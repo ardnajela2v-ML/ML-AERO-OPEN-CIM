@@ -62,6 +62,50 @@ def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.001):
     return v_ref * num / denom
 
 
+# ─── DYNAMIC HELLMANN COEFFICIENT ─────────────────────────────────────────────
+
+defalen dynamic_hellmann_alpha(v_ref, z_ref, z_target, z0=0.001):
+    """
+    Compute a local Hellmann exponent α from the logarithmic wind profile
+    at the reference height, so that the power-law extrapolation matches
+    the log-law at the reference height.
+
+    α = ln( v_log(z_target) / v_ref ) / ln( z_target / z_ref )
+
+       where v_log(z_target) is obtained via the log-law using the same
+    roughness length z0.
+
+    This provides a physically consistent α that adapts toz0 and the
+    reference height, rather than using a fixed terrain class value.
+    """
+    if z0 <= 0:
+        z0 = 1e-4
+    # avoid division by zero when z_target == z_ref
+    if abs(z_target - z_ref) < 1e-6:
+        return 0.0
+    v_log_target = extrapolate_wind_log(v_ref, z_ref, z_target, z0=z0)
+    if v_ref <= 0 or v_log_target <= 0:
+        return 0.0
+    alpha = np.log(v_log_target / v_ref) / np.log(z_target / z_ref)
+    # clamp to physically plausible range
+    return float(np.clip(alpha, 0.05, 0.50))
+
+
+# ─── DYNAMIC AIR DENSITY (per time step) ──────────────────────────────────────
+
+def dynamic_air_density(temperature_c, pressure_pa, humidity_pct=0.0):
+    """
+    Vectorised version of air_density() that accepts arrays for
+    temperature and pressure, returning an array of densities (kg/m³).
+    """
+    T_K = np.asarray(temperature_c) + 273.15
+    e_sat = 6.112 * np.exp(17.67 * np.asarray(temperature_c) /
+                           (np.asarray(temperature_c) + 243.5)) * 100  # Pa
+    e = np.asarray(humidity_pct) / 100.0 * e_sat
+    rho = (np.asarray(pressure_pa) - 0.378 * e) / (Config.GAS_CONSTANT_DRY_AIR * T_K)
+    return rho
+
+
 # ─── POWER CURVE ──────────────────────────────────────────────────────────────
 
 class PowerCurve:
@@ -298,10 +342,14 @@ class WindToPowerEngine:
                                               self.turbine.hub_height_m,
                                               z0=roughness_z0)
             else:
-                alpha = hellmann_alpha or Config.HELLMANN_EXPONENT_OPEN
+                #awn dynamic Hellmann coefficient if no explicit alpha given
+                if hellmann_alpha is None:
+                    hellmann_alpha = dynamic_hellmann_alpha(
+                        np.median(ws), ws_height_m,
+                        self.turbine.hub_height_m, z0=roughness_z0)
                 ws_hub = extrapolate_wind_hellmann(ws, ws_height_m,
                                                    self.turbine.hub_height_m,
-                                                   alpha=alpha)
+                                                   alpha=hellmann_alpha)
         else:
             ws_hub = ws.copy()
 
@@ -309,7 +357,7 @@ class WindToPowerEngine:
 
         # ── air density ──
         if temp_col and temp_col in df.columns and pressure_col and pressure_col in df.columns:
-            rho_arr = air_density(df[temp_col].values, df[pressure_col].values)
+            rho_arr = dynamic_air_density(df[temp_col].values, df[pressure_col].values)
         elif altitude_m is not None:
             t = df[temp_col].values if temp_col and temp_col in df.columns else 15.0
             rho_arr = density_from_altitude(altitude_m, t)
