@@ -1,0 +1,1795 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenWAsP — Ingeniería, Matemática y Guía de Replicación</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap');
+
+  :root {
+    --bg: #0a0e14;
+    --surface: #111820;
+    --surface2: #182030;
+    --border: #1e3048;
+    --accent: #00d4aa;
+    --accent2: #4a9eff;
+    --accent3: #ff6b35;
+    --accent4: #c7f464;
+    --text: #d4e0f0;
+    --text-dim: #6a8aaa;
+    --text-bright: #f0f8ff;
+    --mono: 'Space Mono', monospace;
+    --serif: 'Crimson Pro', Georgia, serif;
+    --gutter: clamp(1.5rem, 4vw, 4rem);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--serif);
+    font-size: clamp(16px, 1.8vw, 19px);
+    line-height: 1.75;
+    overflow-x: hidden;
+  }
+
+  /* ── NOISE TEXTURE OVERLAY ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.4;
+  }
+
+  /* ── HERO ── */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: var(--gutter);
+    position: relative;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  .hero-grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 60px 60px;
+    opacity: 0.4;
+  }
+
+  .hero-glow {
+    position: absolute;
+    top: -20%; left: -10%;
+    width: 60%; height: 60%;
+    background: radial-gradient(ellipse, rgba(0,212,170,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero-glow2 {
+    position: absolute;
+    bottom: -20%; right: -10%;
+    width: 50%; height: 60%;
+    background: radial-gradient(ellipse, rgba(74,158,255,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .tag {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    display: inline-block;
+    padding: 0.2em 0.8em;
+    margin-bottom: 2rem;
+    position: relative;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: clamp(2.2rem, 6vw, 5.5rem);
+    font-weight: 700;
+    line-height: 1.05;
+    color: var(--text-bright);
+    position: relative;
+    letter-spacing: -0.03em;
+  }
+
+  h1 span.accent { color: var(--accent); }
+  h1 span.accent2 { color: var(--accent2); }
+
+  .hero-sub {
+    font-family: var(--serif);
+    font-style: italic;
+    font-size: clamp(1.1rem, 2vw, 1.4rem);
+    color: var(--text-dim);
+    margin-top: 1.5rem;
+    max-width: 680px;
+    position: relative;
+  }
+
+  .meta-bar {
+    display: flex;
+    gap: 2rem;
+    flex-wrap: wrap;
+    margin-top: 3rem;
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    position: relative;
+  }
+  .meta-bar span { color: var(--accent4); }
+
+  /* ── LAYOUT ── */
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: var(--gutter);
+  }
+
+  /* ── SECTION ── */
+  section {
+    padding: 5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-label {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent2);
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+  }
+  .section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  h2 {
+    font-family: var(--mono);
+    font-size: clamp(1.5rem, 3vw, 2.4rem);
+    color: var(--text-bright);
+    font-weight: 700;
+    margin-bottom: 2rem;
+    letter-spacing: -0.02em;
+  }
+
+  h3 {
+    font-family: var(--mono);
+    font-size: clamp(1rem, 2vw, 1.3rem);
+    color: var(--accent);
+    font-weight: 700;
+    margin: 2.5rem 0 1rem;
+    padding-left: 1rem;
+    border-left: 3px solid var(--accent);
+  }
+
+  h4 {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    color: var(--accent2);
+    font-weight: 700;
+    margin: 1.8rem 0 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  p { margin-bottom: 1.2rem; color: var(--text); }
+
+  strong { color: var(--text-bright); font-weight: 600; }
+  em { color: var(--accent4); font-style: italic; }
+
+  /* ── MATH BLOCKS ── */
+  .math {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0;
+    font-family: var(--mono);
+    font-size: clamp(0.85rem, 1.5vw, 1rem);
+    color: var(--accent4);
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .math::before {
+    content: attr(data-label);
+    position: absolute;
+    top: 0.5rem; right: 1rem;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .math .eq-name {
+    display: block;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.1em;
+  }
+
+  /* ── CODE BLOCKS ── */
+  pre {
+    background: #080c10;
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent3);
+    padding: 1.5rem 2rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: clamp(0.75rem, 1.2vw, 0.88rem);
+    line-height: 1.65;
+    position: relative;
+  }
+
+  pre::before {
+    content: attr(data-lang);
+    position: absolute;
+    top: 0.5rem; right: 1rem;
+    font-size: 0.6rem;
+    color: var(--accent3);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+  }
+
+  .kw { color: #c792ea; }
+  .fn { color: var(--accent2); }
+  .st { color: var(--accent4); }
+  .cm { color: var(--text-dim); font-style: italic; }
+  .nm { color: var(--accent); }
+  .op { color: var(--accent3); }
+  .py-kw  { color: #ff79c6; }
+  .py-fn  { color: #8be9fd; }
+  .py-str { color: #f1fa8c; }
+  .py-cm  { color: #6272a4; font-style: italic; }
+  .py-nm  { color: var(--accent); }
+  .py-op  { color: var(--accent3); }
+  .py-num { color: #bd93f9; }
+
+  /* ── PIPELINE / FLOWCHART ── */
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin: 2rem 0;
+    overflow-x: auto;
+    padding-bottom: 0.5rem;
+  }
+
+  .pipe-step {
+    flex: 1;
+    min-width: 140px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1.2rem 1rem;
+    position: relative;
+    transition: background 0.2s;
+  }
+  .pipe-step:hover { background: var(--surface2); }
+  .pipe-step:not(:last-child)::after {
+    content: '→';
+    position: absolute;
+    right: -16px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--accent);
+    font-size: 1.2rem;
+    z-index: 2;
+    font-family: var(--mono);
+  }
+
+  .pipe-num {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    color: var(--accent);
+    letter-spacing: 0.1em;
+    margin-bottom: 0.4rem;
+  }
+
+  .pipe-title {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--text-bright);
+    font-weight: 700;
+    margin-bottom: 0.4rem;
+  }
+
+  .pipe-desc {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  /* ── INFO CARDS ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+    margin: 2rem 0;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 1.5rem;
+    position: relative;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+
+  .card-icon {
+    font-size: 1.8rem;
+    margin-bottom: 0.8rem;
+    display: block;
+  }
+
+  .card h4 {
+    margin-top: 0;
+    font-size: 0.82rem;
+    color: var(--accent);
+  }
+
+  .card p {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-bottom: 0;
+    line-height: 1.5;
+  }
+
+  /* ── MODULE STRUCTURE ── */
+  .module-tree {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    background: #080c10;
+    border: 1px solid var(--border);
+    padding: 1.5rem 2rem;
+    color: var(--text-dim);
+    line-height: 1.9;
+    overflow-x: auto;
+  }
+
+  .tree-dir { color: var(--accent2); }
+  .tree-file { color: var(--text); }
+  .tree-desc { color: var(--text-dim); font-size: 0.72rem; }
+  .tree-accent { color: var(--accent4); }
+
+  /* ── TABLE ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1.5rem 0;
+    font-size: 0.85rem;
+  }
+
+  th {
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent2);
+    padding: 0.8rem 1rem;
+    text-align: left;
+    border-bottom: 2px solid var(--border);
+  }
+
+  td {
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    vertical-align: top;
+  }
+  tr:hover td { background: var(--surface); }
+  td:first-child { font-family: var(--mono); font-size: 0.8rem; color: var(--accent4); }
+
+  /* ── CALLOUT ── */
+  .callout {
+    border: 1px solid;
+    padding: 1.2rem 1.5rem;
+    margin: 1.5rem 0;
+    font-size: 0.9rem;
+    line-height: 1.6;
+    position: relative;
+    padding-left: 3rem;
+  }
+  .callout::before {
+    position: absolute;
+    left: 1rem;
+    top: 1.1rem;
+    font-size: 1rem;
+  }
+  .callout.warn { border-color: var(--accent3); background: rgba(255,107,53,0.05); }
+  .callout.warn::before { content: '⚠'; color: var(--accent3); }
+  .callout.info { border-color: var(--accent2); background: rgba(74,158,255,0.05); }
+  .callout.info::before { content: 'ℹ'; color: var(--accent2); }
+  .callout.tip { border-color: var(--accent4); background: rgba(199,244,100,0.05); }
+  .callout.tip::before { content: '→'; color: var(--accent4); font-family: var(--mono); }
+
+  /* ── TOC ── */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2rem;
+    margin-bottom: 4rem;
+  }
+
+  .toc h3 {
+    border: none;
+    padding: 0;
+    margin-top: 0;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--text-dim);
+  }
+
+  .toc ol {
+    margin: 1rem 0 0;
+    padding-left: 1.5rem;
+    counter-reset: toc-main;
+    list-style: none;
+  }
+  .toc > ol > li { counter-increment: toc-main; margin-bottom: 0.5rem; }
+  .toc > ol > li::before {
+    content: counter(toc-main, decimal-leading-zero) ' ';
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--accent);
+    margin-right: 0.5rem;
+  }
+  .toc a {
+    color: var(--text);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    transition: color 0.2s;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  /* ── BADGE ── */
+  .badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 0.65rem;
+    padding: 0.15em 0.6em;
+    border-radius: 0;
+    margin-left: 0.4rem;
+    vertical-align: middle;
+  }
+  .badge-green { background: rgba(0,212,170,0.15); color: var(--accent); border: 1px solid var(--accent); }
+  .badge-blue  { background: rgba(74,158,255,0.15); color: var(--accent2); border: 1px solid var(--accent2); }
+  .badge-orange{ background: rgba(255,107,53,0.15); color: var(--accent3); border: 1px solid var(--accent3); }
+
+  /* ── FOOTER ── */
+  footer {
+    padding: 3rem var(--gutter);
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+  }
+  footer span { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════
+     HERO
+════════════════════════════════════════════ -->
+<div class="hero">
+  <div class="hero-grid"></div>
+  <div class="hero-glow"></div>
+  <div class="hero-glow2"></div>
+  <div class="container" style="position:relative">
+    <div class="tag">Ingeniería de Recursos Eólicos · DTU Wind</div>
+    <h1>Open<span class="accent">WAsP</span><br><span class="accent2">Blueprint</span></h1>
+    <p class="hero-sub">
+      Toda la ingeniería y matemática detrás de <strong>WAsP, PyWAsP y PyWake</strong> —
+      con instrucciones completas para que un programador replique el sistema desde sus fundamentos físicos.
+    </p>
+    <div class="meta-bar">
+      <div>Autor · <span>José Antonio Rojas Escobar</span></div>
+      <div>Institución · <span>CIIDIR Oaxaca / CCEEA</span></div>
+      <div>Marco · <span>DoCiTTE — IPN</span></div>
+      <div>Versión · <span>2026.1</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     MAIN
+════════════════════════════════════════════ -->
+<div class="container">
+
+<!-- TOC -->
+<section style="padding-top:4rem; border-bottom:none;">
+  <div class="toc">
+    <h3>Tabla de Contenidos</h3>
+    <ol>
+      <li><a href="#s1">Arquitectura general del sistema WAsP</a></li>
+      <li><a href="#s2">Matemática del modelo de flujo microscala (BZ + IBL)</a></li>
+      <li><a href="#s3">Distribución de Weibull y el Clima Eólico Generalizado</a></li>
+      <li><a href="#s4">Orografía: el modelo BZ (Bessel-Zooming)</a></li>
+      <li><a href="#s5">Rugosidad y la Capa Límite Interna (IBL)</a></li>
+      <li><a href="#s6">Producción de energía: AEP y curvas de potencia</a></li>
+      <li><a href="#s7">Efectos de estela: PyWake y modelos de déficit</a></li>
+      <li><a href="#s8">Índice de rugosidad RIX y ΔRIX</a></li>
+      <li><a href="#s9">Estructura del proyecto OpenWAsP — instrucciones al programador</a></li>
+      <li><a href="#s10">Módulo 1: Datos y entrada</a></li>
+      <li><a href="#s11">Módulo 2: Motor de flujo microscala</a></li>
+      <li><a href="#s12">Módulo 3: Motor de estela (PyWake)</a></li>
+      <li><a href="#s13">Módulo 4: Recursos y salidas</a></li>
+      <li><a href="#s14">Módulo 5: Dashboard interactivo</a></li>
+      <li><a href="#s15">Stack tecnológico y dependencias</a></li>
+    </ol>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S1 — ARQUITECTURA GENERAL
+══════════════════════════════════════ -->
+<section id="s1">
+  <div class="section-label">01 · Visión de sistema</div>
+  <h2>Arquitectura general del sistema WAsP</h2>
+
+  <p>
+    WAsP (<em>Wind Atlas Analysis and Application Program</em>) es el estándar de facto mundial para evaluación de recursos eólicos. Desarrollado por DTU Wind (antes Risø), implementa la <strong>Wind Atlas Methodology</strong>: un proceso de dos pasos —"subir" y "bajar"— que desacopla el clima eólico medido de las condiciones topográficas locales, permitiendo extrapolar predicciones a cualquier sitio.
+  </p>
+
+  <div class="pipeline">
+    <div class="pipe-step">
+      <div class="pipe-num">01 · ENTRADA</div>
+      <div class="pipe-title">Datos observados</div>
+      <div class="pipe-desc">Serie histórica de viento (OMC), topografía (contornos), rugosidad superficial (polígonos)</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">02 · ANÁLISIS</div>
+      <div class="pipe-title">Climatología</div>
+      <div class="pipe-desc">Histograma sectorial → Weibull A, k por sector</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">03 · SUBIR ↑</div>
+      <div class="pipe-title">Generalización</div>
+      <div class="pipe-desc">Eliminar efectos locales → Clima Eólico Generalizado (wind atlas)</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">04 · BAJAR ↓</div>
+      <div class="pipe-title">Aplicación</div>
+      <div class="pipe-desc">Re-introducir efectos del sitio objetivo → Clima local predicho</div>
+    </div>
+    <div class="pipe-step">
+      <div class="pipe-num">05 · SALIDA</div>
+      <div class="pipe-title">AEP + Mapa</div>
+      <div class="pipe-desc">Velocidad media, AEP, Weibull, RIX, ΔRIX por punto de recurso</div>
+    </div>
+  </div>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-icon">🌀</span>
+      <h4>WAsP (core)</h4>
+      <p>Motor en Fortran. GUI en Windows. Opera con archivos .wsz, .map, .omwc, .wtg. Licencia comercial DTU.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">🐍</span>
+      <h4>PyWAsP</h4>
+      <p>Wrapper Python del core Fortran. Acceso programático al motor microscala WAsP a través de xarray + WindKit. Licencia run-based DTU.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">⚡</span>
+      <h4>PyWake</h4>
+      <p>Open source. Motor de estelas vectorizado en NumPy/Numba. Modelos NOJ, Bastankhah, Fuga, GCL, TurboGauss. Calcula AEP con pérdidas de estela.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">🌍</span>
+      <h4>Global Wind Atlas</h4>
+      <p>WAsP ejecutado 5.6 mil millones de veces sobre una grilla de 250m. Fuente pública de datos de viento generalizado para todo el mundo.</p>
+    </div>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S2 — MATEMÁTICA FLUJO MICROSCALA
+══════════════════════════════════════ -->
+<section id="s2">
+  <div class="section-label">02 · Física del flujo</div>
+  <h2>Matemática del modelo de flujo microscala</h2>
+
+  <p>
+    El núcleo de WAsP resuelve el campo de velocidades de viento en la capa límite atmosférica (ABL) sobre terreno heterogéneo. El enfoque es <strong>linealización de Navier-Stokes</strong> bajo condiciones estacionarias y neutras.
+  </p>
+
+  <h3>Perfil logarítmico de velocidad (terreno plano)</h3>
+  <p>La base teórica es el perfil log-lineal de la capa superficial de Monin-Obukhov. En condiciones neutras:</p>
+
+  <div class="math" data-label="Ec. 1 — Perfil log">
+    <span class="eq-name">// Perfil logarítmico de viento — ley de la pared</span>
+    U(z) = (u* / κ) · ln(z / z₀)
+
+    Donde:
+      U(z)  = velocidad del viento a altura z  [m/s]
+      u*    = velocidad de fricción            [m/s]
+      κ     = constante de von Kármán ≈ 0.4   [-]
+      z     = altura sobre el suelo           [m]
+      z₀    = longitud de rugosidad           [m]
+  </div>
+
+  <h3>Ley de arrastre geostrófico</h3>
+  <p>Para conectar el viento medido a baja altura con el viento geostrófico libre de efectos de superficie (el "viento atlas"):</p>
+
+  <div class="math" data-label="Ec. 2 — Geostrófico">
+    G = u* / κ · √[ (ln(u*/fz₀) - A)² + B² ]
+
+    f  = 2Ω·sin(φ)   parámetro de Coriolis
+    Ω  = 7.27×10⁻⁵ rad/s  velocidad angular Tierra
+    φ  = latitud del sitio
+    A ≈ 1.8,  B ≈ 4.5   (constantes de Blackadar-Tennekes)
+  </div>
+
+  <p>La transformación "subir" elimina los efectos de z₀ local y orografía local. La transformación "bajar" los reintroduce para el sitio predicho.</p>
+
+  <h3>Velocidad de fricción y estrés cortante</h3>
+
+  <div class="math" data-label="Ec. 3 — u*">
+    u* = U(z) · κ / ln(z / z₀)
+
+    // Para extrapolación vertical entre altura de medición z₁ y z₂:
+    U(z₂) = U(z₁) · ln(z₂/z₀) / ln(z₁/z₀)
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S3 — WEIBULL
+══════════════════════════════════════ -->
+<section id="s3">
+  <div class="section-label">03 · Estadística del viento</div>
+  <h2>Distribución de Weibull y Clima Eólico Generalizado</h2>
+
+  <p>
+    WAsP representa la distribución de velocidades por sector como una <strong>Distribución de Weibull de 2 parámetros</strong>. El Clima Eólico Generalizado (CWG) es un conjunto de distribuciones Weibull por sector, referidas a terreno ideal.
+  </p>
+
+  <div class="math" data-label="Ec. 4 — Weibull PDF">
+    <span class="eq-name">// Función densidad de probabilidad de Weibull</span>
+    f(U) = (k/A) · (U/A)^(k-1) · exp[-(U/A)^k]
+
+    Donde:
+      A = parámetro de escala  [m/s]   (≈ velocidad media / Γ(1+1/k))
+      k = parámetro de forma  [-]      (típico: 1.5 – 3.0 para viento)
+      U = velocidad del viento [m/s]
+      Γ = función Gamma de Euler
+  </div>
+
+  <div class="math" data-label="Ec. 5 — Velocidad media">
+    <span class="eq-name">// Velocidad media a partir de parámetros Weibull</span>
+    Ū = A · Γ(1 + 1/k)
+
+    // Densidad de potencia media:
+    P̄ = ½ρ · A³ · Γ(1 + 3/k)    [W/m²]
+  </div>
+
+  <div class="math" data-label="Ec. 6 — Weibull CDF">
+    <span class="eq-name">// Función de distribución acumulada</span>
+    F(U) = 1 - exp[-(U/A)^k]
+
+    // Frecuencia de velocidades en intervalo [U₁, U₂]:
+    p(U₁ ≤ U ≤ U₂) = F(U₂) - F(U₁)
+  </div>
+
+  <h3>Estructura del Clima Eólico Generalizado (CWG)</h3>
+  <p>El CWG es un array de forma <code>[n_sectores × (A, k, frecuencia)]</code>. WAsP típicamente usa <strong>12 sectores de 30°</strong>:</p>
+
+  <div class="math" data-label="Estructura CWG">
+    CWG = {
+      sector_i: {
+        freq_i: frecuencia de ocurrencia del sector i  [0-1]
+        A_i:    parámetro de escala Weibull del sector [m/s]
+        k_i:    parámetro de forma Weibull del sector  [-]
+      }
+      para i = 0°, 30°, 60°, ..., 330°
+    }
+
+    Restricción: Σ freq_i = 1
+  </div>
+
+  <h3>Ajuste de Weibull (fitting)</h3>
+  <p>El ajuste se hace por Máxima Verosimilitud (MLE) o Mínimos Cuadrados sobre el histograma empírico. La solución MLE para k requiere iteración numérica:</p>
+
+  <div class="math" data-label="Ec. 7 — MLE Weibull">
+    <span class="eq-name">// Estimación por máxima verosimilitud</span>
+    k_MLE: resuelve numéricamente
+      Σ Uᵢᵏ·ln(Uᵢ) / Σ Uᵢᵏ - (1/k) - (1/N)·Σ ln(Uᵢ) = 0
+
+    A_MLE = (1/N · Σ Uᵢᵏ)^(1/k)
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S4 — OROGRAFÍA / MODELO BZ
+══════════════════════════════════════ -->
+<section id="s4">
+  <div class="section-label">04 · Orografía</div>
+  <h2>Orografía: el modelo BZ (Bessel-Zooming)</h2>
+
+  <p>
+    <strong>El modelo BZ</strong> (Troen, 1990) es el corazón del cálculo orográfico de WAsP. Resuelve las ecuaciones linealizadas de flujo potencial perturbado sobre una grilla polar de alta resolución centrada en el punto de cálculo.
+  </p>
+
+  <h3>Fundamento: ecuaciones de flujo perturbado linealizado</h3>
+
+  <div class="math" data-label="Ec. 8 — Flujo perturbado">
+    <span class="eq-name">// Descomposición del campo de velocidades</span>
+    u(x,y,z) = U₀(z) + u'(x,y,z)      // componente media + perturbación
+    w(x,y,z) =         w'(x,y,z)
+
+    // Bajo linealización (|u'| << U₀), las ecuaciones RANS se reducen a:
+    ∂u'/∂x + ∂v'/∂y + ∂w'/∂z = 0      // continuidad
+    U₀·∂u'/∂x = -∂p'/∂x               // momento x
+    U₀·∂w'/∂x = -∂p'/∂z               // momento z
+  </div>
+
+  <h3>Speed-up orográfico (Δs)</h3>
+
+  <div class="math" data-label="Ec. 9 — Speed-up">
+    <span class="eq-name">// Speed-up fraccional en la cima de una colina</span>
+    Δs = u'(x_cima, z) / U₀(z)
+
+    // La altura de máximo speed-up l está relacionada con la escala L de la colina:
+    l ≈ L / 2π   (estimación de Troen)
+
+    // Speed-up máximo típico para colina suave:
+    Δs_max ≈ H / (π·L)   donde H = altura, L = semi-longitud de ladera
+  </div>
+
+  <h3>Grilla polar de Zooming (BZ)</h3>
+  <p>
+    WAsP discretiza el terreno en una grilla polar centrada en el punto de cálculo. La resolución radial aumenta hacia el centro (zooming), optimizando detalle local sin explotar el costo computacional:
+  </p>
+
+  <div class="math" data-label="Ec. 10 — Grilla BZ">
+    <span class="eq-name">// Distribución radial de la grilla zooming</span>
+    r_n = R · (n/N)^α    n = 1, ..., N
+
+    Donde:
+      R = radio máximo de la grilla  (≈ 20 km, contornos > 20 km se ignoran)
+      N = número de anillos
+      α > 1 controla la distribución (mayor α → más resolución al centro)
+
+    // La grilla tiene:
+    - N anillos radiales
+    - M sectores angulares (típico: 72 → resolución 5°)
+    - Resolución total: N × M celdas
+  </div>
+
+  <h3>Procesamiento de contornos a grilla BZ</h3>
+  <pre data-lang="pseudocódigo">
+<span class="cm">// El archivo .map contiene líneas de contorno z = cte</span>
+<span class="cm">// Se interpola a la grilla polar (r, θ) para cada punto de cálculo</span>
+
+<span class="kw">PARA</span> <span class="nm">cada_punto_de_calculo</span>:
+  <span class="nm">grid</span> = crear_grilla_polar(R=20km, N=60, M=72)
+  <span class="nm">elevacion_grid</span> = interpolar_contornos_a_polar(<span class="nm">contornos_map</span>, <span class="nm">grid</span>)
+  <span class="nm">speedup_sector</span> = BZ_flow_solver(<span class="nm">elevacion_grid</span>, <span class="nm">U_ref</span>, <span class="nm">z0</span>)
+  <span class="nm">viento_corregido</span> = <span class="nm">U_genz</span> × (1 + <span class="nm">speedup_sector</span>)
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S5 — RUGOSIDAD / IBL
+══════════════════════════════════════ -->
+<section id="s5">
+  <div class="section-label">05 · Rugosidad superficial</div>
+  <h2>Rugosidad y la Capa Límite Interna (IBL)</h2>
+
+  <h3>Longitudes de rugosidad z₀ estándar</h3>
+
+  <table>
+    <tr><th>Cobertura</th><th>z₀ [m]</th><th>Descripción</th></tr>
+    <tr><td>Agua / mar abierto</td><td>0.0001</td><td>Superficie lisa</td></tr>
+    <tr><td>Playa / nieve</td><td>0.001</td><td>Terreno muy liso</td></tr>
+    <tr><td>Hierba corta</td><td>0.01</td><td>Pasto, pastizales</td></tr>
+    <tr><td>Cultivos / matorral</td><td>0.05 – 0.1</td><td>Agricultura típica</td></tr>
+    <tr><td>Bosque bajo</td><td>0.2 – 0.5</td><td>Arbusto denso</td></tr>
+    <tr><td>Bosque alto / urbano</td><td>0.5 – 2.0</td><td>Ciudad, selva</td></tr>
+  </table>
+
+  <h3>Capa Límite Interna (IBL) en cambio de rugosidad</h3>
+  <p>
+    Cuando el viento cruza un cambio de rugosidad (z₀₁ → z₀₂), la capa límite no se adapta instantáneamente. La IBL crece aguas abajo y la adaptación puede percibirse a 10 km de distancia a 100 m de altura.
+  </p>
+
+  <div class="math" data-label="Ec. 11 — Altura IBL">
+    <span class="eq-name">// Crecimiento de la capa límite interna (IBL)</span>
+    h_IBL(x) = κ · x / ln(x/z₀₂)     (aproximación simple)
+
+    // Modelo de Elliott (1958), más preciso:
+    h_IBL(x) · [ln(h_IBL/z₀₂) - 1] = 0.9 · x
+
+    Donde x = distancia aguas abajo del cambio de rugosidad
+  </div>
+
+  <div class="math" data-label="Ec. 12 — Velocidad en zona mixta">
+    <span class="eq-name">// Perfil de velocidad en la zona de transición rugosidad</span>
+    Para z < h_IBL(x):
+      U(z) = (u*₂/κ) · ln(z/z₀₂)       // adapado a z₀₂
+
+    Para z > h_IBL(x):
+      U(z) = (u*₁/κ) · ln(z/z₀₁)       // aún influenciado por z₀₁
+  </div>
+
+  <h3>Modelo multirugosidad (WAsP)</h3>
+  <p>WAsP divide el entorno en sectores angulares. Para cada sector integra el efecto de múltiples cambios de rugosidad en serie, acumulando el efecto IBL:</p>
+
+  <div class="math" data-label="Ec. 13 — Multi-IBL">
+    Velocidad efectiva en el mástil (sector θ):
+
+    U_eff(z, θ) = U_geo(θ) · ∏ᵢ [F_rgh(z₀ᵢ, z₀ᵢ₊₁, xᵢ, z)]
+
+    Donde F_rgh es el factor de corrección IBL por cada cambio i
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S6 — AEP Y CURVAS DE POTENCIA
+══════════════════════════════════════ -->
+<section id="s6">
+  <div class="section-label">06 · Energía</div>
+  <h2>Producción de energía: AEP y curvas de potencia</h2>
+
+  <h3>AEP por integración Weibull × curva de potencia</h3>
+  <p>
+    La Producción Anual de Energía (AEP) se calcula integrando la curva de potencia P(U) del aerogenerador contra la distribución de probabilidad de velocidades f(U):
+  </p>
+
+  <div class="math" data-label="Ec. 14 — AEP integral">
+    <span class="eq-name">// Producción de energía esperada por sector</span>
+    E_sector = T · freq_sector · ∫₀^∞ P(U) · f(U; A, k) dU
+
+    // AEP total:
+    AEP = Σᵢ E_sectorᵢ    [kWh/año]
+
+    Donde:
+      T = 8760 h/año
+      P(U)  = curva de potencia del aerogenerador [kW]
+      f(U)  = Weibull PDF del sector i
+      freq_i = frecuencia de ocurrencia del sector i
+  </div>
+
+  <div class="math" data-label="Ec. 15 — AEP discreto">
+    <span class="eq-name">// Versión discreta (bins de velocidad)</span>
+    AEP ≈ T · Σⱼ P(Uⱼ) · p(Uⱼ)    [kWh/año]
+
+    p(Uⱼ) = F(Uⱼ + ΔU/2) - F(Uⱼ - ΔU/2)   // probabilidad en bin j
+  </div>
+
+  <h3>Densidad de potencia media</h3>
+
+  <div class="math" data-label="Ec. 16 — Densidad de potencia">
+    P̄_dens = ½ · ρ_aire · Ū³   [W/m²]
+
+    // ρ_aire varía con altitud y temperatura:
+    ρ = P_atm / (R_d · T)
+
+    R_d = 287 J/(kg·K),   T en Kelvin
+    ρ ≈ 1.225 kg/m³ a 15°C, nivel del mar
+  </div>
+
+  <h3>Factor de capacidad (CF)</h3>
+
+  <div class="math" data-label="Ec. 17 — CF">
+    CF = AEP / (P_nominal × 8760)    [-]
+
+    // Rango típico:
+    CF_bueno   > 0.35
+    CF_excelente > 0.45
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S7 — ESTELAS / PYWAKE
+══════════════════════════════════════ -->
+<section id="s7">
+  <div class="section-label">07 · Efectos de estela</div>
+  <h2>Efectos de estela: PyWake y modelos de déficit</h2>
+
+  <p>
+    PyWake es el motor open-source de DTU para calcular interacciones de estela en parques eólicos. Implementa la cadena: <strong>Site → WindTurbines → WakeDeficitModel → SuperpositionModel → AEP</strong>.
+  </p>
+
+  <h3>Modelo N.O. Jensen (NOJ) — Top-hat, 1983</h3>
+  <p>El modelo más simple y ampliamente usado. Asume expansión lineal de la estela con perfil uniforme ("sombrero de copa"):</p>
+
+  <div class="math" data-label="Ec. 18 — Jensen NOJ">
+    <span class="eq-name">// Velocidad en la estela</span>
+    V = U₀ · [1 - 2a · (r₀ / (r₀ + k·x))²]
+
+    Donde:
+      U₀  = velocidad libre corriente aguas arriba  [m/s]
+      a   = factor de inducción axial = (1 - √(1-Cт))/2
+      r₀  = radio del rotor  [m]
+      x   = distancia axial aguas abajo  [m]
+      k   = constante de entrainment ≈ 0.04 (offshore) a 0.1 (onshore)
+      Cт  = coeficiente de empuje de la turbina  [-]
+  </div>
+
+  <div class="math" data-label="Ec. 19 — Déficit NOJ">
+    <span class="eq-name">// Déficit de velocidad fraccional</span>
+    δV/U₀ = 2a · (r₀ / (r₀ + k·x))²
+
+    // Radio de la estela aguas abajo:
+    r_w(x) = r₀ + k·x
+  </div>
+
+  <h3>Modelo Bastankhah-Porté-Agel (2014) — Gaussiano</h3>
+  <p>Modelo analítico con perfil Gaussiano, conserva masa y cantidad de movimiento:</p>
+
+  <div class="math" data-label="Ec. 20 — Bastankhah Gaussian">
+    <span class="eq-name">// Déficit de velocidad con perfil Gaussiano</span>
+    ΔU(x,r) = U₀ · (1 - √(1 - Cт/(8·σ²/D²))) · exp(-r²/(2σ²))
+
+    // Expansión del ancho de estela:
+    σ(x)/D = k* · x/D + ε
+
+    Donde:
+      r   = distancia radial al eje de estela  [m]
+      σ   = anchura del Gaussiano  [m]
+      D   = diámetro del rotor  [m]
+      k*  = coeficiente de expansión de estela ≈ 0.04
+      ε   = ε₀ que depende de Cт (evita singularidad en x=0)
+  </div>
+
+  <h3>Superposición de estelas múltiples</h3>
+
+  <div class="math" data-label="Ec. 21 — Superposición">
+    <span class="eq-name">// Suma lineal (LinearSum)</span>
+    ΔU_total = Σᵢ ΔUᵢ           // simple pero sobreestima
+
+    <span class="eq-name">// Suma cuadrática (SquaredSum — Katic 1986)</span>
+    ΔU_total = √(Σᵢ ΔUᵢ²)      // más conservadora, preferida
+
+    <span class="eq-name">// Velocidad efectiva resultante:</span>
+    U_eff = U₀ · (1 - ΔU_total/U₀)
+  </div>
+
+  <h3>Pipeline PyWake en código</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> py_wake
+<span class="py-kw">from</span> py_wake <span class="py-kw">import</span> NOJ, BastankhahGaussian
+<span class="py-kw">from</span> py_wake.examples.data.hornsrev1 <span class="py-kw">import</span> V80, Hornsrev1Site
+
+<span class="py-cm"># 1. Definir sitio (distribución Weibull por dirección)</span>
+site = Hornsrev1Site()
+
+<span class="py-cm"># 2. Definir aerogenerador (curva P + Ct)</span>
+wt = V80()
+
+<span class="py-cm"># 3. Seleccionar modelo de estela</span>
+wf_model = NOJ(site, wt, k=<span class="py-num">0.04</span>)
+<span class="py-cm"># O Gaussiano:</span>
+<span class="py-cm"># wf_model = BastankhahGaussian(site, wt, k=0.04)</span>
+
+<span class="py-cm"># 4. Correr simulación con posiciones de turbinas</span>
+x_wt = [<span class="py-num">0</span>, <span class="py-num">500</span>, <span class="py-num">1000</span>, <span class="py-num">1500</span>]   <span class="py-cm"># posiciones en metros</span>
+y_wt = [<span class="py-num">0</span>, <span class="py-num">0</span>,   <span class="py-num">0</span>,    <span class="py-num">0</span>   ]
+
+sim = wf_model(x_wt, y_wt)
+
+<span class="py-cm"># 5. Calcular AEP [GWh/año]</span>
+aep = sim.aep().sum()
+<span class="py-fn">print</span>(<span class="py-str">f"AEP total: {aep:.2f} GWh"</span>)
+
+<span class="py-cm"># 6. Mapa de flujo de velocidades</span>
+flow_map = sim.flow_map(wd=<span class="py-num">270</span>, ws=<span class="py-num">9</span>)
+flow_map.plot_wake_map()
+  </pre>
+
+  <div class="callout info">
+    <strong>PyWake + PyWAsP:</strong> La integración típica usa PyWAsP para obtener el clima eólico local (Weibull sectorial con efectos topográficos) y lo pasa como Site a PyWake, que calcula el AEP con pérdidas de estela incluidas.
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S8 — RIX / ΔRIX
+══════════════════════════════════════ -->
+<section id="s8">
+  <div class="section-label">08 · Complejidad del terreno</div>
+  <h2>Índice de Rugosidad RIX y ΔRIX</h2>
+
+  <p>
+    El modelo BZ tiene validez limitada en terrenos de pendiente pronunciada. WAsP cuantifica esto con el índice RIX para alertar sobre posibles errores en sitios con orografía compleja.
+  </p>
+
+  <div class="math" data-label="Ec. 22 — RIX">
+    <span class="eq-name">// Ruggedness Index (RIX)</span>
+    RIX = fracción del terreno circundante que supera la pendiente crítica
+
+    Pendiente crítica θ_c ≈ 0.3 rad (≈ 17°)
+
+    RIX = (1/2π) · ∫₀^2π H(tan θ(φ) - tan θ_c) dφ
+
+    Donde H() = función de Heaviside (1 si condición verdadera)
+  </div>
+
+  <div class="math" data-label="Ec. 23 — ΔRIX">
+    <span class="eq-name">// Delta-RIX: diferencial entre sitio de predicción y sitio de referencia</span>
+    ΔRIX = RIX_prediccion - RIX_referencia    [%]
+
+    // Guías de interpretación:
+    |ΔRIX| < 5%    → predicción fiable
+    |ΔRIX| 5-10%   → incertidumbre moderada
+    |ΔRIX| > 10%   → WAsP puede sobre/sub-estimar significativamente
+  </div>
+
+  <p>Cuando ΔRIX > 0, WAsP tiende a sobreestimar la velocidad. La corrección empírica de Bowen-Mortensen:</p>
+
+  <div class="math" data-label="Ec. 24 — Corrección ΔRIX">
+    U_corr = U_WAsP / (1 + β · ΔRIX)
+
+    β ≈ 3.5 (calibrado empíricamente para terrenos complejos)
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S9 — ESTRUCTURA OPENWASP
+══════════════════════════════════════ -->
+<section id="s9">
+  <div class="section-label">09 · Instrucciones al programador</div>
+  <h2>Estructura del proyecto OpenWAsP</h2>
+
+  <div class="callout tip">
+    <strong>Objetivo:</strong> Replicar la funcionalidad de WAsP/PyWAsP en Python puro (sin licencia DTU), implementando cada modelo físico desde sus ecuaciones fundamentales. PyWake se usa directamente (es open-source MIT). El stack resultante es completamente libre.
+  </div>
+
+  <div class="module-tree">
+<span class="tree-dir">openwasp/</span>
+│
+├── <span class="tree-dir">core/</span>                         <span class="tree-desc">Motor físico-matemático</span>
+│   ├── <span class="tree-file">wind_profile.py</span>          <span class="tree-desc">Perfil log, extrapolación vertical, z₀</span>
+│   ├── <span class="tree-file">geostrophic.py</span>           <span class="tree-desc">Ley de arrastre, transformación up/down</span>
+│   ├── <span class="tree-file">weibull.py</span>               <span class="tree-desc">PDF, CDF, fitting MLE, estadísticos</span>
+│   ├── <span class="tree-file">ibl.py</span>                   <span class="tree-desc">Capa límite interna, cambios de rugosidad</span>
+│   ├── <span class="tree-file">orography.py</span>             <span class="tree-desc">Speed-up BZ simplificado, grilla polar</span>
+│   ├── <span class="tree-file">rix.py</span>                   <span class="tree-desc">Cálculo RIX, ΔRIX, corrección Bowen</span>
+│   └── <span class="tree-file">aep.py</span>                   <span class="tree-desc">Integración AEP, CF, densidad de potencia</span>
+│
+├── <span class="tree-dir">io/</span>                           <span class="tree-desc">Parseo de formatos WAsP</span>
+│   ├── <span class="tree-file">map_parser.py</span>            <span class="tree-desc">Leer archivos .map (contornos)</span>
+│   ├── <span class="tree-file">omwc_parser.py</span>           <span class="tree-desc">Leer .omwc (observaciones de viento)</span>
+│   ├── <span class="tree-file">wtg_parser.py</span>            <span class="tree-desc">Leer .wtg (curvas P y Ct de turbina)</span>
+│   ├── <span class="tree-file">gwc_io.py</span>                <span class="tree-desc">Leer/escribir .gwc (clima generalizado)</span>
+│   └── <span class="tree-file">gwa_fetcher.py</span>           <span class="tree-desc">Descargar datos Global Wind Atlas API</span>
+│
+├── <span class="tree-dir">wake/</span>                         <span class="tree-desc">Integración con PyWake</span>
+│   ├── <span class="tree-file">site_builder.py</span>          <span class="tree-desc">Construir XRSite de PyWake desde Weibull</span>
+│   ├── <span class="tree-file">turbine_builder.py</span>       <span class="tree-desc">Construir WindTurbines desde .wtg</span>
+│   ├── <span class="tree-file">wake_runner.py</span>           <span class="tree-desc">Ejecutar NOJ/Bastankhah sobre layout</span>
+│   └── <span class="tree-file">wake_plots.py</span>            <span class="tree-desc">Visualizar mapas de estela, AEP por turbina</span>
+│
+├── <span class="tree-dir">resource/</span>                     <span class="tree-desc">Recurso eólico y mapas</span>
+│   ├── <span class="tree-file">resource_grid.py</span>         <span class="tree-desc">Grilla rectangular de puntos, cálculo masivo</span>
+│   ├── <span class="tree-file">micrositing.py</span>           <span class="tree-desc">Optimización de posición de turbinas</span>
+│   └── <span class="tree-file">atlas_generation.py</span>      <span class="tree-desc">Generar atlas local desde múltiples mástiles</span>
+│
+├── <span class="tree-dir">dashboard/</span>                    <span class="tree-desc">Interfaz web interactiva</span>
+│   ├── <span class="tree-file">app.py</span>                   <span class="tree-desc">FastAPI + uvicorn backend</span>
+│   ├── <span class="tree-file">routes/</span>                  <span class="tree-desc">Endpoints REST</span>
+│   └── <span class="tree-file">frontend/</span>                <span class="tree-desc">React + Leaflet + Recharts</span>
+│
+├── <span class="tree-dir">data/</span>                         <span class="tree-desc">Datos de ejemplo</span>
+│   ├── <span class="tree-file">example.map</span>              <span class="tree-desc">Contornos Serra Santa Luzia (PTG)</span>
+│   ├── <span class="tree-file">example.omwc</span>
+│   └── <span class="tree-file">vestas_v80.wtg</span>
+│
+├── <span class="tree-file">requirements.txt</span>
+└── <span class="tree-file">README.md</span>
+  </div>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S10 — MÓDULO 1: DATOS
+══════════════════════════════════════ -->
+<section id="s10">
+  <div class="section-label">10 · Implementación · Módulo 1</div>
+  <h2>Módulo 1: Datos y entrada</h2>
+
+  <h3>io/omwc_parser.py — Observaciones de viento</h3>
+  <p>El formato .omwc de WAsP es un histograma de viento: velocidad × dirección. Estructura a implementar:</p>
+
+  <pre data-lang="Python">
+<span class="py-cm">"""
+INSTRUCCIÓN AL PROGRAMADOR:
+Implementar un parser para archivos .omwc (Observed Mean Wind Climate).
+El formato es un archivo de texto con tabla de frecuencias:
+  - Filas: bins de velocidad (0-1, 1-2, ..., N-N+1 m/s)
+  - Columnas: sectores de dirección (12 columnas = 12 sectores de 30°)
+  - Valores: frecuencia de ocurrencia (número de horas o fracción)
+"""</span>
+
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">import</span> pandas <span class="py-kw">as</span> pd
+
+<span class="py-kw">class</span> <span class="py-fn">OmwcParser</span>:
+    <span class="py-str">"""
+    Parser de archivos WAsP .omwc (Observed Mean Wind Climate)
+    
+    Atributos resultantes:
+      self.freq_table : np.ndarray shape (n_speeds, n_sectors)
+      self.speed_bins : np.ndarray de velocidades [m/s]
+      self.sectors    : np.ndarray de ángulos centrales [deg]
+      self.heights    : dict con metadatos (altura anemómetro, etc.)
+    """</span>
+    
+    <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, filepath: str):
+        self.filepath = filepath
+        self.freq_table = <span class="py-fn">None</span>
+        self.speed_bins = np.<span class="py-fn">arange</span>(<span class="py-num">0.5</span>, <span class="py-num">30.5</span>, <span class="py-num">1.0</span>)  <span class="py-cm"># centros de bins</span>
+        self.sectors    = np.<span class="py-fn">arange</span>(<span class="py-num">0</span>, <span class="py-num">360</span>, <span class="py-num">30</span>)      <span class="py-cm"># 12 sectores</span>
+        self.metadata   = {}
+    
+    <span class="py-kw">def</span> <span class="py-fn">parse</span>(self) -> dict:
+        <span class="py-str">"""Lee el archivo y devuelve datos estructurados"""</span>
+        <span class="py-cm"># TODO: implementar lectura del encabezado (.omwc tiene metadatos)</span>
+        <span class="py-cm"># TODO: leer la tabla de frecuencias</span>
+        <span class="py-cm"># TODO: normalizar frecuencias si están en horas</span>
+        <span class="py-kw">raise</span> <span class="py-fn">NotImplementedError</span>(<span class="py-str">"Implementar según especificación del formato .omwc"</span>)
+    
+    <span class="py-kw">def</span> <span class="py-fn">to_weibull</span>(self) -> dict:
+        <span class="py-str">"""
+        Ajusta distribución Weibull por sector usando MLE.
+        Devuelve dict con claves: 'A', 'k', 'freq' por sector.
+        """</span>
+        weibull_params = {}
+        <span class="py-kw">for</span> i, sector <span class="py-kw">in</span> <span class="py-fn">enumerate</span>(self.sectors):
+            col = self.freq_table[:, i]
+            A, k = self.<span class="py-fn">_fit_weibull_mle</span>(self.speed_bins, col)
+            weibull_params[sector] = {
+                <span class="py-str">'A'</span>: A,
+                <span class="py-str">'k'</span>: k,
+                <span class="py-str">'freq'</span>: col.<span class="py-fn">sum</span>()
+            }
+        <span class="py-kw">return</span> weibull_params
+    
+    <span class="py-kw">def</span> <span class="py-fn">_fit_weibull_mle</span>(self, U: np.ndarray, freq: np.ndarray):
+        <span class="py-str">"""
+        Ajuste MLE de Weibull.
+        IMPLEMENTAR: resolver iterativamente la ecuación de MLE para k,
+        luego calcular A analíticamente.
+        Referencia: Ec. 7 de este documento.
+        """</span>
+        <span class="py-kw">from</span> scipy.optimize <span class="py-kw">import</span> brentq
+        <span class="py-cm"># Filtrar bins vacíos</span>
+        mask = freq > <span class="py-num">0</span>
+        U_m, f_m = U[mask], freq[mask]
+        
+        <span class="py-kw">def</span> <span class="py-fn">mle_eq</span>(k):
+            num = np.<span class="py-fn">sum</span>(f_m * U_m**k * np.<span class="py-fn">log</span>(U_m))
+            den = np.<span class="py-fn">sum</span>(f_m * U_m**k)
+            <span class="py-kw">return</span> num/den - <span class="py-num">1</span>/k - np.<span class="py-fn">sum</span>(f_m * np.<span class="py-fn">log</span>(U_m)) / np.<span class="py-fn">sum</span>(f_m)
+        
+        k = brentq(mle_eq, <span class="py-num">0.5</span>, <span class="py-num">10</span>)
+        A = (np.<span class="py-fn">sum</span>(f_m * U_m**k) / np.<span class="py-fn">sum</span>(f_m)) ** (<span class="py-num">1</span>/k)
+        <span class="py-kw">return</span> A, k
+  </pre>
+
+  <h3>io/wtg_parser.py — Curva de potencia y Ct</h3>
+  <pre data-lang="Python">
+<span class="py-cm">"""
+INSTRUCCIÓN AL PROGRAMADOR:
+Los archivos .wtg de WAsP son XML con:
+  - PowerTable: (U [m/s], P [W]) para cada velocidad
+  - ThrustForceTable: (U [m/s], Ct [-])
+  - Metadatos: diámetro, altura hub, densidad de referencia
+  
+Importar con xml.etree.ElementTree o lxml.
+Interpolación de P(U) y Ct(U): usar scipy.interpolate.interp1d
+"""</span>
+
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> scipy.interpolate <span class="py-kw">import</span> interp1d
+<span class="py-kw">import</span> xml.etree.ElementTree <span class="py-kw">as</span> ET
+
+<span class="py-kw">class</span> <span class="py-fn">WtgParser</span>:
+    <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, filepath: str):
+        self.filepath = filepath
+        self.U_bins  = np.<span class="py-fn">array</span>([])
+        self.P_curve = np.<span class="py-fn">array</span>([])  <span class="py-cm"># [W]</span>
+        self.Ct_curve= np.<span class="py-fn">array</span>([])  <span class="py-cm"># [-]</span>
+        self.diameter= <span class="py-num">None</span>           <span class="py-cm"># [m]</span>
+        self.hub_height = <span class="py-num">None</span>       <span class="py-cm"># [m]</span>
+    
+    <span class="py-kw">def</span> <span class="py-fn">parse</span>(self):
+        tree = ET.<span class="py-fn">parse</span>(self.filepath)
+        root = tree.<span class="py-fn">getroot</span>()
+        <span class="py-cm"># TODO: navegar el XML según esquema WAsP .wtg</span>
+        <span class="py-cm"># Buscar tags: PowerTable, ThrustForceTable, RotorDiameter, HubHeight</span>
+        <span class="py-kw">raise</span> <span class="py-fn">NotImplementedError</span>()
+    
+    <span class="py-kw">def</span> <span class="py-fn">power</span>(self, U: float) -> float:
+        <span class="py-str">"""Interpola potencia en U [m/s] → P [W]"""</span>
+        interp = interp1d(self.U_bins, self.P_curve,
+                         kind=<span class="py-str">'linear'</span>, bounds_error=<span class="py-fn">False</span>, fill_value=<span class="py-num">0.0</span>)
+        <span class="py-kw">return</span> <span class="py-fn">float</span>(interp(U))
+    
+    <span class="py-kw">def</span> <span class="py-fn">ct</span>(self, U: float) -> float:
+        <span class="py-str">"""Interpola coeficiente de empuje Ct en U"""</span>
+        interp = interp1d(self.U_bins, self.Ct_curve,
+                         kind=<span class="py-str">'linear'</span>, bounds_error=<span class="py-fn">False</span>, fill_value=<span class="py-num">0.0</span>)
+        <span class="py-kw">return</span> <span class="py-fn">float</span>(interp(U))
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S11 — MÓDULO 2: MOTOR FLUJO
+══════════════════════════════════════ -->
+<section id="s11">
+  <div class="section-label">11 · Implementación · Módulo 2</div>
+  <h2>Módulo 2: Motor de flujo microscala</h2>
+
+  <h3>core/weibull.py — Distribución de velocidades</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> scipy.special <span class="py-kw">import</span> gamma
+<span class="py-kw">from</span> scipy.optimize <span class="py-kw">import</span> brentq
+
+<span class="py-kw">class</span> <span class="py-fn">WeibullDistribution</span>:
+    <span class="py-str">"""
+    Distribución de Weibull de 2 parámetros para viento.
+    Ecuaciones de referencia: Ec. 4-7 de este documento.
+    """</span>
+    
+    <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, A: float, k: float):
+        self.A = A   <span class="py-cm"># escala [m/s]</span>
+        self.k = k   <span class="py-cm"># forma [-]</span>
+    
+    <span class="py-kw">def</span> <span class="py-fn">pdf</span>(self, U: np.ndarray) -> np.ndarray:
+        <span class="py-str">"""f(U) — Función densidad de probabilidad (Ec. 4)"""</span>
+        A, k = self.A, self.k
+        <span class="py-kw">return</span> (k/A) * (U/A)**(k-<span class="py-num">1</span>) * np.<span class="py-fn">exp</span>(-(U/A)**k)
+    
+    <span class="py-kw">def</span> <span class="py-fn">cdf</span>(self, U: np.ndarray) -> np.ndarray:
+        <span class="py-str">"""F(U) — Función distribución acumulada (Ec. 6)"""</span>
+        <span class="py-kw">return</span> <span class="py-num">1</span> - np.<span class="py-fn">exp</span>(-(U/self.A)**self.k)
+    
+    <span class="py-kw">def</span> <span class="py-fn">mean_speed</span>(self) -> float:
+        <span class="py-str">"""Ū = A · Γ(1 + 1/k) (Ec. 5)"""</span>
+        <span class="py-kw">return</span> self.A * <span class="py-fn">gamma</span>(<span class="py-num">1</span> + <span class="py-num">1</span>/self.k)
+    
+    <span class="py-kw">def</span> <span class="py-fn">mean_power_density</span>(self, rho: float = <span class="py-num">1.225</span>) -> float:
+        <span class="py-str">"""P̄_dens = ½ρ·A³·Γ(1+3/k) [W/m²] (Ec. 5, 16)"""</span>
+        <span class="py-kw">return</span> <span class="py-num">0.5</span> * rho * self.A**<span class="py-num">3</span> * <span class="py-fn">gamma</span>(<span class="py-num">1</span> + <span class="py-num">3</span>/self.k)
+    
+    <span class="py-kw">def</span> <span class="py-fn">bin_probability</span>(self, U_low: float, U_high: float) -> float:
+        <span class="py-str">"""Probabilidad en intervalo [U_low, U_high]"""</span>
+        <span class="py-kw">return</span> self.<span class="py-fn">cdf</span>(U_high) - self.<span class="py-fn">cdf</span>(U_low)
+    
+    <span class="py-kw">def</span> <span class="py-fn">extrapolate_A</span>(self, z1: float, z2: float,
+                       z0: float = <span class="py-num">0.05</span>) -> <span class="py-str">'WeibullDistribution'</span>:
+        <span class="py-str">"""
+        Extrapolación vertical del parámetro A con perfil logarítmico (Ec. 3).
+        Asume k constante con la altura (aproximación WAsP).
+        """</span>
+        ratio = np.<span class="py-fn">log</span>(z2/z0) / np.<span class="py-fn">log</span>(z1/z0)
+        <span class="py-kw">return</span> <span class="py-fn">WeibullDistribution</span>(A=self.A * ratio, k=self.k)
+  </pre>
+
+  <h3>core/geostrophic.py — Transformación up/down</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+KAPPA  = <span class="py-num">0.4</span>    <span class="py-cm"># constante von Kármán</span>
+A_CONST = <span class="py-num">1.8</span>   <span class="py-cm"># constante Blackadar-Tennekes</span>
+B_CONST = <span class="py-num">4.5</span>
+
+<span class="py-kw">def</span> <span class="py-fn">u_star_from_profile</span>(U_obs: float, z_obs: float, z0: float) -> float:
+    <span class="py-str">"""
+    Calcula velocidad de fricción u* desde perfil log (Ec. 3).
+    U_obs: velocidad observada a altura z_obs
+    z_obs: altura del anemómetro [m]
+    z0:    rugosidad del terreno en el mástil [m]
+    """</span>
+    <span class="py-kw">return</span> U_obs * KAPPA / np.<span class="py-fn">log</span>(z_obs / z0)
+
+<span class="py-kw">def</span> <span class="py-fn">geostrophic_wind</span>(u_star: float, f: float, z0: float) -> float:
+    <span class="py-str">"""
+    Calcula viento geostrófico G a partir de u* (Ec. 2).
+    f = 2Ω·sin(latitud) — parámetro de Coriolis
+    """</span>
+    log_term = np.<span class="py-fn">log</span>(u_star / (f * z0))
+    G = (u_star / KAPPA) * np.<span class="py-fn">sqrt</span>((log_term - A_CONST)**<span class="py-num">2</span> + B_CONST**<span class="py-num">2</span>)
+    <span class="py-kw">return</span> G
+
+<span class="py-kw">def</span> <span class="py-fn">coriolis_f</span>(lat_deg: float) -> float:
+    <span class="py-str">"""Parámetro de Coriolis para latitud dada [rad/s]"""</span>
+    OMEGA = <span class="py-num">7.2921e-5</span>  <span class="py-cm"># rad/s</span>
+    <span class="py-kw">return</span> <span class="py-num">2</span> * OMEGA * np.<span class="py-fn">sin</span>(np.<span class="py-fn">radians</span>(lat_deg))
+
+<span class="py-kw">def</span> <span class="py-fn">wind_up</span>(U_obs: float, z_obs: float, z0_mast: float,
+           lat: float, z0_neutral: float = <span class="py-num">0.05</span>) -> dict:
+    <span class="py-str">"""
+    SUBIR ↑: eliminar efectos locales del mástil.
+    Devuelve el clima eólico generalizado (geostrófico).
+    
+    INSTRUCCIÓN: Este es el paso de generalización WAsP.
+    Para cada sector, calcular u*, luego G, y almacenar
+    como distribución Weibull de G (el "atlas").
+    """</span>
+    f   = <span class="py-fn">coriolis_f</span>(lat)
+    u_s = <span class="py-fn">u_star_from_profile</span>(U_obs, z_obs, z0_mast)
+    G   = <span class="py-fn">geostrophic_wind</span>(u_s, f, z0_mast)
+    <span class="py-kw">return</span> {<span class="py-str">'G'</span>: G, <span class="py-str">'u_star'</span>: u_s, <span class="py-str">'f'</span>: f}
+
+<span class="py-kw">def</span> <span class="py-fn">wind_down</span>(G: float, z_target: float, z0_target: float,
+             lat: float) -> float:
+    <span class="py-str">"""
+    BAJAR ↓: aplicar efectos del sitio objetivo.
+    Dado G (atlas), calcular U a altura z_target en terreno z0_target.
+    
+    INSTRUCCIÓN: Resolver iterativamente u* dado G y z0_target,
+    luego extrapolar con perfil log a z_target.
+    """</span>
+    f = <span class="py-fn">coriolis_f</span>(lat)
+    <span class="py-cm"># Resolver u* numéricamente de la ecuación de arrastre (Ec. 2)</span>
+    <span class="py-kw">from</span> scipy.optimize <span class="py-kw">import</span> brentq
+    <span class="py-kw">def</span> <span class="py-fn">eq</span>(u_s):
+        log_t = np.<span class="py-fn">log</span>(u_s / (f * z0_target))
+        G_calc = (u_s / KAPPA) * np.<span class="py-fn">sqrt</span>((log_t - A_CONST)**<span class="py-num">2</span> + B_CONST**<span class="py-num">2</span>)
+        <span class="py-kw">return</span> G_calc - G
+    u_star_site = brentq(eq, <span class="py-num">0.01</span>, <span class="py-num">5.0</span>)
+    U_target = (u_star_site / KAPPA) * np.<span class="py-fn">log</span>(z_target / z0_target)
+    <span class="py-kw">return</span> U_target
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S12 — MÓDULO 3: ESTELA
+══════════════════════════════════════ -->
+<section id="s12">
+  <div class="section-label">12 · Implementación · Módulo 3</div>
+  <h2>Módulo 3: Motor de estela con PyWake</h2>
+
+  <h3>wake/site_builder.py — Construir Site desde CWG</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">import</span> xarray <span class="py-kw">as</span> xr
+<span class="py-kw">from</span> py_wake.site.xrsite <span class="py-kw">import</span> XRSite
+
+<span class="py-kw">def</span> <span class="py-fn">build_xrsite_from_cwg</span>(cwg: dict) -> XRSite:
+    <span class="py-str">"""
+    Construye un objeto XRSite de PyWake desde el Clima Eólico
+    Generalizado (CWG) calculado por el motor microscala.
+    
+    cwg: dict con clave=sector[°], valor={'A':..., 'k':..., 'freq':...}
+    
+    INSTRUCCIÓN: XRSite requiere un xarray.Dataset con variables:
+      - P(wd, ws): probabilidad de cada (dirección, velocidad)
+      - o bien Weibull A(wd), k(wd), freq_wd(wd)
+    """</span>
+    sectors = <span class="py-fn">sorted</span>(cwg.keys())
+    A_arr   = np.<span class="py-fn">array</span>([cwg[s][<span class="py-str">'A'</span>]    <span class="py-kw">for</span> s <span class="py-kw">in</span> sectors])
+    k_arr   = np.<span class="py-fn">array</span>([cwg[s][<span class="py-str">'k'</span>]    <span class="py-kw">for</span> s <span class="py-kw">in</span> sectors])
+    f_arr   = np.<span class="py-fn">array</span>([cwg[s][<span class="py-str">'freq'</span>] <span class="py-kw">for</span> s <span class="py-kw">in</span> sectors])
+    f_arr  /= f_arr.<span class="py-fn">sum</span>()  <span class="py-cm"># normalizar</span>
+    
+    ws = np.<span class="py-fn">arange</span>(<span class="py-num">0</span>, <span class="py-num">26</span>, <span class="py-num">1.0</span>)  <span class="py-cm"># bins 0-25 m/s</span>
+    wd = np.<span class="py-fn">array</span>(sectors, dtype=float)
+    
+    <span class="py-cm"># Calcular P(wd, ws): Weibull por sector</span>
+    P = np.<span class="py-fn">zeros</span>((len(wd), len(ws)))
+    <span class="py-kw">for</span> i, (A, k, f) <span class="py-kw">in</span> <span class="py-fn">enumerate</span>(<span class="py-fn">zip</span>(A_arr, k_arr, f_arr)):
+        P[i] = f * (k/A) * (ws/A+<span class="py-num">1e-9</span>)**(k-<span class="py-num">1</span>) * np.<span class="py-fn">exp</span>(-(ws/A)**k)
+        P[i] /= P[i].<span class="py-fn">sum</span>() + <span class="py-num">1e-12</span>
+        P[i] *= f
+    
+    ds = xr.<span class="py-fn">Dataset</span>({
+        <span class="py-str">'P'</span>: xr.<span class="py-fn">DataArray</span>(P, dims=[<span class="py-str">'wd'</span>, <span class="py-str">'ws'</span>],
+                         coords={<span class="py-str">'wd'</span>: wd, <span class="py-str">'ws'</span>: ws})
+    })
+    <span class="py-kw">return</span> <span class="py-fn">XRSite</span>(ds)
+
+
+<span class="py-kw">def</span> <span class="py-fn">run_wake_analysis</span>(cwg: dict, turbines_xy: list,
+                       wtg_parser, wake_model: str = <span class="py-str">'NOJ'</span>) -> dict:
+    <span class="py-str">"""
+    Pipeline completo: CWG → Site → AEP con estelas.
+    
+    turbines_xy: lista de (x, y) en metros (coordenadas relativas)
+    wake_model:  'NOJ' | 'BastankhahGaussian' | 'TurboGaussian'
+    
+    Devuelve dict con AEP total [GWh], AEP por turbina, wake losses [%]
+    """</span>
+    <span class="py-kw">from</span> py_wake <span class="py-kw">import</span> NOJ, BastankhahGaussian
+    <span class="py-kw">from</span> py_wake.wind_turbines <span class="py-kw">import</span> WindTurbines
+    
+    site = <span class="py-fn">build_xrsite_from_cwg</span>(cwg)
+    
+    <span class="py-cm"># Construir WindTurbines desde el parser .wtg</span>
+    wt = <span class="py-fn">build_pywake_turbine</span>(wtg_parser)
+    
+    <span class="py-cm"># Seleccionar modelo</span>
+    models = {<span class="py-str">'NOJ'</span>: NOJ, <span class="py-str">'BastankhahGaussian'</span>: BastankhahGaussian}
+    WfModel = models[wake_model]
+    wf = <span class="py-fn">WfModel</span>(site, wt)
+    
+    x_arr = np.<span class="py-fn">array</span>([p[<span class="py-num">0</span>] <span class="py-kw">for</span> p <span class="py-kw">in</span> turbines_xy])
+    y_arr = np.<span class="py-fn">array</span>([p[<span class="py-num">1</span>] <span class="py-kw">for</span> p <span class="py-kw">in</span> turbines_xy])
+    
+    sim = <span class="py-fn">wf</span>(x_arr, y_arr)
+    aep_by_turbine = sim.<span class="py-fn">aep</span>().<span class="py-fn">sum</span>([<span class="py-str">'wd'</span>, <span class="py-str">'ws'</span>])
+    aep_total      = <span class="py-fn">float</span>(aep_by_turbine.<span class="py-fn">sum</span>())
+    
+    <span class="py-cm"># Wake loss = (AEP sin estela - AEP con estela) / AEP sin estela</span>
+    sim_nw = <span class="py-fn">wf</span>(x_arr, y_arr, wake_radius_factor=<span class="py-num">0</span>)  <span class="py-cm"># sin estela</span>
+    aep_nw = <span class="py-fn">float</span>(sim_nw.<span class="py-fn">aep</span>().<span class="py-fn">sum</span>())
+    wake_loss = (aep_nw - aep_total) / aep_nw * <span class="py-num">100</span>
+    
+    <span class="py-kw">return</span> {
+        <span class="py-str">'aep_total_gwh'</span>: aep_total,
+        <span class="py-str">'aep_by_turbine'</span>: aep_by_turbine,
+        <span class="py-str">'wake_loss_pct'</span>: wake_loss,
+        <span class="py-str">'sim_result'</span>: sim,
+    }
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S13 — MÓDULO 4: RECURSOS
+══════════════════════════════════════ -->
+<section id="s13">
+  <div class="section-label">13 · Implementación · Módulo 4</div>
+  <h2>Módulo 4: Recursos y mapas de salida</h2>
+
+  <h3>resource/resource_grid.py — Grilla de recursos</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">import</span> xarray <span class="py-kw">as</span> xr
+<span class="py-kw">from</span> dataclasses <span class="py-kw">import</span> dataclass
+
+@dataclass
+<span class="py-kw">class</span> <span class="py-fn">ResourcePoint</span>:
+    <span class="py-str">"""Resultado del cálculo en un punto de la grilla."""</span>
+    lat: float
+    lon: float
+    elevation: float          <span class="py-cm"># m.s.n.m.</span>
+    mean_wind_speed: float    <span class="py-cm"># m/s a hub height</span>
+    mean_power_density: float <span class="py-cm"># W/m²</span>
+    weibull_A: float
+    weibull_k: float
+    aep_kwh: float            <span class="py-cm"># kWh/año (si hay turbina)</span>
+    rix: float                <span class="py-cm"># índice de rugosidad [0-1]</span>
+
+<span class="py-kw">class</span> <span class="py-fn">ResourceGrid</span>:
+    <span class="py-str">"""
+    Calcula el recurso eólico en una grilla rectangular.
+    Para cada punto: aplicar motor microscala (subir+bajar) y 
+    calcular estadísticos.
+    
+    INSTRUCCIÓN AL PROGRAMADOR:
+    - Usar joblib.Parallel para paralelizar el cálculo por puntos
+    - Cada punto es independiente (problema "embarrassingly parallel")
+    - Almacenar resultados como xarray.Dataset con coordenadas (lat, lon)
+    - Visualizar con matplotlib.pyplot.pcolormesh o folium
+    """</span>
+    
+    <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, lat_center, lon_center,
+                 n_rows, n_cols, spacing_m, hub_height):
+        self.lat_c  = lat_center
+        self.lon_c  = lon_center
+        self.n_rows = n_rows
+        self.n_cols = n_cols
+        self.spacing= spacing_m   <span class="py-cm"># espaciado [m]</span>
+        self.hub_h  = hub_height  <span class="py-cm"># [m]</span>
+        self.results = []
+    
+    <span class="py-kw">def</span> <span class="py-fn">run</span>(self, cwg_ref: dict, topo_map,
+           z0_map, n_jobs: int = -<span class="py-num">1</span>) -> xr.Dataset:
+        <span class="py-str">"""
+        Ejecuta el cálculo en todos los puntos de la grilla.
+        cwg_ref: CWG del mástil de referencia
+        topo_map: objeto con método get_elevation(lat, lon)
+        z0_map:   objeto con método get_z0(lat, lon, sector)
+        n_jobs:   -1 = todos los cores disponibles
+        """</span>
+        <span class="py-kw">from</span> joblib <span class="py-kw">import</span> Parallel, delayed
+        
+        points = self.<span class="py-fn">_generate_grid_points</span>()
+        
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(self.<span class="py-fn">_calc_point</span>)(p, cwg_ref, topo_map, z0_map)
+            <span class="py-kw">for</span> p <span class="py-kw">in</span> points
+        )
+        <span class="py-kw">return</span> self.<span class="py-fn">_to_dataset</span>(results)
+    
+    <span class="py-kw">def</span> <span class="py-fn">_calc_point</span>(self, point, cwg_ref, topo_map, z0_map) -> ResourcePoint:
+        <span class="py-str">"""
+        Pipeline por punto:
+        1. Obtener elevación y z0 del punto
+        2. Calcular speed-up orográfico (orography.py)
+        3. Aplicar corrección de rugosidad (ibl.py)
+        4. Calcular Weibull local via wind_down (geostrophic.py)
+        5. Calcular AEP, densidad de potencia, RIX
+        """</span>
+        <span class="py-cm"># TODO: implementar llamando a los módulos del core/</span>
+        <span class="py-kw">raise</span> <span class="py-fn">NotImplementedError</span>()
+    
+    <span class="py-kw">def</span> <span class="py-fn">_to_dataset</span>(self, results: list) -> xr.Dataset:
+        <span class="py-str">"""Convierte lista de ResourcePoint a xarray.Dataset"""</span>
+        <span class="py-cm"># TODO: construir Dataset con dims (lat, lon)</span>
+        <span class="py-kw">raise</span> <span class="py-fn">NotImplementedError</span>()
+  </pre>
+
+  <h3>core/aep.py — Cálculo de AEP</h3>
+  <pre data-lang="Python">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> .weibull <span class="py-kw">import</span> WeibullDistribution
+
+HOURS_PER_YEAR = <span class="py-num">8760</span>
+
+<span class="py-kw">def</span> <span class="py-fn">calc_aep</span>(cwg: dict, power_curve_fn, U_cut_in: float = <span class="py-num">3</span>,
+             U_cut_out: float = <span class="py-num">25</span>, dU: float = <span class="py-num">0.5</span>,
+             rho: float = <span class="py-num">1.225</span>) -> float:
+    <span class="py-str">"""
+    Calcula AEP [kWh/año] por integración numérica Weibull × curva de potencia.
+    Ecuación de referencia: Ec. 14, 15.
+    
+    cwg: dict sectorial {sector_deg: {'A': float, 'k': float, 'freq': float}}
+    power_curve_fn: función callable P(U) → potencia en W
+    dU: ancho de bin de velocidad [m/s]
+    """</span>
+    U_bins = np.<span class="py-fn">arange</span>(U_cut_in, U_cut_out + dU, dU)
+    aep_total = <span class="py-num">0.0</span>
+    
+    <span class="py-kw">for</span> sector, params <span class="py-kw">in</span> cwg.items():
+        wb  = <span class="py-fn">WeibullDistribution</span>(A=params[<span class="py-str">'A'</span>], k=params[<span class="py-str">'k'</span>])
+        freq= params[<span class="py-str">'freq'</span>]  <span class="py-cm"># fracción de tiempo en este sector</span>
+        
+        <span class="py-cm"># Corrección por densidad del aire (si diferente de referencia)</span>
+        rho_factor = rho / <span class="py-num">1.225</span>
+        
+        <span class="py-kw">for</span> U <span class="py-kw">in</span> U_bins:
+            p_U  = wb.<span class="py-fn">bin_probability</span>(U - dU/<span class="py-num">2</span>, U + dU/<span class="py-num">2</span>)
+            P_kW = <span class="py-fn">power_curve_fn</span>(U) / <span class="py-num">1000</span> * rho_factor  <span class="py-cm"># W→kW</span>
+            aep_total += HOURS_PER_YEAR * freq * p_U * P_kW
+    
+    <span class="py-kw">return</span> aep_total  <span class="py-cm"># [kWh/año]</span>
+
+
+<span class="py-kw">def</span> <span class="py-fn">capacity_factor</span>(aep_kwh: float, rated_power_kw: float) -> float:
+    <span class="py-str">"""CF = AEP / (P_nominal × 8760) — Ec. 17"""</span>
+    <span class="py-kw">return</span> aep_kwh / (rated_power_kw * HOURS_PER_YEAR)
+
+
+<span class="py-kw">def</span> <span class="py-fn">air_density</span>(elevation_m: float, T_K: float = <span class="py-num">288.15</span>) -> float:
+    <span class="py-str">"""
+    Densidad del aire con corrección altimétrica (ISA estándar).
+    Ec. 16: ρ = P_atm / (R_d · T)
+    """</span>
+    Rd    = <span class="py-num">287.058</span>  <span class="py-cm"># J/(kg·K)</span>
+    g     = <span class="py-num">9.80665</span>  <span class="py-cm"># m/s²</span>
+    L     = <span class="py-num">0.0065</span>   <span class="py-cm"># K/m tasa de enfriamiento</span>
+    P0    = <span class="py-num">101325</span>  <span class="py-cm"># Pa presión nivel del mar</span>
+    T_eff = T_K - L * elevation_m
+    P_atm = P0 * (T_eff / T_K) ** (g / (Rd * L))
+    <span class="py-kw">return</span> P_atm / (Rd * T_eff)
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S14 — MÓDULO 5: DASHBOARD
+══════════════════════════════════════ -->
+<section id="s14">
+  <div class="section-label">14 · Implementación · Módulo 5</div>
+  <h2>Módulo 5: Dashboard interactivo</h2>
+
+  <h3>Arquitectura del backend (FastAPI)</h3>
+  <pre data-lang="Python">
+<span class="py-cm">"""
+INSTRUCCIÓN AL PROGRAMADOR:
+Crear una API REST con FastAPI. Endpoints principales:
+"""</span>
+
+<span class="py-kw">from</span> fastapi <span class="py-kw">import</span> FastAPI, UploadFile, File
+<span class="py-kw">from</span> fastapi.middleware.cors <span class="py-kw">import</span> CORSMiddleware
+<span class="py-kw">import</span> uvicorn
+
+app = <span class="py-fn">FastAPI</span>(title=<span class="py-str">"OpenWAsP API"</span>, version=<span class="py-str">"1.0"</span>)
+
+app.<span class="py-fn">add_middleware</span>(CORSMiddleware,
+    allow_origins=[<span class="py-str">"*"</span>], allow_methods=[<span class="py-str">"*"</span>], allow_headers=[<span class="py-str">"*"</span>])
+
+<span class="py-cm"># POST /upload/omwc   → procesar serie de viento</span>
+<span class="py-cm"># POST /upload/map    → procesar topografía</span>
+<span class="py-cm"># POST /upload/wtg    → procesar curva de potencia</span>
+<span class="py-cm"># POST /analyze       → correr pipeline completo</span>
+<span class="py-cm"># GET  /results/{id} → descargar resultados JSON/GeoJSON</span>
+<span class="py-cm"># GET  /resource_grid → grilla de recurso como GeoJSON</span>
+<span class="py-cm"># GET  /wake_map      → mapa de estelas como imagen</span>
+
+@app.<span class="py-fn">post</span>(<span class="py-str">"/analyze"</span>)
+<span class="py-kw">async</span> <span class="py-kw">def</span> <span class="py-fn">analyze</span>(config: dict):
+    <span class="py-str">"""
+    Pipeline completo:
+    1. Cargar datos (omwc, map, wtg)
+    2. Ajustar Weibull por sector
+    3. Calcular CWG (up/down)
+    4. Calcular AEP sin estela
+    5. Calcular AEP con estela (PyWake)
+    6. Calcular grilla de recurso
+    7. Devolver JSON con todos los resultados
+    """</span>
+    <span class="py-kw">pass</span>
+  </pre>
+
+  <h3>Frontend — componentes clave (React + Leaflet)</h3>
+  <pre data-lang="JavaScript">
+<span class="cm">/*
+INSTRUCCIÓN AL PROGRAMADOR — Componentes React a implementar:
+
+1. WindRoseChart
+   - Librería: recharts o d3
+   - Datos: {sector, A, k, frecuencia}
+   - Renderiza rosa de viento polar con barras de frecuencia
+   - Colorear por velocidad media
+
+2. WeibullChart  
+   - Renderiza PDF y CDF de Weibull
+   - Input: {A, k, sector seleccionado}
+   - Mostrar Ū, densidad de potencia
+
+3. ResourceMap
+   - Librería: Leaflet + react-leaflet
+   - Capa base: OpenStreetMap o mapbox
+   - Overlay: heatmap de AEP/velocidad sobre la grilla
+   - Clic en punto → mostrar estadísticos locales
+
+4. WakeFlowMap
+   - Imagen PNG del mapa de flujo de PyWake
+   - Controles: seleccionar WD, WS, modelo de estela
+
+5. TurbineLayout
+   - Mapa interactivo con drag & drop de turbinas
+   - Al mover: recalcular AEP en tiempo real (debounce 500ms)
+   - Mostrar AEP total y pérdidas de estela
+*/</span>
+  </pre>
+</section>
+
+
+<!-- ══════════════════════════════════════
+     S15 — STACK
+══════════════════════════════════════ -->
+<section id="s15">
+  <div class="section-label">15 · Tecnología</div>
+  <h2>Stack tecnológico y dependencias</h2>
+
+  <h3>requirements.txt — Python</h3>
+  <pre data-lang="requirements.txt">
+<span class="cm"># Motor científico</span>
+numpy>=1.26
+scipy>=1.12
+pandas>=2.1
+xarray>=2023.9
+
+<span class="cm"># Datos geoespaciales</span>
+geopandas>=1.0
+rasterio>=1.3
+pyproj>=3.6
+shapely>=2.0
+
+<span class="cm"># Motor de estela</span>
+py_wake>=2.6
+
+<span class="cm"># Visualización</span>
+matplotlib>=3.8
+plotly>=5.0
+folium>=0.15
+
+<span class="cm"># Backend web</span>
+fastapi>=0.110
+uvicorn>=0.28
+python-multipart
+
+<span class="cm"># Paralelización</span>
+joblib>=1.3
+
+<span class="cm"># Utilidades</span>
+tqdm
+netcdf4
+h5netcdf
+pyyaml
+  </pre>
+
+  <h3>Orden de implementación recomendado</h3>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="card-icon">1️⃣</span>
+      <h4>Fase 1 — Núcleo matemático</h4>
+      <p>Implementar: weibull.py, geostrophic.py, wind_profile.py, aep.py. Tests unitarios contra valores publicados en literatura WAsP.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">2️⃣</span>
+      <h4>Fase 2 — Parsers de datos</h4>
+      <p>Implementar: omwc_parser.py, wtg_parser.py, map_parser.py. Probar con archivos de ejemplo de WAsP (Serra Santa Luzia).</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">3️⃣</span>
+      <h4>Fase 3 — Orografía y rugosidad</h4>
+      <p>Implementar: orography.py (BZ simplificado), ibl.py, rix.py. Comparar speed-up contra resultados de WAsP en terreno conocido.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">4️⃣</span>
+      <h4>Fase 4 — Integración PyWake</h4>
+      <p>Implementar: site_builder.py, turbine_builder.py, wake_runner.py. Validar AEP contra ejemplo Horns Rev de la documentación PyWake.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">5️⃣</span>
+      <h4>Fase 5 — Grilla de recursos</h4>
+      <p>Implementar: resource_grid.py con joblib.Parallel. Generar mapas de velocidad media y AEP como GeoJSON/NetCDF.</p>
+    </div>
+    <div class="card">
+      <span class="card-icon">6️⃣</span>
+      <h4>Fase 6 — Dashboard</h4>
+      <p>Implementar backend FastAPI y frontend React. Componentes: WindRose, Weibull chart, mapa interactivo, layout de turbinas.</p>
+    </div>
+  </div>
+
+  <div class="callout warn">
+    <strong>Nota crítica sobre el modelo BZ:</strong> El código Fortran original del BZ es propiedad de DTU y no está disponible públicamente. Para una implementación libre, se puede usar una aproximación basada en flujo potencial linealizado sobre grilla polar, o integrar con WRF/OpenFOAM para sitios con orografía compleja donde el BZ no es suficiente. Para terreno suave (RIX &lt; 5%), la corrección logarítmica de velocidad y la ley de arrastre geostrófico dan resultados aceptables sin necesitar BZ completo.
+  </div>
+
+  <div class="callout tip">
+    <strong>Acceso a datos sin licencia DTU:</strong> El Global Wind Atlas (<code>globalwindatlas.info</code>) expone una API pública que devuelve el CWG (distribución Weibull sectorial) para cualquier punto del planeta a resoluciones de 250m, 1km y 5km. Esto permite saltarse el paso "subir" (generalización) usando el atlas ya calculado como punto de partida para la aplicación ("bajar") sobre el sitio objetivo.
+  </div>
+</section>
+
+</div><!-- /container -->
+
+<footer>
+  <p>
+    <span>OpenWAsP Blueprint</span> · José Antonio Rojas Escobar ·
+    CIIDIR Oaxaca / IPN · DoCiTTE · <span>2026</span>
+  </p>
+  <p style="margin-top:0.5rem; font-size:0.6rem; opacity:0.5;">
+    Basado en: Troen & Petersen (1989), Jensen (1983), Bastankhah & Porté-Agel (2014),
+    DTU Wind Energy, Global Wind Atlas methodology
+  </p>
+</footer>
+
+</body>
+</html>

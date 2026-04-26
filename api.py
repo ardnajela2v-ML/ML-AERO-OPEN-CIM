@@ -1,0 +1,1761 @@
+"""
+WindPro Platform — Flask application and REST API.
+All scientific computation is delegated to core/ modules.
+"""
+import os
+import json
+import uuid
+import threading
+import traceback
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+
+from config import Config
+from core.data import DataLoader, DataQualityChecker, FeatureEngineer, df_to_json_safe, series_to_chart
+from core.models import ModelArena
+from core.validate import (compute_all_metrics, build_comparison_table,
+                            temporal_stability, residual_analysis, reliability_diagram)
+from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
+                          TurbineComparator, TechnoEconomicAnalyzer,
+                          air_density, extrapolate_wind_hellmann,
+                          load_turbines_from_folder, list_turbine_info)
+from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
+                              compute_monthly_climatology, compute_extreme_events,
+                              compute_histogram, compute_site_overview,
+                              compute_turbulence_intensity, compute_wind_shear,
+                              compute_sector_analysis, compute_return_periods,
+                              compute_month_hour_heatmap)
+from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
+                          HybridDispatch, HybridEconomics,
+                          build_load_profile, estimate_clearsky_ghi)
+from core.kriging import (parse_coords_from_filename, read_wind_file,
+                          site_wind_stats, kriging_grid, analyze_sites,
+                          legacy_three_maps)
+from core.farm import simulate_wind_farm, jensen_deficit, dominant_direction
+from core.multicriteria import (topsis, rank_sites_turbines,
+                                 DEFAULT_WEIGHTS, CRITERION_LABELS,
+                                 CRITERION_DIRECTION)
+from core.forecasting import (read_one_column, read_pml,
+                               base_year_stats,
+                               synthesize_annual_series,
+                               fit_all_trend_models,
+                               project_25_years,
+                               best_trend_model)
+
+
+# ─── APP FACTORY ──────────────────────────────────────────────────────────────
+
+def create_app():
+    app = Flask(__name__,
+                template_folder='templates',
+                static_folder='static')
+    app.config.from_object(Config)
+    CORS(app)
+
+    # ── in-memory session store (replace with Redis/DB for multi-user prod) ──
+    sessions = {}        # session_id -> { df, meta, features, results, ... }
+    tasks    = {}        # task_id    -> { status, progress, message, result }
+    arena_store = {}     # session_id -> ModelArena
+
+    # ─── HELPERS ──────────────────────────────────────────────────────────────
+
+    def get_session(sid):
+        if sid not in sessions:
+            sessions[sid] = {}
+        return sessions[sid]
+
+    def allowed_file(filename):
+        return ('.' in filename and
+                filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS)
+
+    def safe_float_list(lst):
+        return [float(x) if x is not None and not (isinstance(x, float) and np.isnan(x)) else None
+                for x in lst]
+
+    def numpy_to_python(obj):
+        if isinstance(obj, np.integer): return int(obj)
+        if isinstance(obj, np.floating): return None if np.isnan(obj) else float(obj)
+        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, dict): return {k: numpy_to_python(v) for k, v in obj.items()}
+        if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
+        return obj
+
+    # ─── MAIN PAGE ────────────────────────────────────────────────────────────
+
+    @app.route('/')
+    def index():
+        return render_template('index.html')
+
+    @app.route('/ingenieria')
+    def ingenieria_page():
+        """Nested reference doc: OpenWAsP engineering & reproducibility blueprint."""
+        return render_template('ingenieria.html')
+
+    @app.route('/static/<path:filename>')
+    def static_files(filename):
+        return send_from_directory('static', filename)
+
+    # ─── SESSION ──────────────────────────────────────────────────────────────
+
+    @app.route('/api/session/new', methods=['POST'])
+    def new_session():
+        sid = str(uuid.uuid4())[:8]
+        sessions[sid] = {}
+        return jsonify({'session_id': sid})
+
+    # ─── PRESET FILE BROWSER ──────────────────────────────────────────────────
+
+    @app.route('/api/data/list_files', methods=['GET'])
+    def list_preset_files():
+        """List available meteorological data files from the configured DATA_FOLDER."""
+        folder = Config.DATA_FOLDER
+        if not os.path.isdir(folder):
+            return jsonify({'files': [], 'folder': folder,
+                            'error': 'DATA_FOLDER not found'})
+        files = []
+        for fname in sorted(os.listdir(folder)):
+            if fname.startswith('.') or fname.startswith('~'):
+                continue
+            ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+            if ext in ('txt', 'csv', 'tsv', 'dat'):
+                fpath = os.path.join(folder, fname)
+                size_mb = round(os.path.getsize(fpath) / 1_048_576, 1)
+                source = 'merra2' if 'MERRA' in fname.upper() or 'MERRA2' in fname.upper() else \
+                         'era5'   if 'ERA5' in fname.upper() else 'windnavigator'
+                files.append({'filename': fname, 'size_mb': size_mb, 'source': source})
+        return jsonify({'files': files, 'folder': folder, 'count': len(files)})
+
+    @app.route('/api/data/load_preset', methods=['POST'])
+    def load_preset_file():
+        """Load a meteorological file from DATA_FOLDER by filename."""
+        body     = request.json or {}
+        sid      = body.get('session_id', 'default')
+        filename = body.get('filename', '')
+        source   = body.get('source', 'auto')
+
+        if not filename:
+            return jsonify({'error': 'filename required'}), 400
+
+        # security: no path traversal
+        safe_name = os.path.basename(filename)
+        fpath = os.path.join(Config.DATA_FOLDER, safe_name)
+        if not os.path.isfile(fpath):
+            return jsonify({'error': f'File not found: {safe_name}'}), 404
+
+        try:
+            loader = DataLoader()
+            df, meta = loader.load_file(fpath, source_hint=source)
+            sess = get_session(sid)
+            sess['df']   = df
+            sess['meta'] = meta
+
+            chart_col = 'wind_speed' if 'wind_speed' in df.columns else df.columns[0]
+            chart_data = None
+            if isinstance(df.index, pd.DatetimeIndex) and chart_col in df.columns:
+                s = df[chart_col].dropna()
+                chart_data = series_to_chart(s.index, s.values, label=chart_col)
+
+            return jsonify({
+                'session_id': sid,
+                'meta':    numpy_to_python(meta),
+                'columns': list(df.columns),
+                'chart':   chart_data,
+                'n_rows':  len(df),
+                'filename': safe_name,
+            })
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── DATA UPLOAD ──────────────────────────────────────────────────────────
+
+    @app.route('/api/data/upload', methods=['POST'])
+    def upload_data():
+        sid = request.form.get('session_id', 'default')
+        source_hint = request.form.get('source', 'auto')
+
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+
+        f = request.files['file']
+        if not f.filename or not allowed_file(f.filename):
+            return jsonify({'error': f'Unsupported file type: {f.filename}'}), 400
+
+        try:
+            loader = DataLoader()
+            df, meta = loader.load_file(f, source_hint=source_hint)
+            sess = get_session(sid)
+            sess['df'] = df
+            sess['meta'] = meta
+
+            # quick preview
+            preview_rows = df_to_json_safe(df, max_rows=200)
+            chart_col = 'wind_speed' if 'wind_speed' in df.columns else df.columns[0]
+            chart_data = None
+            if isinstance(df.index, pd.DatetimeIndex) and chart_col in df.columns:
+                s = df[chart_col].dropna()
+                chart_data = series_to_chart(s.index, s.values, label=chart_col)
+
+            return jsonify({
+                'session_id': sid,
+                'meta': numpy_to_python(meta),
+                'preview': preview_rows[:50],
+                'columns': list(df.columns),
+                'chart': chart_data,
+                'n_rows': len(df),
+            })
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── DATA QUALITY ─────────────────────────────────────────────────────────
+
+    @app.route('/api/data/quality', methods=['POST'])
+    def data_quality():
+        sid = request.json.get('session_id', 'default')
+        target_col = request.json.get('target_col', 'wind_speed')
+        sess = get_session(sid)
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded. Upload a file first.'}), 400
+
+        try:
+            checker = DataQualityChecker()
+            report, flags = checker.run(sess['df'], target_col=target_col)
+            sess['qc_report'] = report
+            sess['qc_flags']  = flags
+
+            # time series with flags highlighted
+            df = sess['df']
+            s  = df[target_col] if target_col in df.columns else None
+            ts_chart = None
+            if s is not None and isinstance(df.index, pd.DatetimeIndex):
+                step = max(1, len(s) // 2000)
+                ts_chart = {
+                    'labels': [str(t) for t in s.index[::step]],
+                    'clean':  safe_float_list(s.values[::step].tolist()),
+                    'flagged_idx': [str(t) for t in flags.index[flags.any(axis=1)][::max(1, int(flags.any(axis=1).sum()) // 200)]]
+                    if flags.any(axis=1).sum() > 0 else [],
+                }
+
+            # per-column statistics for quality table
+            numeric_cols = df.select_dtypes(include='number').columns.tolist()
+            columns_report = {}
+            for col in numeric_cols:
+                s_col = df[col]
+                n = len(s_col)
+                n_miss = int(s_col.isna().sum())
+                columns_report[col] = {
+                    'mean':        round(float(s_col.mean()), 4) if s_col.notna().any() else None,
+                    'std':         round(float(s_col.std()),  4) if s_col.notna().any() else None,
+                    'min':         round(float(s_col.min()),  4) if s_col.notna().any() else None,
+                    'max':         round(float(s_col.max()),  4) if s_col.notna().any() else None,
+                    'missing_pct': round(n_miss / n * 100, 2) if n > 0 else 0,
+                }
+
+            return jsonify({'report': numpy_to_python(report), 'chart': ts_chart,
+                            'columns_report': columns_report})
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── FEATURE ENGINEERING ──────────────────────────────────────────────────
+
+    @app.route('/api/features/build', methods=['POST'])
+    def build_features():
+        body = request.json or {}
+        sid = body.get('session_id', 'default')
+        target_col   = body.get('target_col', 'wind_speed')
+        horizons_h   = body.get('horizons', [1, 6, 24])
+        test_frac    = float(body.get('test_frac', 0.2))
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        try:
+            fe = FeatureEngineer()
+            feat_dict = fe.build(sess['df'], target_col=target_col,
+                                 horizons_h=horizons_h)
+            sess['features']   = feat_dict
+            sess['target_col'] = target_col
+            sess['test_frac']  = test_frac
+            sess['horizons']   = horizons_h
+
+            # return summary
+            summary = {}
+            for h, (X, y, feat_names, idx) in feat_dict.items():
+                split = int(len(X) * (1 - test_frac))
+                summary[h] = {
+                    'n_samples': len(X),
+                    'n_features': len(feat_names),
+                    'n_train': split,
+                    'n_test': len(X) - split,
+                    'feature_names': feat_names,
+                    'target_mean_train': round(float(np.mean(y[:split])), 3),
+                    'target_mean_test':  round(float(np.mean(y[split:])), 3),
+                }
+            return jsonify({'summary': summary, 'horizons': horizons_h})
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── MODEL TRAINING ───────────────────────────────────────────────────────
+
+    @app.route('/api/models/train', methods=['POST'])
+    def train_models():
+        body   = request.json or {}
+        sid    = body.get('session_id', 'default')
+        horizon_h = int(body.get('horizon_h', 1))
+        enabled_models = body.get('models', None)  # None = train all
+        task_id = str(uuid.uuid4())[:8]
+        tasks[task_id] = {'status': 'running', 'progress': 0,
+                          'message': 'Starting...', 'result': None}
+
+        sess = get_session(sid)
+        if 'features' not in sess:
+            return jsonify({'error': 'Run /api/features/build first.'}), 400
+        if horizon_h not in sess['features']:
+            return jsonify({'error': f'Horizon {horizon_h}h not in feature set.'}), 400
+
+        def _train_thread():
+            try:
+                X, y, feat_names, idx = sess['features'][horizon_h]
+                fe = FeatureEngineer()
+                test_frac = sess.get('test_frac', 0.2)
+                X_tr, X_te, y_tr, y_te, idx_tr, idx_te = \
+                    fe.train_test_split_temporal(X, y, idx, test_frac)
+
+                def cb(pct, msg):
+                    tasks[task_id]['progress'] = pct
+                    tasks[task_id]['message'] = msg
+
+                arena = ModelArena()
+                results = arena.train_all(X_tr, y_tr, X_te, y_te,
+                                          idx_te, feat_names,
+                                          horizon_h=horizon_h,
+                                          progress_callback=cb,
+                                          enabled_models=enabled_models)
+                arena_store[sid] = arena
+                sess[f'results_h{horizon_h}'] = results
+                sess[f'split_h{horizon_h}'] = {
+                    'X_tr': X_tr, 'y_tr': y_tr, 'X_te': X_te, 'y_te': y_te,
+                    'idx_tr': idx_tr, 'idx_te': idx_te,
+                }
+
+                # serialise for API
+                out = {}
+                for name, res in results.items():
+                    if name.startswith('_'):
+                        out[name] = res
+                        continue
+                    if 'error' in res:
+                        out[name] = {'error': res['error']}
+                        continue
+                    out[name] = {
+                        'metrics': numpy_to_python(res['metrics']),
+                        'type': res.get('type', 'ml'),
+                        'feature_importance': res.get('feature_importance', [])[:10],
+                    }
+                tasks[task_id]['result'] = out
+                tasks[task_id]['status'] = 'done'
+                tasks[task_id]['progress'] = 100
+                tasks[task_id]['message'] = 'Training complete'
+            except Exception as e:
+                tasks[task_id]['status'] = 'error'
+                tasks[task_id]['message'] = str(e)
+                tasks[task_id]['trace'] = traceback.format_exc()
+
+        threading.Thread(target=_train_thread, daemon=True).start()
+        return jsonify({'task_id': task_id})
+
+    @app.route('/api/models/status/<task_id>', methods=['GET'])
+    def task_status(task_id):
+        if task_id not in tasks:
+            return jsonify({'error': 'Unknown task'}), 404
+        t = tasks[task_id]
+        return jsonify(numpy_to_python({
+            'status': t['status'], 'progress': t['progress'],
+            'message': t['message'],
+            'result': t.get('result') if t['status'] == 'done' else None,
+        }))
+
+    # ─── FORECAST / PREDICTIONS ───────────────────────────────────────────────
+
+    @app.route('/api/forecast/predictions', methods=['POST'])
+    def get_predictions():
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        horizon_h = int(body.get('horizon_h', 1))
+        model_name = body.get('model', 'lightgbm')
+        sess = get_session(sid)
+        res_key = f'results_h{horizon_h}'
+
+        if res_key not in sess:
+            return jsonify({'error': 'Models not trained for this horizon.'}), 400
+
+        results = sess[res_key]
+        if model_name not in results:
+            model_name = next((k for k in results if results[k].get('type') == 'ml'
+                               and 'error' not in results[k]), None)
+            if model_name is None:
+                return jsonify({'error': 'No trained ML model found.'}), 400
+
+        res = results[model_name]
+        y_true = np.array(res['y_true'])
+        y_pred = np.array(res['y_pred'])
+        idx    = res['idx']
+
+        # quantile intervals if available
+        q_data = results.get('_quantiles', {})
+
+        # temporal stability
+        try:
+            stab_idx = pd.DatetimeIndex([pd.Timestamp(i) for i in idx])
+            stability = temporal_stability(y_true, y_pred, stab_idx)
+        except Exception:
+            stability = []
+
+        # residual analysis
+        try:
+            resid = residual_analysis(y_true, y_pred)
+        except Exception:
+            resid = {}
+
+        # calibration
+        calib = {}
+        if '_quantiles' in results:
+            q = results['_quantiles']
+            try:
+                calib = reliability_diagram(y_true, np.array(q['q10']),
+                                            np.array(q['q90']), nominal_coverage=0.80)
+            except Exception:
+                pass
+
+        step = max(1, len(idx) // 2000)
+        return jsonify(numpy_to_python({
+            'model': model_name,
+            'horizon_h': horizon_h,
+            'labels':  idx[::step],
+            'y_true':  safe_float_list(y_true[::step].tolist()),
+            'y_pred':  safe_float_list(y_pred[::step].tolist()),
+            'q10':     safe_float_list(np.array(q_data.get('q10', []))[::step].tolist())
+                       if q_data.get('q10') else None,
+            'q90':     safe_float_list(np.array(q_data.get('q90', []))[::step].tolist())
+                       if q_data.get('q90') else None,
+            'metrics': res['metrics'],
+            'stability': stability,
+            'residuals': resid,
+            'calibration': calib,
+        }))
+
+    @app.route('/api/forecast/comparison', methods=['POST'])
+    def comparison_table():
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        horizon_h = int(body.get('horizon_h', 1))
+        sess = get_session(sid)
+        res_key = f'results_h{horizon_h}'
+
+        if res_key not in sess:
+            return jsonify({'error': 'Models not trained.'}), 400
+
+        results = sess[res_key]
+        rows = []
+        pers_pred = np.array(results['persistence']['y_pred']) \
+            if 'persistence' in results else None
+
+        for name, res in results.items():
+            if name.startswith('_') or 'error' in res or 'metrics' not in res:
+                continue
+            m = res['metrics'].copy()
+            rows.append(m)
+
+        rows.sort(key=lambda x: x['rmse'])
+        return jsonify({'rows': numpy_to_python(rows), 'best': rows[0]['label'] if rows else None})
+
+    # ─── ENERGY MODULE ────────────────────────────────────────────────────────
+
+    @app.route('/api/energy/compute', methods=['POST'])
+    def energy_compute():
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        turbine_cfg = body.get('turbine', {})
+        sim_cfg     = body.get('simulation', {})
+
+        try:
+            # ── turbine setup ──
+            builtin = turbine_cfg.get('builtin_model')
+            if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+                turbine = PowerCurve.from_builtin(builtin)
+            elif builtin and builtin.endswith('.csv'):
+                # file-based turbine from aerogeneradores folder
+                fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+                turbine = PowerCurve.from_file(fpath)
+            else:
+                curve_pts = turbine_cfg.get('curve_points')
+                if curve_pts:
+                    pts = [(p['ws'], p['power']) for p in curve_pts]
+                else:
+                    pts = None
+                turbine = PowerCurve(
+                    name=turbine_cfg.get('name', 'Custom'),
+                    rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
+                    cut_in=float(turbine_cfg.get('cut_in', 3.0)),
+                    rated_speed=float(turbine_cfg.get('rated_speed', 12.0)),
+                    cut_out=float(turbine_cfg.get('cut_out', 25.0)),
+                    hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
+                    rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
+                    curve_points=pts,
+                )
+
+            n_turbines = int(sim_cfg.get('n_turbines', 1))
+            availability = float(sim_cfg.get('availability', 1.0))
+            elec_losses  = float(sim_cfg.get('electrical_losses', 0.0))
+            wake_losses  = float(sim_cfg.get('wake_losses', 0.0))
+            curt_losses  = float(sim_cfg.get('curtailment_losses', 0.0))
+            ws_height_m  = float(sim_cfg.get('ws_height_m', 50.0))
+            altitude_m   = sim_cfg.get('altitude_m')
+            extr_method  = sim_cfg.get('extrapolation', 'hellmann')
+            hellmann_alpha = sim_cfg.get('hellmann_alpha')
+
+            engine = WindToPowerEngine(
+                turbine, n_turbines=n_turbines,
+                availability=availability,
+                electrical_losses=elec_losses,
+                wake_losses=wake_losses,
+                curtailment_losses=curt_losses,
+            )
+
+            ws_col = sess.get('target_col', 'wind_speed')
+            df_sim, summary = engine.run(
+                sess['df'], ws_col=ws_col,
+                ws_height_m=ws_height_m,
+                altitude_m=altitude_m,
+                extrapolation=extr_method,
+                hellmann_alpha=hellmann_alpha,
+            )
+            sess['df_energy'] = df_sim
+            sess['turbine']   = turbine
+            sess['energy_summary'] = summary
+
+            # ── AEP ──
+            aep_calc = AEPCalculator()
+            try:
+                aep = aep_calc.compute_from_timeseries(df_sim, 'energy_net_kwh')
+            except Exception:
+                aep = {}
+
+            monthly = aep_calc.monthly_distribution(df_sim, 'energy_net_kwh')
+            sensitivity = aep_calc.sensitivity_table(
+                aep.get('aep_p50_mwh', summary['energy_net_mwh']))
+
+            # Weibull-based AEP if QC ran
+            weibull_aep = None
+            qc = sess.get('qc_report', {})
+            wb = qc.get('weibull')
+            if wb:
+                try:
+                    rho_val = air_density()
+                    if altitude_m:
+                        rho_val = air_density(pressure_pa=101325 * (1 - 2.2557e-5 * altitude_m) ** 5.2559)
+                    weibull_aep = aep_calc.compute_from_weibull(
+                        turbine, wb['k'], wb['lambda'], rho=rho_val,
+                        n_turbines=n_turbines,
+                        losses=1 - (availability * (1 - elec_losses) *
+                                    (1 - wake_losses) * (1 - curt_losses)))
+                except Exception:
+                    pass
+
+            # power curve chart
+            t_dict = turbine.to_dict()
+            step = max(1, len(df_sim) // 2000)
+            ts_labels = [str(t) for t in df_sim.index[::step]]
+
+            return jsonify(numpy_to_python({
+                'summary': summary,
+                'aep': aep,
+                'monthly': monthly,
+                'sensitivity': sensitivity,
+                'weibull_aep': weibull_aep,
+                'turbine': t_dict,
+                'timeseries': {
+                    'labels': ts_labels,
+                    'ws_hub': safe_float_list(df_sim['ws_hub'].values[::step].tolist()),
+                    'power_kw': safe_float_list(df_sim['power_net_kw'].values[::step].tolist()),
+                    'energy_kwh': safe_float_list(df_sim['energy_net_kwh'].values[::step].tolist()),
+                },
+            }))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/energy/turbines', methods=['GET'])
+    def list_turbines():
+        """Return built-in turbines + real turbines from aerogeneradores folder."""
+        builtin = [{
+            'key': k, 'name': k, 'source': 'builtin',
+            'rated_power_kw':  v['rated_power_kw'],
+            'hub_height_m':    v['hub_height_m'],
+            'rotor_diameter_m':v['rotor_diameter_m'],
+            'cut_in': v['cut_in'], 'rated_speed': v['rated_speed'], 'cut_out': v['cut_out'],
+        } for k, v in PowerCurve.BUILTIN_CURVES.items()]
+
+        folder_turbines = list_turbine_info(Config.TURBINES_FOLDER)
+        for t in folder_turbines:
+            t['key']    = t['filename']
+            t['source'] = 'file'
+
+        return jsonify({'turbines': builtin + folder_turbines,
+                        'folder':   Config.TURBINES_FOLDER})
+
+    @app.route('/api/energy/compare_turbines', methods=['POST'])
+    def compare_turbines():
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        turbine_keys = body.get('turbine_keys', None)
+        ws_col = sess.get('target_col', 'wind_speed')
+        ws_height_m = float(body.get('ws_height_m', 50.0))
+
+        try:
+            # load all available turbines (built-in + folder) if no explicit list given
+            all_turbines = [PowerCurve.from_builtin(k) for k in PowerCurve.BUILTIN_CURVES]
+            all_turbines += load_turbines_from_folder(Config.TURBINES_FOLDER)
+            if turbine_keys:
+                all_turbines = [t for t in all_turbines if t.name in turbine_keys]
+            turbines = all_turbines if all_turbines else [PowerCurve.from_builtin('V150_4.5')]
+            df = sess['df']
+            ws = df[ws_col].fillna(df[ws_col].median()).values
+
+            # extrapolate to each turbine's hub height
+            comp = TurbineComparator()
+            results = comp.compare(turbines, ws, dt_h=1.0)
+            return jsonify({'comparison': numpy_to_python(results)})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # ─── WIND STATISTICS ──────────────────────────────────────────────────────────
+
+    @app.route('/api/wind/stats', methods=['POST'])
+    def wind_stats():
+        """Compute full wind analysis: overview KPIs, rose, diurnal, climatology, extremes."""
+        body    = request.json or {}
+        sid     = body.get('session_id', 'default')
+        ws_col  = body.get('ws_col',  'wind_speed')
+        wd_col  = body.get('wd_col',  'wind_dir')
+        temp_col= body.get('temp_col','temperature')
+        pres_col= body.get('pres_col','pressure')
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        try:
+            df = sess['df']
+            result = {
+                'overview':     numpy_to_python(compute_site_overview(
+                                    df, ws_col, wd_col, temp_col, pres_col)),
+                'rose':         numpy_to_python(compute_wind_rose(df, ws_col, wd_col)),
+                'diurnal':      numpy_to_python(compute_diurnal_profile(df, ws_col)),
+                'climatology':  numpy_to_python(compute_monthly_climatology(df, ws_col)),
+                'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
+                'histogram':    numpy_to_python(compute_histogram(df, ws_col)),
+            }
+            sess['wind_stats'] = result
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── ADVANCED WIND ANALYSIS (Windographer-style) ──────────────────────────
+
+    @app.route('/api/wind/advanced', methods=['POST'])
+    def wind_advanced():
+        """TI, wind shear, sector analysis, extreme return periods."""
+        body    = request.json or {}
+        sid     = body.get('session_id', 'default')
+        ws_col  = body.get('ws_col', 'wind_speed')
+        wd_col  = body.get('wd_col', 'wind_dir')
+        ws_h    = float(body.get('ws_height', 50.0))
+        sess    = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        try:
+            df = sess['df']
+            result = {
+                'turbulence':    numpy_to_python(compute_turbulence_intensity(df, ws_col)),
+                'shear':         numpy_to_python(compute_wind_shear(df, ws_col, ws_h)),
+                'sectors':       numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
+                'return_periods':numpy_to_python(compute_return_periods(df, ws_col)),
+            }
+            sess['wind_advanced'] = result
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── HYBRID SYSTEM (HOMER Pro-style) ──────────────────────────────────────
+
+    @app.route('/api/hybrid/simulate', methods=['POST'])
+    def hybrid_simulate():
+        """Simulate Wind + Solar + Battery + Diesel dispatch for a given load."""
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        try:
+            df     = sess['df']
+            ws_col = sess.get('target_col', 'wind_speed')
+            ws_h   = float(body.get('ws_height', 50.0))
+            lat    = float(body.get('lat', 20.0))
+
+            # --- Wind power ---
+            wind_cfg    = body.get('wind', {})
+            wind_kw_cap = float(wind_cfg.get('capacity_kw', 500))
+            hub_h       = float(wind_cfg.get('hub_height_m', 80))
+            alpha_exp   = float(wind_cfg.get('alpha', 0.143))
+            ws_arr      = df[ws_col].fillna(df[ws_col].median()).values if ws_col in df.columns else np.zeros(len(df))
+            ws_hub      = ws_arr * (hub_h / ws_h) ** alpha_exp
+
+            # Simple power curve: cubic between cut-in/rated/cut-out
+            cut_in  = float(wind_cfg.get('cut_in', 3.0))
+            rated   = float(wind_cfg.get('rated_speed', 12.0))
+            cut_out = float(wind_cfg.get('cut_out', 25.0))
+            wind_kw = np.where(
+                (ws_hub >= cut_in) & (ws_hub < rated),
+                wind_kw_cap * ((ws_hub - cut_in) / (rated - cut_in)) ** 3,
+                np.where((ws_hub >= rated) & (ws_hub <= cut_out), wind_kw_cap, 0.0)
+            )
+
+            # --- Solar PV ---
+            solar_cfg = body.get('solar', {})
+            solar_kwp = float(solar_cfg.get('capacity_kwp', 0))
+            solar_kw  = np.zeros(len(df))
+            if solar_kwp > 0:
+                ghi = estimate_clearsky_ghi(df.index if isinstance(df.index, pd.DatetimeIndex)
+                                            else pd.date_range('2020-01-01', periods=len(df), freq='h'),
+                                            lat=lat,
+                                            cloud_factor=float(solar_cfg.get('cloud_factor', 0.65)))
+                pv  = SolarPVModel(capacity_kwp=solar_kwp,
+                                   pr=float(solar_cfg.get('pr', 0.80)))
+                solar_kw = pv.power_kw(ghi)
+
+            # --- Battery ---
+            batt_cfg = body.get('battery', {})
+            batt_kwh = float(batt_cfg.get('capacity_kwh', 0))
+            battery  = None
+            if batt_kwh > 0:
+                battery = BatteryStorage(
+                    capacity_kwh=batt_kwh,
+                    c_rate=float(batt_cfg.get('c_rate', 0.5)),
+                    eta_rt=float(batt_cfg.get('eta_rt', 0.92)))
+
+            # --- Diesel ---
+            diesel_cfg = body.get('diesel', {})
+            diesel_kw  = float(diesel_cfg.get('capacity_kw', 0))
+            diesel     = None
+            if diesel_kw > 0:
+                diesel = DieselGenerator(
+                    capacity_kw=diesel_kw,
+                    fuel_price_usd_l=float(diesel_cfg.get('fuel_price', 0.90)))
+
+            # --- Load ---
+            load_cfg = body.get('load', {})
+            annual_kwh = float(load_cfg.get('annual_kwh', 1_000_000))
+            peak_kw    = float(load_cfg.get('peak_kw', annual_kwh / 4380))
+            profile_t  = load_cfg.get('profile_type', 'residential')
+            load_kw    = build_load_profile(annual_kwh, peak_kw, profile_t, len(df))
+
+            # --- Dispatch ---
+            sim = HybridDispatch()
+            result = sim.simulate(load_kw, wind_kw, solar_kw, battery, diesel)
+
+            # --- Economics ---
+            econ_cfg = body.get('economics', {})
+            eco = HybridEconomics()
+            economics = eco.compute(
+                wind_kw=wind_kw_cap, solar_kw=solar_kwp,
+                battery_kwh=batt_kwh, diesel_kw=diesel_kw,
+                dispatch=result,
+                discount_rate=float(econ_cfg.get('discount_rate', 0.08)),
+                lifetime=int(econ_cfg.get('lifetime', 25)))
+
+            result['economics'] = economics
+            result['config'] = {
+                'wind_kw': wind_kw_cap, 'solar_kwp': solar_kwp,
+                'battery_kwh': batt_kwh, 'diesel_kw': diesel_kw,
+                'load_annual_kwh': annual_kwh, 'profile': profile_t,
+            }
+            sess['hybrid_result'] = result
+            return jsonify(numpy_to_python(result))
+
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/hybrid/load_profile', methods=['POST'])
+    def hybrid_load_profile():
+        """Return synthetic load profile for preview."""
+        body       = request.json or {}
+        annual_kwh = float(body.get('annual_kwh', 1_000_000))
+        peak_kw    = float(body.get('peak_kw', annual_kwh / 4380))
+        ptype      = body.get('profile_type', 'residential')
+        n          = int(body.get('n_hours', 8760))
+        profile    = build_load_profile(annual_kwh, peak_kw, ptype, n)
+        step       = max(1, n // 720)
+        return jsonify({
+            'load_kw': [round(float(v), 2) for v in profile[::step]],
+            'peak_kw': round(float(profile.max()), 2),
+            'mean_kw': round(float(profile.mean()), 2),
+            'annual_kwh': round(float(profile.sum()), 0),
+            'step': step,
+        })
+
+    # ─── TECHNO-ECONOMIC ──────────────────────────────────────────────────────────
+
+    @app.route('/api/energy/techno_economic', methods=['POST'])
+    def techno_economic():
+        """Full techno-economic analysis: CAPEX, NPV/VAN, LCOE, VAE, payback, Cp."""
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = get_session(sid)
+
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        turbine_cfg = body.get('turbine', {})
+        fin_cfg     = body.get('financial', {})
+
+        try:
+            # resolve turbine
+            builtin = turbine_cfg.get('builtin_model')
+            if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+                turbine = PowerCurve.from_builtin(builtin)
+            elif builtin and builtin.endswith('.csv'):
+                fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+                turbine = PowerCurve.from_file(fpath)
+            else:
+                turbine = PowerCurve(
+                    name=turbine_cfg.get('name', 'Custom'),
+                    rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
+                    cut_in=float(turbine_cfg.get('cut_in', 3.0)),
+                    rated_speed=float(turbine_cfg.get('rated_speed', 12.0)),
+                    cut_out=float(turbine_cfg.get('cut_out', 25.0)),
+                    hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
+                    rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
+                )
+
+            ws_col      = sess.get('target_col', 'wind_speed')
+            ws_height_m = float(body.get('ws_height_m', 50.0))
+            df          = sess['df']
+            ws_raw      = df[ws_col].fillna(df[ws_col].median()).values if ws_col in df.columns else np.array([])
+
+            # extrapolate to hub height
+            ws_hub = extrapolate_wind_hellmann(ws_raw, ws_height_m, turbine.hub_height_m)
+
+            # air density
+            rho = air_density()
+            if 'pressure' in df.columns and 'temperature' in df.columns:
+                try:
+                    p_pa = df['pressure'].dropna().mean() * 100  # hPa to Pa
+                    t_k  = df['temperature'].dropna().mean() + 273.15
+                    rho  = air_density(temperature_k=t_k, pressure_pa=p_pa)
+                except Exception:
+                    pass
+
+            # annual energy per turbine
+            p_kw  = turbine.power_kw_density_corrected(ws_hub, rho)
+            dt_h  = 1.0  # assume hourly data
+            hours_in_data = len(ws_hub) * dt_h
+            years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
+            annual_kwh_per_turbine = float((p_kw * dt_h).sum() / years_in_data)
+
+            # sizing + financial
+            demand_mwh    = float(fin_cfg.get('demand_mwh', 0))
+            n_turbines_req= 0
+            tea = TechnoEconomicAnalyzer(
+                cost_per_kw_usd=float(fin_cfg.get('cost_per_kw', 2000)),
+                maintenance_pct=float(fin_cfg.get('maintenance_pct', 0.03)),
+                foundation_per_turbine=float(fin_cfg.get('foundation_per_turbine', 1_000_000)),
+                cabling_per_turbine=float(fin_cfg.get('cabling_per_turbine', 1_500_000)),
+            )
+            if demand_mwh > 0:
+                n_turbines_req = tea.turbines_for_demand(annual_kwh_per_turbine, demand_mwh)
+            n_turbines = int(body.get('n_turbines') or n_turbines_req or 1)
+
+            analysis = tea.analyze(
+                turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
+                energy_price_usd_kwh=float(fin_cfg.get('energy_price_usd_kwh', 0.07)),
+                discount_rate_pct=float(fin_cfg.get('discount_rate_pct', 8.0)),
+                project_years=int(fin_cfg.get('project_years', 20)),
+                usd_to_mxn=float(fin_cfg.get('usd_to_mxn', 1.0)),
+            )
+
+            # Cp analysis
+            cp = tea.cp_analysis(turbine, ws_hub, rho=rho)
+
+            return jsonify(numpy_to_python({
+                'analysis': analysis,
+                'cp': cp,
+                'turbine': turbine.to_dict(),
+                'n_turbines_needed': n_turbines_req,
+                'n_turbines_used':   n_turbines,
+                'annual_kwh_per_turbine': round(annual_kwh_per_turbine),
+                'rho': round(rho, 4),
+            }))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
+    @app.route('/api/farm/simulate', methods=['POST'])
+    def farm_simulate():
+        """
+        Simulate a wind farm layout with Jensen NOJ wakes.
+        Body:
+          layout:        [[x_m, y_m], ...]
+          turbine:       { builtin_model? OR full PowerCurve fields }
+          k_wake:        wake decay (default 0.05)
+          ct:            thrust coefficient (default 0.8)
+          ws_height_m:   measurement height for extrapolation
+          availability:  0..1
+          electrical_losses: 0..1
+          n_sectors:     wind direction sectors (default 36)
+        Uses the wind/direction time series from the active session.
+        """
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = get_session(sid)
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        layout = body.get('layout') or []
+        if not layout or len(layout) < 1:
+            return jsonify({'error': 'Layout vacío. Coloca al menos una turbina.'}), 400
+
+        try:
+            t_cfg = body.get('turbine', {})
+            builtin = t_cfg.get('builtin_model')
+            if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+                turbine = PowerCurve.from_builtin(builtin)
+            elif builtin and builtin.endswith('.csv'):
+                fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+                turbine = PowerCurve.from_file(fpath)
+            else:
+                turbine = PowerCurve(
+                    name=t_cfg.get('name', 'Custom'),
+                    rated_power_kw=float(t_cfg.get('rated_power_kw', 2000)),
+                    cut_in=float(t_cfg.get('cut_in', 3.0)),
+                    rated_speed=float(t_cfg.get('rated_speed', 12.0)),
+                    cut_out=float(t_cfg.get('cut_out', 25.0)),
+                    hub_height_m=float(t_cfg.get('hub_height_m', 80)),
+                    rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
+                )
+
+            df = sess['df']
+            ws_col = sess.get('target_col', 'wind_speed')
+            wd_col = body.get('wd_col', 'wind_dir')
+            if ws_col not in df.columns:
+                return jsonify({'error': f'Columna de viento "{ws_col}" no presente.'}), 400
+            ws_h    = float(body.get('ws_height_m', 50.0))
+            ws_raw  = df[ws_col].fillna(df[ws_col].median()).values
+            ws_hub  = extrapolate_wind_hellmann(ws_raw, ws_h, turbine.hub_height_m)
+
+            if wd_col in df.columns:
+                wd = df[wd_col].fillna(0).values
+            else:
+                # Sin dirección: una sola dirección dominante (sector único)
+                wd = np.zeros_like(ws_hub)
+
+            result = simulate_wind_farm(
+                layout_xy=layout,
+                turbine=turbine,
+                ws=ws_hub, wd=wd,
+                k_wake=float(body.get('k_wake', 0.05)),
+                ct=float(body.get('ct', 0.8)),
+                n_sectors=int(body.get('n_sectors', 36)),
+                availability=float(body.get('availability', 1.0)),
+                electrical_losses=float(body.get('electrical_losses', 0.0)),
+            )
+            result['turbine'] = turbine.to_dict()
+            return jsonify(numpy_to_python(result))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/grid/build', methods=['POST'])
+    def grid_build_resource():
+        """
+        Build a multi-variable resource grid centred on a session site (or an
+        arbitrary lat/lon) using Ordinary Kriging across all sites within
+        ``radius_km``. Returns 4 grids in one shot (speed/power/AEP/CF) plus
+        the per-site values, so the frontend can switch variables instantly.
+        """
+        from math import gamma as _gamma
+        from core.kriging import _haversine_km
+        from scipy.stats import weibull_min as _wbl
+
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        sess = sessions.get(sid, {})
+
+        cen_lat = body.get('center_lat')
+        cen_lon = body.get('center_lon')
+        if cen_lat is None and 'meta' in sess:
+            cen_lat = sess['meta'].get('latitude')
+            cen_lon = sess['meta'].get('longitude')
+        if cen_lat is None or cen_lon is None:
+            return jsonify({'error': 'Sin centro: carga un sitio o pasa center_lat/center_lon'}), 400
+        cen_lat, cen_lon = float(cen_lat), float(cen_lon)
+
+        radius_km = float(body.get('radius_km', 200))
+        n_grid    = int(body.get('n_grid', 60))
+        model     = body.get('model', 'exponential')
+        year      = body.get('year')
+        if year is not None:
+            year = int(year)
+        p_nom_kw  = float(body.get('p_nom_kw', 2000))
+        rotor_m   = float(body.get('rotor_m', 80))
+        cp        = float(body.get('cp', 0.4))
+
+        folder = Config.DATA_FOLDER
+        if not os.path.isdir(folder):
+            return jsonify({'error': f'DATA_FOLDER no existe: {folder}'}), 404
+
+        v_arr   = np.linspace(0.1, 25, 200)
+        A_rotor = np.pi * (rotor_m ** 2) / 4
+        p_kw    = np.minimum(0.5 * 1.225 * A_rotor * cp * v_arr ** 3 / 1000.0, p_nom_kw)
+
+        sites = []
+        for fn in sorted(os.listdir(folder)):
+            if fn.startswith('.') or not fn.lower().endswith('.txt'):
+                continue
+            coords = parse_coords_from_filename(fn)
+            if not coords:
+                continue
+            lat, lon = coords
+            if _haversine_km(lat, lon, cen_lat, cen_lon) > radius_km:
+                continue
+            try:
+                site  = read_wind_file(os.path.join(folder, fn), year=year)
+                if site['n'] < 24:
+                    continue
+                stats = site_wind_stats(site)
+                if stats is None:
+                    continue
+            except Exception:
+                continue
+            C, K, rho = stats['weibull_C'], stats['weibull_K'], stats['rho_mean']
+            try:
+                pdf = _wbl.pdf(v_arr, K, scale=C)
+                aep_kwh = float(np.trapz(p_kw * pdf, v_arr) * 8760)
+                pd_wm2  = 0.5 * rho * (C ** 3) * _gamma(1 + 3 / max(K, 0.1))
+            except Exception:
+                aep_kwh, pd_wm2 = 0.0, 0.0
+            cf_pct = 100.0 * aep_kwh / (p_nom_kw * 8760) if p_nom_kw > 0 else 0.0
+            sites.append({
+                'filename': fn, 'lat': lat, 'lon': lon,
+                'speed': float(stats['v_mean']),
+                'power': float(pd_wm2),
+                'aep':   float(aep_kwh / 1000.0),    # MWh/year
+                'cf':    float(cf_pct),
+                'weibull_C': float(C), 'weibull_K': float(K),
+            })
+
+        if len(sites) < 3:
+            return jsonify({'error':
+                f'Necesitas ≥3 sitios en {radius_km} km del centro (hay {len(sites)})'}), 400
+
+        lats = [s['lat'] for s in sites]
+        lons = [s['lon'] for s in sites]
+
+        units = {'speed': 'm/s', 'power': 'W/m²', 'aep': 'MWh/año', 'cf': '%'}
+        titles = {
+            'speed': 'Velocidad media @ hub (m/s)',
+            'power': 'Densidad de potencia (W/m²)',
+            'aep':   f'AEP estimado ({int(p_nom_kw)} kW, MWh/año)',
+            'cf':    f'Factor de capacidad ({int(p_nom_kw)} kW, %)',
+        }
+
+        grids = {}
+        for var in ('speed', 'power', 'aep', 'cf'):
+            vals = [s[var] for s in sites]
+            try:
+                g = kriging_grid(lons, lats, vals, n=n_grid, model=model)
+            except Exception as e:
+                return jsonify({'error': f'Kriging falló para {var}: {e}'}), 500
+            g['unit']  = units[var]
+            g['title'] = titles[var]
+            grids[var] = g
+
+        bounds = grids['speed']['bounds']
+        return jsonify(numpy_to_python({
+            'center':  {'lat': cen_lat, 'lon': cen_lon},
+            'radius_km': radius_km,
+            'n_sites': len(sites),
+            'sites':   sites,
+            'bounds':  bounds,
+            'grids':   grids,
+            'p_nom_kw': p_nom_kw,
+            'rotor_m':  rotor_m,
+        }))
+
+    @app.route('/api/farm/wake_profile', methods=['POST'])
+    def farm_wake_profile():
+        """Return Jensen NOJ deficit (%) along the centreline vs x/D — for the physics chart."""
+        body = request.json or {}
+        rotor_d = float(body.get('rotor_d_m', 80.0))
+        k_wake  = float(body.get('k_wake', 0.05))
+        ct      = float(body.get('ct', 0.8))
+        xd_arr  = np.arange(0.5, 20.01, 0.25)
+        deficit_pct = [
+            100.0 * jensen_deficit(xd * rotor_d, 0.0, rotor_d, k=k_wake, ct=ct)
+            for xd in xd_arr
+        ]
+        return jsonify({
+            'x_over_d':     [round(float(x), 3) for x in xd_arr],
+            'deficit_pct':  [round(float(v), 4) for v in deficit_pct],
+            'k_wake':       k_wake,
+            'ct':           ct,
+            'rotor_d_m':    rotor_d,
+        })
+
+    # ─── EXPORT ───────────────────────────────────────────────────────────────
+
+    @app.route('/api/export/csv', methods=['GET', 'POST'])
+    def export_csv():
+        if request.method == 'GET':
+            body = {}
+            sid     = request.args.get('session_id', 'default')
+            dataset = request.args.get('type', 'raw')
+        else:
+            body    = request.json or {}
+            sid     = body.get('session_id', 'default')
+            dataset = body.get('dataset', 'energy')
+        sess    = get_session(sid)
+
+        key_map = {'energy': 'df_energy', 'raw': 'df'}
+        df_key  = key_map.get(dataset, 'df')
+
+        if df_key not in sess:
+            return jsonify({'error': f'Dataset "{dataset}" not available.'}), 400
+
+        df = sess[df_key].copy()
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df.reset_index()
+
+        fname = f'windpro_{dataset}_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.csv'
+        fpath = os.path.join(Config.EXPORT_FOLDER, fname)
+        df.to_csv(fpath, index=False)
+
+        from flask import send_file
+        return send_file(fpath, as_attachment=True, download_name=fname,
+                         mimetype='text/csv')
+
+    # ─── AI ASSISTANT ─────────────────────────────────────────────────────────
+
+    @app.route('/api/ai/chat', methods=['POST'])
+    def ai_chat():
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        q    = body.get('question', '').strip()
+        sess = get_session(sid)
+
+        if not q:
+            return jsonify({'answer': 'Escribe una pregunta.'})
+
+        try:
+            answer = _ai_answer(q, sess)
+            return jsonify({'answer': answer})
+        except Exception as e:
+            return jsonify({'answer': f'Error interno: {e}'})
+
+    def _ai_answer(q, sess):
+        ql = q.lower()
+        meta = sess.get('meta', {})
+        qc   = sess.get('qc_report', {})
+        estats = sess.get('energy_summary', {})
+
+        # ── contextual responses based on loaded data ──
+        has_data   = 'df' in sess
+        has_models = any(k.startswith('results_h') for k in sess)
+        has_energy = 'energy_summary' in sess
+
+        if any(w in ql for w in ['datos', 'cargado', 'dataset', 'filas', 'columnas']):
+            if has_data:
+                n = meta.get('n_rows', '?')
+                cols = meta.get('columns', [])
+                dr = meta.get('date_range', ['?', '?'])
+                return (f"Se han cargado {n:,} registros desde {dr[0]} hasta {dr[1]}. "
+                        f"Columnas: {', '.join(cols[:8])}{'...' if len(cols) > 8 else ''}.")
+            return "No hay datos cargados aún. Ve a Data Hub y sube un archivo CSV/TXT."
+
+        if any(w in ql for w in ['calidad', 'qc', 'faltantes', 'missing', 'outlier']):
+            if qc:
+                overall = qc.get('overall', '?')
+                pct_miss = qc.get('pct_missing', '?')
+                spikes = qc.get('n_spikes', 0)
+                stats_d = qc.get('stats', {})
+                return (f"Control de calidad: {overall}. "
+                        f"Datos faltantes: {pct_miss}%. "
+                        f"Picos detectados: {spikes}. "
+                        f"Velocidad media: {stats_d.get('mean','?')} m/s, "
+                        f"máx: {stats_d.get('max','?')} m/s.")
+            return "Ejecuta el control de calidad en Data Hub primero."
+
+        if any(w in ql for w in ['weibull', 'distribución', 'distribucion', 'k ', 'lambda']):
+            wb = qc.get('weibull')
+            if wb:
+                return (f"Ajuste Weibull: k={wb['k']} (factor de forma), "
+                        f"λ={wb['lambda']} m/s (factor de escala). "
+                        f"{'k < 2 indica distribución sesgada hacia vientos fuertes (régimen tipo Tehuantepecano).' if wb['k'] < 2 else 'k ≥ 2 indica distribución más simétrica (régimen estable).'}")
+            return "Ejecuta QC primero para obtener el ajuste Weibull."
+
+        if any(w in ql for w in ['modelo', 'rmse', 'r2', 'mae', 'skill', 'mejor']):
+            best_res = None
+            for k, v in sess.items():
+                if k.startswith('results_h') and v:
+                    best_res = v
+                    break
+            if best_res:
+                best_name = min(
+                    {n: r for n, r in best_res.items()
+                     if not n.startswith('_') and 'metrics' in r},
+                    key=lambda n: best_res[n]['metrics']['rmse'],
+                    default=None)
+                if best_name:
+                    m = best_res[best_name]['metrics']
+                    skill = m.get('skill_vs_persistence', 'N/A')
+                    return (f"Mejor modelo: {m['label']} — "
+                            f"RMSE={m['rmse']} m/s, MAE={m['mae']} m/s, "
+                            f"R²={m['r2']}, nRMSE={m['nrmse']:.1%}, "
+                            f"Skill vs persistencia: {'+' if isinstance(skill,float) and skill>0 else ''}"
+                            f"{skill*100:.1f}% " if isinstance(skill,float) else f"Skill: {skill}.")
+            return "Entrena los modelos en Model Arena primero."
+
+        if any(w in ql for w in ['energía', 'energia', 'aep', 'potencia', 'factor de capacidad', 'cf']):
+            if has_energy:
+                cf = estats.get('capacity_factor_pct', '?')
+                e = estats.get('energy_net_mwh', '?')
+                flh = estats.get('full_load_hours', '?')
+                return (f"Producción estimada: {e} MWh netos en el periodo analizado. "
+                        f"Factor de capacidad: {cf}%. "
+                        f"Horas equivalentes de plena carga: {flh}.")
+            return "Configura y ejecuta la simulación en Energy Lab."
+
+        if any(w in ql for w in ['persistencia', 'baseline', 'baseline']):
+            return ("La persistencia predice que el viento en t+h es igual al viento en t. "
+                    "Es el baseline estándar para pronóstico a corto plazo. "
+                    "Un skill score positivo frente a persistencia indica que el modelo ML agrega valor real.")
+
+        if any(w in ql for w in ['horizonte', 'plazo', 'corto', 'largo', 'semanal']):
+            return ("Para h=1h: los modelos ML suelen superar ampliamente la persistencia. "
+                    "Para h=6-24h: la ventaja ML disminuye; se recomienda combinar con NWP. "
+                    "Para pronóstico semanal: se modelan distribuciones y percentiles, no series exactas. "
+                    "WindPro entrena un modelo independiente por horizonte para máxima precisión.")
+
+        if any(w in ql for w in ['leakage', 'sobreajuste', 'overfitting', 'validación', 'test']):
+            return ("WindPro usa separación cronológica estricta: "
+                    "el 80% inicial es entrenamiento y el 20% final (futuro absoluto) es test. "
+                    "No hay shuffling ni cross-validation temporal que cruce el futuro al pasado. "
+                    "Las features usan únicamente información disponible en el momento de la predicción.")
+
+        if any(w in ql for w in ['merra', 'era5', 'reanálisis', 'reanalisis']):
+            return ("Para cargar datos MERRA-2: exporta el dataset tabular desde GES DISC "
+                    "y selecciona fuente 'MERRA-2' al subir. "
+                    "Para ERA5: exporta desde Copernicus CDS en CSV y selecciona 'ERA5'. "
+                    "WindPro detecta automáticamente columnas U50M/V50M y deriva velocidad y dirección.")
+
+        if any(w in ql for w in ['limitaciones', 'advertencia', 'incertidumbre', 'sesgo']):
+            return ("Limitaciones declaradas: (1) Los modelos son válidos para el sitio y periodo entrenado. "
+                    "(2) El pronóstico semanal no predice trazas horarias exactas — produce distribuciones. "
+                    "(3) La curva de potencia asume condiciones de operación nominales. "
+                    "(4) El AEP de largo plazo incluye incertidumbre inter-anual representada en P50/P75/P90.")
+
+        # fallback
+        context = f"Sesión activa: {'datos cargados' if has_data else 'sin datos'}. "
+        context += f"{'Modelos entrenados.' if has_models else 'Sin modelos aún.'} "
+        context += f"{'Simulación energética disponible.' if has_energy else ''}"
+        return (f"No encontré una respuesta específica para '{q}'. {context} "
+                f"Temas disponibles: calidad de datos, Weibull, modelos y métricas, "
+                f"energía y factor de capacidad, horizonte de pronóstico, validación científica.")
+
+    # ─── MONTH × HOUR HEATMAP ─────────────────────────────────────────────────
+    @app.route('/api/wind_stats/month_hour_heatmap', methods=['POST'])
+    def month_hour_heatmap():
+        body = request.json or {}
+        sid = body.get('session_id', 'default')
+        col = body.get('col', 'wind_speed')
+        sess = get_session(sid)
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded'}), 400
+        hm = compute_month_hour_heatmap(sess['df'], col=col)
+        if hm is None:
+            return jsonify({'error': 'Column not found or not datetime-indexed'}), 400
+        return jsonify(numpy_to_python(hm))
+
+    # ─── KRIGING & MULTI-SITE ─────────────────────────────────────────────────
+    @app.route('/api/kriging/sites', methods=['GET'])
+    def kriging_list_sites():
+        """Scan the meteorological folder and return sites with parsed coords + quick Weibull stats."""
+        folder = Config.DATA_FOLDER
+        year = request.args.get('year', type=int)
+        if not os.path.isdir(folder):
+            return jsonify({'error': f'DATA_FOLDER not found: {folder}'}), 404
+
+        sites = []
+        skipped = []
+        for fname in sorted(os.listdir(folder)):
+            if fname.startswith('.') or fname.startswith('~'):
+                continue
+            if not fname.lower().endswith('.txt'):
+                continue
+            path = os.path.join(folder, fname)
+            coords = parse_coords_from_filename(fname)
+            if coords is None:
+                skipped.append(fname)
+                continue
+            try:
+                site = read_wind_file(path, year=year)
+                if site['n'] < 24:
+                    skipped.append(fname)
+                    continue
+                stats = site_wind_stats(site)
+                sites.append({
+                    'filename':   fname,
+                    'lat':        site['lat'],
+                    'lon':        site['lon'],
+                    'n_hours':    int(site['n']),
+                    'v_mean':     round(stats['v_mean'], 3),
+                    'v_mean_raw': round(stats['v_mean_raw'], 3),
+                    'v_max':      round(stats['v_max'], 2),
+                    'weibull_C':  round(stats['weibull_C'], 3),
+                    'weibull_K':  round(stats['weibull_K'], 3),
+                    'rho_mean':   round(stats['rho_mean'], 4),
+                    'source':     ('merra2' if 'MERRA' in fname.upper()
+                                   else 'era5' if 'ERA5' in fname.upper()
+                                   else 'other'),
+                })
+            except Exception as e:
+                skipped.append(f'{fname}: {e}')
+
+        return jsonify({
+            'folder':  folder,
+            'year':    year,
+            'sites':   sites,
+            'count':   len(sites),
+            'skipped': len(skipped),
+        })
+
+    @app.route('/api/kriging/grid', methods=['POST'])
+    def kriging_compute_grid():
+        """Interpolate a metric across the sites using Ordinary Kriging."""
+        body = request.json or {}
+        sites = body.get('sites') or []
+        metric = body.get('metric', 'v_mean')
+        n = int(body.get('n', 60))
+        model = body.get('model', 'exponential')
+
+        if len(sites) < 3:
+            return jsonify({'error': 'Need at least 3 sites for Kriging'}), 400
+
+        try:
+            lats = [float(s['lat']) for s in sites]
+            lons = [float(s['lon']) for s in sites]
+            vals = [float(s[metric]) for s in sites]
+        except (KeyError, TypeError, ValueError) as e:
+            return jsonify({'error': f'Invalid site data: {e}'}), 400
+
+        try:
+            grid = kriging_grid(lons, lats, vals, n=n, model=model)
+            grid['metric'] = metric
+            grid['n_sites'] = len(sites)
+            return jsonify(grid)
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/kriging/legacy_maps', methods=['POST'])
+    def kriging_legacy_maps():
+        """
+        Replica exacta del script ajuste_aerogeneradores.py:
+        lee todos los sitios, calcula técnica-económica con el último
+        aerogenerador del catálogo y genera 3 grillas Kriging
+        (viento, inversión, VAN).
+        """
+        body = request.json or {}
+        task_id = str(uuid.uuid4())[:8]
+        tasks[task_id] = {'status': 'running', 'progress': 0,
+                          'message': 'Procesando sitios…', 'result': None}
+
+        def _run():
+            try:
+                # Optional: resolve center from a filename if provided
+                cen_lat = body.get('center_lat')
+                cen_lon = body.get('center_lon')
+                if cen_lat is None and body.get('center_file'):
+                    coords = parse_coords_from_filename(body['center_file'])
+                    if coords:
+                        cen_lat, cen_lon = coords
+                result = legacy_three_maps(
+                    wind_folder=Config.DATA_FOLDER,
+                    turbines_folder=Config.TURBINES_FOLDER,
+                    year=int(body.get('year', 2018)),
+                    demand_mwh=float(body.get('demand_mwh', 1000)),
+                    tasa=float(body.get('tasa', 0.08)),
+                    price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
+                    price_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
+                    max_files=body.get('max_files'),
+                    n_grid=int(body.get('n_grid', 80)),
+                    model=body.get('model', 'exponential'),
+                    center_lat=float(cen_lat) if cen_lat is not None else None,
+                    center_lon=float(cen_lon) if cen_lon is not None else None,
+                    radius_km=float(body['radius_km']) if body.get('radius_km') else None,
+                    filter_filenames=body.get('filenames') or None,
+                )
+                tasks[task_id]['result'] = numpy_to_python(result)
+                tasks[task_id]['status'] = 'done'
+                tasks[task_id]['progress'] = 100
+                tasks[task_id]['message'] = f'{result["n_sites"]} sitios · 3 mapas listos'
+            except Exception as e:
+                tasks[task_id]['status'] = 'error'
+                tasks[task_id]['message'] = str(e)
+                tasks[task_id]['trace'] = traceback.format_exc()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({'task_id': task_id})
+
+    @app.route('/api/kriging/analyze', methods=['POST'])
+    def kriging_full_analysis():
+        """Full multi-site × multi-turbine analysis (heavy). Runs async."""
+        body = request.json or {}
+        year = int(body.get('year', 2018))
+        demand_mwh = float(body.get('demand_mwh', 1000))
+        tasa = float(body.get('tasa', 0.08))
+        price_usd_kwh = float(body.get('price_usd_kwh', 0.20))
+        price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
+        max_files = body.get('max_files')
+        filter_files = body.get('filenames')
+        task_id = str(uuid.uuid4())[:8]
+        tasks[task_id] = {'status': 'running', 'progress': 0,
+                          'message': 'Iniciando análisis multi-sitio…', 'result': None}
+
+        def _run():
+            try:
+                results = analyze_sites(
+                    wind_folder=Config.DATA_FOLDER,
+                    turbines_folder=Config.TURBINES_FOLDER,
+                    year=year, demand_mwh=demand_mwh, tasa=tasa,
+                    price_usd_kwh=price_usd_kwh,
+                    price_mxn_per_usd=price_mxn_per_usd,
+                    max_files=max_files, filter_filenames=filter_files,
+                )
+                tasks[task_id]['result'] = numpy_to_python(results)
+                tasks[task_id]['status'] = 'done'
+                tasks[task_id]['progress'] = 100
+                tasks[task_id]['message'] = f'{len(results)} sitios analizados'
+            except Exception as e:
+                tasks[task_id]['status'] = 'error'
+                tasks[task_id]['message'] = str(e)
+                tasks[task_id]['trace'] = traceback.format_exc()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return jsonify({'task_id': task_id})
+
+    # ─── MULTI-CRITERIA (TOPSIS) ──────────────────────────────────────────────
+    @app.route('/api/multicriteria/defaults', methods=['GET'])
+    def mcda_defaults():
+        return jsonify({
+            'weights':    DEFAULT_WEIGHTS,
+            'labels':     CRITERION_LABELS,
+            'directions': CRITERION_DIRECTION,
+        })
+
+    @app.route('/api/multicriteria/rank', methods=['POST'])
+    def mcda_rank():
+        """
+        Rank alternatives via TOPSIS. Accepts either:
+          - 'alternatives': flat list of dicts (each with all criterion fields), or
+          - 'sites_analysis': output of /api/kriging/analyze (nested), with 'mode'.
+        """
+        body = request.json or {}
+        weights = body.get('weights')
+        mode = body.get('mode', 'pairs')
+
+        if 'alternatives' in body:
+            result = topsis(body['alternatives'], weights=weights)
+        elif 'sites_analysis' in body:
+            result = rank_sites_turbines(body['sites_analysis'],
+                                         weights=weights, mode=mode)
+        elif 'task_id' in body:
+            # pull results from a previous /api/kriging/analyze task
+            tid = body['task_id']
+            if tid not in tasks or tasks[tid].get('status') != 'done':
+                return jsonify({'error': 'Task not found or not complete'}), 404
+            result = rank_sites_turbines(tasks[tid]['result'] or [],
+                                         weights=weights, mode=mode)
+        else:
+            return jsonify({'error': 'Provide alternatives, sites_analysis, or task_id'}), 400
+
+        return jsonify(numpy_to_python(result))
+
+    @app.route('/api/kriging/status/<task_id>', methods=['GET'])
+    def kriging_task_status(task_id):
+        if task_id not in tasks:
+            return jsonify({'error': 'Unknown task'}), 404
+        t = tasks[task_id]
+        return jsonify(numpy_to_python({
+            'status':   t['status'],
+            'progress': t['progress'],
+            'message':  t['message'],
+            'result':   t.get('result') if t['status'] == 'done' else None,
+        }))
+
+    # ─── DEMANDA & PML — PRONÓSTICO A 25 AÑOS ────────────────────────────────
+
+    DEMAND_PRESETS = {
+        'juchitan':  {'file': 'JUCHITANDEMANDA.txt', 'label': 'Juchitán — Demanda nodal',
+                      'unit': 'MW',  'kind': 'demand'},
+        'load':      {'file': 'LOAD.txt',           'label': 'Carga del sistema',
+                      'unit': 'MW',  'kind': 'demand'},
+    }
+    PML_PRESETS = {
+        'pml_ipo':   {'file': 'PML_IPO.txt',        'label': 'PML horario (compra/venta)',
+                      'unit': '$/kWh', 'kind': 'pml'},
+    }
+
+    def _market_path(filename):
+        safe = os.path.basename(filename)
+        return os.path.join(Config.MARKET_DATA_FOLDER, safe)
+
+    @app.route('/api/market/list_presets', methods=['GET'])
+    def market_list_presets():
+        """Lista los presets de demanda y PML disponibles en MARKET_DATA_FOLDER."""
+        folder = Config.MARKET_DATA_FOLDER
+        out = {'folder': folder, 'demand': [], 'pml': []}
+        if not os.path.isdir(folder):
+            out['error'] = 'MARKET_DATA_FOLDER not found'
+            return jsonify(out)
+        for key, meta in DEMAND_PRESETS.items():
+            fpath = os.path.join(folder, meta['file'])
+            if os.path.isfile(fpath):
+                size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                out['demand'].append({'key': key, **meta, 'size_kb': size_kb})
+        for key, meta in PML_PRESETS.items():
+            fpath = os.path.join(folder, meta['file'])
+            if os.path.isfile(fpath):
+                size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                out['pml'].append({'key': key, **meta, 'size_kb': size_kb})
+        return jsonify(out)
+
+    @app.route('/api/demand/load', methods=['POST'])
+    def demand_load():
+        """Carga el archivo de demanda y devuelve estadísticos del año base."""
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        key  = body.get('preset', 'juchitan')
+        meta = DEMAND_PRESETS.get(key)
+        if not meta:
+            return jsonify({'error': f'Preset desconocido: {key}'}), 400
+        fpath = _market_path(meta['file'])
+        if not os.path.isfile(fpath):
+            return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+        try:
+            values = read_one_column(fpath)
+            stats = base_year_stats(values)
+            sess = get_session(sid)
+            sess.setdefault('demand', {})
+            sess['demand'][key] = {'values': values.tolist(), 'meta': meta}
+            return jsonify(numpy_to_python({
+                'preset': key, 'meta': meta, 'stats': stats,
+                'sample_first_24h': values[:24].tolist(),
+            }))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/demand/forecast', methods=['POST'])
+    def demand_forecast():
+        """
+        Ajusta varios modelos de tendencia y proyecta demanda a 25 años.
+        Body: {session_id, preset, growth?, horizon?, history_years?}
+        """
+        body = request.json or {}
+        sid = body.get('session_id', 'default')
+        key = body.get('preset', 'juchitan')
+        growth = float(body.get('growth', Config.DEMAND_GROWTH_DEFAULT))
+        horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
+        hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
+        models  = body.get('models')  # subset opcional
+
+        sess = get_session(sid)
+        cache = (sess.get('demand') or {}).get(key)
+        if not cache:
+            # cargar perezosamente
+            meta = DEMAND_PRESETS.get(key)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+            values = read_one_column(fpath)
+            sess.setdefault('demand', {})[key] = {'values': values.tolist(), 'meta': meta}
+            cache = sess['demand'][key]
+
+        try:
+            values = np.asarray(cache['values'], dtype=float)
+            t, annual_hist = synthesize_annual_series(
+                values, n_years_history=hist_y, growth_seed=growth)
+            fitted = fit_all_trend_models(t, annual_hist, models=models)
+            projection = project_25_years(values, fitted, horizon_years=horizon)
+            best = best_trend_model(fitted)
+
+            # tabla resumida lista para UI (sin closures internos)
+            summary = []
+            for k, m in fitted.items():
+                if 'error' in m:
+                    summary.append({'model': k, 'error': m['error']})
+                    continue
+                proj = projection.get(k, {})
+                summary.append({
+                    'model':   k,
+                    'kind':    m.get('kind'),
+                    'r2':      m['metrics']['r2'],
+                    'rmse':    m['metrics']['rmse'],
+                    'mape':    m['metrics']['mape'],
+                    'cagr':    proj.get('cagr'),
+                    'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
+                })
+
+            # eliminar predict callables (no JSON-serializables)
+            for m in fitted.values():
+                m.pop('_predict', None)
+
+            return jsonify(numpy_to_python({
+                'preset': key,
+                'growth_seed': growth,
+                'horizon_years': horizon,
+                'history_years': hist_y,
+                'history_t': [int(x) for x in t],
+                'history_annual': [float(x) for x in annual_hist],
+                'fitted': fitted,
+                'projection': projection,
+                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'best_model': best,
+            }))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/pml/load', methods=['POST'])
+    def pml_load():
+        """Carga PML_IPO.txt y devuelve estadísticos compra/venta."""
+        body = request.json or {}
+        sid  = body.get('session_id', 'default')
+        key  = body.get('preset', 'pml_ipo')
+        meta = PML_PRESETS.get(key)
+        if not meta:
+            return jsonify({'error': f'Preset desconocido: {key}'}), 400
+        fpath = _market_path(meta['file'])
+        if not os.path.isfile(fpath):
+            return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+        try:
+            data = read_pml(fpath)
+            stats_compra = base_year_stats(data['compra'])
+            stats_venta  = base_year_stats(data['venta'])
+            sess = get_session(sid)
+            sess.setdefault('pml', {})
+            sess['pml'][key] = {'compra': data['compra'].tolist(),
+                                 'venta':  data['venta'].tolist(),
+                                 'meta':   meta}
+            return jsonify(numpy_to_python({
+                'preset': key, 'meta': meta,
+                'stats_compra': stats_compra,
+                'stats_venta':  stats_venta,
+                'sample_first_24h': {
+                    'compra': data['compra'][:24].tolist(),
+                    'venta':  data['venta'][:24].tolist(),
+                },
+            }))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    @app.route('/api/pml/forecast', methods=['POST'])
+    def pml_forecast():
+        """
+        Proyecta el PML a 25 años (compra y venta por separado).
+        Body: {session_id, preset, growth?, side?, horizon?, history_years?}
+        """
+        body = request.json or {}
+        sid     = body.get('session_id', 'default')
+        key     = body.get('preset', 'pml_ipo')
+        growth  = float(body.get('growth', Config.PML_GROWTH_DEFAULT))
+        horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
+        hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
+        side    = body.get('side', 'venta')   # 'compra' | 'venta' | 'both'
+        models  = body.get('models')
+
+        sess = get_session(sid)
+        cache = (sess.get('pml') or {}).get(key)
+        if not cache:
+            meta = PML_PRESETS.get(key)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+            data = read_pml(fpath)
+            sess.setdefault('pml', {})[key] = {
+                'compra': data['compra'].tolist(),
+                'venta':  data['venta'].tolist(),
+                'meta':   meta,
+            }
+            cache = sess['pml'][key]
+
+        sides = ['compra', 'venta'] if side == 'both' else [side]
+        result = {'preset': key, 'growth_seed': growth, 'horizon_years': horizon,
+                  'sides': {}}
+
+        try:
+            for s in sides:
+                values = np.asarray(cache[s], dtype=float)
+                t, annual_hist = synthesize_annual_series(
+                    values, n_years_history=hist_y, growth_seed=growth,
+                    noise_pct=0.04)  # PML es más volátil
+                fitted = fit_all_trend_models(t, annual_hist, models=models)
+                projection = project_25_years(values, fitted, horizon_years=horizon)
+                best = best_trend_model(fitted)
+                summary = []
+                for k, m in fitted.items():
+                    if 'error' in m:
+                        summary.append({'model': k, 'error': m['error']}); continue
+                    proj = projection.get(k, {})
+                    summary.append({
+                        'model':   k,
+                        'kind':    m.get('kind'),
+                        'r2':      m['metrics']['r2'],
+                        'rmse':    m['metrics']['rmse'],
+                        'mape':    m['metrics']['mape'],
+                        'cagr':    proj.get('cagr'),
+                        'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
+                    })
+                for m in fitted.values():
+                    m.pop('_predict', None)
+                result['sides'][s] = {
+                    'history_t': [int(x) for x in t],
+                    'history_annual': [float(x) for x in annual_hist],
+                    'fitted': fitted,
+                    'projection': projection,
+                    'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                    'best_model': best,
+                }
+            return jsonify(numpy_to_python(result))
+        except Exception as e:
+            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+
+    return app

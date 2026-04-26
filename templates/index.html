@@ -1,0 +1,1912 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WindPro Platform — Inteligencia Meteorológica & Predicción de Viento</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:opsz,wght@9..144,300;9..144,600;9..144,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/windpro.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+</head>
+<body>
+
+<!-- ═══════════════════════════ TOP BAR ═══════════════════════════ -->
+<header class="topbar">
+  <div class="topbar-brand">
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" class="brand-icon">
+      <circle cx="14" cy="14" r="13" stroke="#4DA3FF" stroke-width="1.5" fill="none"/>
+      <path d="M14 6 L14 14 L20 10" stroke="#4DA3FF" stroke-width="2" stroke-linecap="round"/>
+      <path d="M14 14 L7 17" stroke="#9F7AEA" stroke-width="2" stroke-linecap="round"/>
+      <path d="M14 14 L11 21" stroke="#3DDC97" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="14" cy="14" r="2" fill="#4DA3FF"/>
+    </svg>
+    <span class="brand-name">WindPro <span class="brand-sub">Platform</span></span>
+  </div>
+  <nav class="topbar-nav">
+    <button class="nav-btn active" data-module="data">Data Hub</button>
+    <button class="nav-btn" data-module="overview">Resumen</button>
+    <button class="nav-btn" data-module="wind">Viento</button>
+    <button class="nav-btn" data-module="advanced">Recurso Avanzado</button>
+    <button class="nav-btn" data-module="kriging">Mapa & Kriging</button>
+    <button class="nav-btn" data-module="parque">Parque</button>
+    <button class="nav-btn" data-module="mapa">Mapa</button>
+    <button class="nav-btn" data-module="hybrid">Sistema Híbrido</button>
+    <button class="nav-btn" data-module="models">Model Arena</button>
+    <button class="nav-btn" data-module="forecast">Forecast Studio</button>
+    <button class="nav-btn" data-module="demand">Demanda 25 a</button>
+    <button class="nav-btn" data-module="pml">PML 25 a</button>
+    <button class="nav-btn" data-module="energy">Energy Lab</button>
+    <button class="nav-btn" data-module="techno">Tecno-Económico</button>
+    <button class="nav-btn" data-module="validation">Validation</button>
+    <button class="nav-btn" data-module="export">Exportar</button>
+    <button class="nav-btn" data-module="ai">AI Assistant</button>
+  </nav>
+  <div class="topbar-actions">
+    <div class="session-badge" id="session-badge">
+      <span class="dot" id="session-dot"></span>
+      <span id="session-label">No session</span>
+    </div>
+    <button class="btn-icon" id="theme-toggle" title="Toggle theme">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>
+        <line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/>
+        <line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ MAIN CONTENT ══════════════════════ -->
+<main class="main-content">
+
+<!-- ╔══════════════════ DATA HUB ══════════════════╗ -->
+<section class="module active" id="mod-data">
+  <div class="module-header">
+    <h1 class="module-title">Data Hub</h1>
+    <p class="module-desc">Carga, inspecciona y valida datos meteorológicos. Soporta CSV/TXT, exportaciones MERRA-2 y ERA5.</p>
+  </div>
+
+  <!-- Preset files panel -->
+  <div class="card mb-3" id="preset-panel">
+    <div class="card-header">
+      <span class="card-title">Datos de Parques Eólicos (México)</span>
+      <span class="badge badge--info" id="preset-count">Cargando…</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid-4">
+        <div style="grid-column:span 3">
+          <label class="form-label">Seleccionar archivo de reanálisis</label>
+          <select class="form-select" id="preset-file-select" style="width:100%">
+            <option value="">— Elige un archivo de la carpeta de datos —</option>
+          </select>
+        </div>
+        <div class="flex-end">
+          <button class="btn-primary" id="btn-load-preset">Cargar</button>
+        </div>
+      </div>
+      <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
+        <span class="badge badge--warn" id="preset-source-badge" style="display:none"></span>
+        <span class="text-muted" style="font-size:0.78rem">MERRA-2 y ERA5 desde Windnavigator — parques eólicos reales de México</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-3">
+    <!-- Upload card -->
+    <div class="card card--accent col-span-1">
+      <div class="card-header"><span class="card-title">O carga tu propio archivo</span></div>
+      <div class="card-body">
+        <div class="upload-zone" id="upload-zone">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--accent)">
+            <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+            <path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>
+          </svg>
+          <p>Arrastra tu archivo o <label for="file-input" class="link-text">selecciona</label></p>
+          <p class="text-muted">CSV · TXT · TSV · MERRA-2 · ERA5</p>
+          <input type="file" id="file-input" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+        </div>
+        <div class="form-row mt-2">
+          <label class="form-label">Fuente de datos</label>
+          <select class="form-select" id="source-select">
+            <option value="auto">Auto-detectar</option>
+            <option value="csv">CSV genérico</option>
+            <option value="merra2">MERRA-2</option>
+            <option value="era5">ERA5</option>
+            <option value="conagua">CONAGUA/SMN</option>
+          </select>
+        </div>
+        <button class="btn-primary mt-2 w-full" id="btn-upload">Cargar archivo</button>
+      </div>
+    </div>
+
+    <!-- Meta info card -->
+    <div class="card col-span-2">
+      <div class="card-header">
+        <span class="card-title">Vista Previa</span>
+        <span class="badge badge--info" id="badge-rows">— filas</span>
+      </div>
+      <div class="card-body">
+        <div id="preview-chart-container" style="height:200px;">
+          <canvas id="preview-chart"></canvas>
+        </div>
+        <div id="meta-grid" class="meta-grid mt-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QC section -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Control de Calidad</span>
+      <button class="btn-secondary" id="btn-qc">Ejecutar QC</button>
+    </div>
+    <div class="card-body">
+      <div id="qc-results" class="qc-grid hidden"></div>
+      <div id="qc-stats-grid" class="stats-row hidden"></div>
+    </div>
+  </div>
+
+  <!-- Quality per-variable table (shown after QC) -->
+  <div class="card mt-3" id="quality-table-card" style="display:none">
+    <div class="ch">
+      <span class="ct">Calidad por variable</span>
+      <span class="cbadge g" id="quality-table-badge">0 variables</span>
+    </div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="quality-tbl">
+        <thead><tr><th>Variable</th><th>Media</th><th>σ</th><th>Mín</th><th>Máx</th><th>Faltantes</th><th>Integridad</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Feature engineering config -->
+  <div class="card mt-3">
+    <div class="card-header"><span class="card-title">Preparar Features & Configuración de Entrenamiento</span></div>
+    <div class="card-body">
+      <div class="form-grid-4">
+        <div>
+          <label class="form-label">Columna objetivo</label>
+          <select class="form-select" id="target-col-select"><option value="wind_speed">wind_speed</option></select>
+        </div>
+        <div>
+          <label class="form-label">Hold-out test (%)</label>
+          <input type="number" class="form-input" id="test-frac" value="20" min="10" max="40">
+        </div>
+        <div>
+          <label class="form-label">Horizontes (h)</label>
+          <input type="text" class="form-input" id="horizons-input" value="1,6,24" placeholder="1,6,24,72">
+        </div>
+        <div class="flex-end">
+          <button class="btn-primary" id="btn-build-features">Generar Features</button>
+        </div>
+      </div>
+      <div id="features-summary" class="features-summary mt-2 hidden"></div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
+<section class="module" id="mod-models">
+  <div class="module-header">
+    <h1 class="module-title">Model Arena</h1>
+    <p class="module-desc">Entrena y compara todos los modelos automáticamente. Separación cronológica estricta, sin data leakage.</p>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Configuración de Entrenamiento</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <label class="form-label">Horizonte de pronóstico</label>
+          <select class="form-select" id="train-horizon">
+            <option value="1">h = +1h (muy corto plazo)</option>
+            <option value="6">h = +6h (corto plazo)</option>
+            <option value="24">h = +24h (día siguiente)</option>
+            <option value="72">h = +72h (3 días)</option>
+          </select>
+        </div>
+        <div class="model-checklist mt-2">
+          <p class="text-muted mb-1">Modelos a entrenar <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
+          <div class="model-tags" id="model-tag-list">
+            <span class="model-tag model-tag--baseline active" data-model="persistence">Persistencia</span>
+            <span class="model-tag model-tag--baseline active" data-model="climatology">Climatología</span>
+            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+            <span class="model-tag model-tag--ml active" data-model="random_forest">Random Forest</span>
+            <span class="model-tag model-tag--ml active" data-model="xgboost">XGBoost</span>
+            <span class="model-tag model-tag--ml active" data-model="lightgbm">LightGBM</span>
+            <span class="model-tag model-tag--ml active" data-model="ridge">Ridge LR</span>
+            <span class="model-tag model-tag--ml active" data-model="mlp">MLP</span>
+            <span class="model-tag model-tag--ml active" data-model="svr">SVR</span>
+          </div>
+          <div style="display:flex;gap:.5rem;margin-top:.5rem">
+            <button class="btn-sm" id="btn-models-all">Todos</button>
+            <button class="btn-sm" id="btn-models-fast">Solo rápidos</button>
+            <button class="btn-sm" id="btn-models-ml">Solo ML</button>
+          </div>
+        </div>
+        <button class="btn-primary mt-3 w-full" id="btn-train">
+          <span id="btn-train-label">Entrenar modelos seleccionados</span>
+        </button>
+        <div class="progress-bar-container mt-2 hidden" id="train-progress-container">
+          <div class="progress-bar" id="train-progress-bar" style="width:0%"></div>
+          <span class="progress-label" id="train-progress-label">Iniciando...</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Feature Importance</span></div>
+      <div class="card-body" style="height:280px;">
+        <canvas id="fi-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comparison table (dashboard .tbl style) -->
+  <div class="card mt-3">
+    <div class="ch">
+      <span class="ct">Tabla comparativa de modelos</span>
+      <span class="cbadge g" id="best-model-badge">—</span>
+    </div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="comparison-table">
+        <thead>
+          <tr><th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th><th>Skill</th></tr>
+        </thead>
+        <tbody id="comparison-tbody"><tr><td colspan="8" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Feature importance table -->
+  <div class="card mt-3" id="fi-table-card" style="display:none">
+    <div class="ch">
+      <span class="ct">Importancia de variables · GBM (top 10)</span>
+      <span class="cbadge b">Feature importance</span>
+    </div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="fi-tbl">
+        <thead><tr><th>#</th><th>Variable</th><th>Importancia</th><th>%</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ FORECAST STUDIO ══════════════════╗ -->
+<section class="module" id="mod-forecast">
+  <div class="module-header">
+    <h1 class="module-title">Forecast Studio</h1>
+    <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
+  </div>
+
+  <div class="toolbar mb-3">
+    <div class="toolbar-group">
+      <label class="form-label">Horizonte</label>
+      <select class="form-select" id="fc-horizon-select">
+        <option value="1">+1h</option>
+        <option value="6">+6h</option>
+        <option value="24">+24h</option>
+        <option value="72">+72h</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label class="form-label">Modelo</label>
+      <select class="form-select" id="fc-model-select">
+        <option value="lightgbm">LightGBM</option>
+        <option value="xgboost">XGBoost</option>
+        <option value="random_forest">Random Forest</option>
+      </select>
+    </div>
+    <button class="btn-primary" id="btn-load-forecast">Cargar Predicciones</button>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+      <div class="metric-pills" id="fc-metric-pills"></div>
+    </div>
+    <div class="card-body" style="height:300px;">
+      <canvas id="fc-main-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+      <div class="card-body" style="height:250px;">
+        <canvas id="scatter-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+      <div class="card-body" style="height:250px;">
+        <canvas id="residual-hist-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE mensual)</span></div>
+    <div class="card-body" style="height:220px;">
+      <canvas id="stability-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header"><span class="card-title">Sesgo por Rango de Velocidad</span></div>
+    <div class="card-body" style="height:220px;">
+      <canvas id="binned-bias-chart"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ ENERGY LAB ══════════════════╗ -->
+<section class="module" id="mod-energy">
+  <div class="module-header">
+    <h1 class="module-title">Energy Lab</h1>
+    <p class="module-desc">Simulación física de potencia y energía. Motor híbrido físico + ML. AEP con P50/P75/P90.</p>
+  </div>
+
+  <!-- Energy Lab Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="single-turbine">Turbina Individual</button>
+    <button class="tab-btn" data-tab="wind-farm">Parque Eólico</button>
+  </div>
+
+  <!-- Single Turbine Tab Content -->
+  <div id="single-turbine-tab" class="tab-content active">
+    <div class="grid-2">
+      <!-- Turbine config -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Aerogenerador</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <label class="form-label">Modelo de aerogenerador</label>
+          <select class="form-select" id="turbine-builtin">
+            <option value="">— Configuración manual —</option>
+            <optgroup label="Incorporados">
+              <option value="SG_8.0_167">Siemens Gamesa SG 8.0-167 DD (8 MW)</option>
+              <option value="V150_4.5">Vestas V150-4.5 MW</option>
+              <option value="E126_7.58">Enercon E126 7.58 MW</option>
+            </optgroup>
+            <optgroup label="Curvas reales" id="turbine-real-group">
+            </optgroup>
+          </select>
+        </div>
+        <div id="turbine-manual-form">
+          <div class="form-grid-2 mt-2">
+            <div><label class="form-label">Nombre</label>
+              <input class="form-input" id="t-name" value="Custom" placeholder="Nombre turbina"></div>
+            <div><label class="form-label">Potencia nominal (kW)</label>
+              <input type="number" class="form-input" id="t-rated" value="2000"></div>
+            <div><label class="form-label">Cut-in (m/s)</label>
+              <input type="number" class="form-input" id="t-cutin" value="3.0" step="0.5"></div>
+            <div><label class="form-label">Vel. nominal (m/s)</label>
+              <input type="number" class="form-input" id="t-rated-spd" value="12.0" step="0.5"></div>
+            <div><label class="form-label">Cut-out (m/s)</label>
+              <input type="number" class="form-input" id="t-cutout" value="25.0" step="0.5"></div>
+            <div><label class="form-label">Diámetro rotor (m)</label>
+              <input type="number" class="form-input" id="t-rotor" value="80"></div>
+            <div><label class="form-label">Altura de buje (m)</label>
+              <input type="number" class="form-input" id="t-hub" value="80"></div>
+            <div><label class="form-label">Nº de turbinas</label>
+              <input type="number" class="form-input" id="t-n" value="1" min="1"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Simulation config -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Configuración de Simulación</span></div>
+      <div class="card-body">
+        <div class="form-grid-2">
+          <div><label class="form-label">Altura datos viento (m)</label>
+            <input type="number" class="form-input" id="ws-height" value="50"></div>
+          <div><label class="form-label">Altitud sitio (m s.n.m.)</label>
+            <input type="number" class="form-input" id="site-altitude" value="0" placeholder="0 = nivel del mar"></div>
+          <div><label class="form-label">Extrapolación vertical</label>
+            <select class="form-select" id="extrapolation">
+              <option value="hellmann">Ley potencial (Hellmann)</option>
+              <option value="log">Perfil logarítmico</option>
+            </select></div>
+          <div><label class="form-label">Disponibilidad (%)</label>
+            <input type="number" class="form-input" id="availability" value="97" min="0" max="100"></div>
+          <div><label class="form-label">Pérdidas eléctricas (%)</label>
+            <input type="number" class="form-input" id="elec-losses" value="2" min="0" max="20"></div>
+          <div><label class="form-label">Pérdidas wake (%)</label>
+            <input type="number" class="form-input" id="wake-losses" value="3" min="0" max="30"></div>
+        </div>
+        <button class="btn-primary mt-3 w-full" id="btn-run-energy">Ejecutar Simulación</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Energy KPIs -->
+  <div class="kpi-row mt-3 hidden" id="energy-kpis">
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-cf">—</div>
+      <div class="kpi-label">Factor de Capacidad</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-aep">—</div>
+      <div class="kpi-label">AEP P50 (MWh/año)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-flh">—</div>
+      <div class="kpi-label">Horas Equiv. Plena Carga</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-energy-net">—</div>
+      <div class="kpi-label">Energía Neta (MWh)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-value" id="kpi-p90">—</div>
+      <div class="kpi-label">AEP P90 (MWh/año)</div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva de Potencia</span></div>
+      <div class="card-body" style="height:260px;">
+        <canvas id="power-curve-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Producción Mensual (MWh)</span></div>
+      <div class="card-body" style="height:260px;">
+        <canvas id="monthly-energy-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Serie de Potencia Estimada</span></div>
+      <div class="card-body" style="height:240px;">
+        <canvas id="power-ts-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Análisis de Sensibilidad</span></div>
+      <div class="card-body" style="height:240px;">
+        <canvas id="sensitivity-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Turbine ficha técnica -->
+  <div class="card mt-3" id="turbine-ficha-card" style="display:none">
+    <div class="ch">
+      <span class="ct">Ficha técnica del aerogenerador</span>
+      <span class="cbadge b" id="turbine-ficha-badge">SG 8.0-167</span>
+    </div>
+    <div class="cb">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem">
+        <table class="tbl ficha-tbl" id="turbine-ficha-tbl-left"><tbody></tbody></table>
+        <table class="tbl ficha-tbl" id="turbine-ficha-tbl-right"><tbody></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- AEP P-values -->
+  <div class="card mt-3 hidden" id="aep-card">
+    <div class="card-header"><span class="card-title">Producción Anual de Energía — Distribución P</span></div>
+    <div class="card-body">
+      <div class="p-value-row" id="p-value-row"></div>
+      <div class="text-muted mt-2" style="font-size:0.78rem;">
+        P50 = mediana esperada | P75 = excedido el 75% del tiempo | P90 = excedido el 90% del tiempo (escenario conservador).
+      </div>
+    </div>
+  </div>
+
+  <!-- Turbine comparator -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Comparador de Aerogeneradores</span>
+      <button class="btn-secondary" id="btn-compare-turbines">Comparar</button>
+    </div>
+    <div class="card-body">
+      <div class="table-wrapper">
+        <table class="sci-table" id="turbine-comp-table">
+          <thead><tr>
+            <th>Turbina</th><th>P. Nominal (kW)</th><th>Diámetro (m)</th>
+            <th>H. Buje (m)</th><th>CF (%)</th><th>FLH</th><th>P. Media (kW)</th><th>Rank</th>
+          </tr></thead>
+          <tbody id="turbine-comp-tbody"><tr><td colspan="8" class="empty-msg">Haz clic en "Comparar"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <!-- Wind Farm Tab Content -->
+  <div id="wind-farm-tab" class="tab-content">
+    <div class="grid-2">
+      <!-- Layout Editor -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Diseño del Parque</span>
+          <div class="card-actions">
+            <button class="btn btn-sm" id="add-turbine-btn">+ Turbina</button>
+            <button class="btn btn-sm" id="clear-layout-btn">Limpiar</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <canvas id="farm-layout-canvas" width="400" height="300" style="border:1px solid var(--border); border-radius:4px;"></canvas>
+          <div class="form-row mt-2">
+            <label class="form-label">Escala: <span id="canvas-scale">1:1000</span></label>
+            <input type="range" id="layout-scale" min="500" max="5000" value="1000" step="100">
+          </div>
+          <div class="form-row">
+            <label class="form-label">Rotar diseño:</label>
+            <input type="range" id="layout-rotation" min="0" max="359" value="0" step="1">
+            <span id="rotation-value">0°</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Farm KPIs -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">KPIs del Parque</span></div>
+        <div class="card-body">
+          <div class="kpi-grid">
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-n-turbines">-</div>
+              <div class="kpi-label">Turbinas</div>
+            </div>
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-installed-mw">-</div>
+              <div class="kpi-label">MW Instalados</div>
+            </div>
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-aep-mwh">-</div>
+              <div class="kpi-label">AEP (MWh)</div>
+            </div>
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-cf-pct">-</div>
+              <div class="kpi-label">CF (%)</div>
+            </div>
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-wake-loss-pct">-</div>
+              <div class="kpi-label">Pérdidas Wake (%)</div>
+            </div>
+            <div class="kpi-item">
+              <div class="kpi-value" id="farm-flh">-</div>
+              <div class="kpi-label">FLH</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Per-Turbine Table -->
+    <div class="card mt-3">
+      <div class="card-header">
+        <span class="card-title">Producción por Turbina</span>
+        <div class="card-actions">
+          <button class="btn btn-sm" id="simulate-farm-btn">Simular Parque</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <table class="data-table" id="farm-turbines-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>X (m)</th><th>Y (m)</th><th>AEP (MWh)</th><th>AEP Sin Wake (MWh)</th>
+              <th>Pérdida Wake (%)</th><th>CF (%)</th><th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="farm-turbines-tbody">
+            <tr><td colspan="8" class="empty-msg">Añade turbinas y simula el parque</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ VALIDATION ══════════════════╗ -->
+<section class="module" id="mod-validation">
+  <div class="module-header">
+    <h1 class="module-title">Validation Center</h1>
+    <p class="module-desc">Análisis científico riguroso: métricas, calibración de intervalos, homoscedasticidad, autocorrelación residual.</p>
+  </div>
+
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Métricas Seleccionadas</span></div>
+      <div class="card-body" id="val-metrics-body">
+        <p class="text-muted">Entrena modelos para ver métricas.</p>
+      </div>
+    </div>
+    <div class="card col-span-2">
+      <div class="card-header"><span class="card-title">Cobertura del Intervalo de Predicción</span></div>
+      <div class="card-body">
+        <div id="calib-display" class="calib-display">
+          <div class="calib-item">
+            <span class="calib-label">Cobertura nominal</span>
+            <span class="calib-val" id="calib-nominal">80%</span>
+          </div>
+          <div class="calib-item">
+            <span class="calib-label">Cobertura empírica</span>
+            <span class="calib-val" id="calib-empirical">—</span>
+          </div>
+          <div class="calib-item">
+            <span class="calib-label">Error de calibración</span>
+            <span class="calib-val" id="calib-error">—</span>
+          </div>
+          <div class="calib-item">
+            <span class="calib-label">Sharpness (ancho medio)</span>
+            <span class="calib-val" id="calib-sharp">—</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">QQ Plot de Residuos</span></div>
+      <div class="card-body" style="height:260px;">
+        <canvas id="qq-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Sesgo Agrupado por Velocidad</span></div>
+      <div class="card-body" style="height:260px;">
+        <canvas id="val-bias-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="card-header"><span class="card-title">Declaración de Validez Científica</span></div>
+    <div class="card-body">
+      <div class="sci-statement" id="sci-statement">
+        <ul class="sci-list" id="sci-list">
+          <li class="sci-item">Separación cronológica estricta: 80% entrenamiento / 20% test (futuro absoluto)</li>
+          <li class="sci-item">Sin data leakage: todas las features son información pasada al momento de predicción</li>
+          <li class="sci-item">Baseline de comparación: persistencia (estándar de la industria)</li>
+          <li class="sci-item">Skill score de Murphy: mide mejora real sobre el baseline</li>
+          <li class="sci-item">Intervalos de predicción con cobertura empírica verificada</li>
+          <li class="sci-item">Estabilidad temporal evaluada por periodos mensuales</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ AI ASSISTANT ══════════════════╗ -->
+<section class="module" id="mod-ai">
+  <div class="module-header">
+    <h1 class="module-title">AI Assistant</h1>
+    <p class="module-desc">Consulta los resultados de tu sesión. Respuestas ancladas en los datos calculados, no en generalizaciones.</p>
+  </div>
+
+  <div class="ai-container">
+    <div class="ai-chat-window" id="ai-chat-window">
+      <div class="ai-msg ai-msg--system">
+        <div class="ai-avatar">WP</div>
+        <div class="ai-bubble">
+          Hola. Soy el asistente de WindPro. Mis respuestas se basan en los datos y resultados de tu sesión actual.
+          Puedes preguntarme sobre: calidad de datos, distribución Weibull, modelos y métricas, energía y factor de capacidad, validación científica, horizontes de pronóstico.
+        </div>
+      </div>
+    </div>
+
+    <div class="ai-chips" id="ai-chips">
+      <button class="chip" data-q="¿Cuál es el mejor modelo?">¿Mejor modelo?</button>
+      <button class="chip" data-q="¿Cómo están la calidad y los datos faltantes?">Calidad de datos</button>
+      <button class="chip" data-q="¿Cuál es el parámetro k de Weibull?">Distribución Weibull</button>
+      <button class="chip" data-q="¿Cuál es el factor de capacidad y el AEP?">Factor de capacidad</button>
+      <button class="chip" data-q="¿Cómo se valida científicamente el sistema?">Validación científica</button>
+      <button class="chip" data-q="¿Qué limitaciones tiene el sistema?">Limitaciones</button>
+    </div>
+
+    <div class="ai-input-row">
+      <input type="text" class="ai-input" id="ai-input" placeholder="Escribe una pregunta sobre tus datos y resultados...">
+      <button class="btn-primary" id="ai-send">Enviar</button>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ RESUMEN ══════════════════╗ -->
+<section class="module" id="mod-overview">
+  <div class="sh">
+    <div>
+      <div class="st">Resumen del Sitio</div>
+      <div class="ss">KPIs clave del recurso eólico · Carga datos y calcula estadísticas</div>
+    </div>
+    <div>
+      <button class="btn-primary" id="btn-calc-stats">Calcular Estadísticas</button>
+      <span class="badge badge--info" id="overview-status" style="margin-left:.5rem">Sin datos</span>
+    </div>
+  </div>
+
+  <!-- KPI row -->
+  <div class="krow" id="kpi-row">
+    <div class="kpi"><div class="kl">Velocidad media</div><div class="kv" id="kv-mean">—</div><div class="ks" id="ks-mean"></div></div>
+    <div class="kpi a2"><div class="kl">Velocidad máxima</div><div class="kv" id="kv-max">—</div><div class="ks" id="ks-max"></div></div>
+    <div class="kpi a3"><div class="kl">Weibull k / λ</div><div class="kv" id="kv-weibull">—</div><div class="ks">Forma · Escala</div></div>
+    <div class="kpi go"><div class="kl">Densidad de potencia</div><div class="kv" id="kv-pd">—</div><div class="ks">W/m²</div></div>
+    <div class="kpi"><div class="kl">Horas ≥ 15 m/s</div><div class="kv" id="kv-ext">—</div><div class="ks" id="ks-ext"></div></div>
+    <div class="kpi a2"><div class="kl">Temperatura media</div><div class="kv" id="kv-temp">—</div><div class="ks">°C</div></div>
+    <div class="kpi a3"><div class="kl">Presión media</div><div class="kv" id="kv-pres">—</div><div class="ks">hPa</div></div>
+    <div class="kpi go"><div class="kl">Registros</div><div class="kv" id="kv-nobs">—</div><div class="ks" id="ks-nobs"></div></div>
+  </div>
+
+  <!-- 2/3 + 1/3: daily TS + model comparison table -->
+  <div class="g21">
+    <div class="card">
+      <div class="ch"><span class="ct">Serie temporal · velocidad media diaria</span><span class="cbadge" id="badge-daily-ts">m/s</span></div>
+      <div class="cbox xl"><canvas id="chart-daily-ts"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Comparación de modelos ML</span><span class="cbadge g" id="badge-best-model">—</span></div>
+      <div class="cb">
+        <table class="tbl" id="overview-model-tbl">
+          <thead><tr><th>Modelo</th><th>RMSE</th><th>R²</th><th>Skill</th></tr></thead>
+          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1rem">Entrena modelos primero</td></tr></tbody>
+        </table>
+        <div style="margin-top:.9rem">
+          <div class="kl" style="margin-bottom:.4rem">RMSE por modelo (m/s)</div>
+          <div style="height:110px;position:relative"><canvas id="chart-model-bar-overview"></canvas></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3-col: climatology + Weibull + diurnal profile -->
+  <div class="grid-3">
+    <div class="card">
+      <div class="ch"><span class="ct">Climatología mensual · Media ± σ</span></div>
+      <div class="cbox"><canvas id="chart-mclim-overview"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Histograma + Weibull</span></div>
+      <div class="cbox"><canvas id="chart-hist-overview"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Perfil diurno · media horaria</span></div>
+      <div class="cbox"><canvas id="chart-hourly-overview"></canvas></div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ VIENTO ══════════════════╗ -->
+<section class="module" id="mod-wind">
+  <div class="sh">
+    <div>
+      <div class="st">Análisis de Viento</div>
+      <div class="ss">Rosa · Distribución · Perfil estacional · Weibull · Extremos</div>
+    </div>
+    <div>
+      <button class="btn-primary" id="btn-calc-wind">Calcular Análisis</button>
+      <span class="badge badge--info" id="wind-status" style="margin-left:.5rem">Sin datos</span>
+    </div>
+  </div>
+
+  <!-- Rosa + Diurnal -->
+  <div class="g2">
+    <div class="card">
+      <div class="ch"><span class="ct">Rosa de vientos · 16 sectores</span><span class="cbadge" id="rose-dom">—</span></div>
+      <div style="display:flex;justify-content:center;align-items:center;height:340px;padding:1rem">
+        <canvas id="chart-rose" style="max-width:310px;max-height:310px"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Perfil diurno · Media ± σ</span><span class="cbadge">Ciclo 24h</span></div>
+      <div class="cbox t"><canvas id="chart-diurnal"></canvas></div>
+    </div>
+  </div>
+
+  <!-- 3-col: Weibull+hist / colored hist / monthly WS -->
+  <div class="grid-3">
+    <div class="card">
+      <div class="ch"><span class="ct">Weibull ajustado + histograma</span></div>
+      <div class="cbox"><canvas id="chart-wb-hist"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Histograma de velocidades</span></div>
+      <div class="cbox"><canvas id="chart-hist-colored"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Velocidad media mensual</span></div>
+      <div class="cbox"><canvas id="chart-monthly-ws"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Climatología + Extremos -->
+  <div class="g2">
+    <div class="card">
+      <div class="ch"><span class="ct">Climatología mensual · Media ± σ</span></div>
+      <div class="cbox"><canvas id="chart-climatology"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Eventos extremos por mes (≥15 m/s)</span><span class="cbadge r" id="badge-extremes">—</span></div>
+      <div class="cbox"><canvas id="chart-extremes"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Month × Hour calendar heatmap (from WindPro_Dashboard) -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Calendario Mes × Hora — velocidad media</span>
+      <span class="badge badge--info" id="mh-legend">—</span>
+    </div>
+    <div class="card-body">
+      <div id="mh-heatmap-wrap" style="overflow-x:auto">
+        <div id="mh-heatmap" class="text-muted" style="font-size:.85rem">Ejecuta "Calcular Análisis" para ver el mapa de calor.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ RECURSO AVANZADO ══════════════════╗ -->
+<section class="module" id="mod-advanced">
+  <div class="module-header">
+    <h1 class="module-title">Recurso Avanzado</h1>
+    <p class="module-desc">Turbulencia IEC · Cizalladura vertical · Análisis sectorial · Períodos de retorno (Windographer-style)</p>
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <label class="form-label">Altura anemómetro (m)</label>
+      <input class="form-input" id="adv-ws-height" type="number" value="50" style="width:90px">
+    </div>
+    <button class="btn-primary" id="btn-run-advanced">Calcular análisis avanzado</button>
+  </div>
+
+  <!-- TI KPIs -->
+  <div class="kpi-row mt-2" id="adv-kpi-row" style="display:none">
+    <div class="kpi-card kpi--green">
+      <div class="kpi-label">TI Global</div>
+      <div class="kpi-value" id="adv-kpi-ti">—</div>
+      <div class="kpi-sub">σ/V̄ promedio</div>
+    </div>
+    <div class="kpi-card kpi--blue">
+      <div class="kpi-label">TI @ 15 m/s</div>
+      <div class="kpi-value" id="adv-kpi-ti15">—</div>
+      <div class="kpi-sub">Representativo IEC</div>
+    </div>
+    <div class="kpi-card kpi--orange">
+      <div class="kpi-label">Clase IEC</div>
+      <div class="kpi-value" id="adv-kpi-iec">—</div>
+      <div class="kpi-sub">61400-1 Ed.3</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Exponente α</div>
+      <div class="kpi-value" id="adv-kpi-alpha">—</div>
+      <div class="kpi-sub">Ley de Hellmann</div>
+    </div>
+    <div class="kpi-card kpi--purple">
+      <div class="kpi-label">V₅₀ (retorno 50a)</div>
+      <div class="kpi-value" id="adv-kpi-v50">—</div>
+      <div class="kpi-sub">Ve50 = 1.4 × V₅₀</div>
+    </div>
+  </div>
+
+  <!-- TI chart + Shear profile -->
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Intensidad de Turbulencia vs Velocidad</span>
+        <span class="cbadge" id="adv-badge-iec">IEC —</span>
+      </div>
+      <div class="cbox t"><canvas id="chart-ti"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Perfil vertical (cizalladura)</span>
+        <span class="cbadge b" id="adv-badge-alpha">α = —</span>
+      </div>
+      <div class="cbox t"><canvas id="chart-shear"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Sector table + Return periods -->
+  <div class="g21 mt-2">
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Análisis sectorial (16 sectores)</span>
+        <span class="cbadge b" id="adv-badge-dom">Dom: —</span>
+      </div>
+      <div class="cb" style="overflow-x:auto">
+        <table class="tbl" id="sector-tbl">
+          <thead><tr>
+            <th>Sector</th><th>Dirección</th><th>Frec. %</th>
+            <th>V̄ (m/s)</th><th>Densidad (W/m²)</th>
+            <th>Energía %</th><th>k Weibull</th><th>λ Weibull</th>
+          </tr></thead>
+          <tbody id="sector-tbl-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Períodos de retorno</span>
+        <span class="cbadge r" id="adv-badge-method">Gumbel</span>
+      </div>
+      <div class="cb">
+        <div class="cbox" style="height:180px"><canvas id="chart-return"></canvas></div>
+        <table class="tbl mt-2" id="return-tbl">
+          <thead><tr><th>T (años)</th><th>Gumbel (m/s)</th><th>GEV (m/s)</th></tr></thead>
+          <tbody id="return-tbl-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ MAPA & KRIGING ══════════════════╗ -->
+<section class="module" id="mod-kriging">
+  <div class="module-header">
+    <h1 class="module-title">Kriging — 3 mapas clásicos</h1>
+    <p class="module-desc">Réplica exacta del script <code>ajuste_aerogeneradores.py</code>: genera los 3 mapas Kriging de <b>Velocidad promedio</b>, <b>Inversión inicial</b> y <b>VAN</b> a partir de todos los sitios MERRA-2 / ERA5 y del catálogo de aerogeneradores.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Parámetros</span>
+      <span class="badge badge--info" id="krig3-status">En espera</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid-4">
+        <div><label class="form-label">Año</label>
+          <select class="form-select" id="krig3-year">
+            <option value="2018" selected>2018</option>
+            <option value="2019">2019</option>
+            <option value="2020">2020</option>
+            <option value="2021">2021</option>
+            <option value="2022">2022</option>
+          </select></div>
+        <div><label class="form-label">Demanda (MWh/año)</label>
+          <input class="form-input" type="number" id="krig3-demand" value="1000" step="100"></div>
+        <div><label class="form-label">Tasa (%)</label>
+          <input class="form-input" type="number" id="krig3-tasa" value="8" step="0.5"></div>
+        <div><label class="form-label">Precio (USD/kWh)</label>
+          <input class="form-input" type="number" id="krig3-price" value="0.20" step="0.01"></div>
+        <div><label class="form-label">USD→MXN</label>
+          <input class="form-input" type="number" id="krig3-fx" value="20" step="0.5"></div>
+        <div><label class="form-label">Modelo</label>
+          <select class="form-select" id="krig3-model">
+            <option value="exponential" selected>Exponencial</option>
+            <option value="gaussian">Gaussiano</option>
+          </select></div>
+        <div><label class="form-label">Grilla</label>
+          <select class="form-select" id="krig3-n">
+            <option value="60">60×60</option>
+            <option value="80" selected>80×80</option>
+            <option value="120">120×120</option>
+          </select></div>
+        <div><label class="form-label">Zoom tras Kriging (km)</label>
+          <input class="form-input" type="number" id="krig3-zoom-km" value="100" step="25" min="25"></div>
+      </div>
+      <div class="flex-end mt-2" style="gap:.4rem;align-items:center">
+        <span class="text-muted" id="krig3-selection-info" style="font-size:.78rem;margin-right:auto">
+          Selecciona sitios en el mapa (click para incluir/excluir, ★ marca el parque principal).
+        </span>
+        <button class="btn-secondary" id="btn-krig3-select-all" type="button">Seleccionar todos</button>
+        <button class="btn-secondary" id="btn-krig3-select-none" type="button">Limpiar</button>
+        <button class="btn-primary" id="btn-krig3-run">▶ Generar 3 mapas Kriging</button>
+      </div>
+      <div class="progress-bar mt-2" id="krig3-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
+        <div id="krig3-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
+      </div>
+      <p class="text-muted mt-1" id="krig3-progress-text" style="font-size:.75rem"></p>
+    </div>
+  </div>
+
+  <!-- Mapa único con selector de capa -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title" id="krig3-map-title">Mapa Kriging</span>
+      <span class="badge badge--info" id="krig3-legend">—</span>
+    </div>
+    <div class="card-body">
+      <div class="krig3-tabs" role="tablist" style="display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap">
+        <button class="btn-secondary krig3-tab is-active" data-layer="wind"      type="button">① Velocidad (m/s)</button>
+        <button class="btn-secondary krig3-tab"           data-layer="inversion" type="button">② Inversión (USD)</button>
+        <button class="btn-secondary krig3-tab"           data-layer="van"       type="button">③ VAN (USD)</button>
+      </div>
+      <div id="krig3-map" style="width:100%;height:560px;border-radius:8px;overflow:hidden"></div>
+    </div>
+  </div>
+
+  <!-- Curvas de potencia ajustadas (catálogo) -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Curvas de potencia — Real vs Ajustada</span>
+      <span class="badge badge--info" id="krig3-curve-counter">—</span>
+    </div>
+    <div class="card-body">
+      <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.6rem;flex-wrap:wrap">
+        <button class="btn-secondary" id="btn-curve-prev" type="button">◀</button>
+        <select class="form-select" id="krig3-curve-select" style="flex:1;min-width:240px">
+          <option value="">— Ejecuta el Kriging para poblar el catálogo —</option>
+        </select>
+        <button class="btn-secondary" id="btn-curve-next" type="button">▶</button>
+        <span class="text-muted" id="krig3-curve-meta" style="font-size:.78rem"></span>
+      </div>
+      <div style="height:340px"><canvas id="krig3-curve-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ ANÁLISIS MULTI-SITIO × TURBINA + RANKING MULTICRITERIO ═══════════ -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Selección óptima — Análisis multicriterio (TOPSIS)</span>
+      <span class="badge badge--info" id="mcda-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Ejecuta el análisis técnico-económico completo (todos los sitios × todas las turbinas del catálogo)
+        y ranquea las combinaciones con TOPSIS ponderado. Criterios técnicos:
+        Cp máx, horas cerca de v<sub>nominal</sub>, Factor de capacidad, AEP. Criterios económicos: VAN, ROI, LCOE (min), CAPEX (min).
+      </p>
+
+      <div class="grid-3">
+        <!-- Parámetros de análisis -->
+        <div class="col-span-1">
+          <h4 style="font-size:.85rem;margin-bottom:.5rem">Parámetros económicos</h4>
+          <div class="form-row"><label class="form-label">Año</label>
+            <select class="form-select" id="mcda-year">
+              <option value="2018" selected>2018</option>
+              <option value="2019">2019</option>
+              <option value="2020">2020</option>
+            </select></div>
+          <div class="form-row"><label class="form-label">Demanda (MWh/año)</label>
+            <input class="form-input" type="number" id="mcda-demand" value="1000" step="100"></div>
+          <div class="form-row"><label class="form-label">Tasa descuento (%)</label>
+            <input class="form-input" type="number" id="mcda-tasa" value="8" step="0.5"></div>
+          <div class="form-row"><label class="form-label">Precio energía (USD/kWh)</label>
+            <input class="form-input" type="number" id="mcda-price" value="0.20" step="0.01"></div>
+          <div class="form-row"><label class="form-label">USD→MXN</label>
+            <input class="form-input" type="number" id="mcda-fx" value="20" step="0.5"></div>
+          <div class="form-row"><label class="form-label">Modo ranking</label>
+            <select class="form-select" id="mcda-mode">
+              <option value="pairs" selected>Todas las combinaciones</option>
+              <option value="best_per_site">Mejor turbina por sitio</option>
+              <option value="best_per_turbine">Mejor sitio por turbina</option>
+            </select></div>
+          <div class="form-row"><label class="form-label">Límite sitios (test)</label>
+            <input class="form-input" type="number" id="mcda-maxfiles" value="8" min="3" step="1"
+              title="Para la primera corrida usa pocos sitios, luego sube."></div>
+          <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Ejecutar análisis</button>
+          <div class="progress-bar mt-2" id="mcda-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
+            <div id="mcda-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
+          </div>
+          <p class="text-muted mt-1" id="mcda-progress-text" style="font-size:.75rem"></p>
+        </div>
+
+        <!-- Pesos (sliders) -->
+        <div class="col-span-2">
+          <h4 style="font-size:.85rem;margin-bottom:.5rem">Pesos de criterios (TOPSIS) — se renormalizan a 1</h4>
+          <div id="mcda-weights" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem">
+            <!-- populated by JS -->
+          </div>
+          <div class="flex-end mt-2" style="gap:.4rem">
+            <button class="btn-secondary" id="btn-mcda-reset-w">↺ Valores por defecto</button>
+            <button class="btn-primary" id="btn-mcda-rerank">Re-ranquear con estos pesos</button>
+          </div>
+        </div>
+      </div>
+
+      <hr class="mt-3 mb-3" style="border:none;border-top:1px solid var(--border);">
+
+      <!-- Ranking table -->
+      <div style="max-height:420px;overflow:auto">
+        <table class="tbl" id="mcda-rank-tbl">
+          <thead><tr>
+            <th>#</th><th>Sitio</th><th>Turbina</th>
+            <th>Score</th><th>CF</th><th>AEP (MWh)</th>
+            <th>VAN (USD)</th><th>LCOE</th><th>ROI</th><th>CAPEX (USD)</th>
+          </tr></thead>
+          <tbody id="mcda-rank-body">
+            <tr><td colspan="10" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ PARQUE EÓLICO ══════════════════╗ -->
+<section class="module" id="mod-parque">
+  <div class="module-header">
+    <h1 class="module-title">Parque eólico — Layout & Estelas</h1>
+    <p class="module-desc">Simulación de un parque con interacción de estelas (Jensen NOJ + superposición Katic) sobre el sitio cargado en Data Hub. Calcula AEP por turbina, pérdida de estela, factor de capacidad y déficit axial.</p>
+  </div>
+
+  <!-- Parámetros del parque -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Parámetros del parque</span>
+      <span class="badge badge--info" id="parque-status">Sin simular</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid-4">
+        <div><label class="form-label">Filas</label>
+          <input class="form-input" type="number" id="parque-rows" value="2" min="1" max="10"></div>
+        <div><label class="form-label">Columnas</label>
+          <input class="form-input" type="number" id="parque-cols" value="4" min="1" max="12"></div>
+        <div><label class="form-label">Separación (m)</label>
+          <input class="form-input" type="number" id="parque-sep" value="400" step="50" min="100"></div>
+        <div><label class="form-label">k estela (NOJ)</label>
+          <input class="form-input" type="number" id="parque-kwake" value="0.05" step="0.01" min="0.01" max="0.20"></div>
+        <div><label class="form-label">Ct (thrust)</label>
+          <input class="form-input" type="number" id="parque-ct" value="0.8" step="0.05" min="0.1" max="1.0"></div>
+        <div><label class="form-label">Disponibilidad (0-1)</label>
+          <input class="form-input" type="number" id="parque-avail" value="0.97" step="0.01" min="0" max="1"></div>
+        <div><label class="form-label">Pérdidas eléctricas (0-1)</label>
+          <input class="form-input" type="number" id="parque-elec" value="0.03" step="0.01" min="0" max="1"></div>
+        <div><label class="form-label">Sectores dirección</label>
+          <select class="form-select" id="parque-sectors">
+            <option value="12">12</option>
+            <option value="16">16</option>
+            <option value="36" selected>36</option>
+          </select></div>
+        <div><label class="form-label">Turbina</label>
+          <select class="form-select" id="parque-turbine"></select></div>
+        <div><label class="form-label">Altura medición (m)</label>
+          <input class="form-input" type="number" id="parque-ws-h" value="50" step="5"></div>
+      </div>
+      <div class="flex-end mt-2" style="gap:.5rem;align-items:center">
+        <span class="text-muted" id="parque-info" style="font-size:.78rem;margin-right:auto">
+          Carga un sitio en Data Hub primero.
+        </span>
+        <button class="btn-secondary" id="btn-parque-reset" type="button">↺ Resetear layout</button>
+        <button class="btn-primary" id="btn-parque-run" type="button">▶ Simular parque</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPIs del parque -->
+  <div class="kpi-row mt-2" id="parque-kpis" style="display:none">
+    <div class="kpi-card kpi--green">
+      <div class="kpi-label">AEP parque (con estela)</div>
+      <div class="kpi-value" id="parque-kpi-aep">—</div>
+      <div class="kpi-sub">GWh/año</div>
+    </div>
+    <div class="kpi-card kpi--orange">
+      <div class="kpi-label">Pérdida por estela</div>
+      <div class="kpi-value" id="parque-kpi-wl">—</div>
+      <div class="kpi-sub">% vs. sin estela</div>
+    </div>
+    <div class="kpi-card kpi--blue">
+      <div class="kpi-label">CF parque</div>
+      <div class="kpi-value" id="parque-kpi-cf">—</div>
+      <div class="kpi-sub">%</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Potencia instalada</div>
+      <div class="kpi-value" id="parque-kpi-mw">—</div>
+      <div class="kpi-sub">MW</div>
+    </div>
+    <div class="kpi-card kpi--purple">
+      <div class="kpi-label">FLH</div>
+      <div class="kpi-value" id="parque-kpi-flh">—</div>
+      <div class="kpi-sub">h equivalentes</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Dirección dominante</div>
+      <div class="kpi-value" id="parque-kpi-dir">—</div>
+      <div class="kpi-sub">grados (met)</div>
+    </div>
+  </div>
+
+  <!-- Layout + AEP por turbina -->
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Layout del parque</span>
+        <span class="text-muted" id="parque-layout-meta" style="font-size:.72rem">—</span>
+      </div>
+      <div class="card-body">
+        <canvas id="parque-canvas" style="width:100%;height:340px"></canvas>
+        <div class="text-muted mt-1" style="font-size:.7rem">
+          Color = AEP relativa. Flecha verde = dirección dominante.
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">AEP por turbina (con estela)</span>
+      </div>
+      <div class="card-body">
+        <div style="height:340px"><canvas id="parque-aep-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabla turbinas + Wake deficit -->
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Resultados por turbina</span></div>
+      <div class="card-body" style="overflow-x:auto;max-height:340px;overflow-y:auto">
+        <table class="tbl" id="parque-tbl">
+          <thead><tr>
+            <th>#</th><th>X (m)</th><th>Y (m)</th>
+            <th>AEP (MWh)</th><th>AEP s/estela</th><th>Pérdida %</th><th>CF %</th>
+          </tr></thead>
+          <tbody id="parque-tbl-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Déficit NOJ axial (dirección dominante)</span>
+      </div>
+      <div class="card-body">
+        <div style="height:340px"><canvas id="parque-wake-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ MAPA & GRILLA DE RECURSO ══════════════════╗ -->
+<section class="module" id="mod-mapa">
+  <div class="module-header">
+    <h1 class="module-title">Mapa & Grilla de recurso</h1>
+    <p class="module-desc">Mapa interactivo Leaflet centrado en el sitio cargado. Interpola por Kriging las variables (velocidad, densidad de potencia, AEP, CF) usando los sitios MERRA-2/ERA5 reales en un radio configurable.</p>
+  </div>
+
+  <div class="grid-2 mt-1" style="grid-template-columns:340px 1fr;gap:.8rem">
+    <!-- Controles + leyenda -->
+    <div style="display:flex;flex-direction:column;gap:.6rem">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Controles del mapa</span>
+          <span class="badge badge--info" id="mapa-status">—</span>
+        </div>
+        <div class="card-body">
+          <label class="form-label">Capa base</label>
+          <select class="form-select" id="mapa-baselayer">
+            <option value="dark" selected>Carto Dark</option>
+            <option value="voyager">Carto Voyager</option>
+            <option value="osm">OpenStreetMap</option>
+            <option value="topo">OpenTopoMap</option>
+            <option value="sat">Satélite ESRI</option>
+          </select>
+          <label class="form-label mt-2">Variable en grilla</label>
+          <select class="form-select" id="mapa-var">
+            <option value="speed" selected>Velocidad media (m/s)</option>
+            <option value="power">Densidad de potencia (W/m²)</option>
+            <option value="aep">AEP estimado (MWh/año)</option>
+            <option value="cf">Factor de capacidad (%)</option>
+          </select>
+          <label class="form-label mt-2">Radio (km) alrededor del sitio</label>
+          <input class="form-input" type="number" id="mapa-radius" value="200" step="25" min="25">
+          <label class="form-label mt-2">Resolución de grilla</label>
+          <select class="form-select" id="mapa-n">
+            <option value="40">40×40 (rápido)</option>
+            <option value="60" selected>60×60</option>
+            <option value="80">80×80</option>
+            <option value="120">120×120 (lento)</option>
+          </select>
+          <label class="form-label mt-2">Modelo Kriging</label>
+          <select class="form-select" id="mapa-model">
+            <option value="exponential" selected>Exponencial</option>
+            <option value="gaussian">Gaussiano</option>
+          </select>
+          <div class="form-grid-2 mt-2">
+            <div><label class="form-label">P nom. (kW)</label>
+              <input class="form-input" type="number" id="mapa-pnom" value="2000" step="100"></div>
+            <div><label class="form-label">Rotor (m)</label>
+              <input class="form-input" type="number" id="mapa-rotor" value="80" step="5"></div>
+          </div>
+          <div class="flex-end mt-2" style="gap:.4rem">
+            <button class="btn-secondary" id="btn-mapa-export" type="button">↓ GeoJSON</button>
+            <button class="btn-primary" id="btn-mapa-build" type="button">▶ Generar grilla</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Leyenda & estadísticas</span></div>
+        <div class="card-body">
+          <div id="mapa-colorbar" style="height:14px;border-radius:3px;background:linear-gradient(90deg,rgb(49,54,149),rgb(116,173,209),rgb(254,224,144),rgb(244,109,67),rgb(215,48,39));"></div>
+          <div id="mapa-cbar-lbl" style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:.68rem;color:var(--text-secondary);margin-top:.25rem">
+            <span>—</span><span>—</span><span>—</span>
+          </div>
+          <div id="mapa-stats" class="text-muted mt-2" style="font-size:.72rem;line-height:1.7">
+            Esperando grilla.
+          </div>
+          <div id="mapa-pt" class="text-muted mt-2" style="font-size:.72rem;line-height:1.7;border-top:1px solid var(--border);padding-top:.4rem">
+            Click en el mapa para inspeccionar la celda más cercana.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mapa Leaflet -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title" id="mapa-title">Mapa de recurso</span>
+        <span class="badge badge--info" id="mapa-legend">—</span>
+      </div>
+      <div class="card-body">
+        <div id="mapa-leaflet" style="width:100%;height:620px;border-radius:8px;overflow:hidden"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ SISTEMA HÍBRIDO ══════════════════╗ -->
+<section class="module" id="mod-hybrid">
+  <div class="module-header">
+    <h1 class="module-title">Sistema Híbrido</h1>
+    <p class="module-desc">Wind + Solar PV + Batería + Diésel · Despacho horario · NPC · LCOE · CO₂ (HOMER Pro-style)</p>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <!-- Left: configuration -->
+    <div style="display:flex;flex-direction:column;gap:.75rem">
+
+      <!-- Load -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">⚡ Perfil de Carga</span></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Energía anual (kWh/año)</label>
+              <input class="form-input" id="hyb-load-kwh" type="number" value="1000000">
+            </div>
+            <div>
+              <label class="form-label">Pico máximo (kW)</label>
+              <input class="form-input" id="hyb-load-peak" type="number" value="228">
+            </div>
+            <div>
+              <label class="form-label">Tipo de perfil</label>
+              <select class="form-select" id="hyb-load-type">
+                <option value="residential">Residencial</option>
+                <option value="commercial">Comercial</option>
+                <option value="industrial">Industrial</option>
+                <option value="flat">Constante</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Latitud del sitio</label>
+              <input class="form-input" id="hyb-lat" type="number" value="20" step="0.1">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wind -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">💨 Viento</span></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Capacidad (kW)</label>
+              <input class="form-input" id="hyb-wind-kw" type="number" value="500">
+            </div>
+            <div>
+              <label class="form-label">Altura buje (m)</label>
+              <input class="form-input" id="hyb-wind-hub" type="number" value="80">
+            </div>
+            <div>
+              <label class="form-label">V arranque (m/s)</label>
+              <input class="form-input" id="hyb-wind-cutin" type="number" value="3">
+            </div>
+            <div>
+              <label class="form-label">V nominal (m/s)</label>
+              <input class="form-input" id="hyb-wind-rated" type="number" value="12">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Solar -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">☀️ Solar PV</span></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Capacidad (kWp)</label>
+              <input class="form-input" id="hyb-solar-kwp" type="number" value="200">
+            </div>
+            <div>
+              <label class="form-label">Performance Ratio</label>
+              <input class="form-input" id="hyb-solar-pr" type="number" value="0.80" step="0.01">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Battery -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">🔋 Batería</span></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Capacidad (kWh)</label>
+              <input class="form-input" id="hyb-batt-kwh" type="number" value="500">
+            </div>
+            <div>
+              <label class="form-label">C-rate</label>
+              <input class="form-input" id="hyb-batt-crate" type="number" value="0.5" step="0.1">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Diesel -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">⛽ Diésel (backup)</span></div>
+        <div class="card-body">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Capacidad (kW)</label>
+              <input class="form-input" id="hyb-diesel-kw" type="number" value="100">
+            </div>
+            <div>
+              <label class="form-label">Precio combustible (USD/L)</label>
+              <input class="form-input" id="hyb-diesel-price" type="number" value="0.90" step="0.05">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn-primary w-full" id="btn-run-hybrid">Simular sistema híbrido</button>
+    </div>
+
+    <!-- Right: results -->
+    <div style="display:flex;flex-direction:column;gap:.75rem">
+      <!-- KPI cards -->
+      <div class="kpi-row" id="hyb-kpi-row" style="display:none;grid-template-columns:repeat(3,1fr)">
+        <div class="kpi-card kpi--green">
+          <div class="kpi-label">Fracción Renovable</div>
+          <div class="kpi-value" id="hyb-kpi-rf">—</div>
+        </div>
+        <div class="kpi-card kpi--blue">
+          <div class="kpi-label">LCOE (USD/kWh)</div>
+          <div class="kpi-value" id="hyb-kpi-lcoe">—</div>
+        </div>
+        <div class="kpi-card kpi--orange">
+          <div class="kpi-label">NPC (USD)</div>
+          <div class="kpi-value" id="hyb-kpi-npc">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">CO₂ evitado (t/año)</div>
+          <div class="kpi-value" id="hyb-kpi-co2">—</div>
+        </div>
+        <div class="kpi-card kpi--purple">
+          <div class="kpi-label">LPSP (%)</div>
+          <div class="kpi-value" id="hyb-kpi-lpsp">—</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Combustible (L/año)</div>
+          <div class="kpi-value" id="hyb-kpi-fuel">—</div>
+        </div>
+      </div>
+
+      <!-- Dispatch chart -->
+      <div class="card">
+        <div class="ch">
+          <span class="ct">Despacho horario simulado</span>
+          <span class="cbadge" id="hyb-badge-pts">—</span>
+        </div>
+        <div class="cbox xl"><canvas id="chart-hybrid-dispatch"></canvas></div>
+      </div>
+
+      <!-- Energy breakdown + CAPEX table -->
+      <div class="g2">
+        <div class="card">
+          <div class="ch"><span class="ct">Balance energético</span></div>
+          <div class="cbox" style="height:200px"><canvas id="chart-hybrid-energy"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="ch"><span class="ct">Desglose CAPEX</span></div>
+          <div class="cb">
+            <table class="tbl" id="hyb-capex-tbl">
+              <thead><tr><th>Componente</th><th>USD</th><th>%</th></tr></thead>
+              <tbody id="hyb-capex-body"></tbody>
+            </table>
+            <div class="mt-2">
+              <div class="val-metric-list" id="hyb-econ-list"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ TECNO-ECONÓMICO ══════════════════╗ -->
+<section class="module" id="mod-techno">
+  <div class="module-header">
+    <h1 class="module-title">Análisis Tecno-Económico</h1>
+    <p class="module-desc">VAN · LCOE · VAE · Desglose CAPEX · Curva Cp. Metodología de doctorado.</p>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <!-- Config panel -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Parámetros del proyecto</span></div>
+      <div class="card-body">
+        <div class="form-grid-2">
+          <div>
+            <label class="form-label">Aerogenerador</label>
+            <select class="form-select" id="te-turbine">
+              <option value="SG_8.0_167">Siemens Gamesa SG 8.0-167 (8 MW)</option>
+              <option value="V150_4.5">Vestas V150-4.5 MW</option>
+              <option value="E126_7.58">Enercon E126 7.58 MW</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">N° de aerogeneradores</label>
+            <input type="number" class="form-input" id="te-nturbines" value="10" min="1">
+          </div>
+          <div>
+            <label class="form-label">Demanda anual (MWh)</label>
+            <input type="number" class="form-input" id="te-demand" value="0" min="0" placeholder="0 = manual">
+          </div>
+          <div>
+            <label class="form-label">Precio energía (USD/kWh)</label>
+            <input type="number" class="form-input" id="te-price" value="0.07" step="0.01">
+          </div>
+          <div>
+            <label class="form-label">Tasa de descuento (%)</label>
+            <input type="number" class="form-input" id="te-rate" value="8" step="0.5">
+          </div>
+          <div>
+            <label class="form-label">Vida del proyecto (años)</label>
+            <input type="number" class="form-input" id="te-years" value="20" min="5" max="40">
+          </div>
+          <div>
+            <label class="form-label">Costo por kW (USD/kW)</label>
+            <input type="number" class="form-input" id="te-costkw" value="2000">
+          </div>
+          <div>
+            <label class="form-label">Tipo de cambio (MXN/USD)</label>
+            <input type="number" class="form-input" id="te-fx" value="1" step="0.5" placeholder="1 = mantener USD">
+          </div>
+        </div>
+        <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular Análisis Tecno-Económico</button>
+      </div>
+    </div>
+
+    <!-- Financial KPIs -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Resultados financieros</span><span class="badge badge--info" id="te-viable-badge" style="display:none">—</span></div>
+      <div class="card-body" id="te-kpi-grid">
+        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Desglose CAPEX</span></div>
+      <div class="chart-box"><canvas id="chart-capex"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Flujo de caja acumulado (20 años)</span></div>
+      <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva Cp vs Velocidad del viento</span><span class="badge badge--info" id="badge-cp-max">—</span></div>
+      <div class="chart-box"><canvas id="chart-cp"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Tabla de flujos anuales</span></div>
+      <div class="card-body" style="overflow-x:auto;max-height:280px">
+        <table class="data-table" id="te-cashflow-table">
+          <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ EXPORTAR ══════════════════╗ -->
+<section class="module" id="mod-export">
+  <div class="module-header">
+    <h1 class="module-title">Centro de Exportación</h1>
+    <p class="module-desc">Descarga datos, predicciones, métricas y reporte técnico de la sesión activa.</p>
+  </div>
+
+  <!-- Status info -->
+  <div id="export-session-info" class="info-box amber" style="margin-bottom:1rem">
+    Carga un archivo de datos y ejecuta los módulos para habilitar las exportaciones.
+  </div>
+
+  <!-- Download cards -->
+  <div class="export-grid">
+    <div class="export-card">
+      <div class="export-icon">&#127788;</div>
+      <h4>Serie temporal de viento</h4>
+      <p>Datos méteorológicos completos: timestamp, velocidad, dirección, temperatura, presión.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('raw')">&#8595; wind_series.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#9889;</div>
+      <h4>Energía mensual estimada</h4>
+      <p>MWh por mes para el aerogenerador seleccionado con factor de capacidad mensual.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('energy')">&#8595; monthly_energy.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#129302;</div>
+      <h4>Métricas de modelos ML</h4>
+      <p>MAE, RMSE, R², sMAPE, nRMSE, skill vs persistencia por modelo y horizonte.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('metrics')">&#8595; model_metrics.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#128202;</div>
+      <h4>Backtest: observado vs predicho</h4>
+      <p>Serie de test set con observado, predicción GBM y persistencia.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('forecast')">&#8595; forecast_backtest.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#127973;</div>
+      <h4>Climatología mensual</h4>
+      <p>Media, desviación estándar y percentiles por mes (ene–dic).</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('climatology')">&#8595; climatology.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#128196;</div>
+      <h4>Análisis tecno-económico</h4>
+      <p>VAN, LCOE, VAE, CAPEX detallado y flujo de caja anual del proyecto.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('techno')">&#8595; techno_economic.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#128295;</div>
+      <h4>Rosa de vientos + estadísticas</h4>
+      <p>Frecuencia y velocidad media por sector (16), perfil diurno, climatología.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportData('wind_stats')">&#8595; wind_statistics.csv</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#128203;</div>
+      <h4>Reporte técnico completo</h4>
+      <p>Resumen ejecutivo, metodología, métricas, limitaciones y resultados. Formato TXT.</p>
+      <button class="btn-primary" style="width:100%" onclick="exportReport()">&#8595; report.txt</button>
+    </div>
+    <div class="export-card">
+      <div class="export-icon">&#128196;</div>
+      <h4>Exportar tablas visibles</h4>
+      <p>Guarda cualquier tabla del panel en formato texto plano, CSV o imagen PNG.</p>
+      <select class="form-select" id="export-table-select" style="width:100%;margin-bottom:.6rem">
+        <option value="quality-tbl">Calidad por variable</option>
+        <option value="comparison-table">Tabla comparativa de modelos</option>
+        <option value="fi-tbl">Importancia de variables</option>
+        <option value="overview-model-tbl">Comparación de modelos (Resumen)</option>
+        <option value="turbine-comp-table">Comparador de aerogeneradores</option>
+        <option value="sector-tbl">Análisis sectorial</option>
+        <option value="return-tbl">Períodos de retorno</option>
+        <option value="mcda-rank-tbl">Ranking multicriterio</option>
+        <option value="te-cashflow-table">Flujos anuales tecno-económicos</option>
+        <option value="hyb-capex-tbl">Desglose CAPEX híbrido</option>
+      </select>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem">
+        <button class="btn-secondary" id="btn-export-table-txt">TXT</button>
+        <button class="btn-secondary" id="btn-export-table-csv">CSV</button>
+        <button class="btn-secondary" id="btn-export-table-img">PNG</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-box green" style="margin-top:.5rem">
+    ✓ Todos los archivos incluyen metadatos de la sesión · Timestamps en UTC · Valores numéricos en formato internacional (punto decimal)
+  </div>
+</section>
+
+<!-- ╔══════════════════ DEMANDA 25 AÑOS ══════════════════╗ -->
+<section class="module" id="mod-demand">
+  <div class="module-header">
+    <h1 class="module-title">Arena de Pronóstico — Demanda Eléctrica</h1>
+    <p class="module-desc">Ajusta varios modelos de tendencia sobre la serie horaria de demanda y proyecta el crecimiento agregado a 25 años conservando el perfil horario observado.</p>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Configuración</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <label class="form-label">Serie de demanda</label>
+          <select class="form-select" id="dem-preset">
+            <option value="juchitan">Juchitán — Demanda nodal (MW)</option>
+            <option value="load">Carga del sistema (MW)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Tasa anual de crecimiento histórica supuesta (CAGR base)</label>
+          <input type="number" class="form-input" id="dem-growth" step="0.005" min="0" max="0.10" value="0.025">
+          <span class="text-muted" style="font-size:.7rem">Referencia: PRODESEN ~2.5–3.0 % anual.</span>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Horizonte de proyección (años)</label>
+          <input type="number" class="form-input" id="dem-horizon" min="5" max="40" value="25">
+        </div>
+        <div class="model-checklist mt-2">
+          <p class="text-muted mb-1">Modelos de tendencia <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
+          <div class="model-tags" id="dem-model-tags">
+            <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
+            <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
+            <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
+            <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
+            <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
+            <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
+            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+          </div>
+        </div>
+        <button class="btn-primary mt-3 w-full" id="btn-dem-train">Cargar y entrenar arena</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Estadísticos del año base</span></div>
+      <div class="card-body">
+        <div class="kpi-grid" id="dem-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="ch">
+      <span class="ct">Proyección anual a 25 años</span>
+      <span class="cbadge g" id="dem-best-badge">—</span>
+    </div>
+    <div class="cb" style="height:340px"><canvas id="dem-projection-chart"></canvas></div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Perfil diurno y mensual del año base</span></div>
+      <div class="card-body" style="height:260px"><canvas id="dem-profile-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva de duración de carga</span></div>
+      <div class="card-body" style="height:260px"><canvas id="dem-duration-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="dem-compare-tbl">
+        <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
+        <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena la arena.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ╔══════════════════ PML 25 AÑOS ══════════════════╗ -->
+<section class="module" id="mod-pml">
+  <div class="module-header">
+    <h1 class="module-title">Arena de Pronóstico — Precios PML</h1>
+    <p class="module-desc">Modela el incremento histórico del Precio Marginal Local (compra y venta) y proyecta su evolución anual hasta 25 años, escalando el patrón horario observado.</p>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Configuración</span></div>
+      <div class="card-body">
+        <div class="form-row">
+          <label class="form-label">Serie de PML</label>
+          <select class="form-select" id="pml-preset">
+            <option value="pml_ipo">PML horario — Ipomeas/Juchitán ($/kWh)</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Lado del mercado</label>
+          <select class="form-select" id="pml-side">
+            <option value="venta">Venta (inyección)</option>
+            <option value="compra">Compra (extracción)</option>
+            <option value="both">Ambos lados</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Tasa anual de incremento histórica (nominal)</label>
+          <input type="number" class="form-input" id="pml-growth" step="0.005" min="0" max="0.15" value="0.030">
+          <span class="text-muted" style="font-size:.7rem">Referencia: 3 – 5 % nominal según inflación e índice CRE.</span>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Horizonte de proyección (años)</label>
+          <input type="number" class="form-input" id="pml-horizon" min="5" max="40" value="25">
+        </div>
+        <div class="model-checklist mt-2">
+          <p class="text-muted mb-1">Modelos de tendencia</p>
+          <div class="model-tags" id="pml-model-tags">
+            <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
+            <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
+            <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
+            <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
+            <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
+            <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
+            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+          </div>
+        </div>
+        <button class="btn-primary mt-3 w-full" id="btn-pml-train">Cargar y entrenar arena</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">Resumen del año base</span></div>
+      <div class="card-body">
+        <div class="kpi-grid" id="pml-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="ch">
+      <span class="ct">Proyección anual del PML a 25 años</span>
+      <span class="cbadge g" id="pml-best-badge">—</span>
+    </div>
+    <div class="cb" style="height:340px"><canvas id="pml-projection-chart"></canvas></div>
+  </div>
+
+  <div class="grid-2 mt-3">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Perfil horario del PML (año base)</span></div>
+      <div class="card-body" style="height:260px"><canvas id="pml-diurnal-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva de duración del precio</span></div>
+      <div class="card-body" style="height:260px"><canvas id="pml-duration-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-3">
+    <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="pml-compare-tbl">
+        <thead><tr><th>Modelo</th><th>Lado</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Precio año final</th></tr></thead>
+        <tbody><tr><td colspan="7" class="ks" style="text-align:center;padding:1.5rem">Carga la serie de PML y entrena la arena.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ═════════════════════ INGENIERÍA DRAWER (anidado) ═════════════════════ -->
+<div class="ing-drawer" id="ing-drawer" aria-hidden="true">
+  <div class="ing-drawer-head">
+    <div class="ing-drawer-title">
+      <span class="ing-f">ƒ</span>
+      <div>
+        <div style="font-weight:700">Ingeniería &amp; Réplica</div>
+        <div class="ing-sub">OpenWAsP Blueprint — fundamentos matemáticos</div>
+      </div>
+    </div>
+    <div class="ing-drawer-actions">
+      <button class="btn-icon" id="ing-open-tab" title="Abrir en pestaña nueva">↗</button>
+      <button class="btn-icon" id="ing-close" title="Cerrar">✕</button>
+    </div>
+  </div>
+  <iframe id="ing-frame" src="about:blank" title="Ingeniería OpenWAsP"></iframe>
+</div>
+<div class="ing-backdrop" id="ing-backdrop"></div>
+
+<!-- Floating action button: open Ingeniería from anywhere -->
+<button class="ing-fab" id="ing-fab" title="Ingeniería &amp; Réplica (fórmulas)">
+  <span style="font-family:'Fraunces',serif;font-size:1.35rem;line-height:1">ƒ</span>
+</button>
+
+<!-- ─── STATUS BAR ──────────────────────────────────── -->
+<div class="statusbar" id="statusbar">
+  <span id="status-text">Listo</span>
+</div>
+
+<!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/js/windpro.js"></script>
+</body>
+</html>
