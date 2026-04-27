@@ -10,8 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 from scipy import stats
-from config import Config
-
+from config import Config   
 warnings.filterwarnings('ignore')
 
 # ─── AIR DENSITY ──────────────────────────────────────────────────────────────
@@ -19,13 +18,15 @@ warnings.filterwarnings('ignore')
 def air_density(temperature_c=15.0, pressure_pa=101325.0, humidity_pct=0.0):
     """
     Ideal gas law for moist air.  Returns rho in kg/m³.
+    Acepta escalares o arrays numpy (ej. series horarias de MERRA-2/ERA5).
     humidity_pct: relative humidity 0-100.
     """
-    T_K = temperature_c + 273.15
-    e_sat = 6.112 * np.exp(17.67 * temperature_c / (temperature_c + 243.5)) * 100  # Pa
-    e = humidity_pct / 100.0 * e_sat
-    rho = (pressure_pa - 0.378 * e) / (Config.GAS_CONSTANT_DRY_AIR * T_K)
-    return float(rho)
+    T_K = np.asarray(temperature_c, dtype=float) + 273.15
+    e_sat = 6.112 * np.exp(17.67 * np.asarray(temperature_c, dtype=float) /
+                           (np.asarray(temperature_c, dtype=float) + 243.5)) * 100  # Pa
+    e = np.asarray(humidity_pct, dtype=float) / 100.0 * e_sat
+    rho = (np.asarray(pressure_pa, dtype=float) - 0.378 * e) / (Config.GAS_CONSTANT_DRY_AIR * T_K)
+    return rho
 
 
 def density_from_altitude(altitude_m, temperature_c=15.0):
@@ -46,7 +47,23 @@ def extrapolate_wind_hellmann(v_ref, z_ref, z_target, alpha=None):
     if alpha is None:
         alpha = Config.HELLMANN_EXPONENT_OPEN
     return v_ref * (z_target / z_ref) ** alpha
-
+def hellmann_alpha_by_zone(zone: str = 'default') -> float:
+    """
+    Coeficiente de Hellmann calibrado por zona geográfica de Oaxaca.
+    Fuente: Hernández-Escobedo et al. (2014), datos MERRA-2 CIIDIR.
+      istmo        : terreno plano costero, alta velocidad  α ≈ 0.11
+      costa        : franja costera con vegetación baja     α ≈ 0.14
+      valles       : valles centrales, terreno mixto        α ≈ 0.20
+      sierra_norte : terreno montañoso, alta rugosidad      α ≈ 0.25
+    """
+    _ALPHAS = {
+        'istmo':        0.11,
+        'costa':        0.14,
+        'valles':       0.20,
+        'sierra_norte': 0.25,
+        'default':      0.143,
+    }
+    return _ALPHAS.get(zone.lower(), _ALPHAS['default'])
 
 def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.001):
     """
