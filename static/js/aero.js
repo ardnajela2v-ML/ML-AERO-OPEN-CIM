@@ -1774,8 +1774,7 @@ function renderWbHist(hist) {
   const ctx = document.getElementById('chart-wb-hist')?.getContext('2d');
   if (!ctx) return;
   const bw  = (hist.centers?.[1]-hist.centers?.[0]) || 1;
-  const tot = (hist.counts||[]).reduce((a,b)=>a+b,0);
-  const dens = tot>0 ? hist.counts.map(c=>c/(tot*bw)) : hist.counts;
+  const dens = hist.frequency || [];
   const wb   = hist.weibull;
   const wbLine = wb ? (hist.centers||[]).map(v => {
     if (v<=0) return 0;
@@ -1808,7 +1807,7 @@ function renderHistColored(hist) {
     type:'bar',
     data:{
       labels:(hist.centers||[]).map(v=>v.toFixed(1)),
-      datasets:[{ label:'Horas', data:hist.counts,
+      datasets:[{ label:'Frecuencia', data:hist.frequency,
         backgroundColor:(hist.centers||[]).map(v=>v>=15?a2+'cc':v>=7?a+'cc':m+'66'),
         borderRadius:2 }]
     },
@@ -3431,7 +3430,7 @@ async function renderMonthHourHeatmap() {
   if (!container) return;
   try {
     const r = await api('/api/wind_stats/month_hour_heatmap', 'POST', {
-      session_id: (window.WP && WP.sid) || 'default',
+      session_id: (window.WP && WP.sessionId) || 'default',
       col: 'wind_speed',
     });
     const { matrix, months, hours, vmin, vmax, overall_mean } = r;
