@@ -5,6 +5,7 @@ Supports: CSV/TXT (auto-detect), MERRA-2 tabular exports, ERA5 tabular exports.
 import io
 import re
 import json
+import logging
 import warnings
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from config import Config
 
 warnings.filterwarnings('ignore')
+log = logging.getLogger(__name__)
 
 # ─── UTILITY ──────────────────────────────────────────────────────────────────
 
@@ -68,8 +70,13 @@ def air_density_from_df(df, temp_col='temperature', pressure_col='pressure',
 
 
 def _detect_separator(sample_text):
-    """Detect CSV separator from first few lines."""
-    for sep in [',', ';', '\t', '|', ' ']:
+    """Detect CSV separator from first few lines.
+
+    El espacio se excluye intencionalmente: cualquier CSV con strings que
+    contengan espacios entre palabras se interpretaría erróneamente como
+    space-separated.
+    """
+    for sep in ['\t', ',', ';', '|']:
         count = sample_text.count(sep)
         if count > 3:
             return sep
@@ -377,7 +384,14 @@ class DataLoader:
         if 'pressure' in df.columns:
             df['pressure'] = _normalise_pressure_to_pa(df['pressure'])
 
-        meta = {'format': 'conagua', 'sep': sep}
+        # CONAGUA usa hora local México; DST cambia entre UTC-6 y UTC-5
+        warnings.warn(
+            "CONAGUA usa hora local México (UTC-6/UTC-5 DST). "
+            "Verificar alineación con otras fuentes (Windnavigator/MERRA-2/ERA5 son UTC).",
+            stacklevel=2,
+        )
+
+        meta = {'format': 'conagua', 'sep': sep, 'tz_note': 'local_mexico'}
         return df, meta
 
     # ─── standardisation ──────────────────────────────────────────────────────
@@ -398,10 +412,18 @@ class DataLoader:
                 dt_col = c
                 break
         if dt_col is None:
-            # try first column
+            # try first column only if it looks like a real datetime string
             try:
-                pd.to_datetime(df.iloc[:, 0])
-                dt_col = df.columns[0]
+                first_val = str(df.iloc[0, 0]).strip()
+                # Reject purely numeric values (wind speed, pressure, etc.)
+                try:
+                    float(first_val)
+                    is_numeric = True
+                except ValueError:
+                    is_numeric = False
+                if not is_numeric and len(first_val) >= 8:
+                    pd.to_datetime(df.iloc[:, 0])
+                    dt_col = df.columns[0]
             except Exception:
                 pass
         if dt_col is not None:
@@ -412,7 +434,10 @@ class DataLoader:
         # Deduplicación de timestamps + orden cronológico estricto
         if isinstance(df.index, pd.DatetimeIndex):
             df = df[~df.index.duplicated(keep='first')]
-        df = df.sort_index()
+            if not df.index.is_monotonic_increasing:
+                df = df.sort_index()
+        else:
+            df = df.sort_index()
 
         # ── map columns to standard names ──
         col_lower = {c.lower().replace(' ', '_'): c for c in df.columns}
@@ -433,10 +458,19 @@ class DataLoader:
         # ── detect time resolution ──
         if len(df) > 2 and isinstance(df.index, pd.DatetimeIndex):
             diffs = df.index.to_series().diff().dropna()
-            most_common = diffs.mode()[0]
-            meta['time_resolution_min'] = int(most_common.total_seconds() / 60)
+            freqs = diffs.value_counts()
+            if len(freqs) > 1:
+                # Cadencia bimodal: usar la moda menor (resolución más fina) y avisar
+                log.warning(
+                    "Cadencia bimodal detectada: %s. Usando la menor.",
+                    freqs.index.tolist()[:5],
+                )
+            chosen = freqs.index.min()
+            meta['time_resolution_min'] = int(chosen.total_seconds() / 60)
+            meta['dt_h'] = chosen.total_seconds() / 3600
         else:
             meta['time_resolution_min'] = None
+            meta['dt_h'] = 1.0
 
         meta['n_rows'] = len(df)
         meta['columns'] = list(df.columns)
@@ -453,7 +487,7 @@ class DataQualityChecker:
     Returns a structured report dict + a flags DataFrame.
     """
 
-    def run(self, df, target_col='wind_speed'):
+    def run(self, df, target_col='wind_speed', meta=None):
         report = {}
         flags = pd.DataFrame(index=df.index)
         flags['flag_missing'] = False
@@ -465,6 +499,18 @@ class DataQualityChecker:
             return {'error': f"Column '{target_col}' not found."}, flags
 
         s = df[target_col].copy()
+
+        # ── validación wind_dir ∈ [0, 360] ──
+        if 'wind_dir' in df.columns:
+            wd = pd.to_numeric(df['wind_dir'], errors='coerce')
+            invalid_dir = ~wd.between(0, 360) & wd.notna()
+            if invalid_dir.any():
+                report['qc_wind_dir_range'] = {
+                    'status': 'FAIL',
+                    'n_invalid': int(invalid_dir.sum()),
+                }
+            else:
+                report['qc_wind_dir_range'] = 'PASS'
 
         # ── missing values ──
         n_missing = s.isna().sum()
@@ -515,11 +561,16 @@ class DataQualityChecker:
         report['n_spikes'] = int(len(spike_idx))
         report['qc_spikes'] = 'WARN' if report['n_spikes'] > 10 else 'PASS'
 
-        # ── frozen / stuck sensor ──
-        window = 5
-        frozen = (s.rolling(window).std() < 0.001) & s.notna()
+        # ── frozen / stuck sensor (window escalado a la cadencia detectada) ──
+        # Equivalente a 5h: con 1h→5 muestras, con 10-min→30 muestras
+        dt_h = (meta or {}).get('dt_h', 1.0)
+        window_scaled = max(3, int(round(5.0 / max(dt_h, 1e-3))))
+        rolling_std = s.rolling(window_scaled).std()
+        # Excluye períodos de viento real = 0 (turbina parada en calma legítima)
+        frozen = (rolling_std < 0.001) & s.notna() & (s.abs() > 1e-6)
         flags['flag_frozen'] = frozen.fillna(False)
         report['n_frozen_periods'] = int(frozen.sum())
+        report['frozen_window'] = window_scaled
         report['qc_frozen'] = 'WARN' if report['n_frozen_periods'] > 20 else 'PASS'
 
         # ── basic statistics ──
@@ -611,7 +662,7 @@ class FeatureEngineer:
 
         # ── temporal features ──
         base['hour']       = base.index.hour
-        base['day_of_week']= base.index.dayofweek
+        # day_of_week eliminado: no hay efecto antrópico en flujo eólico
         base['month']      = base.index.month
         base['day_of_year']= base.index.dayofyear
         base['is_night']   = ((base.index.hour >= 20) | (base.index.hour < 6)).astype(int)
@@ -669,7 +720,13 @@ class FeatureEngineer:
             # Lags ws(t-1)...ws(t-k) disponibles en t; no son leaky bajo esta convención
             # (target = ws(t+h), features = info hasta t).
             df_h.drop(columns=[target_col], inplace=True, errors='ignore')
+            n_before = len(df_h)
             df_h.dropna(inplace=True)
+            n_dropped = n_before - len(df_h)
+            if n_dropped > 0:
+                pct = (n_dropped / n_before) if n_before > 0 else 0.0
+                log.info("Horizonte h=%d: %d filas eliminadas por NaN (%.1f%%)",
+                         h, n_dropped, pct * 100)
 
             feature_cols = [c for c in df_h.columns if c != 'target']
             X = df_h[feature_cols].values.astype(np.float32)
@@ -685,6 +742,12 @@ class FeatureEngineer:
         # Embargo evita leakage por autocorrelación entre train y test
         max_lag = max(getattr(Config, 'DEFAULT_LAG_HOURS', [168]))
         embargo_end = min(split + max_lag, n)
+        n_test = len(X[embargo_end:])
+        if n_test < 500:
+            warnings.warn(
+                f"Test set pequeño ({n_test} muestras). Estadística poco fiable.",
+                stacklevel=2,
+            )
         return (X[:split], X[embargo_end:],
                 y[:split], y[embargo_end:],
                 idx[:split], idx[embargo_end:])
