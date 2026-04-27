@@ -1,5 +1,5 @@
 """
-WindPro Platform — Data loading, feature engineering, and quality control.
+AERO by OPEN CIM — Data loading, feature engineering, and quality control.
 Supports: CSV/TXT (auto-detect), MERRA-2 tabular exports, ERA5 tabular exports.
 """
 import io
@@ -9,7 +9,7 @@ import warnings
 import numpy as np
 import pandas as pd
 from scipy import stats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from config import Config
 
 warnings.filterwarnings('ignore')
@@ -29,9 +29,42 @@ def _parse_datetime_flexible(series):
         except Exception:
             pass
     try:
-        return pd.to_datetime(series, infer_datetime_format=True)
+        return pd.to_datetime(series)
     except Exception:
         raise ValueError(f"Cannot parse datetime column. Sample: {series.iloc[0]}")
+
+
+def _normalise_pressure_to_pa(series):
+    """Convertir presión a Pa según rango. air_density() en energy.py espera Pa.
+
+    Reglas:
+      - mediana < 200   → kPa  (×1000)
+      - mediana < 2000  → hPa  (×100)
+      - mediana > 80000 → ya está en Pa
+    """
+    s = pd.to_numeric(series, errors='coerce')
+    med = float(np.nanmedian(s.values))
+    if np.isnan(med):
+        return s
+    if med < 200:
+        return s * 1000.0   # kPa → Pa
+    if med < 2000:
+        return s * 100.0    # hPa → Pa
+    return s                # ya en Pa
+
+
+def air_density_from_df(df, temp_col='temperature', pressure_col='pressure',
+                        humidity_col='humidity'):
+    """Calcula densidad del aire (kg/m³) a partir de columnas T (°C) y P (Pa).
+
+    pressure DEBE estar en Pa (los loaders normalizan automáticamente).
+    Si no hay columna de humedad se asume 0% RH.
+    """
+    from core.energy import air_density
+    if temp_col not in df.columns or pressure_col not in df.columns:
+        raise KeyError(f"Faltan columnas '{temp_col}' o '{pressure_col}' para air_density")
+    h = df[humidity_col].values if humidity_col in df.columns else 0.0
+    return air_density(df[temp_col].values, df[pressure_col].values, h)
 
 
 def _detect_separator(sample_text):
@@ -96,7 +129,7 @@ class DataLoader:
         df, meta = self._standardise(df, meta)
         meta['source'] = source_hint
         meta['filename'] = filename
-        meta['loaded_at'] = datetime.utcnow().isoformat()
+        meta['loaded_at'] = datetime.now(timezone.utc).isoformat()
         return df, meta
 
     # ─── source detection ─────────────────────────────────────────────────────
@@ -205,12 +238,21 @@ class DataLoader:
                 df.rename(columns={c: 'temperature'}, inplace=True)
                 break
 
-        # rename pressure (Windnavigator stores kPa → convert to hPa)
+        # rename pressure (Windnavigator stores kPa)
         for c in df.columns:
             if 'pressure' in c.lower() or c.lower().startswith('pressure'):
                 df.rename(columns={c: 'pressure_kpa'}, inplace=True)
-                df['pressure'] = df['pressure_kpa'] * 10.0  # kPa → hPa
+                # air_density() en energy.py espera Pa
+                df['pressure'] = _normalise_pressure_to_pa(df['pressure_kpa'])
                 break
+
+        # parsea datetime y localiza UTC en el index
+        # Windnavigator/MERRA-2/ERA5 reportan en UTC
+        if 'datetime' in df.columns:
+            df['datetime'] = _parse_datetime_flexible(df['datetime'].astype(str))
+            df = df.set_index('datetime').sort_index()
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC')
 
         return df, meta
 
@@ -253,6 +295,20 @@ class DataLoader:
                 df['wind_dir'] = (270 - np.degrees(np.arctan2(df[v_col], df[u_col]))) % 360
                 meta['wind_height_m'] = int(u_col[1:-1]) if u_col[1:-1].isdigit() else 50
                 break
+
+        # Normaliza presión a Pa — air_density() en energy.py espera Pa
+        for pc in ('pressure', 'PS', 'ps', 'slp', 'psl', 'mslp'):
+            if pc in df.columns:
+                df['pressure'] = _normalise_pressure_to_pa(df[pc])
+                break
+
+        # Windnavigator/MERRA-2/ERA5 reportan en UTC
+        if 'datetime' in df.columns:
+            df['datetime'] = _parse_datetime_flexible(df['datetime'].astype(str))
+            df = df.set_index('datetime').sort_index()
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC')
+
         return df, meta
 
     def _load_era5(self, raw_bytes, sample):
@@ -268,6 +324,20 @@ class DataLoader:
                 df['wind_dir'] = (270 - np.degrees(np.arctan2(df[v_col], df[u_col]))) % 360
                 meta['wind_height_m'] = h
                 break
+
+        # Normaliza presión a Pa — air_density() en energy.py espera Pa
+        for pc in ('pressure', 'sp', 'msl', 'mslp'):
+            if pc in df.columns:
+                df['pressure'] = _normalise_pressure_to_pa(df[pc])
+                break
+
+        # Windnavigator/MERRA-2/ERA5 reportan en UTC
+        if 'datetime' in df.columns:
+            df['datetime'] = _parse_datetime_flexible(df['datetime'].astype(str))
+            df = df.set_index('datetime').sort_index()
+            if df.index.tz is None:
+                df.index = df.index.tz_localize('UTC')
+
         return df, meta
 
     def _load_conagua(self, raw_bytes, sample):
@@ -278,7 +348,7 @@ class DataLoader:
         df.columns = [str(c).strip().lower() for c in df.columns]
 
         rename_map = {
-            'fecha': 'datetime', 'hora': 'hour_str',
+            'fecha': 'fecha', 'hora': 'hour_str',
             'velocidad_viento': 'wind_speed', 'velocidad viento': 'wind_speed',
             'vel_viento': 'wind_speed', 'vel.viento': 'wind_speed',
             'dir_viento': 'wind_dir', 'direccion_viento': 'wind_dir',
@@ -286,6 +356,27 @@ class DataLoader:
             'humedad_relativa': 'humidity',
         }
         df.rename(columns=rename_map, inplace=True)
+
+        # Combina fecha + hora antes de parsear datetime (antes la hora se perdía)
+        if 'fecha' in df.columns and 'hour_str' in df.columns:
+            df['datetime'] = pd.to_datetime(
+                df['fecha'].astype(str) + ' ' + df['hour_str'].astype(str),
+                errors='coerce'
+            )
+            df.drop(columns=['fecha', 'hour_str'], inplace=True, errors='ignore')
+        elif 'fecha' in df.columns:
+            df.rename(columns={'fecha': 'datetime'}, inplace=True)
+
+        # CONAGUA reporta en km/h; convertir a m/s si la mediana sugiere km/h
+        if 'wind_speed' in df.columns:
+            ws_med = float(np.nanmedian(pd.to_numeric(df['wind_speed'], errors='coerce').values))
+            if not np.isnan(ws_med) and ws_med > 30:
+                df['wind_speed'] = pd.to_numeric(df['wind_speed'], errors='coerce') / 3.6
+
+        # air_density() en energy.py espera Pa
+        if 'pressure' in df.columns:
+            df['pressure'] = _normalise_pressure_to_pa(df['pressure'])
+
         meta = {'format': 'conagua', 'sep': sep}
         return df, meta
 
@@ -318,6 +409,9 @@ class DataLoader:
             df = df.set_index(dt_col)
             df.index.name = 'datetime'
 
+        # Deduplicación de timestamps + orden cronológico estricto
+        if isinstance(df.index, pd.DatetimeIndex):
+            df = df[~df.index.duplicated(keep='first')]
         df = df.sort_index()
 
         # ── map columns to standard names ──
@@ -404,10 +498,19 @@ class DataQualityChecker:
         report['n_out_physical'] = int(out_physical.sum())
         report['qc_physical'] = 'FAIL' if report['n_out_physical'] > 0 else 'PASS'
 
-        # ── spike detection (z-score on differences) ──
+        # ── spike detection (MAD robusto sobre diferencias) ──
         diff = s.diff().dropna()
-        z = np.abs(stats.zscore(diff.dropna()))
-        spike_idx = diff.dropna().index[z > Config.QC_MAX_SPIKE_SIGMA]
+        diff_vals = diff.values.astype(float)
+        if len(diff_vals) == 0 or np.nanstd(diff_vals) < 1e-10:
+            spike_idx = pd.DatetimeIndex([])
+        else:
+            median = np.nanmedian(diff_vals)
+            mad = np.nanmedian(np.abs(diff_vals - median))
+            if mad < 1e-10:
+                mad = 1e-10
+            # 1.4826·MAD ≈ σ bajo normalidad; robusto a outliers (no contaminado por ellos)
+            z_robust = np.abs(diff_vals - median) / (1.4826 * mad)
+            spike_idx = diff.index[z_robust > Config.QC_MAX_SPIKE_SIGMA]
         flags.loc[spike_idx, 'flag_spike'] = True
         report['n_spikes'] = int(len(spike_idx))
         report['qc_spikes'] = 'WARN' if report['n_spikes'] > 10 else 'PASS'
@@ -485,8 +588,24 @@ class FeatureEngineer:
         # infer hourly resolution (resample if sub-hourly)
         resolution_min = (df.index.to_series().diff().mode()[0].total_seconds() / 60)
         if resolution_min < 55:
+            wd_circular = None
+            if 'wind_dir' in df.columns:
+                # Media circular: la lineal de 350° y 10° da 180°, físicamente errónea
+                wd_rad = np.deg2rad(df['wind_dir'])
+                sin_mean = np.sin(wd_rad).resample('1h').mean()
+                cos_mean = np.cos(wd_rad).resample('1h').mean()
+                wd_circular = (np.rad2deg(np.arctan2(sin_mean, cos_mean)) % 360)
             df = df.resample('1h').mean()
+            if wd_circular is not None:
+                df['wind_dir'] = wd_circular
             resolution_min = 60
+
+        # Densidad del aire derivada si hay T y P
+        if 'temperature' in df.columns and 'pressure' in df.columns:
+            try:
+                df['air_density'] = air_density_from_df(df)
+            except Exception:
+                pass
 
         base = df[[target_col]].copy()
 
@@ -500,6 +619,10 @@ class FeatureEngineer:
         base['hour_cos']   = np.cos(2 * np.pi * base.index.hour / 24)
         base['month_sin']  = np.sin(2 * np.pi * (base.index.month - 1) / 12)
         base['month_cos']  = np.cos(2 * np.pi * (base.index.month - 1) / 12)
+        # Día del año cíclico — captura estacionalidad anual sin discontinuidad 31-dic/1-ene
+        doy = base.index.dayofyear.values.astype(float)
+        base['doy_sin'] = np.sin(2 * np.pi * doy / 365.0)
+        base['doy_cos'] = np.cos(2 * np.pi * doy / 365.0)
 
         # ── wind direction features ──
         if 'wind_dir' in df.columns:
@@ -508,9 +631,17 @@ class FeatureEngineer:
             base['wd_cos'] = np.cos(wd_rad)
 
         # ── additional meteorological features ──
-        for col in ['temperature', 'pressure', 'humidity']:
+        for col in ['temperature', 'pressure', 'humidity', 'air_density']:
             if col in df.columns:
                 base[col] = df[col]
+
+        # ── climatología por hora del día (baseline poderoso de wind forecasting) ──
+        base['ws_clim_hour'] = base.groupby(base.index.hour)[target_col].transform('mean')
+
+        # ── rolling de variables auxiliares (T, P) ──
+        for col in ('temperature', 'pressure'):
+            if col in df.columns:
+                base[f'{col}_roll24'] = df[col].shift(1).rolling(24).mean()
 
         # ── lag features (no leakage: lag_h >= horizon_h) ──
         # we create all lags >= 1 here; filter per-horizon when building X,y
@@ -535,9 +666,8 @@ class FeatureEngineer:
             df_h = base.copy()
             # target: wind speed h hours ahead
             df_h['target'] = df_h[target_col].shift(-h)
-            # drop lag features that would be future-leaking (lag < h)
-            leaky_lags = [lag_features[lag] for lag in lags if lag < h]
-            df_h.drop(columns=leaky_lags, inplace=True, errors='ignore')
+            # Lags ws(t-1)...ws(t-k) disponibles en t; no son leaky bajo esta convención
+            # (target = ws(t+h), features = info hasta t).
             df_h.drop(columns=[target_col], inplace=True, errors='ignore')
             df_h.dropna(inplace=True)
 
@@ -549,12 +679,15 @@ class FeatureEngineer:
         return result
 
     def train_test_split_temporal(self, X, y, idx, test_frac=0.2):
-        """Strict chronological split — no shuffling."""
+        """Strict chronological split with embargo — no shuffling."""
         n = len(X)
         split = int(n * (1 - test_frac))
-        return (X[:split], X[split:],
-                y[:split], y[split:],
-                idx[:split], idx[split:])
+        # Embargo evita leakage por autocorrelación entre train y test
+        max_lag = max(getattr(Config, 'DEFAULT_LAG_HOURS', [168]))
+        embargo_end = min(split + max_lag, n)
+        return (X[:split], X[embargo_end:],
+                y[:split], y[embargo_end:],
+                idx[:split], idx[embargo_end:])
 
 
 # ─── SERIALISATION HELPERS ────────────────────────────────────────────────────
@@ -569,7 +702,11 @@ def df_to_json_safe(df, max_rows=5000):
     return df.where(pd.notnull(df), None).to_dict(orient='records')
 
 
-def series_to_chart(index, values, label='', color='#00D4FF', max_pts=2000):
+# Alias público con nombre orientado a dominio
+WindDataLoader = DataLoader
+
+
+def series_to_chart(index, values, label='', color='#4DA3FF', max_pts=2000):
     """Build Chart.js compatible dataset from pandas Series."""
     idx = list(index)
     vals = list(values)
