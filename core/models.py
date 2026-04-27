@@ -1,5 +1,5 @@
 """
-WindPro Platform — ML/baseline model training and prediction.
+AERO by OPEN CIM — ML/baseline model training and prediction.
 Enforces strict chronological train/test split.  No data leakage.
 """
 import warnings
@@ -34,8 +34,47 @@ try:
 except Exception:
     HAS_STATSMODELS = False
 
-from core.validate import compute_all_metrics, skill_score
+from core.validate import compute_all_metrics, skill_score, rmse as _rmse
 warnings.filterwarnings('ignore')
+
+
+# ─── GPU DETECTION ────────────────────────────────────────────────────────────
+
+def _detect_gpu():
+    """Return True if a CUDA-capable GPU is available and usable by XGBoost/LightGBM."""
+    try:
+        import xgboost as xgb
+        # XGBoost >= 1.5 exposes a simple GPU check
+        if hasattr(xgb, 'build_info'):
+            info = xgb.build_info()
+            if info.get('USE_CUDA', False):
+                return True
+    except Exception:
+        pass
+    try:
+        import lightgbm as lgb
+        # LightGBM can be compiled with GPU support; we check by trying to create a GPU dataset
+        if hasattr(lgb, 'Dataset'):
+            try:
+                dummy = lgb.Dataset(np.zeros((2, 2)), label=np.zeros(2))
+                # If the library was built with GPU support, the parameter 'device' is accepted
+                dummy.construct()
+                # LightGBM doesn't expose a simple flag, so we assume GPU if the import succeeded
+                # and the system has a CUDA device visible to Python.
+                import subprocess
+                try:
+                    out = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL)
+                    if out.strip():
+                        return True
+                except Exception:
+                    pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+HAS_GPU = _detect_gpu()
 
 
 # ─── BASELINES ────────────────────────────────────────────────────────────────
@@ -132,17 +171,28 @@ def _build_models():
         n_jobs=-1, random_state=42)
 
     if HAS_XGB:
-        models['xgboost'] = XGBRegressor(
+        xgb_kwargs = dict(
             n_estimators=300, learning_rate=0.05, max_depth=6,
             subsample=0.8, colsample_bytree=0.8,
             reg_lambda=1.0, reg_alpha=0.1,
-            random_state=42, verbosity=0, n_jobs=-1)
+            random_state=42, verbosity=0, n_jobs=-1,
+        )
+        if HAS_GPU:
+            xgb_kwargs['tree_method'] = 'gpu_hist'
+            xgb_kwargs['gpu_id'] = 0
+        models['xgboost'] = XGBRegressor(**xgb_kwargs)
 
     if HAS_LGB:
-        models['lightgbm'] = LGBMRegressor(
+        lgb_kwargs = dict(
             n_estimators=300, learning_rate=0.05, num_leaves=63,
             subsample=0.8, colsample_bytree=0.8,
-            reg_lambda=1.0, verbose=-1, random_state=42, n_jobs=-1)
+            reg_lambda=1.0, verbose=-1, random_state=42, n_jobs=-1,
+        )
+        if HAS_GPU:
+            lgb_kwargs['device'] = 'gpu'
+            lgb_kwargs['gpu_platform_id'] = 0
+            lgb_kwargs['gpu_device_id'] = 0
+        models['lightgbm'] = LGBMRegressor(**lgb_kwargs)
 
     models['ridge'] = Ridge(alpha=10.0)
 
@@ -162,6 +212,62 @@ def _build_models():
     models['svr']._svr_subsample = True
 
     return models
+
+
+# ─── BLACKWELL-OPTIMIZED MODEL SECTION ────────────────────────────────────────
+
+class BlackwellOptimizedModel:
+    """
+    Placeholder for future Blackwell-architecture optimizations.
+    Currently wraps a standard XGBoost/LightGBM model with GPU acceleration
+    when available, and provides a unified interface for training and prediction.
+    """
+    def __init__(self, model_type='xgboost', **kwargs):
+        self.model_type = model_type
+        self.kwargs = kwargs
+        self.model = None
+
+    def _create_model(self):
+        if self.model_type == 'xgboost':
+            if not HAS_XGB:
+                raise RuntimeError("XGBoost is not installed.")
+            xgb_kwargs = dict(
+                n_estimators=300, learning_rate=0.05, max_depth=6,
+                subsample=0.8, colsample_bytree=0.8,
+                reg_lambda=1.0, reg_alpha=0.1,
+                random_state=42, verbosity=0, n_jobs=-1,
+            )
+            if HAS_GPU:
+                xgb_kwargs['tree_method'] = 'gpu_hist'
+                xgb_kwargs['gpu_id'] = 0
+            xgb_kwargs.update(self.kwargs)
+            return XGBRegressor(**xgb_kwargs)
+        elif self.model_type == 'lightgbm':
+            if not HAS_LGB:
+                raise RuntimeError("LightGBM is not installed.")
+            lgb_kwargs = dict(
+                n_estimators=300, learning_rate=0.05, num_leaves=63,
+                subsample=0.8, colsample_bytree=0.8,
+                reg_lambda=1.0, verbose=-1, random_state=42, n_jobs=-1,
+            )
+            if HAS_GPU:
+                lgb_kwargs['device'] = 'gpu'
+                lgb_kwargs['gpu_platform_id'] = 0
+                lgb_kwargs['gpu_device_id'] = 0
+            lgb_kwargs.update(self.kwargs)
+            return LGBMRegressor(**lgb_kwargs)
+        else:
+            raise ValueError(f"Unsupported model_type: {self.model_type}")
+
+    def fit(self, X, y):
+        self.model = self._create_model()
+        self.model.fit(X, y)
+        return self
+
+    def predict(self, X):
+        if self.model is None:
+            raise RuntimeError("Model has not been fitted yet.")
+        return self.model.predict(X)
 
 
 # ─── MODEL ARENA ──────────────────────────────────────────────────────────────
@@ -378,6 +484,5 @@ def time_series_cv(model, X, y, n_splits=5, scoring='neg_mean_squared_error'):
         m = type(model)(**model.get_params()) if hasattr(model, 'get_params') else model
         m.fit(X[train_idx], y[train_idx])
         pred = m.predict(X[val_idx])
-        rmse_val = float(np.sqrt(np.mean((y[val_idx] - pred)**2)))
-        scores.append(rmse_val)
+        scores.append(_rmse(y[val_idx], pred))
     return np.array(scores)
