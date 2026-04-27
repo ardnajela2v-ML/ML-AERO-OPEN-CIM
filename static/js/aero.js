@@ -82,8 +82,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function initSession() {
   try {
     const r = await api('/api/session/new', 'POST', {});
-    WP.sessionId = rd.session_id;
-    document.getElementById('session-label'.textContent = `Sesión ${r.session_id}`;
+    WP.sessionId = r.session_id;
+    document.getElementById('session-label').textContent = `Sesión ${r.session_id}`;
     document.getElementById('session-dot').classList.add('active');
   } catch (e) {
     document.getElementById('session-label').textContent = 'Sin conexión';
@@ -191,14 +191,14 @@ async function loadPresetFileByName(filename, source) {
       source: 'auto',
     });
 
-    const rd = r.data || r; document.getElementById('badge-rows').textContent = `${rd.n_rows.toLocaleString()} filas`;
+    document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
 
     // meta grid
-    const meta = rd.meta;
+    const meta = r.meta;
     const grid = document.getElementById('meta-grid');
     grid.innerHTML = '';
     const items = [
-      ['Filas',       rd.n_rows?.toLocaleString()],
+      ['Filas',       r.n_rows?.toLocaleString()],
       ['Columnas',    meta.columns?.length],
       ['Desde',       meta.date_range?.[0]?.substring(0,10)],
       ['Hasta',       meta.date_range?.[1]?.substring(0,10)],
@@ -218,7 +218,7 @@ async function loadPresetFileByName(filename, source) {
     // target col select
     const sel = document.getElementById('target-col-select');
     sel.innerHTML = '';
-    (rd.columns || []).forEach(c => {
+    (r.columns || []).forEach(c => {
       const opt = document.createElement('option');
       opt.value = c; opt.textContent = c;
       if (c === 'wind_speed') opt.selected = true;
@@ -233,8 +233,8 @@ async function loadPresetFileByName(filename, source) {
 
     if (r.chart) renderLineChart('preview-chart', r.chart, {});
 
-    toast(`${filename} cargado — ${rd.n_rows.toLocaleString()} filas`, 'success');
-    setStatus(`Datos listos: ${filename} | ${rd.n_rows.toLocaleString()} registros | ${meta.reanalysis_type || meta.format}`);
+    toast(`${filename} cargado — ${r.n_rows.toLocaleString()} filas`, 'success');
+    setStatus(`Datos listos: ${filename} | ${r.n_rows.toLocaleString()} registros | ${meta.reanalysis_type || meta.format}`);
   } catch (e) {
     toast(`Error cargando ${filename}: ${e.message}`, 'error');
     setStatus('Error al cargar archivo.');
@@ -302,15 +302,14 @@ async function uploadFile(file) {
 
   try {
     const r = await apiFD('/api/data/upload', fd);
-    const rd = r.data || r;
-    document.getElementById('badge-rows').textContent = `${rd.n_rows.toLocaleString()} filas`;
+    document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
 
     // meta grid
-    const meta = rd.meta;
+    const meta = r.meta;
     const grid = document.getElementById('meta-grid');
     grid.innerHTML = '';
     const items = [
-      ['Filas', rd.n_rows?.toLocaleString()],
+      ['Filas', r.n_rows?.toLocaleString()],
       ['Columnas', meta.columns?.length],
       ['Desde', meta.date_range?.[0]?.substring(0,10)],
       ['Hasta', meta.date_range?.[1]?.substring(0,10)],
@@ -327,7 +326,7 @@ async function uploadFile(file) {
     // update target col select
     const sel = document.getElementById('target-col-select');
     sel.innerHTML = '';
-    (rd.columns || []).forEach(c => {
+    (r.columns || []).forEach(c => {
       const opt = document.createElement('option');
       opt.value = c; opt.textContent = c;
       if (c === 'wind_speed') opt.selected = true;
@@ -337,8 +336,8 @@ async function uploadFile(file) {
     // preview chart
     if (r.chart) renderLineChart('preview-chart', r.chart, { title: 'Vista previa' });
 
-    toast(`Archivo cargado: ${rd.n_rows.toLocaleString()} filas, ${rd.columns.length} columnas`, 'success');
-    setStatus(`Datos listos — ${rd.n_rows.toLocaleString()} registros desde ${meta.date_range?.[0]?.substring(0,10)}`);
+    toast(`Archivo cargado: ${r.n_rows.toLocaleString()} filas, ${r.columns.length} columnas`, 'success');
+    setStatus(`Datos listos — ${r.n_rows.toLocaleString()} registros desde ${meta.date_range?.[0]?.substring(0,10)}`);
   } catch (e) {
     toast(`Error cargando archivo: ${e.message}`, 'error');
     setStatus('Error al cargar datos.');
@@ -543,7 +542,7 @@ async function trainModels() {
     const r = await api('/api/models/train', 'POST', {
       session_id: WP.sessionId, horizon_h: horizonH, models: selectedModels
     });
-    WP.trainTaskId = r.data ? r.data.task_id : r.task_id;
+    WP.trainTaskId = r.task_id;
 
     // stop any previous poll
     if (WP.trainPollInterval) clearInterval(WP.trainPollInterval);
@@ -3041,7 +3040,7 @@ async function krig3Run() {
     `Procesando ${KRIG.selected.size} sitios seleccionados…`;
   try {
     const r = await api('/api/kriging/legacy_maps', 'POST', body);
-    KRIG.task_id = r.data ? r.data.task_id : r.task_id;
+    KRIG.task_id = r.task_id;
     krig3Poll();
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
@@ -3208,7 +3207,7 @@ async function mcdaRunAnalysis() {
   document.getElementById('mcda-progress-text').textContent = 'Iniciando…';
   try {
     const r = await api('/api/kriging/analyze', 'POST', body);
-    MCDA.taskId = r.data ? r.data.task_id : r.task_id;
+    MCDA.taskId = r.task_id;
     mcdaPollStatus();
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');

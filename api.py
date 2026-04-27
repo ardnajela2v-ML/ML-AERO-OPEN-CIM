@@ -360,7 +360,7 @@ def create_app():
                 s = df[chart_col].dropna()
                 chart_data = series_to_chart(s.index, s.values, label=chart_col)
 
-            return _ok({
+            return jsonify({
                 'session_id': sid,
                 'meta': numpy_to_python(meta),
                 'preview': preview_rows[:50],
@@ -532,7 +532,7 @@ def create_app():
                 logger.exception('Task fallida')
 
         _executor.submit(_train_thread)
-        return _ok({'task_id': task_id})
+        return jsonify({'task_id': task_id})
 
     @app.route('/api/models/status/<task_id>', methods=['GET'])
     def task_status(task_id):
@@ -1087,7 +1087,7 @@ def create_app():
             # Cp analysis
             cp = tea.cp_analysis(turbine, ws_hub, rho=rho)
 
-            return _ok(numpy_to_python({
+            return jsonify(numpy_to_python({
                 'analysis': analysis,
                 'cp': cp,
                 'turbine': turbine.to_dict(),
@@ -1185,7 +1185,7 @@ def create_app():
                 pressure_pa=pressure_pa,
             )
             result['turbine'] = turbine.to_dict()
-            return _ok(numpy_to_python(result))
+            return jsonify(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
