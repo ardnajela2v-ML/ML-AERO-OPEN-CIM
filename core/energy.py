@@ -1,5 +1,5 @@
 """
-WindPro Platform — Wind-to-Power Lab & Energy Simulation.
+AERO by OPEN CIM — Wind-to-Power Lab & Energy Simulation.
 Physical + ML hybrid engine.  All assumptions documented and configurable.
 Techno-economic analysis based on PhD research (ajusteMultiplesArchivosConMediaMovil.m).
 """
@@ -61,6 +61,10 @@ def hellmann_alpha_by_zone(zone: str = 'default') -> float:
         'costa':        0.14,
         'valles':       0.20,
         'sierra_norte': 0.25,
+        'sonora':       0.12,
+        'chihuahua':    0.13,
+        'semiarido':    0.13,
+        'desierto':     0.11,
         'default':      0.143,
     }
     return _ALPHAS.get(zone.lower(), _ALPHAS['default'])
@@ -393,9 +397,10 @@ class WindToPowerEngine:
             'rated_power_total_kw': cap_kw,
             'mean_power_kw': round(float(df['power_net_kw'].mean()), 2),
             'zone_hours': {z: round(v * dt_h, 1) for z, v in zone_counts.items()},
-            'loss_factor': round((1 - self.availability * (1 - self.electrical_losses)
-                                  * (1 - self.wake_losses)
-                                  * (1 - self.curtailment_losses)), 4),
+            'loss_factor': round(1 - (self.availability
+                                      * (1 - self.electrical_losses)
+                                      * (1 - self.wake_losses)
+                                      * (1 - self.curtailment_losses)), 4),
         }
 
 
@@ -545,7 +550,7 @@ class TurbineComparator:
                 'rated_power_kw': t.rated_power_kw,
                 'rotor_diameter_m': t.rotor_diameter_m,
                 'hub_height_m': t.hub_height_m,
-                'aep_gross_mwh': round(e_total_mwh * 8760 / (hours / 8760 or 1)
+                'aep_gross_mwh': round(e_total_mwh * (8760 / hours)
                                        if hours > 0 else 0, 1),
                 'capacity_factor_pct': round(cf * 100, 2),
                 'full_load_hours': round(flh, 0),
@@ -669,6 +674,7 @@ class TechnoEconomicAnalyzer:
 
         # NPV / VAN
         annuity_factor = (1 - (1 + r) ** -project_years) / r if r > 0 else project_years
+        # factor 1.8: obras civiles, instalación, conexión a red, ingeniería y contingencia (IRENA onshore México)
         investment_cost = total_capex * usd_to_mxn * 1.8   # ×1.8 for contingency (from MATLAB)
         npv = annual_cashflow * annuity_factor - investment_cost
 
