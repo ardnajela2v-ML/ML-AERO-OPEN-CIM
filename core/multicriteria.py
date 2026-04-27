@@ -20,7 +20,8 @@ Economic (maximize unless indicated):
 
 Default weights sum to 1.0 (validated on construction).
 """
-from typing import List, Dict, Optional
+import warnings
+from typing import List, Dict, Optional, Callable
 import numpy as np
 
 
@@ -64,9 +65,17 @@ CRITERION_LABELS = {
 def _normalize_weights(weights: Optional[Dict[str, float]]) -> Dict[str, float]:
     w = dict(DEFAULT_WEIGHTS)
     if weights:
+        unknown = set(weights.keys()) - set(w.keys())
+        if unknown:
+            warnings.warn(
+                f"Claves de pesos no reconocidas (ignoradas): {unknown}",
+                stacklevel=2,
+            )
         for k, v in weights.items():
             if k in w:
                 w[k] = float(v)
+    if any(v < 0 for v in w.values()):
+        raise ValueError("Los pesos no pueden ser negativos en TOPSIS")
     # renormalize so sum = 1
     total = sum(w.values())
     if total <= 0:
@@ -74,7 +83,8 @@ def _normalize_weights(weights: Optional[Dict[str, float]]) -> Dict[str, float]:
     return {k: v / total for k, v in w.items()}
 
 
-def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None):
+def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None,
+           feasibility_filter: Optional[Callable[[Dict], bool]] = None):
     """
     Rank alternatives by TOPSIS.
 
@@ -83,6 +93,8 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None)
     alternatives : list of dicts, each containing all criterion keys.
                    Typically each dict has 'site', 'turbina' labels plus metrics.
     weights : optional override for criterion weights.
+    feasibility_filter : optional callable(alt) -> bool. Si se provee, descarta
+        alternativas para las que devuelve False antes del ranking (e.g. VAN<0).
 
     Returns
     -------
@@ -95,16 +107,34 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None)
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0}
 
+    # Deduplicación: misma alternativa enviada >1 vez se cuenta solo una vez
+    seen = set()
+    unique_alts = []
+    for a in alternatives:
+        key = a.get('label', str(a))
+        if key not in seen:
+            seen.add(key)
+            unique_alts.append(a)
+    alternatives = unique_alts
+
+    # Filtro de viabilidad (opcional)
+    if callable(feasibility_filter):
+        alternatives = [a for a in alternatives if feasibility_filter(a)]
+        if not alternatives:
+            return {'ranking': [], 'weights': {}, 'n': 0,
+                    'note': 'Ninguna alternativa pasó el filtro de viabilidad.'}
+
     w = _normalize_weights(weights)
     criteria = list(w.keys())
     n = len(alternatives)
 
-    # Build decision matrix (n × m)
+    # Build decision matrix (n × m). NaN/Inf y None → 0.0 (neutral).
     M = np.zeros((n, len(criteria)), dtype=float)
     for i, alt in enumerate(alternatives):
         for j, c in enumerate(criteria):
-            v = alt.get(c, 0) or 0
-            M[i, j] = float(v)
+            v = alt.get(c)
+            v = 0.0 if (v is None or (isinstance(v, float) and not np.isfinite(v))) else float(v)
+            M[i, j] = v
 
     # Apply direction: invert minimization columns so all are "higher is better"
     for j, c in enumerate(criteria):
