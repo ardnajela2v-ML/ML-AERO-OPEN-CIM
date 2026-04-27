@@ -1,21 +1,22 @@
 """
 Kriging interpolation and multi-site wind turbine analysis.
 Ported and adapted from ajuste_aerogeneradores.py (MATLAB -> Python),
-decoupled from tkinter for use in the WindPro Platform REST API.
+decoupled from tkinter for use in the AERO by OPEN CIM REST API.
 """
 import os
 import re
 import math
+import logging
 import warnings
 from typing import Optional, List
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.stats import weibull_min as wbl_dist
-from scipy.spatial.distance import cdist
 from scipy.interpolate import interp1d
 
 warnings.filterwarnings('ignore')
+log = logging.getLogger(__name__)
 
 # ── Physical / Engineering constants ──────────────────────────────────────────
 Z_REF = 100.0   # m — MERRA-2 reference height for wind speed extrapolation
@@ -75,35 +76,75 @@ _TURB_RE = re.compile(r'_p(\d+)_r([\d.]+)', re.IGNORECASE)
 
 
 def parse_turbine_filename(fn: str):
-    """Return (name, rotor_radius_m, power_nominal_kw)."""
+    """Return (name, rotor_diameter_m, power_nominal_kw).
+
+    Convención unificada con core/energy.py: el segundo elemento es DIÁMETRO
+    del rotor en metros, no radio. Default 80 m si no se encuentra el patrón.
+    """
     base = os.path.splitext(fn)[0]
     m = _TURB_RE.search(base)
     if m:
         return (base, float(m.group(2)), float(m.group(1)))
-    return (base, 40.0, 1000.0)
+    return (base, 80.0, 1000.0)
 
 
 # ── Kriging core (ordinary Kriging on a normalised variogram) ─────────────────
 
-def kriging_interp(x, y, z, xq, yq, model='exponential', rng=0.5):
-    """Ordinary Kriging interpolation. Returns (z_interp, variance)."""
+def _haversine_pairwise_km(lons1, lats1, lons2, lats2):
+    """Matriz de distancias great-circle (km) entre dos sets de puntos (lon, lat).
+
+    Reemplaza cdist sobre (lon, lat) — en México 1° lat ≈ 111 km pero 1° lon
+    varía de ~96 km (norte 26°N) a ~106 km (sur 17°N), por lo que tratar lat/lon
+    como cartesiano introduce anisotropía artificial de ~7-15%.
+    """
+    R = 6371.0
+    lat1 = np.radians(np.asarray(lats1, dtype=float))[:, None]
+    lat2 = np.radians(np.asarray(lats2, dtype=float))[None, :]
+    lon1 = np.radians(np.asarray(lons1, dtype=float))[:, None]
+    lon2 = np.radians(np.asarray(lons2, dtype=float))[None, :]
+    dphi = lat2 - lat1
+    dlam = lon2 - lon1
+    a = np.sin(dphi/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlam/2)**2
+    return 2 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
+
+
+def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
+    """Simple Kriging interpolation. Returns (z_interp, variance).
+
+    Coordenadas (x=lon, y=lat) en grados; las distancias internas se calculan
+    con Haversine (km), por lo que `rng` debe interpretarse en KILÓMETROS
+    (default 50 km, escala típica de un cluster de sitios MERRA-2/ERA5).
+
+    NOTA: implementa Simple Kriging (asume media conocida = 0 con sill normalizado).
+    Lejos del rango de correlación las predicciones tienden a 0, no a la media de
+    los datos. Para Ordinary Kriging real se requiere ampliar el sistema con un
+    multiplicador de Lagrange que imponga Σwᵢ=1.
+    """
+    # Simple Kriging: asume media=0. Para Ordinary Kriging se requiere sistema con Lagrange.
     x = np.asarray(x).ravel()
     y = np.asarray(y).ravel()
     z = np.asarray(z, dtype=float).ravel()
-    d  = cdist(np.c_[x, y], np.c_[x, y])
-    dq = cdist(np.c_[x, y], np.c_[xq.ravel(), yq.ravel()])
+    # Distancias Haversine en km — 1°lat ≠ 1°lon en México (ver _haversine_pairwise_km).
+    d  = _haversine_pairwise_km(x, y, x, y)
+    dq = _haversine_pairwise_km(x, y, xq.ravel(), yq.ravel())
     if rng == 0:
         rng = np.max(d) / 3 if d.size else 1.0
     if model == 'gaussian':
         g = lambda h, a: 1 - np.exp(-(h / a) ** 2)
     else:
         g = lambda h, a: 1 - np.exp(-h / a)
-    K = 1 - g(d,  rng) + 1e-8 * np.eye(len(x))
+    # ridge 1e-6 para estabilidad numérica (sobre todo con variograma gaussiano).
+    K = 1 - g(d,  rng) + 1e-6 * np.eye(len(x))
     k = 1 - g(dq, rng)
     w = np.linalg.solve(K, k)
     z_hat = (w.T @ z).reshape(xq.shape)
     var   = (1 - np.sum(w * k, axis=0)).reshape(xq.shape)
     return z_hat, var
+
+
+# Aliases honestos: la función actual es Simple Kriging.
+simple_kriging = kriging_interp
+interpolate_wind = kriging_interp
 
 
 def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential'):
@@ -179,12 +220,20 @@ def read_wind_file(path: str, year: Optional[int] = None):
 
 # ── Per-site statistics (Weibull, density, extrapolated wind) ─────────────────
 
-def site_wind_stats(site: dict):
-    """Compute Weibull + derived wind stats for a single site dict."""
+def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
+                    z0: Optional[float] = None):
+    """Compute Weibull + derived wind stats for a single site dict.
+
+    hub_height_m: altura del rotor de la PowerCurve activa. Fallback Z_TGT=80 m.
+    z0: rugosidad del terreno. Fallback Z0=0.03 (campo abierto/costa).
+    # Sierra Norte Oaxaca usar Z0=0.1-0.5
+    """
+    z_tgt = float(hub_height_m) if hub_height_m is not None else Z_TGT
+    z0_eff = float(z0) if z0 is not None else Z0
     ws = site['ws']; t2m = site['t2m']; p0m = site['p0m']
     if ws.size == 0:
         return None
-    wsp = ws * (math.log(Z_TGT / Z0) / math.log(Z_REF / Z0))  # extrapolate to hub
+    wsp = ws * (math.log(z_tgt / z0_eff) / math.log(Z_REF / z0_eff))  # extrapolate to hub
     T = t2m + 273.15
     P = p0m * 1000.0
     rho = P / (R_ESP * T)
@@ -218,18 +267,41 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     """
     p_nom_w = p_nom_kw * 1000.0
     ps = fit_power_curve_gauss4(curve_x, curve_y * 1000.0, p_nom_w)  # kW -> W
-    ifn = interp1d(curve_x, ps, kind='nearest', bounds_error=False, fill_value=0)
+    # interp1d 'linear' para preservar la suavidad del fit gauss4 (antes 'nearest'
+    # producía escalones discretos que descartaban la suavización).
+    ifn = interp1d(curve_x, ps, kind='linear', bounds_error=False, fill_value=0)
     psit = np.maximum(ifn(ws_hub), 0)
     psit[ws_hub > max_w] = 0
 
-    pt = float(np.sum(psit))                        # W·h (sum over hours)
-    pteo = 0.5 * rho * rotor_m ** 2 * ws_hub ** 3
-    cp = np.minimum(np.where(pteo > 0, psit / pteo, 0), 0.59)
+    # ── inferir paso temporal: si ws_hub es Series con DatetimeIndex usa la moda
+    # de los deltas; si no, asume 1.0 h (datos horarios MERRA-2/ERA5).
+    if isinstance(ws_hub, pd.Series) and isinstance(ws_hub.index, pd.DatetimeIndex) and len(ws_hub) > 1:
+        dt_h = ws_hub.index.to_series().diff().mode()[0].total_seconds() / 3600
+    else:
+        dt_h = 1.0
+    n_hours_actual = len(ws_hub) * dt_h
+
+    pt = float(np.sum(psit)) * dt_h                 # Wh per turbine (energy)
+    # Potencia cinética: P = ½ ρ A v³, con A = π·(D/2)². rotor_m es DIÁMETRO
+    # (consistente con core/energy.py).
+    pteo = 0.5 * rho * np.pi * (rotor_m / 2.0) ** 2 * ws_hub ** 3
+    cp = np.minimum(np.where(pteo > 0, psit / pteo, 0), 0.593)  # Betz (16/27)
     cp_max  = float(np.max(cp))
     cp_prom = float(np.mean(cp))
-    n_hours_near_rated = int(np.sum((ws_hub >= 0.9 * 12) & (ws_hub <= 1.1 * 12)))
+
+    # Velocidad nominal derivada de la curva: primer ws donde P alcanza ≥98% de Pmax.
+    # Fallback 12.0 m/s si la curva no permite estimarla.
+    p_max_kw = float(np.max(curve_y)) if len(curve_y) > 0 else 0.0
+    if p_max_kw > 0:
+        idx_rated = int(np.argmax(np.asarray(curve_y) >= 0.98 * p_max_kw))
+        rated_v = float(curve_x[idx_rated]) if idx_rated > 0 else 12.0
+    else:
+        rated_v = 12.0
+    n_hours_near_rated = int(np.sum((ws_hub >= 0.9 * rated_v) & (ws_hub <= 1.1 * rated_v)))
     p_max_curve = float(np.max(ps))
-    fc = pt / (p_max_curve * 8760) if p_max_curve > 0 else 0
+    # FC con horas reales del registro (no 8760 fijo); si el archivo cubre <1 año
+    # el FC queda correcto en lugar de subestimado.
+    fc = pt / (p_max_curve * n_hours_actual) if p_max_curve > 0 and n_hours_actual > 0 else 0
 
     demand_wh = demand_mwh * 1e6
     n = math.ceil(demand_wh / pt) if pt > 0 else 0
@@ -237,25 +309,27 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     pan     = pt * n                # Wh/year total park
     pin     = p_nom_kw * n          # kW installed
     caero   = n * pr_aero
-    sep     = 7 * rotor_m
+    sep     = 7 * rotor_m           # 7 D streamwise (rotor_m = diámetro)
     area    = sep ** 2 * n
+    road_cost_per_m2 = 10.0         # USD/m² (consistente con TechnoEconomicAnalyzer)
+    roads_usd = area * road_cost_per_m2
     cm      = 0.03 * caero          # annual O&M
     ccim    = 1e6 * n               # foundations
     ccab    = 15e5 * n              # cabling
-    ctot    = caero + cm + ccim + ccab + area   # CAPEX
-    capex_total = ctot * anios / anios          # keep name stable
-    inv     = ctot * anios          # lifetime outflow (as in legacy code, for VAN)
+    # CAPEX en USD; antes se sumaba `area` (m²) directamente, mezcla de unidades.
+    ctot    = caero + ccim + ccab + roads_usd
+    inv     = ctot                  # inversión inicial = CAPEX (one-time, no × anios)
 
     ekwh = pan / 1e3
     vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
-    flux = vtas - ((area + cm) * anios)
+    flux = vtas - cm                # flujo neto anual = ventas − O&M anual
     if tasa > 0:
         VAN = (flux * ((1 - (1 + tasa) ** -anios) / tasa)) - inv
         VAE = (VAN * tasa / (1 - (1 + tasa) ** -anios))
     else:
         VAN = 0.0
         VAE = 0.0
-    lcoe = (ctot + cm) / ekwh if ekwh > 0 else 0
+    lcoe = (ctot + cm * anios) / (ekwh * anios) if ekwh > 0 else 0
     # ROI simple
     roi = (VAN / inv) if inv > 0 else 0
 
@@ -312,7 +386,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
         path = os.path.join(wind_folder, wf)
         try:
             site = read_wind_file(path, year=year)
-        except Exception:
+        except Exception as e:
+            log.warning('analyze_sites: skip wind file %s — %s', wf, e)
             continue
         if site['n'] < 24:
             continue
@@ -326,7 +401,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
                 dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
                 x_c = dat[:, 0].astype(float)
                 y_c = dat[:, 1].astype(float)
-            except Exception:
+            except Exception as e:
+                log.warning('analyze_sites: skip turbine CSV %s — %s', tf, e)
                 continue
             name, rotor, p_nom_kw = parse_turbine_filename(tf)
             econ = turbine_site_economics(
@@ -425,7 +501,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
             dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
             xd = dat[:, 0].astype(float)
             yd_kw = dat[:, 1].astype(float)
-        except Exception:
+        except Exception as e:
+            log.warning('legacy_three_maps: skip turbine curve %s — %s', tf, e)
             continue
         name, rotor, p_nom_kw = parse_turbine_filename(tf)
         # Fit on Watts (matches reference script), then convert back to kW for plotting.
@@ -452,7 +529,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         path = os.path.join(wind_folder, wf)
         try:
             site = read_wind_file(path, year=year)
-        except Exception:
+        except Exception as e:
+            log.warning('legacy_three_maps: skip wind file %s — %s', wf, e)
             continue
         if site['n'] < 24:
             continue
@@ -466,7 +544,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                 dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
                 x_c = dat[:, 0].astype(float)
                 y_c = dat[:, 1].astype(float)
-            except Exception:
+            except Exception as e:
+                log.warning('legacy_three_maps: skip turbine econ %s — %s', tf, e)
                 continue
             name, rotor, p_nom_kw = parse_turbine_filename(tf)
             econ = turbine_site_economics(
