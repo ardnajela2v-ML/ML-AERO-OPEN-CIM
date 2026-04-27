@@ -1,15 +1,18 @@
 """
-WindPro Platform — Flask application and REST API.
+AERO by OPEN CIM — Flask application and REST API.
 All scientific computation is delegated to core/ modules.
 """
 import os
 import json
 import uuid
+import time
+import logging
 import threading
 import traceback
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -54,19 +57,56 @@ def create_app():
                 template_folder='templates',
                 static_folder='static')
     app.config.from_object(Config)
-    CORS(app)
+
+    # CORS con whitelist desde Config (ALLOWED_ORIGINS) o fallback localhost
+    CORS(app, origins=getattr(Config, 'ALLOWED_ORIGINS',
+                              ['http://localhost:5051']))
+
+    logger = logging.getLogger('aero')
+    if not logger.handlers:
+        logging.basicConfig(
+            level=logging.ERROR,
+            format='%(asctime)s %(levelname)s %(message)s',
+        )
 
     # ── in-memory session store (replace with Redis/DB for multi-user prod) ──
     sessions = {}        # session_id -> { df, meta, features, results, ... }
     tasks    = {}        # task_id    -> { status, progress, message, result }
     arena_store = {}     # session_id -> ModelArena
+    _sessions_lock = threading.Lock()
+    _executor = ThreadPoolExecutor(max_workers=4)
+    SESSION_TTL_SEC = 4 * 3600   # 4 h sin actividad
+
+    def _touch(sid):
+        with _sessions_lock:
+            sessions.setdefault(sid, {})['_last_access'] = time.time()
+
+    def _cleanup_sessions():
+        now = time.time()
+        with _sessions_lock:
+            stale = [sid for sid, s in sessions.items()
+                     if isinstance(s, dict)
+                     and now - s.get('_last_access', now) > SESSION_TTL_SEC]
+            for sid in stale:
+                sessions.pop(sid, None)
+                arena_store.pop(sid, None)
+
+    @app.after_request
+    def _after(resp):
+        try:
+            _cleanup_sessions()
+        except Exception:
+            pass
+        return resp
 
     # ─── HELPERS ──────────────────────────────────────────────────────────────
 
     def get_session(sid):
-        if sid not in sessions:
-            sessions[sid] = {}
-        return sessions[sid]
+        with _sessions_lock:
+            if sid not in sessions:
+                sessions[sid] = {}
+            sessions[sid]['_last_access'] = time.time()
+            return sessions[sid]
 
     def allowed_file(filename):
         return ('.' in filename and
@@ -86,6 +126,17 @@ def create_app():
 
     # ─── MAIN PAGE ────────────────────────────────────────────────────────────
 
+    @app.route('/health')
+    def health():
+        return jsonify({'status': 'ok', 'version': '1.0'}), 200
+
+    @app.route('/api/sessions/<sid>', methods=['DELETE'])
+    def delete_session(sid):
+        with _sessions_lock:
+            sessions.pop(sid, None)
+            arena_store.pop(sid, None)
+        return jsonify({'deleted': sid}), 200
+
     @app.route('/')
     def index():
         return render_template('index.html')
@@ -103,8 +154,9 @@ def create_app():
 
     @app.route('/api/session/new', methods=['POST'])
     def new_session():
-        sid = str(uuid.uuid4())[:8]
-        sessions[sid] = {}
+        sid = str(uuid.uuid4())
+        with _sessions_lock:
+            sessions[sid] = {'_last_access': time.time()}
         return jsonify({'session_id': sid})
 
     # ─── PRESET FILE BROWSER ──────────────────────────────────────────────────
@@ -168,7 +220,8 @@ def create_app():
                 'filename': safe_name,
             })
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── DATA UPLOAD ──────────────────────────────────────────────────────────
 
@@ -183,6 +236,9 @@ def create_app():
         f = request.files['file']
         if not f.filename or not allowed_file(f.filename):
             return jsonify({'error': f'Unsupported file type: {f.filename}'}), 400
+
+        # secure_filename anti path traversal y caracteres peligrosos
+        f.filename = secure_filename(f.filename) or 'upload.csv'
 
         try:
             loader = DataLoader()
@@ -208,14 +264,16 @@ def create_app():
                 'n_rows': len(df),
             })
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── DATA QUALITY ─────────────────────────────────────────────────────────
 
     @app.route('/api/data/quality', methods=['POST'])
     def data_quality():
-        sid = request.json.get('session_id', 'default')
-        target_col = request.json.get('target_col', 'wind_speed')
+        body = request.json or {}
+        sid = body.get('session_id', 'default')
+        target_col = body.get('target_col', 'wind_speed')
         sess = get_session(sid)
         if 'df' not in sess:
             return jsonify({'error': 'No data loaded. Upload a file first.'}), 400
@@ -257,7 +315,8 @@ def create_app():
             return jsonify({'report': numpy_to_python(report), 'chart': ts_chart,
                             'columns_report': columns_report})
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── FEATURE ENGINEERING ──────────────────────────────────────────────────
 
@@ -297,7 +356,8 @@ def create_app():
                 }
             return jsonify({'summary': summary, 'horizons': horizons_h})
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── MODEL TRAINING ───────────────────────────────────────────────────────
 
@@ -307,7 +367,7 @@ def create_app():
         sid    = body.get('session_id', 'default')
         horizon_h = int(body.get('horizon_h', 1))
         enabled_models = body.get('models', None)  # None = train all
-        task_id = str(uuid.uuid4())[:8]
+        task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Starting...', 'result': None}
 
@@ -363,9 +423,9 @@ def create_app():
             except Exception as e:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['message'] = str(e)
-                tasks[task_id]['trace'] = traceback.format_exc()
+                logger.exception('Task fallida')
 
-        threading.Thread(target=_train_thread, daemon=True).start()
+        _executor.submit(_train_thread)
         return jsonify({'task_id': task_id})
 
     @app.route('/api/models/status/<task_id>', methods=['GET'])
@@ -591,7 +651,8 @@ def create_app():
                 },
             }))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/energy/turbines', methods=['GET'])
     def list_turbines():
@@ -672,7 +733,8 @@ def create_app():
             sess['wind_stats'] = result
             return jsonify(result)
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── ADVANCED WIND ANALYSIS (Windographer-style) ──────────────────────────
 
@@ -692,15 +754,17 @@ def create_app():
         try:
             df = sess['df']
             result = {
-                'turbulence':    numpy_to_python(compute_turbulence_intensity(df, ws_col)),
-                'shear':         numpy_to_python(compute_wind_shear(df, ws_col, ws_h)),
-                'sectors':       numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
-                'return_periods':numpy_to_python(compute_return_periods(df, ws_col)),
+                'wind_speed_variability': numpy_to_python(compute_turbulence_intensity(df, ws_col)),
+                'ti_warning':             'Proxy horario, no TI IEC 61400-1',
+                'shear':                  numpy_to_python(compute_wind_shear(df, ws_col, ws_h)),
+                'sectors':                numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
+                'return_periods':         numpy_to_python(compute_return_periods(df, ws_col)),
             }
             sess['wind_advanced'] = result
             return jsonify(result)
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── HYBRID SYSTEM (HOMER Pro-style) ──────────────────────────────────────
 
@@ -801,7 +865,8 @@ def create_app():
             return jsonify(numpy_to_python(result))
 
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/hybrid/load_profile', methods=['POST'])
     def hybrid_load_profile():
@@ -863,13 +928,13 @@ def create_app():
             # extrapolate to hub height
             ws_hub = extrapolate_wind_hellmann(ws_raw, ws_height_m, turbine.hub_height_m)
 
-            # air density
+            # air density — pressure ya viene en Pa (data.py normaliza)
             rho = air_density()
             if 'pressure' in df.columns and 'temperature' in df.columns:
                 try:
-                    p_pa = df['pressure'].dropna().mean() * 100  # hPa to Pa
-                    t_k  = df['temperature'].dropna().mean() + 273.15
-                    rho  = air_density(temperature_k=t_k, pressure_pa=p_pa)
+                    p_pa = float(df['pressure'].dropna().mean())
+                    t_c  = float(df['temperature'].dropna().mean())
+                    rho  = float(air_density(temperature_c=t_c, pressure_pa=p_pa))
                 except Exception:
                     pass
 
@@ -914,7 +979,8 @@ def create_app():
                 'rho': round(rho, 4),
             }))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
     @app.route('/api/farm/simulate', methods=['POST'])
@@ -976,6 +1042,10 @@ def create_app():
                 # Sin dirección: una sola dirección dominante (sector único)
                 wd = np.zeros_like(ws_hub)
 
+            # Pasa T/P del df cuando estén disponibles para densidad real
+            temperature_c = df['temperature'].values if 'temperature' in df.columns else None
+            pressure_pa   = df['pressure'].values    if 'pressure'    in df.columns else None
+
             result = simulate_wind_farm(
                 layout_xy=layout,
                 turbine=turbine,
@@ -985,11 +1055,14 @@ def create_app():
                 n_sectors=int(body.get('n_sectors', 36)),
                 availability=float(body.get('availability', 1.0)),
                 electrical_losses=float(body.get('electrical_losses', 0.0)),
+                temperature_c=temperature_c,
+                pressure_pa=pressure_pa,
             )
             result['turbine'] = turbine.to_dict()
             return jsonify(numpy_to_python(result))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/grid/build', methods=['POST'])
     def grid_build_resource():
@@ -1140,6 +1213,8 @@ def create_app():
             body    = request.json or {}
             sid     = body.get('session_id', 'default')
             dataset = body.get('dataset', 'energy')
+        # sanitiza dataset antes de interpolar en filename
+        dataset = secure_filename(dataset) or 'export'
         sess    = get_session(sid)
 
         key_map = {'energy': 'df_energy', 'raw': 'df'}
@@ -1152,7 +1227,8 @@ def create_app():
         if isinstance(df.index, pd.DatetimeIndex):
             df = df.reset_index()
 
-        fname = f'windpro_{dataset}_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.csv'
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        fname = f'aero_{dataset}_{ts}.csv'
         fpath = os.path.join(Config.EXPORT_FOLDER, fname)
         df.to_csv(fpath, index=False)
 
@@ -1176,7 +1252,8 @@ def create_app():
             answer = _ai_answer(q, sess)
             return jsonify({'answer': answer})
         except Exception as e:
-            return jsonify({'answer': f'Error interno: {e}'})
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     def _ai_answer(q, sess):
         ql = q.lower()
@@ -1234,11 +1311,13 @@ def create_app():
                 if best_name:
                     m = best_res[best_name]['metrics']
                     skill = m.get('skill_vs_persistence', 'N/A')
-                    return (f"Mejor modelo: {m['label']} — "
+                    base = (f"Mejor modelo: {m['label']} — "
                             f"RMSE={m['rmse']} m/s, MAE={m['mae']} m/s, "
-                            f"R²={m['r2']}, nRMSE={m['nrmse']:.1%}, "
-                            f"Skill vs persistencia: {'+' if isinstance(skill,float) and skill>0 else ''}"
-                            f"{skill*100:.1f}% " if isinstance(skill,float) else f"Skill: {skill}.")
+                            f"R²={m['r2']}, nRMSE={m['nrmse']:.1%}, ")
+                    if isinstance(skill, (int, float)):
+                        sign = '+' if skill > 0 else ''
+                        return base + f"Skill vs persistencia: {sign}{skill*100:.1f}%."
+                    return base + f"Skill: {skill}."
             return "Entrena los modelos en Model Arena primero."
 
         if any(w in ql for w in ['energía', 'energia', 'aep', 'potencia', 'factor de capacidad', 'cf']):
@@ -1260,10 +1339,10 @@ def create_app():
             return ("Para h=1h: los modelos ML suelen superar ampliamente la persistencia. "
                     "Para h=6-24h: la ventaja ML disminuye; se recomienda combinar con NWP. "
                     "Para pronóstico semanal: se modelan distribuciones y percentiles, no series exactas. "
-                    "WindPro entrena un modelo independiente por horizonte para máxima precisión.")
+                    "AERO entrena un modelo independiente por horizonte para máxima precisión.")
 
         if any(w in ql for w in ['leakage', 'sobreajuste', 'overfitting', 'validación', 'test']):
-            return ("WindPro usa separación cronológica estricta: "
+            return ("AERO usa separación cronológica estricta:"
                     "el 80% inicial es entrenamiento y el 20% final (futuro absoluto) es test. "
                     "No hay shuffling ni cross-validation temporal que cruce el futuro al pasado. "
                     "Las features usan únicamente información disponible en el momento de la predicción.")
@@ -1272,7 +1351,7 @@ def create_app():
             return ("Para cargar datos MERRA-2: exporta el dataset tabular desde GES DISC "
                     "y selecciona fuente 'MERRA-2' al subir. "
                     "Para ERA5: exporta desde Copernicus CDS en CSV y selecciona 'ERA5'. "
-                    "WindPro detecta automáticamente columnas U50M/V50M y deriva velocidad y dirección.")
+                    "AERO detecta automáticamente columnas U50M/V50M y deriva velocidad y dirección.")
 
         if any(w in ql for w in ['limitaciones', 'advertencia', 'incertidumbre', 'sesgo']):
             return ("Limitaciones declaradas: (1) Los modelos son válidos para el sitio y periodo entrenado. "
@@ -1380,7 +1459,8 @@ def create_app():
             grid['n_sites'] = len(sites)
             return jsonify(grid)
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/kriging/legacy_maps', methods=['POST'])
     def kriging_legacy_maps():
@@ -1391,7 +1471,7 @@ def create_app():
         (viento, inversión, VAN).
         """
         body = request.json or {}
-        task_id = str(uuid.uuid4())[:8]
+        task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Procesando sitios…', 'result': None}
 
@@ -1427,9 +1507,9 @@ def create_app():
             except Exception as e:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['message'] = str(e)
-                tasks[task_id]['trace'] = traceback.format_exc()
+                logger.exception('Task fallida')
 
-        threading.Thread(target=_run, daemon=True).start()
+        _executor.submit(_run)
         return jsonify({'task_id': task_id})
 
     @app.route('/api/kriging/analyze', methods=['POST'])
@@ -1443,7 +1523,7 @@ def create_app():
         price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
         max_files = body.get('max_files')
         filter_files = body.get('filenames')
-        task_id = str(uuid.uuid4())[:8]
+        task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Iniciando análisis multi-sitio…', 'result': None}
 
@@ -1464,9 +1544,9 @@ def create_app():
             except Exception as e:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['message'] = str(e)
-                tasks[task_id]['trace'] = traceback.format_exc()
+                logger.exception('Task fallida')
 
-        threading.Thread(target=_run, daemon=True).start()
+        _executor.submit(_run)
         return jsonify({'task_id': task_id})
 
     # ─── MULTI-CRITERIA (TOPSIS) ──────────────────────────────────────────────
@@ -1578,7 +1658,8 @@ def create_app():
                 'sample_first_24h': values[:24].tolist(),
             }))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/demand/forecast', methods=['POST'])
     def demand_forecast():
@@ -1650,7 +1731,8 @@ def create_app():
                 'best_model': best,
             }))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/pml/load', methods=['POST'])
     def pml_load():
@@ -1683,7 +1765,8 @@ def create_app():
                 },
             }))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/api/pml/forecast', methods=['POST'])
     def pml_forecast():
@@ -1756,6 +1839,7 @@ def create_app():
                 }
             return jsonify(numpy_to_python(result))
         except Exception as e:
-            return jsonify({'error': str(e), 'trace': traceback.format_exc()}), 500
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
 
     return app
