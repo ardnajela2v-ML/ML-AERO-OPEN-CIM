@@ -55,8 +55,39 @@ function destroyChart(key) {
   if (WP.charts[key]) { WP.charts[key].destroy(); WP.charts[key] = null; }
 }
 
+// ─── DOCK BEHAVIOR ───────────────────────────────────────────────────────────
+function initDock() {
+  const dock = document.getElementById('topbar-dock');
+  if (!dock) return;
+
+  // Magnification: add .dock-near to immediate siblings of hovered nav-btn
+  const navBtns = dock.querySelectorAll('.nav-btn');
+  navBtns.forEach((btn, i) => {
+    btn.addEventListener('mouseenter', () => {
+      navBtns.forEach(b => b.classList.remove('dock-near'));
+      if (i > 0) navBtns[i - 1].classList.add('dock-near');
+      if (i < navBtns.length - 1) navBtns[i + 1].classList.add('dock-near');
+    });
+    btn.addEventListener('mouseleave', () => {
+      navBtns.forEach(b => b.classList.remove('dock-near'));
+    });
+  });
+
+  // Horizontal scroll with mouse wheel on the nav area
+  const nav = dock.querySelector('.topbar-nav');
+  if (nav) {
+    nav.addEventListener('wheel', (e) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        nav.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
+  }
+}
+
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  initDock();
   await initSession();
   bindNavigation();
   bindThemeToggle();
@@ -547,7 +578,16 @@ async function trainModels() {
     // stop any previous poll
     if (WP.trainPollInterval) clearInterval(WP.trainPollInterval);
 
+    WP.trainPollCount = 0;
     WP.trainPollInterval = setInterval(async () => {
+      WP.trainPollCount++;
+      if (WP.trainPollCount > 600) {          // safety: ~20 min max
+        clearInterval(WP.trainPollInterval);
+        btn.disabled = false;
+        updateTrainBtnLabel();
+        toast('Timeout: el entrenamiento excedió 20 min.', 'error');
+        return;
+      }
       try {
         const s = await api(`/api/models/status/${WP.trainTaskId}`, 'GET');
         progBar.style.width = `${s.progress}%`;
@@ -555,6 +595,7 @@ async function trainModels() {
 
         if (s.status === 'done') {
           clearInterval(WP.trainPollInterval);
+          progContainer.classList.add('hidden');
           btn.disabled = false;
           updateTrainBtnLabel();
           populateComparisonTable(s.result, horizonH);
@@ -563,13 +604,14 @@ async function trainModels() {
           setStatus(`Modelos entrenados para h=+${horizonH}h`);
         } else if (s.status === 'error') {
           clearInterval(WP.trainPollInterval);
+          progContainer.classList.add('hidden');
           btn.disabled = false;
           updateTrainBtnLabel();
           toast(`Error en entrenamiento: ${s.message}`, 'error');
           setStatus('Error durante el entrenamiento.');
         }
       } catch (e) { /* ignore poll errors */ }
-    }, 800);
+    }, 2000);
   } catch (e) {
     btn.disabled = false;
     updateTrainBtnLabel();
@@ -1660,6 +1702,7 @@ async function calcWindAnalysis() {
     renderWbHist(r.histogram);
     renderHistColored(r.histogram);
     renderMonthlyWS(r.climatology);
+    await renderMonthHourHeatmap();
     document.getElementById('wind-status').textContent = 'Listo';
     toast('Análisis de viento completado', 'success');
     setStatus('Análisis de viento completado.');
@@ -2844,6 +2887,11 @@ async function krig3LoadSites(force=false) {
       m.on('popupopen', () => setTimeout(krig3RebindPopupButtons, 30));
       KRIG.siteMarkers[s.filename] = m;
     });
+    // Auto-zoom to fit all loaded sites
+    if (KRIG.sites.length) {
+      const bounds = L.latLngBounds(KRIG.sites.map(s => [s.lat, s.lon]));
+      map.fitBounds(bounds, { padding: [40, 40], maxZoom: 10 });
+    }
     krig3UpdateSelectionInfo();
   } catch (e) {
     toast(`No se pudieron cargar sitios: ${e.message}`, 'error');
@@ -3116,6 +3164,55 @@ document.addEventListener('DOMContentLoaded', () => {
   // Si cambia el año, recargar sitios (n_hours puede variar)
   const yearSel = document.getElementById('krig3-year');
   if (yearSel) yearSel.addEventListener('change', () => krig3LoadSites(true));
+
+  // ── Rectangular selection: Ctrl+drag to select/deselect sites in a box ──
+  (function initRectSelect() {
+    let rectLayer = null, startLL = null, active = false;
+    function onMouseDown(e) {
+      if (!e.originalEvent.ctrlKey && !e.originalEvent.metaKey) return;
+      active = true; startLL = e.latlng;
+      KRIG.map && KRIG.map.dragging.disable();
+      e.originalEvent.preventDefault();
+    }
+    function onMouseMove(e) {
+      if (!active || !startLL) return;
+      if (rectLayer) KRIG.map.removeLayer(rectLayer);
+      rectLayer = L.rectangle([startLL, e.latlng], {
+        color: '#3b82f6', weight: 2, fillOpacity: 0.15, dashArray: '6 4'
+      }).addTo(KRIG.map);
+    }
+    function onMouseUp(e) {
+      if (!active || !startLL) return;
+      active = false;
+      KRIG.map && KRIG.map.dragging.enable();
+      if (rectLayer) {
+        const b = rectLayer.getBounds();
+        KRIG.map.removeLayer(rectLayer); rectLayer = null;
+        // Toggle sites within bounds
+        let toggled = 0;
+        KRIG.sites.forEach(s => {
+          if (b.contains(L.latLng(s.lat, s.lon))) {
+            KRIG.selected.add(s.filename);
+            toggled++;
+          }
+        });
+        if (toggled) { krig3UpdateAllMarkers(); toast(`${toggled} sitios seleccionados`, 'info'); }
+      }
+      startLL = null;
+    }
+    // Defer binding until map is initialized
+    const origInit = krig3InitMap;
+    krig3InitMap = function() {
+      const map = origInit();
+      if (!map._rectSelectBound) {
+        map.on('mousedown', onMouseDown);
+        map.on('mousemove', onMouseMove);
+        map.on('mouseup', onMouseUp);
+        map._rectSelectBound = true;
+      }
+      return map;
+    };
+  })();
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo
@@ -3458,10 +3555,7 @@ async function renderMonthHourHeatmap() {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const btn = document.getElementById('btn-calc-wind');
-  if (btn) btn.addEventListener('click', () => setTimeout(renderMonthHourHeatmap, 400));
-});
+// renderMonthHourHeatmap is now called from within calcWindAnalysis() after data loads.
 
 
 // ═══════════════════════ PARQUE EÓLICO ═══════════════════════════════════════

@@ -3,10 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WindPro Platform — Inteligencia Meteorológica & Predicción de Viento</title>
+<title>AERO by OPEN CIM — Inteligencia Climática para Decisiones Energéticas</title>
+<meta name="description" content="AERO — Análisis Energético y de Recursos Observacionales. Plataforma de inteligencia eólica, solar e hídrica para proyectos renovables en México y Latam.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:opsz,wght@9..144,300;9..144,600;9..144,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/windpro.css">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=DM+Mono:wght@300;400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/aero.css">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
@@ -14,17 +15,21 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════ TOP BAR ═══════════════════════════ -->
-<header class="topbar">
+<!-- ═══════════════════════════ TOP BAR (Dock) ═══════════════════ -->
+<div class="dock-trigger" id="dock-trigger"></div>
+<header class="topbar" id="topbar-dock">
   <div class="topbar-brand">
-    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" class="brand-icon">
-      <circle cx="14" cy="14" r="13" stroke="#4DA3FF" stroke-width="1.5" fill="none"/>
-      <path d="M14 6 L14 14 L20 10" stroke="#4DA3FF" stroke-width="2" stroke-linecap="round"/>
-      <path d="M14 14 L7 17" stroke="#9F7AEA" stroke-width="2" stroke-linecap="round"/>
-      <path d="M14 14 L11 21" stroke="#3DDC97" stroke-width="2" stroke-linecap="round"/>
-      <circle cx="14" cy="14" r="2" fill="#4DA3FF"/>
+    <!-- OPEN CIM radar icon -->
+    <svg width="28" height="28" viewBox="0 0 110 110" fill="none" class="brand-icon">
+      <circle cx="55" cy="55" r="52" stroke="#1D9E75" stroke-width="2"/>
+      <circle cx="55" cy="55" r="36" stroke="#1D9E75" stroke-width="1.5" opacity="0.5"/>
+      <circle cx="55" cy="55" r="20" stroke="#1D9E75" stroke-width="1" opacity="0.3"/>
+      <line x1="55" y1="3" x2="55" y2="107" stroke="#1D9E75" stroke-width="0.5" opacity="0.2"/>
+      <line x1="3" y1="55" x2="107" y2="55" stroke="#1D9E75" stroke-width="0.5" opacity="0.2"/>
+      <line x1="55" y1="55" x2="96" y2="26" stroke="#0F6E56" stroke-width="2.5" stroke-linecap="round"/>
+      <circle cx="55" cy="55" r="4" fill="#1D9E75"/>
     </svg>
-    <span class="brand-name">WindPro <span class="brand-sub">Platform</span></span>
+    <span class="brand-name">AERO <span class="brand-sub">by OPEN CIM</span></span>
   </div>
   <nav class="topbar-nav">
     <button class="nav-btn active" data-module="data">Data Hub</button>
@@ -696,7 +701,7 @@
       <div class="ai-msg ai-msg--system">
         <div class="ai-avatar">WP</div>
         <div class="ai-bubble">
-          Hola. Soy el asistente de WindPro. Mis respuestas se basan en los datos y resultados de tu sesión actual.
+          Hola. Soy el asistente de AERO by OPEN CIM. Mis respuestas se basan en los datos y resultados de tu sesión actual.
           Puedes preguntarme sobre: calidad de datos, distribución Weibull, modelos y métricas, energía y factor de capacidad, validación científica, horizontes de pronóstico.
         </div>
       </div>
@@ -836,7 +841,7 @@
     </div>
   </div>
 
-  <!-- Month × Hour calendar heatmap (from WindPro_Dashboard) -->
+  <!-- Month × Hour calendar heatmap -->
   <div class="card mt-3">
     <div class="card-header">
       <span class="card-title">Calendario Mes × Hora — velocidad media</span>
@@ -992,7 +997,7 @@
       </div>
       <div class="flex-end mt-2" style="gap:.4rem;align-items:center">
         <span class="text-muted" id="krig3-selection-info" style="font-size:.78rem;margin-right:auto">
-          Selecciona sitios en el mapa (click para incluir/excluir, ★ marca el parque principal).
+          Click: popup · Shift+click: incluir/excluir · <b>Ctrl+arrastrar: selección rectangular</b> · ★ parque principal.
         </span>
         <button class="btn-secondary" id="btn-krig3-select-all" type="button">Seleccionar todos</button>
         <button class="btn-secondary" id="btn-krig3-select-none" type="button">Limpiar</button>
@@ -1907,6 +1912,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/windpro.js"></script>
+<script src="/static/js/aero.js"></script>
 </body>
 </html>

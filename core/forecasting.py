@@ -1,5 +1,5 @@
 """
-WindPro Platform — Pronóstico de demanda eléctrica y precios PML a 25 años.
+AERO by OPEN CIM — Pronóstico de demanda eléctrica y precios PML a 25 años.
 
 Series horarias (8760 h) usadas como año base; sobre ellas se ajustan modelos
 de tendencia anual y se proyecta el crecimiento agregado a 25 años, preservando
@@ -85,7 +85,7 @@ def base_year_stats(values):
         'monthly':     [float(x) for x in df.resample('M')['value'].mean().values],
         'diurnal':     [float(x) for x in df.groupby(df.index.hour)['value'].mean().values],
         'weekly':      [float(x) for x in df.groupby(df.index.dayofweek)['value'].mean().values],
-        'duration_curve': sorted([float(x) for x in v], reverse=True),
+        'duration_curve': [float(x) for x in sorted(v, reverse=True)[::max(1, len(v) // 200)]],
     }
 
 
@@ -311,16 +311,18 @@ def fit_all_trend_models(t, y, models=None):
 
 
 def project_25_years(hourly_values, fitted_models, horizon_years=25,
-                      base_year_label=2024, ci_pct=0.10):
+                      base_year_label=2024, ci_pct=0.10,
+                      include_hourly=False):
     """
     Para cada modelo ajustado, proyecta el total anual a `horizon_years` y
-    distribuye en una serie horaria escalando el año base por el factor anual.
-    Devuelve dict { model_key: { 'annual': [...], 'hourly': [...], 'years': [...],
+    opcionalmente distribuye en una serie horaria escalando el año base.
+    Devuelve dict { model_key: { 'annual': [...], 'years': [...],
                                   'ci_low':, 'ci_high':, 'cagr': } }
+    Set include_hourly=True to also get the full hourly time-series (large).
     """
     hourly_values = np.asarray(hourly_values, dtype=float)
     base_total = float(np.nansum(hourly_values))
-    base_profile = hourly_values / base_total if base_total > 0 else hourly_values
+    base_profile = (hourly_values / base_total) if (base_total > 0 and include_hourly) else None
 
     out = {}
     for key, m in fitted_models.items():
@@ -349,20 +351,23 @@ def project_25_years(hourly_values, fitted_models, horizon_years=25,
         ci_low  = np.maximum(annual - 1.96 * sigma_growing, 0)
         ci_high = annual + 1.96 * sigma_growing
 
-        # Serie horaria proyectada concatenada año a año
-        hourly_proj = np.concatenate([base_profile * a for a in annual])
-
-        out[key] = {
+        entry = {
             'years':       [int(base_year_label + i + 1) for i in range(horizon_years)],
             'annual':      [float(x) for x in annual],
             'ci_low':      [float(x) for x in ci_low],
             'ci_high':     [float(x) for x in ci_high],
-            'hourly':      [float(x) for x in hourly_proj],
             'cagr':        cagr,
             'kind':        m.get('kind'),
             'params':      m.get('params'),
             'metrics':     m.get('metrics'),
         }
+
+        # Serie horaria proyectada: only if requested (very large)
+        if include_hourly and base_profile is not None:
+            hourly_proj = np.concatenate([base_profile * a for a in annual])
+            entry['hourly'] = [float(x) for x in hourly_proj]
+
+        out[key] = entry
     return out
 
 

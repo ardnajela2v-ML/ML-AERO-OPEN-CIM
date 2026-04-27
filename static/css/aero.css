@@ -86,22 +86,7 @@ body.light .form-select {
   font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
 
-/* Light-mode topbar */
-body.light .topbar {
-  background: #0c1117;
-  border-bottom-color: #1e2d40;
-}
-body.light .topbar .brand-name,
-body.light .topbar .nav-btn {
-  color: #7a8fa8;
-}
-body.light .topbar .nav-btn.active,
-body.light .topbar .nav-btn:hover {
-  color: #ffffff;
-}
-body.light .nav-btn.active::after {
-  background: var(--acc);
-}
+/* Light-mode topbar overrides now in dock section below */
 
 /* Light-mode card (cream card) */
 body.light .card {
@@ -180,13 +165,12 @@ body.light .toast.warn    { background: #FEF7E6; border-color: #E5CA85; color: #
 /* Status dot — no neon glow */
 body.light .dot.active { background: var(--acc); box-shadow: none; }
 
-/* Nav active button */
+/* Nav active button — light mode */
 body.light .nav-btn.active {
-  background: rgba(15,95,168,.08);
+  background: rgba(15,95,168,.10);
   color: var(--acc);
   border: 1px solid rgba(15,95,168,.2);
 }
-body.light .nav-btn:hover { background: rgba(11,18,32,.05); color: var(--ink); }
 
 /* AI chat */
 body.light .ai-avatar { background: var(--ink); color: #fff; }
@@ -258,19 +242,22 @@ html, body {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 /* ─── TOP BAR ─── */
+
+.dock-trigger { display: none; }
+
 .topbar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 100;
   height: var(--topbar-h);
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 24px;
+  display: flex; align-items: center; gap: 16px;
   padding: 0 20px;
   backdrop-filter: blur(12px);
 }
 
 .topbar-brand {
   display: flex; align-items: center; gap: 10px;
-  min-width: 180px;
+  flex-shrink: 0;
 }
 
 .brand-icon { flex-shrink: 0; }
@@ -278,29 +265,55 @@ html, body {
 .brand-name {
   font-size: 1.05rem; font-weight: 700;
   color: var(--text-primary); letter-spacing: -0.3px;
+  white-space: nowrap;
 }
 .brand-sub { color: var(--accent); font-weight: 500; }
 
 .topbar-nav {
-  display: flex; gap: 4px; flex: 1;
+  display: flex; gap: 2px;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  flex: 1;
+  align-items: center;
+  padding: 2px 0;
 }
+.topbar-nav::-webkit-scrollbar { display: none; }
 
 .nav-btn {
   background: none; border: none; cursor: pointer;
   padding: 6px 14px; border-radius: var(--radius-sm);
   font-size: 0.85rem; font-weight: 500;
   color: var(--text-secondary);
-  transition: all var(--transition);
+  transition: transform 0.18s cubic-bezier(0.22,1,0.36,1),
+              background 0.15s ease,
+              color 0.15s ease;
   white-space: nowrap;
+  transform-origin: center center;
+  flex-shrink: 0;
 }
-.nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Magnification on hover */
+.nav-btn:hover {
+  transform: scale(1.12);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+/* Neighbors of hovered item get a smaller bump */
+.nav-btn.dock-near {
+  transform: scale(1.05);
+}
+
 .nav-btn.active {
   background: var(--accent-dim);
   color: var(--accent);
   border: 1px solid var(--accent)44;
 }
+.nav-btn.active:hover {
+  transform: scale(1.12);
+}
 
-.topbar-actions { display: flex; align-items: center; gap: 12px; }
+.topbar-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 
 .session-badge {
   display: flex; align-items: center; gap: 6px;
@@ -1065,7 +1078,9 @@ body.light .btn-sm:hover { background:#e8f4ef; color:#1a6b4a; border-color:#a8df
 @media (max-width: 900px) {
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
   .col-span-2, .col-span-3 { grid-column: span 1; }
-  .topbar-nav { display: none; }
+  .topbar-brand { display: none; }
+  .topbar-actions .session-badge { display: none; }
+  .topbar { padding: 5px 8px; gap: 4px; }
   .form-grid-4 { grid-template-columns: 1fr 1fr; }
   .calib-display { grid-template-columns: 1fr 1fr; }
 }

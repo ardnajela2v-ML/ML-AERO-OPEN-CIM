@@ -129,12 +129,18 @@ def create_app():
             for tid in stale_t:
                 tasks.pop(tid, None)
 
+    _last_cleanup = [0.0]  # mutable container for closure
+
     @app.after_request
     def _after(resp):
-        try:
-            _cleanup_sessions()
-        except Exception:
-            pass
+        # Cleanup solo cada ~60 s en vez de cada request
+        now = time.time()
+        if now - _last_cleanup[0] > 60:
+            _last_cleanup[0] = now
+            try:
+                _cleanup_sessions()
+            except Exception:
+                pass
         return resp
 
     @app.errorhandler(400)
@@ -213,6 +219,10 @@ def create_app():
         if isinstance(obj, np.integer): return int(obj)
         if isinstance(obj, np.floating): return None if np.isnan(obj) else float(obj)
         if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, float):
+            if obj != obj or obj == float('inf') or obj == float('-inf'):
+                return None
+            return obj
         if isinstance(obj, dict): return {k: numpy_to_python(v) for k, v in obj.items()}
         if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
         return obj
