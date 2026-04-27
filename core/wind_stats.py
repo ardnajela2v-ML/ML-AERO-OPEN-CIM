@@ -427,8 +427,8 @@ def compute_site_overview(df, ws_col='wind_speed', wd_col='wind_dir',
     # Daily mean time series (for overview chart)
     if isinstance(df.index, pd.DatetimeIndex):
         daily = s.resample('D').mean().dropna()
-        # downsample to max 500 pts for chart
-        step = max(1, len(daily) // 500)
+        # send all daily points (typically ~365-3650 for 1-10 years) for zoom fidelity
+        step = max(1, len(daily) // 2000)
         result['daily_series'] = {
             'labels': [str(d)[:10] for d in daily.index[::step]],
             'values': [round(float(v), 3) for v in daily.values[::step]],

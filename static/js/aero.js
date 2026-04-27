@@ -1568,19 +1568,66 @@ function renderDailyTS(ds) {
   destroyChart('chart-daily-ts');
   const ctx = document.getElementById('chart-daily-ts')?.getContext('2d');
   if (!ctx) return;
+  const resetBtn = document.getElementById('btn-reset-zoom-daily');
+  const c = acc3();
   WP.charts['chart-daily-ts'] = new Chart(ctx, {
     type: 'line',
     data: {
       labels: ds.labels,
       datasets: [{ label: 'V̄ diaria (m/s)', data: ds.values,
-        borderColor: acc3(), backgroundColor: acc3()+'18',
-        borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: true }]
+        borderColor: c, backgroundColor: c+'18',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: c,
+        pointHoverBorderColor: '#fff',
+        pointHoverBorderWidth: 2,
+        tension: 0.3, fill: true }]
     },
-    options: { responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { font:{size:9}, boxWidth:10 } } },
-      scales: { x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 12, font:{size:9} } },
-                y: { grid: { color: gridColor() }, min: 0, ticks:{font:{size:9}, callback:v=>v+' m/s'} } } }
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { font:{size:9}, boxWidth:10 } },
+        tooltip: {
+          enabled: true,
+          backgroundColor: isLight() ? '#fff' : '#1B2230',
+          titleColor: isLight() ? '#0B1220' : '#F4F7FB',
+          bodyColor: isLight() ? '#3D4A5C' : '#A6B3C8',
+          borderColor: isLight() ? '#D6DEE9' : '#2A3346',
+          borderWidth: 1,
+          padding: 10,
+          displayColors: false,
+          callbacks: {
+            title: (items) => items[0] ? `📅 ${items[0].label}` : '',
+            label: (item) => `Velocidad media: ${item.formattedValue} m/s`,
+          }
+        },
+        zoom: {
+          pan: { enabled: true, mode: 'x', modifierKey: null },
+          zoom: {
+            wheel: { enabled: true, modifierKey: null },
+            pinch: { enabled: true },
+            drag: { enabled: false },
+            mode: 'x',
+            onZoomComplete: () => { if (resetBtn) resetBtn.style.display = 'inline-block'; },
+          },
+        },
+      },
+      scales: {
+        x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 14, font:{size:9} } },
+        y: { grid: { color: gridColor() }, min: 0, ticks:{font:{size:9}, callback:v=>v+' m/s'} }
+      }
+    }
   });
+  // Reset zoom button
+  if (resetBtn) {
+    resetBtn.style.display = 'none';
+    resetBtn.onclick = () => {
+      WP.charts['chart-daily-ts']?.resetZoom();
+      resetBtn.style.display = 'none';
+    };
+  }
 }
 
 function renderMClimOverview(c) {
