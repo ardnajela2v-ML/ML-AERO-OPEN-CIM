@@ -12,10 +12,36 @@ import traceback
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
+from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, send_from_directory, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
+
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    HAS_LIMITER = True
+except Exception:
+    HAS_LIMITER = False
+
+
+@lru_cache(maxsize=32)
+def _cached_power_curve(filepath):
+    """Cachea PowerCurve.from_file para evitar releer CSVs idénticos."""
+    from core.energy import PowerCurve
+    return PowerCurve.from_file(filepath)
+
+
+@lru_cache(maxsize=4)
+def _cached_list_files(folder):
+    """Cachea el listado del folder. Devuelve tupla (immutable, hashable)."""
+    if not os.path.isdir(folder):
+        return tuple()
+    return tuple(sorted(
+        f for f in os.listdir(folder)
+        if not f.startswith('.') and not f.startswith('~')
+    ))
 
 from config import Config
 from core.data import DataLoader, DataQualityChecker, FeatureEngineer, df_to_json_safe, series_to_chart
@@ -57,6 +83,8 @@ def create_app():
                 template_folder='templates',
                 static_folder='static')
     app.config.from_object(Config)
+    # Tope de upload: 100 MB
+    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
 
     # CORS con whitelist desde Config (ALLOWED_ORIGINS) o fallback localhost
     CORS(app, origins=getattr(Config, 'ALLOWED_ORIGINS',
@@ -76,10 +104,15 @@ def create_app():
     _sessions_lock = threading.Lock()
     _executor = ThreadPoolExecutor(max_workers=4)
     SESSION_TTL_SEC = 4 * 3600   # 4 h sin actividad
+    TASK_TTL_SEC    = 4 * 3600   # 4 h tras la última lectura
 
     def _touch(sid):
         with _sessions_lock:
             sessions.setdefault(sid, {})['_last_access'] = time.time()
+
+    def _touch_task(tid):
+        if tid in tasks and isinstance(tasks[tid], dict):
+            tasks[tid]['_last_access'] = time.time()
 
     def _cleanup_sessions():
         now = time.time()
@@ -90,6 +123,11 @@ def create_app():
             for sid in stale:
                 sessions.pop(sid, None)
                 arena_store.pop(sid, None)
+            stale_t = [tid for tid, t in tasks.items()
+                       if isinstance(t, dict)
+                       and now - t.get('_last_access', now) > TASK_TTL_SEC]
+            for tid in stale_t:
+                tasks.pop(tid, None)
 
     @app.after_request
     def _after(resp):
@@ -98,6 +136,61 @@ def create_app():
         except Exception:
             pass
         return resp
+
+    @app.errorhandler(400)
+    def _bad_request(e):
+        return jsonify({'error': str(getattr(e, 'description', 'Bad Request'))}), 400
+
+    def _require_sid(body):
+        """Devuelve session_id válido o aborta 400 con JSON."""
+        from flask import abort
+        sid = body.get('session_id') if hasattr(body, 'get') else None
+        if not sid:
+            abort(400, description='session_id requerido')
+        return sid
+
+    def _resolve_sid_or_new(body):
+        """Devuelve session_id si existe; si no, genera uno nuevo (entry points)."""
+        sid = body.get('session_id') if hasattr(body, 'get') else None
+        return sid or str(uuid.uuid4())
+
+    # ─── ENVELOPE HELPERS ─────────────────────────────────────────────────────
+
+    def _ok(data):
+        return jsonify({'success': True, 'data': data})
+
+    def _err(msg, code=400):
+        return jsonify({'success': False, 'error': msg}), code
+
+    def _validate_ranges(*, discount_rate=None, n_years=None,
+                         rated_power_kw=None, hub_height_m=None):
+        """Valida rangos físicos/financieros. Devuelve None o (jsonify, code)."""
+        if discount_rate is not None and not (0 < discount_rate < 1):
+            return _err('discount_rate debe estar entre 0 y 1')
+        if n_years is not None and not (1 <= n_years <= 50):
+            return _err('n_years debe estar entre 1 y 50')
+        if rated_power_kw is not None and rated_power_kw <= 0:
+            return _err('rated_power_kw debe ser positivo')
+        if hub_height_m is not None and not (10 <= hub_height_m <= 300):
+            return _err('hub_height_m fuera de rango (10-300 m)')
+        return None
+
+    # ─── RATE LIMITER (opcional, requiere flask-limiter instalado) ────────────
+
+    if HAS_LIMITER:
+        limiter = Limiter(get_remote_address, app=app,
+                          default_limits=['100 per hour'])
+    else:
+        # Decorador no-op si flask-limiter no está disponible
+        class _NoOpLimiter:
+            def limit(self, *_a, **_kw):
+                def deco(f): return f
+                return deco
+        limiter = _NoOpLimiter()
+        logger.warning(
+            "flask-limiter no instalado: rate-limiting deshabilitado. "
+            "Instalar con `pip install flask-limiter` para activarlo."
+        )
 
     # ─── HELPERS ──────────────────────────────────────────────────────────────
 
@@ -130,12 +223,29 @@ def create_app():
     def health():
         return jsonify({'status': 'ok', 'version': '1.0'}), 200
 
+    @app.route('/api/version')
+    def version():
+        return jsonify({'version': '1.0', 'name': 'AERO by OPEN CIM'}), 200
+
     @app.route('/api/sessions/<sid>', methods=['DELETE'])
     def delete_session(sid):
         with _sessions_lock:
             sessions.pop(sid, None)
             arena_store.pop(sid, None)
         return jsonify({'deleted': sid}), 200
+
+    @app.route('/api/tasks/<task_id>', methods=['GET'])
+    def get_task_status(task_id):
+        task = tasks.get(task_id)
+        if not task:
+            return jsonify({'error': 'Task no encontrada'}), 404
+        _touch_task(task_id)
+        return jsonify(numpy_to_python(task)), 200
+
+    @app.route('/api/tasks/<task_id>', methods=['DELETE'])
+    def delete_task(task_id):
+        tasks.pop(task_id, None)
+        return jsonify({'deleted': task_id}), 200
 
     @app.route('/')
     def index():
@@ -146,10 +256,7 @@ def create_app():
         """Nested reference doc: OpenWAsP engineering & reproducibility blueprint."""
         return render_template('ingenieria.html')
 
-    @app.route('/static/<path:filename>')
-    def static_files(filename):
-        return send_from_directory('static', filename)
-
+    # /static/<path> es servido automáticamente por Flask (static_folder='static')
     # ─── SESSION ──────────────────────────────────────────────────────────────
 
     @app.route('/api/session/new', methods=['POST'])
@@ -169,9 +276,7 @@ def create_app():
             return jsonify({'files': [], 'folder': folder,
                             'error': 'DATA_FOLDER not found'})
         files = []
-        for fname in sorted(os.listdir(folder)):
-            if fname.startswith('.') or fname.startswith('~'):
-                continue
+        for fname in _cached_list_files(folder):
             ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
             if ext in ('txt', 'csv', 'tsv', 'dat'):
                 fpath = os.path.join(folder, fname)
@@ -184,8 +289,8 @@ def create_app():
     @app.route('/api/data/load_preset', methods=['POST'])
     def load_preset_file():
         """Load a meteorological file from DATA_FOLDER by filename."""
-        body     = request.json or {}
-        sid      = body.get('session_id', 'default')
+        body     = request.get_json(silent=True) or {}
+        sid      = _resolve_sid_or_new(body)
         filename = body.get('filename', '')
         source   = body.get('source', 'auto')
 
@@ -227,15 +332,15 @@ def create_app():
 
     @app.route('/api/data/upload', methods=['POST'])
     def upload_data():
-        sid = request.form.get('session_id', 'default')
+        sid = request.form.get('session_id') or str(uuid.uuid4())
         source_hint = request.form.get('source', 'auto')
 
         if 'file' not in request.files:
-            return jsonify({'error': 'No file provided'}), 400
+            return _err('No file provided')
 
         f = request.files['file']
         if not f.filename or not allowed_file(f.filename):
-            return jsonify({'error': f'Unsupported file type: {f.filename}'}), 400
+            return _err(f'Unsupported file type: {f.filename}')
 
         # secure_filename anti path traversal y caracteres peligrosos
         f.filename = secure_filename(f.filename) or 'upload.csv'
@@ -255,7 +360,7 @@ def create_app():
                 s = df[chart_col].dropna()
                 chart_data = series_to_chart(s.index, s.values, label=chart_col)
 
-            return jsonify({
+            return _ok({
                 'session_id': sid,
                 'meta': numpy_to_python(meta),
                 'preview': preview_rows[:50],
@@ -265,14 +370,14 @@ def create_app():
             })
         except Exception as e:
             logger.exception('Error en %s', request.path)
-            return jsonify({'error': str(e)}), 500
+            return _err(str(e), 500)
 
     # ─── DATA QUALITY ─────────────────────────────────────────────────────────
 
     @app.route('/api/data/quality', methods=['POST'])
     def data_quality():
-        body = request.json or {}
-        sid = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
         target_col = body.get('target_col', 'wind_speed')
         sess = get_session(sid)
         if 'df' not in sess:
@@ -322,8 +427,8 @@ def create_app():
 
     @app.route('/api/features/build', methods=['POST'])
     def build_features():
-        body = request.json or {}
-        sid = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
         target_col   = body.get('target_col', 'wind_speed')
         horizons_h   = body.get('horizons', [1, 6, 24])
         test_frac    = float(body.get('test_frac', 0.2))
@@ -362,9 +467,10 @@ def create_app():
     # ─── MODEL TRAINING ───────────────────────────────────────────────────────
 
     @app.route('/api/models/train', methods=['POST'])
+    @limiter.limit('5 per minute')
     def train_models():
-        body   = request.json or {}
-        sid    = body.get('session_id', 'default')
+        body   = request.get_json(silent=True) or {}
+        sid    = _require_sid(body)
         horizon_h = int(body.get('horizon_h', 1))
         enabled_models = body.get('models', None)  # None = train all
         task_id = str(uuid.uuid4())
@@ -373,9 +479,9 @@ def create_app():
 
         sess = get_session(sid)
         if 'features' not in sess:
-            return jsonify({'error': 'Run /api/features/build first.'}), 400
+            return _err('Run /api/features/build first.')
         if horizon_h not in sess['features']:
-            return jsonify({'error': f'Horizon {horizon_h}h not in feature set.'}), 400
+            return _err(f'Horizon {horizon_h}h not in feature set.')
 
         def _train_thread():
             try:
@@ -426,7 +532,7 @@ def create_app():
                 logger.exception('Task fallida')
 
         _executor.submit(_train_thread)
-        return jsonify({'task_id': task_id})
+        return _ok({'task_id': task_id})
 
     @app.route('/api/models/status/<task_id>', methods=['GET'])
     def task_status(task_id):
@@ -443,8 +549,8 @@ def create_app():
 
     @app.route('/api/forecast/predictions', methods=['POST'])
     def get_predictions():
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         horizon_h = int(body.get('horizon_h', 1))
         model_name = body.get('model', 'lightgbm')
         sess = get_session(sid)
@@ -510,8 +616,8 @@ def create_app():
 
     @app.route('/api/forecast/comparison', methods=['POST'])
     def comparison_table():
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         horizon_h = int(body.get('horizon_h', 1))
         sess = get_session(sid)
         res_key = f'results_h{horizon_h}'
@@ -537,8 +643,8 @@ def create_app():
 
     @app.route('/api/energy/compute', methods=['POST'])
     def energy_compute():
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = get_session(sid)
 
         if 'df' not in sess:
@@ -555,7 +661,7 @@ def create_app():
             elif builtin and builtin.endswith('.csv'):
                 # file-based turbine from aerogeneradores folder
                 fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
-                turbine = PowerCurve.from_file(fpath)
+                turbine = _cached_power_curve(fpath)
             else:
                 curve_pts = turbine_cfg.get('curve_points')
                 if curve_pts:
@@ -675,8 +781,8 @@ def create_app():
 
     @app.route('/api/energy/compare_turbines', methods=['POST'])
     def compare_turbines():
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = get_session(sid)
 
         if 'df' not in sess:
@@ -708,8 +814,8 @@ def create_app():
     @app.route('/api/wind/stats', methods=['POST'])
     def wind_stats():
         """Compute full wind analysis: overview KPIs, rose, diurnal, climatology, extremes."""
-        body    = request.json or {}
-        sid     = body.get('session_id', 'default')
+        body    = request.get_json(silent=True) or {}
+        sid     = _require_sid(body)
         ws_col  = body.get('ws_col',  'wind_speed')
         wd_col  = body.get('wd_col',  'wind_dir')
         temp_col= body.get('temp_col','temperature')
@@ -741,8 +847,8 @@ def create_app():
     @app.route('/api/wind/advanced', methods=['POST'])
     def wind_advanced():
         """TI, wind shear, sector analysis, extreme return periods."""
-        body    = request.json or {}
-        sid     = body.get('session_id', 'default')
+        body    = request.get_json(silent=True) or {}
+        sid     = _require_sid(body)
         ws_col  = body.get('ws_col', 'wind_speed')
         wd_col  = body.get('wd_col', 'wind_dir')
         ws_h    = float(body.get('ws_height', 50.0))
@@ -771,8 +877,8 @@ def create_app():
     @app.route('/api/hybrid/simulate', methods=['POST'])
     def hybrid_simulate():
         """Simulate Wind + Solar + Battery + Diesel dispatch for a given load."""
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = get_session(sid)
 
         if 'df' not in sess:
@@ -871,7 +977,7 @@ def create_app():
     @app.route('/api/hybrid/load_profile', methods=['POST'])
     def hybrid_load_profile():
         """Return synthetic load profile for preview."""
-        body       = request.json or {}
+        body       = request.get_json(silent=True) or {}
         annual_kwh = float(body.get('annual_kwh', 1_000_000))
         peak_kw    = float(body.get('peak_kw', annual_kwh / 4380))
         ptype      = body.get('profile_type', 'residential')
@@ -891,15 +997,25 @@ def create_app():
     @app.route('/api/energy/techno_economic', methods=['POST'])
     def techno_economic():
         """Full techno-economic analysis: CAPEX, NPV/VAN, LCOE, VAE, payback, Cp."""
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = get_session(sid)
-
-        if 'df' not in sess:
-            return jsonify({'error': 'No data loaded.'}), 400
 
         turbine_cfg = body.get('turbine', {})
         fin_cfg     = body.get('financial', {})
+
+        # Validación de rangos físicos/financieros (antes del df check)
+        rated_kw = float(turbine_cfg.get('rated_power_kw', 2000))
+        hub_h    = float(turbine_cfg.get('hub_height_m', 80))
+        d_rate   = float(fin_cfg.get('discount_rate_pct', 8.0)) / 100.0
+        n_yrs    = int(fin_cfg.get('project_years', 20))
+        err = _validate_ranges(discount_rate=d_rate, n_years=n_yrs,
+                               rated_power_kw=rated_kw, hub_height_m=hub_h)
+        if err is not None:
+            return err
+
+        if 'df' not in sess:
+            return _err('No data loaded.')
 
         try:
             # resolve turbine
@@ -908,7 +1024,7 @@ def create_app():
                 turbine = PowerCurve.from_builtin(builtin)
             elif builtin and builtin.endswith('.csv'):
                 fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
-                turbine = PowerCurve.from_file(fpath)
+                turbine = _cached_power_curve(fpath)
             else:
                 turbine = PowerCurve(
                     name=turbine_cfg.get('name', 'Custom'),
@@ -957,6 +1073,8 @@ def create_app():
             if demand_mwh > 0:
                 n_turbines_req = tea.turbines_for_demand(annual_kwh_per_turbine, demand_mwh)
             n_turbines = int(body.get('n_turbines') or n_turbines_req or 1)
+            if n_turbines < 1:
+                return _err('n_turbines debe ser >= 1')
 
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
@@ -969,7 +1087,7 @@ def create_app():
             # Cp analysis
             cp = tea.cp_analysis(turbine, ws_hub, rho=rho)
 
-            return jsonify(numpy_to_python({
+            return _ok(numpy_to_python({
                 'analysis': analysis,
                 'cp': cp,
                 'turbine': turbine.to_dict(),
@@ -980,7 +1098,7 @@ def create_app():
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
-            return jsonify({'error': str(e)}), 500
+            return _err(str(e), 500)
 
     # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
     @app.route('/api/farm/simulate', methods=['POST'])
@@ -998,32 +1116,40 @@ def create_app():
           n_sectors:     wind direction sectors (default 36)
         Uses the wind/direction time series from the active session.
         """
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = get_session(sid)
+
+        # Validación rangos de la turbina solicitada (antes del df check)
+        t_cfg = body.get('turbine', {})
+        rated_kw = float(t_cfg.get('rated_power_kw', 2000))
+        hub_h    = float(t_cfg.get('hub_height_m', 80))
+        err = _validate_ranges(rated_power_kw=rated_kw, hub_height_m=hub_h)
+        if err is not None:
+            return err
+
         if 'df' not in sess:
-            return jsonify({'error': 'No data loaded.'}), 400
+            return _err('No data loaded.')
 
         layout = body.get('layout') or []
         if not layout or len(layout) < 1:
-            return jsonify({'error': 'Layout vacío. Coloca al menos una turbina.'}), 400
+            return _err('Layout vacío. Coloca al menos una turbina.')
 
         try:
-            t_cfg = body.get('turbine', {})
             builtin = t_cfg.get('builtin_model')
             if builtin and builtin in PowerCurve.BUILTIN_CURVES:
                 turbine = PowerCurve.from_builtin(builtin)
             elif builtin and builtin.endswith('.csv'):
                 fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
-                turbine = PowerCurve.from_file(fpath)
+                turbine = _cached_power_curve(fpath)
             else:
                 turbine = PowerCurve(
                     name=t_cfg.get('name', 'Custom'),
-                    rated_power_kw=float(t_cfg.get('rated_power_kw', 2000)),
+                    rated_power_kw=rated_kw,
                     cut_in=float(t_cfg.get('cut_in', 3.0)),
                     rated_speed=float(t_cfg.get('rated_speed', 12.0)),
                     cut_out=float(t_cfg.get('cut_out', 25.0)),
-                    hub_height_m=float(t_cfg.get('hub_height_m', 80)),
+                    hub_height_m=hub_h,
                     rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
                 )
 
@@ -1031,7 +1157,7 @@ def create_app():
             ws_col = sess.get('target_col', 'wind_speed')
             wd_col = body.get('wd_col', 'wind_dir')
             if ws_col not in df.columns:
-                return jsonify({'error': f'Columna de viento "{ws_col}" no presente.'}), 400
+                return _err(f'Columna de viento "{ws_col}" no presente.')
             ws_h    = float(body.get('ws_height_m', 50.0))
             ws_raw  = df[ws_col].fillna(df[ws_col].median()).values
             ws_hub  = extrapolate_wind_hellmann(ws_raw, ws_h, turbine.hub_height_m)
@@ -1059,10 +1185,10 @@ def create_app():
                 pressure_pa=pressure_pa,
             )
             result['turbine'] = turbine.to_dict()
-            return jsonify(numpy_to_python(result))
+            return _ok(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
-            return jsonify({'error': str(e)}), 500
+            return _err(str(e), 500)
 
     @app.route('/api/grid/build', methods=['POST'])
     def grid_build_resource():
@@ -1076,8 +1202,8 @@ def create_app():
         from core.kriging import _haversine_km
         from scipy.stats import weibull_min as _wbl
 
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         sess = sessions.get(sid, {})
 
         cen_lat = body.get('center_lat')
@@ -1184,7 +1310,7 @@ def create_app():
     @app.route('/api/farm/wake_profile', methods=['POST'])
     def farm_wake_profile():
         """Return Jensen NOJ deficit (%) along the centreline vs x/D — for the physics chart."""
-        body = request.json or {}
+        body = request.get_json(silent=True) or {}
         rotor_d = float(body.get('rotor_d_m', 80.0))
         k_wake  = float(body.get('k_wake', 0.05))
         ct      = float(body.get('ct', 0.8))
@@ -1207,11 +1333,11 @@ def create_app():
     def export_csv():
         if request.method == 'GET':
             body = {}
-            sid     = request.args.get('session_id', 'default')
+            sid     = request.args.get('session_id') or _require_sid(request.args)
             dataset = request.args.get('type', 'raw')
         else:
-            body    = request.json or {}
-            sid     = body.get('session_id', 'default')
+            body    = request.get_json(silent=True) or {}
+            sid     = _require_sid(body)
             dataset = body.get('dataset', 'energy')
         # sanitiza dataset antes de interpolar en filename
         dataset = secure_filename(dataset) or 'export'
@@ -1227,8 +1353,10 @@ def create_app():
         if isinstance(df.index, pd.DatetimeIndex):
             df = df.reset_index()
 
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        fname = f'aero_{dataset}_{ts}.csv'
+        ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+        fname = f'{secure_filename(dataset)}_{ts}.csv'
+        if not fname.endswith('.csv'):
+            fname += '.csv'
         fpath = os.path.join(Config.EXPORT_FOLDER, fname)
         df.to_csv(fpath, index=False)
 
@@ -1240,8 +1368,8 @@ def create_app():
 
     @app.route('/api/ai/chat', methods=['POST'])
     def ai_chat():
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         q    = body.get('question', '').strip()
         sess = get_session(sid)
 
@@ -1330,7 +1458,7 @@ def create_app():
                         f"Horas equivalentes de plena carga: {flh}.")
             return "Configura y ejecuta la simulación en Energy Lab."
 
-        if any(w in ql for w in ['persistencia', 'baseline', 'baseline']):
+        if any(w in ql for w in ['persistencia', 'baseline']):
             return ("La persistencia predice que el viento en t+h es igual al viento en t. "
                     "Es el baseline estándar para pronóstico a corto plazo. "
                     "Un skill score positivo frente a persistencia indica que el modelo ML agrega valor real.")
@@ -1370,8 +1498,8 @@ def create_app():
     # ─── MONTH × HOUR HEATMAP ─────────────────────────────────────────────────
     @app.route('/api/wind_stats/month_hour_heatmap', methods=['POST'])
     def month_hour_heatmap():
-        body = request.json or {}
-        sid = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
         col = body.get('col', 'wind_speed')
         sess = get_session(sid)
         if 'df' not in sess:
@@ -1392,9 +1520,7 @@ def create_app():
 
         sites = []
         skipped = []
-        for fname in sorted(os.listdir(folder)):
-            if fname.startswith('.') or fname.startswith('~'):
-                continue
+        for fname in _cached_list_files(folder):
             if not fname.lower().endswith('.txt'):
                 continue
             path = os.path.join(folder, fname)
@@ -1437,7 +1563,7 @@ def create_app():
     @app.route('/api/kriging/grid', methods=['POST'])
     def kriging_compute_grid():
         """Interpolate a metric across the sites using Ordinary Kriging."""
-        body = request.json or {}
+        body = request.get_json(silent=True) or {}
         sites = body.get('sites') or []
         metric = body.get('metric', 'v_mean')
         n = int(body.get('n', 60))
@@ -1470,7 +1596,7 @@ def create_app():
         aerogenerador del catálogo y genera 3 grillas Kriging
         (viento, inversión, VAN).
         """
-        body = request.json or {}
+        body = request.get_json(silent=True) or {}
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Procesando sitios…', 'result': None}
@@ -1513,9 +1639,10 @@ def create_app():
         return jsonify({'task_id': task_id})
 
     @app.route('/api/kriging/analyze', methods=['POST'])
+    @limiter.limit('5 per minute')
     def kriging_full_analysis():
         """Full multi-site × multi-turbine analysis (heavy). Runs async."""
-        body = request.json or {}
+        body = request.get_json(silent=True) or {}
         year = int(body.get('year', 2018))
         demand_mwh = float(body.get('demand_mwh', 1000))
         tasa = float(body.get('tasa', 0.08))
@@ -1565,7 +1692,7 @@ def create_app():
           - 'alternatives': flat list of dicts (each with all criterion fields), or
           - 'sites_analysis': output of /api/kriging/analyze (nested), with 'mode'.
         """
-        body = request.json or {}
+        body = request.get_json(silent=True) or {}
         weights = body.get('weights')
         mode = body.get('mode', 'pairs')
 
@@ -1638,8 +1765,8 @@ def create_app():
     @app.route('/api/demand/load', methods=['POST'])
     def demand_load():
         """Carga el archivo de demanda y devuelve estadísticos del año base."""
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         key  = body.get('preset', 'juchitan')
         meta = DEMAND_PRESETS.get(key)
         if not meta:
@@ -1667,8 +1794,8 @@ def create_app():
         Ajusta varios modelos de tendencia y proyecta demanda a 25 años.
         Body: {session_id, preset, growth?, horizon?, history_years?}
         """
-        body = request.json or {}
-        sid = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
         key = body.get('preset', 'juchitan')
         growth = float(body.get('growth', Config.DEMAND_GROWTH_DEFAULT))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
@@ -1737,8 +1864,8 @@ def create_app():
     @app.route('/api/pml/load', methods=['POST'])
     def pml_load():
         """Carga PML_IPO.txt y devuelve estadísticos compra/venta."""
-        body = request.json or {}
-        sid  = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
         key  = body.get('preset', 'pml_ipo')
         meta = PML_PRESETS.get(key)
         if not meta:
@@ -1774,8 +1901,8 @@ def create_app():
         Proyecta el PML a 25 años (compra y venta por separado).
         Body: {session_id, preset, growth?, side?, horizon?, history_years?}
         """
-        body = request.json or {}
-        sid     = body.get('session_id', 'default')
+        body = request.get_json(silent=True) or {}
+        sid     = _require_sid(body)
         key     = body.get('preset', 'pml_ipo')
         growth  = float(body.get('growth', Config.PML_GROWTH_DEFAULT))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
