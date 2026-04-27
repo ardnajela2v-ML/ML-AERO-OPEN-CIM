@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════
-   WindPro Platform — Frontend application logic
+   AERO by OPEN CIM — Frontend application logic
 ═══════════════════════════════════════════════════ */
 
 'use strict';
@@ -2034,7 +2034,7 @@ async function exportData(type) {
 
   try {
     let csvText = '';
-    let filename = 'windpro_export.csv';
+    let filename = 'aero_export.csv';
 
     if (type === 'raw') {
       const r = await api(`/api/export/csv?session_id=${WP.sessionId}`, 'GET');
@@ -2085,7 +2085,7 @@ async function exportReport() {
     const now = new Date().toISOString().slice(0,10);
     const lines = [
       '══════════════════════════════════════════════════════',
-      ' WindPro Intelligence Platform — Reporte Técnico',
+      ' AERO by OPEN CIM — Reporte Técnico',
       `══════════════════════════════════════════════════════`,
       `Generado: ${now}  |  Sesión: ${WP.sessionId}`,
       '',
@@ -2121,11 +2121,11 @@ async function exportReport() {
       '· VAN sensible a tasa de descuento y precio de energía asumidos',
       '',
       '══════════════════════════════════════════════════════',
-      ' WindPro Platform · v2.0 · Flask + scikit-learn + LightGBM',
+      ' AERO by OPEN CIM · v2.0 · Flask + scikit-learn + LightGBM',
       '══════════════════════════════════════════════════════',
     ];
-    downloadText(lines.join('\n'), 'windpro_report.txt');
-    if (info) { info.className = 'info-box green'; info.textContent = '✓ windpro_report.txt descargado'; }
+    downloadText(lines.join('\n'), 'aero_report.txt');
+    if (info) { info.className = 'info-box green'; info.textContent = '✓ aero_report.txt descargado'; }
     toast('Reporte descargado', 'success');
   } catch(e) {
     toast('Error al generar reporte: ' + e.message, 'error');
@@ -2259,7 +2259,7 @@ function buildClimatologyCsv(c) {
 
 function buildWindStatsCsv(r) {
   if (!r) return '';
-  const rows = ['# WindPro Wind Statistics Export'];
+  const rows = ['# AERO by OPEN CIM — Wind Statistics Export'];
   if (r.rose) {
     rows.push('\n# Rosa de vientos');
     rows.push('sector,frecuencia_pct,vel_media_ms');
@@ -3929,7 +3929,7 @@ function mapaExportGeoJSON() {
   const blob = new Blob([JSON.stringify(fc, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `windpro_resource_grid_${Date.now()}.geojson`;
+  a.download = `aero_resource_grid_${Date.now()}.geojson`;
   a.click();
   toast('GeoJSON exportado', 'success');
 }

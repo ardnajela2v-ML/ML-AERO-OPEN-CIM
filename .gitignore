@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Backups
+*.backup
+*.bak
+*.orig
+
+# Datos y exports (no versionar)
+exports/*.csv
+uploads/*
+saved_models/*
+!uploads/.gitkeep
+!saved_models/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs
+*.log
+logs/
+
+# Variables de entorno
+.env
+.env.*
