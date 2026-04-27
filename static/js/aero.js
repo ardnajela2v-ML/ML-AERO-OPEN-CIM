@@ -542,7 +542,7 @@ async function trainModels() {
     const r = await api('/api/models/train', 'POST', {
       session_id: WP.sessionId, horizon_h: horizonH, models: selectedModels
     });
-    WP.trainTaskId = r.task_id;
+    WP.trainTaskId = r.data ? r.data.task_id : r.task_id;
 
     // stop any previous poll
     if (WP.trainPollInterval) clearInterval(WP.trainPollInterval);
@@ -3040,7 +3040,7 @@ async function krig3Run() {
     `Procesando ${KRIG.selected.size} sitios seleccionados…`;
   try {
     const r = await api('/api/kriging/legacy_maps', 'POST', body);
-    KRIG.task_id = r.task_id;
+    KRIG.task_id = r.data ? r.data.task_id : r.task_id;
     krig3Poll();
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
@@ -3207,7 +3207,7 @@ async function mcdaRunAnalysis() {
   document.getElementById('mcda-progress-text').textContent = 'Iniciando…';
   try {
     const r = await api('/api/kriging/analyze', 'POST', body);
-    MCDA.taskId = r.task_id;
+    MCDA.taskId = r.data ? r.data.task_id : r.task_id;
     mcdaPollStatus();
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
