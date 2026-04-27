@@ -13,6 +13,7 @@ dominant wind direction (for layout visualisation).
 """
 import math
 import numpy as np
+import pandas as pd
 from typing import List, Tuple, Optional
 
 from core.energy import PowerCurve
@@ -26,15 +27,16 @@ def _rotate_to_wind_axis(layout_xy: np.ndarray, wind_dir_deg: float):
     Convention: wind_dir_deg is the meteorological direction the wind comes
     FROM (0=N, 90=E). After rotation, downstream is +x.
     """
-    # met → math: theta_to_axis = 270 - wind_dir_deg (so wind FROM north → flowing south)
-    theta = math.radians(270.0 - wind_dir_deg)
+    # met → rotation angle: 90 + wind_dir_deg coloca al aerogenerador downstream en +x
+    # (wind FROM north blows toward math 270°, rotamos por +90° para llevarlo a +x)
+    theta = math.radians(90.0 + wind_dir_deg)
     c, s = math.cos(theta), math.sin(theta)
     R = np.array([[c, -s], [s, c]])
     return layout_xy @ R.T
 
 
 def jensen_deficit(distance_x_m: float, lateral_m: float,
-                   rotor_d_m: float, k: float = 0.05,
+                   rotor_d_m: float, k: float = 0.075,  # IEA onshore estándar; Istmo TI alto usar 0.09-0.10
                    ct: float = 0.8) -> float:
     """
     Jensen NOJ single-wake velocity deficit at a downwind turbine,
@@ -67,7 +69,7 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
 
 def effective_wind_per_turbine(layout_xy: np.ndarray, v_free: float,
                                wind_dir_deg: float, rotor_d_m: float,
-                               k: float = 0.05, ct: float = 0.8) -> np.ndarray:
+                               k: float = 0.075, ct: float = 0.8) -> np.ndarray:
     """
     Compute effective free-stream-equivalent wind speed at each turbine
     accounting for upstream wake superposition (Katic — sum-of-squares).
@@ -146,7 +148,7 @@ def dominant_direction(wd: np.ndarray, n_sectors: int = 36) -> float:
 def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        turbine: PowerCurve,
                        ws: np.ndarray, wd: np.ndarray,
-                       k_wake: float = 0.05,
+                       k_wake: float = 0.075,  # IEA onshore estándar; Istmo TI alto usar 0.09-0.10
                        ct: float = 0.8,
                        n_sectors: int = 36,
                        availability: float = 1.0,
@@ -164,15 +166,23 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         return {'error': 'Empty layout'}
 
     rotor_d = float(turbine.rotor_diameter_m or 80.0)
-    hours = len(ws)
-    if hours == 0:
+    n_samples = len(ws)
+    if n_samples == 0:
         return {'error': 'No wind data'}
+
+    # ── inferir paso temporal: si ws es Series con DatetimeIndex usa la moda
+    # de los deltas; si no, asume 1.0 h (datos horarios MERRA-2/ERA5)
+    if isinstance(ws, pd.Series) and isinstance(ws.index, pd.DatetimeIndex) and n_samples > 1:
+        dt_h = ws.index.to_series().diff().mode()[0].total_seconds() / 3600
+    else:
+        dt_h = 1.0
+    total_hours = n_samples * dt_h
 
     sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
 
     # No-wake baseline: total energy if every turbine saw free-stream wind.
     p_free_per_bin = turbine.power_kw(ws_centres)  # kW per turbine at each bin
-    e_free_per_turbine_kwh = float(np.sum(freq.sum(axis=0) * p_free_per_bin)) * hours
+    e_free_per_turbine_kwh = float(np.sum(freq.sum(axis=0) * p_free_per_bin)) * total_hours
     e_free_total_kwh = e_free_per_turbine_kwh * n
 
     # Wake-aware energy: for each (sector, ws_bin) compute effective ws per turbine
@@ -191,20 +201,24 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
             v_eff = effective_wind_per_turbine(
                 layout, v_free, wind_dir, rotor_d, k=k_wake, ct=ct)
             p_kw = turbine.power_kw(v_eff)  # vectorised
-            e_per_turbine_kwh += p_kw * p_join * hours
+            e_per_turbine_kwh += p_kw * p_join * total_hours
 
-    losses = float(availability) * (1.0 - float(electrical_losses))
-    e_per_turbine_kwh *= losses
+    # wake_loss aislado: comparar ANTES de aplicar losses operacionales
+    # (ambos lados sin losses → wake puro, consistente con el per-turbine donde se cancelan)
+    e_total_pre_losses_kwh = float(e_per_turbine_kwh.sum())
+    wake_loss = (1.0 - e_total_pre_losses_kwh / e_free_total_kwh) if e_free_total_kwh > 0 else 0.0
+
+    survival = float(availability) * (1.0 - float(electrical_losses))
+    e_per_turbine_kwh *= survival
     e_total_kwh = float(e_per_turbine_kwh.sum())
 
     rated_kw = float(turbine.rated_power_kw)
     installed_kw = rated_kw * n
-    cf = e_total_kwh / (installed_kw * hours) if installed_kw > 0 else 0.0
-    wake_loss = (1.0 - e_total_kwh / e_free_total_kwh) if e_free_total_kwh > 0 else 0.0
+    cf = e_total_kwh / (installed_kw * total_hours) if installed_kw > 0 else 0.0
     dom_dir = dominant_direction(wd, n_sectors)
 
     # Per-turbine free-stream comparison (no-wake AEP per turbine)
-    e_no_wake_per_turbine = e_free_per_turbine_kwh * losses
+    e_no_wake_per_turbine = e_free_per_turbine_kwh * survival
     per_turbine = []
     for i, (x, y) in enumerate(layout_xy):
         e_i = float(e_per_turbine_kwh[i])
@@ -218,7 +232,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                 100.0 * (1 - e_i / e_no_wake_per_turbine) if e_no_wake_per_turbine > 0 else 0.0,
                 2),
             'cf_pct': round(
-                100.0 * e_i / (rated_kw * hours) if rated_kw > 0 else 0.0,
+                100.0 * e_i / (rated_kw * total_hours) if rated_kw > 0 else 0.0,
                 2),
         })
 
@@ -228,11 +242,12 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'rated_kw':       rated_kw,
         'installed_mw':   round(installed_kw / 1000.0, 3),
         'aep_mwh':        round(e_total_kwh / 1000.0, 2),
-        'aep_no_wake_mwh': round(e_free_total_kwh * losses / 1000.0, 2),
+        'aep_no_wake_mwh': round(e_free_total_kwh * survival / 1000.0, 2),
         'wake_loss_pct':  round(100.0 * wake_loss, 2),
         'cf_pct':         round(100.0 * cf, 2),
         'flh':            round(e_total_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
         'dominant_dir_deg': round(dom_dir, 1),
-        'hours':          int(hours),
+        'hours':          round(total_hours, 1),
+        'dt_h':           round(dt_h, 4),
         'turbines':       per_turbine,
     }
