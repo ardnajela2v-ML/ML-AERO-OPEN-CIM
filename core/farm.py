@@ -12,11 +12,12 @@ Outputs per-turbine AEP, total AEP, wake loss %, capacity factor, and the
 dominant wind direction (for layout visualisation).
 """
 import math
+import warnings
 import numpy as np
 import pandas as pd
 from typing import List, Tuple, Optional
 
-from core.energy import PowerCurve
+from core.energy import PowerCurve, air_density
 
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
@@ -37,7 +38,7 @@ def _rotate_to_wind_axis(layout_xy: np.ndarray, wind_dir_deg: float):
 
 def jensen_deficit(distance_x_m: float, lateral_m: float,
                    rotor_d_m: float, k: float = 0.075,  # IEA onshore estándar; Istmo TI alto usar 0.09-0.10
-                   ct: float = 0.8) -> float:
+                   ct: float = 0.8) -> float:  # Ct promedio operacional. Para mayor precisión usar curva Ct(v) del fabricante
     """
     Jensen NOJ single-wake velocity deficit at a downwind turbine,
     including a linear partial-overlap correction (Frandsen-style).
@@ -46,7 +47,9 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     lateral_m:    perpendicular distance to wake centreline.
     rotor_d_m:    rotor diameter of the upwind turbine.
     k:            wake decay (0.04 offshore, 0.05–0.075 onshore).
-    ct:           thrust coefficient.
+    ct:           thrust coefficient. ct=0.8 es CONSERVADOR para velocidades cercanas a
+                  cut-in (Ct real ≈ 0.8 en parcial-load, baja a ~0.1 cerca de rated).
+                  Sobreestima estela a v alta. Para mayor precisión pasar Ct(v) del fabricante.
 
     Returns delta_v / v_freestream (0 if not in wake).
     """
@@ -152,12 +155,29 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        ct: float = 0.8,
                        n_sectors: int = 36,
                        availability: float = 1.0,
-                       electrical_losses: float = 0.0) -> dict:
+                       electrical_losses: float = 0.0,
+                       temperature_c=None,
+                       pressure_pa=None,
+                       humidity_pct=0.0) -> dict:
     """
     Compute farm AEP per turbine with wake effects.
 
-    layout_xy: list of (x_m, y_m) turbine positions.
-    ws, wd:    hourly wind speed (m/s) and direction (deg, met convention).
+    layout_xy: list of (x_m, y_m) turbine positions EN METROS CARTESIANOS
+               (no lat/lon). Para sitios con extensión >1 km usar UTM o
+               coordenadas locales centradas.
+
+    ws, wd:    serie temporal de velocidad (m/s) y dirección (deg, convención
+               meteorológica: dirección de DONDE viene el viento).
+               IMPORTANTE: ws debe estar extrapolada a hub height ANTES de llamar
+               esta función. Usar extrapolate_wind_hellmann() o
+               extrapolate_wind_log() de core.energy.
+
+    temperature_c, pressure_pa, humidity_pct:
+               Series o escalares para corregir potencia por densidad del aire vía
+               air_density(). Si no se pasan, se usa rho=1.225 kg/m³ (nivel del mar)
+               y se emite un warning — sesgo de 8-12% en sitios de altitud (Sierra
+               Norte de Oaxaca, valles centrales).
+
     Returns dict with per-turbine AEP, totals, wake_loss%, CF%, dominant dir.
     """
     layout = np.asarray(layout_xy, dtype=float)
@@ -165,10 +185,32 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     if n == 0:
         return {'error': 'Empty layout'}
 
+    # ── validación de unidades del layout ──
+    if layout.size > 0 and float(np.max(np.abs(layout))) > 1e6:
+        raise ValueError(
+            "layout_xy debe estar en metros cartesianos, no lat/lon "
+            f"(max |coord| = {float(np.max(np.abs(layout))):.3e}). "
+            "Convertir a UTM o coordenadas locales centradas."
+        )
+
     rotor_d = float(turbine.rotor_diameter_m or 80.0)
     n_samples = len(ws)
     if n_samples == 0:
         return {'error': 'No wind data'}
+
+    # ── densidad del aire (escalar): media de la serie si hay temp+presión,
+    # si no fallback a 1.225 con warning ──
+    if temperature_c is not None and pressure_pa is not None:
+        rho_arr = air_density(temperature_c, pressure_pa, humidity_pct)
+        rho_mean = float(np.mean(rho_arr))
+    else:
+        warnings.warn(
+            "simulate_wind_farm: temperatura/presión no provistas; "
+            "usando rho=1.225 kg/m³ (nivel del mar). En sitios mexicanos de "
+            "altitud el sesgo de AEP puede ser 8-12%.",
+            stacklevel=2,
+        )
+        rho_mean = 1.225
 
     # ── inferir paso temporal: si ws es Series con DatetimeIndex usa la moda
     # de los deltas; si no, asume 1.0 h (datos horarios MERRA-2/ERA5)
@@ -181,7 +223,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
 
     # No-wake baseline: total energy if every turbine saw free-stream wind.
-    p_free_per_bin = turbine.power_kw(ws_centres)  # kW per turbine at each bin
+    p_free_per_bin = turbine.power_kw_density_corrected(ws_centres, rho_mean)  # kW/turbina por bin
     e_free_per_turbine_kwh = float(np.sum(freq.sum(axis=0) * p_free_per_bin)) * total_hours
     e_free_total_kwh = e_free_per_turbine_kwh * n
 
@@ -200,7 +242,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                 continue
             v_eff = effective_wind_per_turbine(
                 layout, v_free, wind_dir, rotor_d, k=k_wake, ct=ct)
-            p_kw = turbine.power_kw(v_eff)  # vectorised
+            p_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # con corrección de densidad
             e_per_turbine_kwh += p_kw * p_join * total_hours
 
     # wake_loss aislado: comparar ANTES de aplicar losses operacionales
@@ -249,5 +291,6 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'dominant_dir_deg': round(dom_dir, 1),
         'hours':          round(total_hours, 1),
         'dt_h':           round(dt_h, 4),
+        'rho_mean':       round(rho_mean, 4),
         'turbines':       per_turbine,
     }
