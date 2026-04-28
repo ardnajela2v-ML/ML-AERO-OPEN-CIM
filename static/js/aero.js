@@ -189,7 +189,7 @@ async function loadPresetFiles() {
     const era5  = r.files.filter(f => f.source === 'era5');
     const other = r.files.filter(f => f.source === 'windnavigator');
 
-    sel.innerHTML = '<option value="">— Selecciona un archivo de reanálisis —</option>';
+    sel.innerHTML = '<option value="">— Selecciona un sitio / parque eólico —</option>';
     [['MERRA-2', merra], ['ERA5', era5], ['Windnavigator', other]].forEach(([label, group]) => {
       if (!group.length) return;
       const og = document.createElement('optgroup');
@@ -198,7 +198,9 @@ async function loadPresetFiles() {
         const opt = document.createElement('option');
         opt.value   = f.filename;
         opt.dataset.source = f.source;
-        opt.textContent = `${f.filename}  (${f.size_mb} MB)`;
+        const loc = f.state ? `  ·  ${f.state}` : '';
+        opt.textContent = `${f.display_name || f.filename}${loc}  (${f.size_mb} MB)`;
+        opt.title = f.filename;
         og.appendChild(opt);
       });
       sel.appendChild(og);
@@ -229,15 +231,18 @@ async function loadPresetFileByName(filename, source) {
     const grid = document.getElementById('meta-grid');
     grid.innerHTML = '';
     const items = [
-      ['Filas',       r.n_rows?.toLocaleString()],
-      ['Columnas',    meta.columns?.length],
-      ['Desde',       meta.date_range?.[0]?.substring(0,10)],
-      ['Hasta',       meta.date_range?.[1]?.substring(0,10)],
-      ['Resolución',  meta.time_resolution_min != null ? `${meta.time_resolution_min} min` : '—'],
-      ['Formato',     meta.reanalysis_type || meta.format?.toUpperCase()],
-      ['Latitud',     meta.latitude != null ? meta.latitude : '—'],
-      ['Longitud',    meta.longitude != null ? meta.longitude : '—'],
-      ['Altura viento', meta.wind_height_m != null ? `${meta.wind_height_m} m` : '—'],
+      ['Sitio / Parque', r.display_name || r.filename],
+      ['Estado',         r.state       || '—'],
+      ['Municipio',      r.municipality || '—'],
+      ['Filas',          r.n_rows?.toLocaleString()],
+      ['Columnas',       meta.columns?.length],
+      ['Desde',          meta.date_range?.[0]?.substring(0,10)],
+      ['Hasta',          meta.date_range?.[1]?.substring(0,10)],
+      ['Resolución',     meta.time_resolution_min != null ? `${meta.time_resolution_min} min` : '—'],
+      ['Formato',        meta.reanalysis_type || meta.format?.toUpperCase()],
+      ['Latitud',        meta.latitude != null ? meta.latitude : '—'],
+      ['Longitud',       meta.longitude != null ? meta.longitude : '—'],
+      ['Altura viento',  meta.wind_height_m != null ? `${meta.wind_height_m} m` : '—'],
     ];
     items.forEach(([label, val]) => {
       grid.innerHTML += `<div class="meta-item">
@@ -264,8 +269,9 @@ async function loadPresetFileByName(filename, source) {
 
     if (r.chart) renderLineChart('preview-chart', r.chart, {});
 
-    toast(`${filename} cargado — ${r.n_rows.toLocaleString()} filas`, 'success');
-    setStatus(`Datos listos: ${filename} | ${r.n_rows.toLocaleString()} registros | ${meta.reanalysis_type || meta.format}`);
+    const siteLabel = r.display_name || filename;
+    toast(`${siteLabel} cargado — ${r.n_rows.toLocaleString()} filas`, 'success');
+    setStatus(`Datos listos: ${siteLabel} | ${r.n_rows.toLocaleString()} registros | ${meta.reanalysis_type || meta.format}`);
   } catch (e) {
     toast(`Error cargando ${filename}: ${e.message}`, 'error');
     setStatus('Error al cargar archivo.');
@@ -3041,19 +3047,21 @@ function krig3UpdateSelectionInfo() {
   if (!el) return;
   const total = KRIG.sites.length;
   const sel = KRIG.selected.size;
-  const principal = KRIG.principal
-    ? `principal: <b>${KRIG.principal}</b>`
+  const principalSite = KRIG.sites.find(x => x.filename === KRIG.principal);
+  const principalLabel = principalSite
+    ? `principal: <b>${principalSite.display_name || principalSite.filename}</b>`
     : '<span style="color:#f59e0b">sin parque principal</span>';
-  el.innerHTML = `${sel}/${total} sitios seleccionados · ${principal}`;
+  el.innerHTML = `${sel}/${total} sitios seleccionados · ${principalLabel}`;
 }
 
 function krig3SitePopupHtml(s) {
   const isPrincipal = s.filename === KRIG.principal;
   return `
     <div style="min-width:220px">
-      <div style="font-weight:600;font-size:.85rem;margin-bottom:.3rem">${s.filename}</div>
+      <div style="font-weight:600;font-size:.85rem;margin-bottom:.15rem">${s.display_name || s.filename}</div>
+      ${s.state ? `<div style="font-size:.72rem;color:#94a3b8;margin-bottom:.25rem">${s.state}${s.municipality ? ' · ' + s.municipality : ''}</div>` : ''}
       <div style="font-size:.75rem;color:#64748b;line-height:1.4">
-        Lat ${s.lat.toFixed(3)} · Lon ${s.lon.toFixed(3)}<br>
+        ${s.lat.toFixed(3)}°N  ${s.lon.toFixed(3)}°W<br>
         v̄ ${(+s.v_mean).toFixed(2)} m/s · Weibull C=${(+s.weibull_C).toFixed(2)} K=${(+s.weibull_K).toFixed(2)}
       </div>
       <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">

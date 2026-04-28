@@ -61,6 +61,7 @@ from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
 from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
                           HybridDispatch, HybridEconomics,
                           build_load_profile, estimate_clearsky_ghi)
+from core.site_catalog import get_site_info
 from core.kriging import (parse_coords_from_filename, read_wind_file,
                           site_wind_stats, kriging_grid, analyze_sites,
                           legacy_three_maps)
@@ -293,7 +294,15 @@ def create_app():
                 size_mb = round(os.path.getsize(fpath) / 1_048_576, 1)
                 source = 'merra2' if 'MERRA' in fname.upper() or 'MERRA2' in fname.upper() else \
                          'era5'   if 'ERA5' in fname.upper() else 'windnavigator'
-                files.append({'filename': fname, 'size_mb': size_mb, 'source': source})
+                info = get_site_info(fname)
+                files.append({
+                    'filename':     fname,
+                    'size_mb':      size_mb,
+                    'source':       source,
+                    'display_name': info['display_name'],
+                    'state':        info['state'],
+                    'municipality': info['municipality'],
+                })
         return jsonify({'files': files, 'folder': folder, 'count': len(files)})
 
     @app.route('/api/data/load_preset', methods=['POST'])
@@ -326,13 +335,17 @@ def create_app():
                 s = df[chart_col].dropna()
                 chart_data = series_to_chart(s.index, s.values, label=chart_col)
 
+            site_info = get_site_info(safe_name)
             return jsonify({
-                'session_id': sid,
-                'meta':    numpy_to_python(meta),
-                'columns': list(df.columns),
-                'chart':   chart_data,
-                'n_rows':  len(df),
-                'filename': safe_name,
+                'session_id':   sid,
+                'meta':         numpy_to_python(meta),
+                'columns':      list(df.columns),
+                'chart':        chart_data,
+                'n_rows':       len(df),
+                'filename':     safe_name,
+                'display_name': site_info['display_name'],
+                'state':        site_info['state'],
+                'municipality': site_info['municipality'],
             })
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -1544,20 +1557,24 @@ def create_app():
                     skipped.append(fname)
                     continue
                 stats = site_wind_stats(site)
+                krig_info = get_site_info(fname)
                 sites.append({
-                    'filename':   fname,
-                    'lat':        site['lat'],
-                    'lon':        site['lon'],
-                    'n_hours':    int(site['n']),
-                    'v_mean':     round(stats['v_mean'], 3),
-                    'v_mean_raw': round(stats['v_mean_raw'], 3),
-                    'v_max':      round(stats['v_max'], 2),
-                    'weibull_C':  round(stats['weibull_C'], 3),
-                    'weibull_K':  round(stats['weibull_K'], 3),
-                    'rho_mean':   round(stats['rho_mean'], 4),
-                    'source':     ('merra2' if 'MERRA' in fname.upper()
-                                   else 'era5' if 'ERA5' in fname.upper()
-                                   else 'other'),
+                    'filename':     fname,
+                    'display_name': krig_info['display_name'],
+                    'state':        krig_info['state'],
+                    'municipality': krig_info['municipality'],
+                    'lat':          site['lat'],
+                    'lon':          site['lon'],
+                    'n_hours':      int(site['n']),
+                    'v_mean':       round(stats['v_mean'], 3),
+                    'v_mean_raw':   round(stats['v_mean_raw'], 3),
+                    'v_max':        round(stats['v_max'], 2),
+                    'weibull_C':    round(stats['weibull_C'], 3),
+                    'weibull_K':    round(stats['weibull_K'], 3),
+                    'rho_mean':     round(stats['rho_mean'], 4),
+                    'source':       ('merra2' if 'MERRA' in fname.upper()
+                                     else 'era5' if 'ERA5' in fname.upper()
+                                     else 'other'),
                 })
             except Exception as e:
                 skipped.append(f'{fname}: {e}')
