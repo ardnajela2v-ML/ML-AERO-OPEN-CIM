@@ -858,6 +858,7 @@ def create_app():
                 'climatology':  numpy_to_python(compute_monthly_climatology(df, ws_col)),
                 'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
                 'histogram':    numpy_to_python(compute_histogram(df, ws_col)),
+                'sectors':      numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
             }
             sess['wind_stats'] = result
             return jsonify(result)
@@ -871,11 +872,15 @@ def create_app():
     def wind_advanced():
         """TI, wind shear, sector analysis, extreme return periods."""
         body    = request.get_json(silent=True) or {}
-        sid     = _require_sid(body)
-        ws_col  = body.get('ws_col', 'wind_speed')
-        wd_col  = body.get('wd_col', 'wind_dir')
-        ws_h    = float(body.get('ws_height', 50.0))
-        sess    = get_session(sid)
+        sid          = _require_sid(body)
+        ws_col       = body.get('ws_col', 'wind_speed')
+        wd_col       = body.get('wd_col', 'wind_dir')
+        ws_h         = float(body.get('ws_height',   50.0))
+        orog_factor  = float(body.get('orog_factor', 0.15))
+        z_scale      = float(body.get('z_scale',     80.0))
+        z_hub        = body.get('z_hub')
+        z_hub        = float(z_hub) if z_hub is not None else None
+        sess         = get_session(sid)
 
         if 'df' not in sess:
             return jsonify({'error': 'No data loaded.'}), 400
@@ -885,7 +890,10 @@ def create_app():
             result = {
                 'wind_speed_variability': numpy_to_python(compute_turbulence_intensity(df, ws_col)),
                 'ti_warning':             'Proxy horario, no TI IEC 61400-1',
-                'shear':                  numpy_to_python(compute_wind_shear(df, ws_col, ws_h)),
+                'shear':                  numpy_to_python(compute_wind_shear(
+                                              df, ws_col, ws_h,
+                                              orog_factor=orog_factor, z_scale=z_scale,
+                                              z_hub=z_hub)),
                 'sectors':                numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
                 'return_periods':         numpy_to_python(compute_return_periods(df, ws_col)),
             }

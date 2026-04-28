@@ -173,8 +173,17 @@
     </div>
   </div>
 
+</section>
+
+<!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
+<section class="module" id="mod-models">
+  <div class="module-header">
+    <h1 class="module-title">Model Arena</h1>
+    <p class="module-desc">Entrena y compara todos los modelos automáticamente. Separación cronológica estricta, sin data leakage.</p>
+  </div>
+
   <!-- Feature engineering config -->
-  <div class="card mt-3">
+  <div class="card mb-3">
     <div class="card-header"><span class="card-title">Preparar Features & Configuración de Entrenamiento</span></div>
     <div class="card-body">
       <div class="form-grid-4">
@@ -196,14 +205,6 @@
       </div>
       <div id="features-summary" class="features-summary mt-2 hidden"></div>
     </div>
-  </div>
-</section>
-
-<!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
-<section class="module" id="mod-models">
-  <div class="module-header">
-    <h1 class="module-title">Model Arena</h1>
-    <p class="module-desc">Entrena y compara todos los modelos automáticamente. Separación cronológica estricta, sin data leakage.</p>
   </div>
 
   <div class="grid-2">
@@ -747,7 +748,8 @@
     <div class="kpi a3"><div class="kl">Weibull k / λ</div><div class="kv" id="kv-weibull">—</div><div class="ks">Forma · Escala</div></div>
     <div class="kpi go"><div class="kl">Densidad de potencia</div><div class="kv" id="kv-pd">—</div><div class="ks">W/m²</div></div>
     <div class="kpi"><div class="kl">Horas ≥ 15 m/s</div><div class="kv" id="kv-ext">—</div><div class="ks" id="ks-ext"></div></div>
-    <div class="kpi a2"><div class="kl">Temperatura media</div><div class="kv" id="kv-temp">—</div><div class="ks">°C</div></div>
+    <div class="kpi a2"><div class="kl">Tiempo ≈ V̄</div><div class="kv" id="kv-near-mean">—</div><div class="ks" id="ks-near-mean">V̄ ± 1 m/s</div></div>
+    <div class="kpi a3"><div class="kl">Temperatura media</div><div class="kv" id="kv-temp">—</div><div class="ks">°C</div></div>
     <div class="kpi a3"><div class="kl">Presión media</div><div class="kv" id="kv-pres">—</div><div class="ks">hPa</div></div>
     <div class="kpi go"><div class="kl">Registros</div><div class="kv" id="kv-nobs">—</div><div class="ks" id="ks-nobs"></div></div>
   </div>
@@ -780,13 +782,23 @@
       <div class="cbox"><canvas id="chart-mclim-overview"></canvas></div>
     </div>
     <div class="card">
-      <div class="ch"><span class="ct">Histograma + Weibull</span></div>
-      <div class="cbox"><canvas id="chart-hist-overview"></canvas></div>
+      <div class="ch"><span class="ct">Histograma + Weibull PDF</span><span class="cbadge" id="badge-weibull-overview">—</span></div>
+      <div class="cbox" style="height:230px"><canvas id="chart-hist-overview"></canvas></div>
     </div>
     <div class="card">
       <div class="ch"><span class="ct">Perfil diurno · media horaria</span></div>
       <div class="cbox"><canvas id="chart-hourly-overview"></canvas></div>
     </div>
+  </div>
+
+  <!-- Densidad de potencia mensual -->
+  <div class="card mt-3">
+    <div class="ch">
+      <span class="ct">Densidad de potencia eólica disponible</span>
+      <span class="cbadge" id="badge-pd-class">—</span>
+      <span class="cbadge b" style="margin-left:.3rem" id="badge-pd-annual">—</span>
+    </div>
+    <div class="cbox" style="height:220px"><canvas id="chart-power-density"></canvas></div>
   </div>
 </section>
 
@@ -795,7 +807,7 @@
   <div class="sh">
     <div>
       <div class="st">Análisis de Viento</div>
-      <div class="ss">Rosa · Distribución · Perfil estacional · Weibull · Extremos</div>
+      <div class="ss">Rosa · Análisis sectorial · Distribución · Perfil estacional · Weibull · Extremos</div>
     </div>
     <div>
       <button class="btn-primary" id="btn-calc-wind">Calcular Análisis</button>
@@ -815,6 +827,24 @@
     <div class="card">
       <div class="ch"><span class="ct">Perfil diurno · Media ± σ</span><span class="cbadge">Ciclo 24h</span></div>
       <div class="cbox t"><canvas id="chart-diurnal"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Tabla sectorial 16 sectores -->
+  <div class="card mt-2">
+    <div class="ch">
+      <span class="ct">Análisis sectorial · 16 sectores</span>
+      <span class="cbadge b" id="wind-badge-dom">Dom: —</span>
+    </div>
+    <div class="cb" style="overflow-x:auto">
+      <table class="tbl" id="sector-tbl">
+        <thead><tr>
+          <th>Sector</th><th>Dirección</th><th>Frec. %</th>
+          <th>V̄ (m/s)</th><th>Densidad (W/m²)</th>
+          <th>Energía %</th><th>k Weibull</th><th>λ Weibull</th>
+        </tr></thead>
+        <tbody id="sector-tbl-body"></tbody>
+      </table>
     </div>
   </div>
 
@@ -869,13 +899,25 @@
 
   <div class="toolbar">
     <div class="toolbar-group">
-      <label class="form-label">Altura anemómetro (m)</label>
-      <input class="form-input" id="adv-ws-height" type="number" value="50" style="width:90px">
+      <label class="form-label" title="Altura donde el archivo reporta la velocidad (MERRA-2 = 50 m, ERA5 = 10 m)">z_ref — anemómetro (m)</label>
+      <input class="form-input" id="adv-ws-height" type="number" value="50" style="width:76px">
+    </div>
+    <div class="toolbar-group">
+      <label class="form-label" title="Altura de buje del aerogenerador. La velocidad y la densidad de potencia se extrapolaran a esta altura.">z_hub — buje (m)</label>
+      <input class="form-input" id="adv-z-hub" type="number" value="100" step="10" min="20" max="250" style="width:76px">
+    </div>
+    <div class="toolbar-group">
+      <label class="form-label" title="Factor de aceleración en cresta/escarpe — Jackson-Hunt simplificado. 0 = sin efecto orográfico.">ΔS orografía</label>
+      <input class="form-input" id="adv-orog-factor" type="number" value="0.15" step="0.05" min="0" max="0.60" style="width:68px">
+    </div>
+    <div class="toolbar-group">
+      <label class="form-label" title="Altura de decaimiento del efecto orográfico (m).">Escala z (m)</label>
+      <input class="form-input" id="adv-z-scale" type="number" value="80" step="10" min="20" max="300" style="width:68px">
     </div>
     <button class="btn-primary" id="btn-run-advanced">Calcular análisis avanzado</button>
   </div>
 
-  <!-- TI KPIs -->
+  <!-- TI / Shear KPIs -->
   <div class="kpi-row mt-2" id="adv-kpi-row" style="display:none">
     <div class="kpi-card kpi--green">
       <div class="kpi-label">TI Global</div>
@@ -904,6 +946,45 @@
     </div>
   </div>
 
+  <!-- Hub-height extrapolation KPIs -->
+  <div class="kpi-row mt-2" id="adv-hub-row" style="display:none">
+    <div class="kpi-card kpi--blue">
+      <div class="kpi-label">V̄ buje — Hellmann</div>
+      <div class="kpi-value" id="adv-hub-v-hell">—</div>
+      <div class="kpi-sub" id="adv-hub-v-hell-sub">z_hub = — m</div>
+    </div>
+    <div class="kpi-card kpi--blue">
+      <div class="kpi-label">V̄ buje — Log</div>
+      <div class="kpi-value" id="adv-hub-v-log">—</div>
+      <div class="kpi-sub" id="adv-hub-v-log-sub">z₀ = — m</div>
+    </div>
+    <div class="kpi-card kpi--green">
+      <div class="kpi-label">Densidad pot. — Hellmann</div>
+      <div class="kpi-value" id="adv-hub-pd-hell">—</div>
+      <div class="kpi-sub">W/m² en buje</div>
+    </div>
+    <div class="kpi-card kpi--green">
+      <div class="kpi-label">Densidad pot. — Log</div>
+      <div class="kpi-value" id="adv-hub-pd-log">—</div>
+      <div class="kpi-sub">W/m² en buje</div>
+    </div>
+    <div class="kpi-card kpi--orange">
+      <div class="kpi-label">Ganancia Hellmann</div>
+      <div class="kpi-value" id="adv-hub-gain-hell">—</div>
+      <div class="kpi-sub">vs. z_ref</div>
+    </div>
+    <div class="kpi-card kpi--orange">
+      <div class="kpi-label">Ganancia Log</div>
+      <div class="kpi-value" id="adv-hub-gain-log">—</div>
+      <div class="kpi-sub">vs. z_ref</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">% ≥ cut-in (3 m/s)</div>
+      <div class="kpi-value" id="adv-hub-cutin">—</div>
+      <div class="kpi-sub">en altura de buje</div>
+    </div>
+  </div>
+
   <!-- TI chart + Shear profile -->
   <div class="grid-2 mt-2">
     <div class="card">
@@ -915,43 +996,26 @@
     </div>
     <div class="card">
       <div class="ch">
-        <span class="ct">Perfil vertical (cizalladura)</span>
+        <span class="ct">Perfiles verticales de viento</span>
         <span class="cbadge b" id="adv-badge-alpha">α = —</span>
+        <span class="cbadge" id="adv-badge-z0" style="margin-left:.35rem">z₀ = —</span>
       </div>
-      <div class="cbox t"><canvas id="chart-shear"></canvas></div>
+      <div class="cbox t" style="height:320px"><canvas id="chart-shear"></canvas></div>
     </div>
   </div>
 
-  <!-- Sector table + Return periods -->
-  <div class="g21 mt-2">
-    <div class="card">
-      <div class="ch">
-        <span class="ct">Análisis sectorial (16 sectores)</span>
-        <span class="cbadge b" id="adv-badge-dom">Dom: —</span>
-      </div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="sector-tbl">
-          <thead><tr>
-            <th>Sector</th><th>Dirección</th><th>Frec. %</th>
-            <th>V̄ (m/s)</th><th>Densidad (W/m²)</th>
-            <th>Energía %</th><th>k Weibull</th><th>λ Weibull</th>
-          </tr></thead>
-          <tbody id="sector-tbl-body"></tbody>
-        </table>
-      </div>
+  <!-- Return periods -->
+  <div class="card mt-2">
+    <div class="ch">
+      <span class="ct">Períodos de retorno</span>
+      <span class="cbadge r" id="adv-badge-method">Gumbel</span>
     </div>
-    <div class="card">
-      <div class="ch">
-        <span class="ct">Períodos de retorno</span>
-        <span class="cbadge r" id="adv-badge-method">Gumbel</span>
-      </div>
-      <div class="cb">
-        <div class="cbox" style="height:180px"><canvas id="chart-return"></canvas></div>
-        <table class="tbl mt-2" id="return-tbl">
-          <thead><tr><th>T (años)</th><th>Gumbel (m/s)</th><th>GEV (m/s)</th></tr></thead>
-          <tbody id="return-tbl-body"></tbody>
-        </table>
-      </div>
+    <div class="cb">
+      <div class="cbox" style="height:200px"><canvas id="chart-return"></canvas></div>
+      <table class="tbl mt-2" id="return-tbl">
+        <thead><tr><th>T (años)</th><th>Gumbel (m/s)</th><th>GEV (m/s)</th></tr></thead>
+        <tbody id="return-tbl-body"></tbody>
+      </table>
     </div>
   </div>
 </section>

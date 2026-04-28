@@ -225,6 +225,7 @@ async function loadPresetFileByName(filename, source) {
     });
 
     document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
+    WP.meta = r.meta;
 
     // meta grid
     const meta = r.meta;
@@ -319,7 +320,6 @@ function bindDataHub() {
 
   document.getElementById('btn-upload').addEventListener('click', () => input.click());
   document.getElementById('btn-qc').addEventListener('click', runQC);
-  document.getElementById('btn-build-features').addEventListener('click', buildFeatures);
 
   // preset file loader
   document.getElementById('btn-load-preset').addEventListener('click', () => {
@@ -515,6 +515,7 @@ const FAST_MODELS = ['persistence','climatology','ridge','lightgbm','random_fore
 const ML_MODELS   = ['random_forest','xgboost','lightgbm','ridge','mlp','svr'];
 
 function bindModelArena() {
+  document.getElementById('btn-build-features').addEventListener('click', buildFeatures);
   document.getElementById('btn-train').addEventListener('click', trainModels);
 
   // chip toggle
@@ -1583,6 +1584,7 @@ async function calcOverviewStats() {
     renderHistogramOverview(r.histogram);
     renderMClimOverview(r.climatology);
     renderHourlyOverview(r.diurnal);
+    renderPowerDensityChart(r.overview);
     document.getElementById('overview-status').textContent = 'Listo';
     toast('Estadísticas calculadas', 'success');
     setStatus('Análisis de sitio completado.');
@@ -1600,13 +1602,29 @@ function renderOverviewKPIs(ov) {
   document.getElementById('kv-max').textContent     = (ov.max ?? '—') + ' m/s';
   document.getElementById('ks-max').textContent     = `p90 = ${ov.p90 ?? '—'} m/s`;
   document.getElementById('kv-weibull').textContent = wb ? `${wb.k} / ${wb.lambda}` : '—';
+  const wbBadge = document.getElementById('badge-weibull-overview');
+  if (wbBadge) wbBadge.textContent = wb ? `k=${wb.k}  λ=${wb.lambda} m/s` : '—';
   document.getElementById('kv-pd').textContent      = (ov.power_density_w_m2 ?? '—') + ' W/m²';
   document.getElementById('kv-ext').textContent     = (ov.h_above_15ms ?? '—') + ' h';
   document.getElementById('ks-ext').textContent     = `${ov.pct_above_15ms ?? '—'}% del total`;
+  // % tiempo cerca de la velocidad media
+  const elnear = document.getElementById('kv-near-mean');
+  if (elnear) {
+    elnear.textContent = ov.pct_near_mean != null ? `${ov.pct_near_mean}%` : '—';
+    document.getElementById('ks-near-mean').textContent =
+      ov.near_mean_band_ms != null ? `V̄ ± ${ov.near_mean_band_ms} m/s` : '';
+  }
   document.getElementById('kv-temp').textContent    = ov.temp_mean != null ? ov.temp_mean + ' °C' : '—';
   document.getElementById('kv-pres').textContent    = ov.pressure_mean != null ? ov.pressure_mean + ' hPa' : '—';
   document.getElementById('kv-nobs').textContent    = (ov.n_obs ?? '—').toLocaleString?.() ?? ov.n_obs;
-  document.getElementById('ks-nobs').textContent    = ov.date_start ? `${ov.date_start} → ${ov.date_end}` : '';
+  // resolución temporal desde WP.meta (guardado al cargar el archivo)
+  const resMin = WP.meta?.time_resolution_min;
+  const resLabel = resMin != null
+    ? (resMin < 60 ? `${resMin} min` : `${Math.round(resMin/60)}h`)
+    : null;
+  document.getElementById('ks-nobs').textContent =
+    (ov.date_start ? `${ov.date_start} → ${ov.date_end}` : '') +
+    (resLabel ? `  ·  Δt = ${resLabel}` : '');
 }
 
 function renderDailyTS(ds) {
@@ -1747,32 +1765,122 @@ function renderModelBarOverview(result) {
   if (badge && rows[0]) badge.textContent = '★ ' + rows[0].label;
 }
 
+function _weibullPDF(v, k, lam) {
+  if (v <= 0) return 0;
+  return (k / lam) * Math.pow(v / lam, k - 1) * Math.exp(-Math.pow(v / lam, k));
+}
+
+function _buildWeibullHistDatasets(hist) {
+  const bw  = (hist.centers?.[1] - hist.centers?.[0]) || 1;
+  let vals;
+  if (hist.counts) {
+    const tot = hist.counts.reduce((a,b)=>a+b, 0);
+    vals = hist.counts.map(c => c / (tot * bw));          // → density (1/m·s)
+  } else {
+    vals = (hist.frequency || []).map(f => f / bw);       // freq=count/total → ÷bw → density
+  }
+  const wb   = hist.weibull;
+  const barC = isLight() ? 'rgba(155,165,180,0.48)' : 'rgba(130,150,175,0.38)';
+  const datasets = [{
+    type:'bar', label:'Histograma', data:vals,
+    backgroundColor:barC, borderColor: isLight()?'rgba(120,130,145,0.6)':'rgba(155,170,195,0.4)',
+    borderWidth:0.5, borderRadius:1, order:2,
+  }];
+  if (wb) {
+    const wbLine = (hist.centers||[]).map(v => _weibullPDF(v, wb.k, wb.lambda));
+    datasets.push({
+      type:'line', label:`Weibull  k=${wb.k}  λ=${wb.lambda} m/s`,
+      data:wbLine, borderColor:acc2(), borderWidth:2.5,
+      pointRadius:0, tension:0.4, order:1, fill:false,
+    });
+  }
+  return { labels:(hist.centers||[]).map(v=>v.toFixed(1)), datasets };
+}
+
+function _weibullHistOptions(axisLabelSize) {
+  const lc = isLight() ? '#64748b' : '#94a3b8';
+  return {
+    responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ position:'top', labels:{ font:{size:10}, boxWidth:13, boxHeight:10, padding:10 } } },
+    scales:{
+      x:{ grid:{display:false}, ticks:{maxTicksLimit:10, font:{size:axisLabelSize}},
+          title:{display:true, text:'Velocidad del viento (m/s)', font:{size:9}, color:lc} },
+      y:{ grid:{color:gridColor()}, ticks:{font:{size:axisLabelSize}},
+          title:{display:true, text:'Densidad de probabilidad (1/m/s)', font:{size:9}, color:lc} },
+    },
+  };
+}
+
 function renderHistogramOverview(hist) {
   if (!hist) return;
   destroyChart('chart-hist-overview');
   const ctx = document.getElementById('chart-hist-overview')?.getContext('2d');
   if (!ctx) return;
-  const bw  = (hist.centers?.[1] - hist.centers?.[0]) || 1;
-  const tot = (hist.counts || hist.frequency || []).reduce((a,b)=>a+b,0);
-  const vals= hist.counts ? hist.counts.map(c=>c/(tot*bw)) : hist.frequency;
-  const datasets = [{
-    type:'bar', label:'Histograma', data:vals, backgroundColor:mut()+'55', borderRadius:2, order:2
-  }];
-  const wb = hist.weibull;
-  if (wb) {
-    const wbAtHist = (hist.centers||[]).map(v => {
-      if (v<=0) return 0;
-      return (wb.k/wb.lambda)*Math.pow(v/wb.lambda,wb.k-1)*Math.exp(-Math.pow(v/wb.lambda,wb.k));
-    });
-    datasets.push({ type:'line', label:`Weibull k=${wb.k} λ=${wb.lambda}`,
-      data: wbAtHist, borderColor:acc2(), borderWidth:2, pointRadius:0, tension:0.4, order:1 });
-  }
+  const { labels, datasets } = _buildWeibullHistDatasets(hist);
   WP.charts['chart-hist-overview'] = new Chart(ctx, {
-    data: { labels:(hist.centers||[]).map(v=>typeof v==='number'?v.toFixed(1):v), datasets },
-    options: { responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{ labels:{font:{size:9},boxWidth:8} } },
-      scales:{ x:{grid:{display:false}, ticks:{maxTicksLimit:8,font:{size:9}}},
-               y:{grid:{color:gridColor()}, ticks:{font:{size:9}}} } }
+    type: 'bar',
+    data:{ labels, datasets },
+    options: _weibullHistOptions(9),
+  });
+}
+
+function renderPowerDensityChart(ov) {
+  if (!ov?.monthly_power_density) return;
+  destroyChart('chart-power-density');
+  const ctx = document.getElementById('chart-power-density')?.getContext('2d');
+  if (!ctx) return;
+
+  const pd  = ov.monthly_power_density;
+  const avg = ov.power_density_w_m2;
+  const lc  = isLight() ? '#64748b' : '#94a3b8';
+
+  // color bars: below avg → muted, above → accent
+  const barColors = pd.values.map(v =>
+    v >= avg ? acc() + 'cc' : mut() + '88'
+  );
+
+  // badges
+  const cls = document.getElementById('badge-pd-class');
+  const ann = document.getElementById('badge-pd-annual');
+  if (cls) cls.textContent = ov.resource_class ?? '—';
+  if (ann) ann.textContent = avg != null ? `${avg} W/m²  ·  media anual` : '—';
+
+  WP.charts['chart-power-density'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: pd.labels,
+      datasets: [{
+        label: 'Densidad de potencia (W/m²)',
+        data: pd.values,
+        backgroundColor: barColors,
+        borderRadius: 3,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        annotation: avg != null ? {
+          annotations: {
+            meanLine: {
+              type: 'line', yMin: avg, yMax: avg,
+              borderColor: acc2(), borderWidth: 1.5, borderDash: [5, 4],
+              label: { content: `V̄ ${avg} W/m²`, display: true,
+                       position: 'end', font: { size: 9 }, color: acc2(),
+                       backgroundColor: 'transparent' },
+            }
+          }
+        } : {},
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { font: { size: 9 } } },
+        y: {
+          grid: { color: gridColor() }, ticks: { font: { size: 9 } },
+          title: { display: true, text: 'W/m²', font: { size: 9 }, color: lc },
+        },
+      },
+    },
   });
 }
 
@@ -1796,6 +1904,11 @@ async function calcWindAnalysis() {
     renderHistColored(r.histogram);
     renderMonthlyWS(r.climatology);
     await renderMonthHourHeatmap();
+    populateSectorTable(r.sectors);
+    if (r.sectors?.dominant_sectors) {
+      const bd = document.getElementById('wind-badge-dom');
+      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
+    }
     document.getElementById('wind-status').textContent = 'Listo';
     toast('Análisis de viento completado', 'success');
     setStatus('Análisis de viento completado.');
@@ -2068,27 +2181,11 @@ function renderWbHist(hist) {
   destroyChart('chart-wb-hist');
   const ctx = document.getElementById('chart-wb-hist')?.getContext('2d');
   if (!ctx) return;
-  const bw  = (hist.centers?.[1]-hist.centers?.[0]) || 1;
-  const dens = hist.frequency || [];
-  const wb   = hist.weibull;
-  const wbLine = wb ? (hist.centers||[]).map(v => {
-    if (v<=0) return 0;
-    return (wb.k/wb.lambda)*Math.pow(v/wb.lambda,wb.k-1)*Math.exp(-Math.pow(v/wb.lambda,wb.k));
-  }) : [];
+  const { labels, datasets } = _buildWeibullHistDatasets(hist);
   WP.charts['chart-wb-hist'] = new Chart(ctx, {
-    type:'bar',
-    data:{
-      labels:(hist.centers||[]).map(v=>v.toFixed(1)),
-      datasets:[
-        { label:'Histograma', data:dens, backgroundColor:mut()+'55', borderRadius:2, order:2 },
-        ...(wb?[{ label:`Weibull fit k=${wb.k}`, data:wbLine, type:'line',
-          borderColor:acc2(), borderWidth:2, pointRadius:0, tension:0.4, order:1 }]:[])
-      ]
-    },
-    options:{ responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{labels:{font:{size:9},boxWidth:8}} },
-      scales:{ x:{grid:{display:false}, ticks:{maxTicksLimit:8,font:{size:9}}},
-               y:{grid:{color:gridColor()}, ticks:{font:{size:9}}} } }
+    type: 'bar',
+    data:{ labels, datasets },
+    options: _weibullHistOptions(9),
   });
 }
 
@@ -2648,9 +2745,13 @@ async function runAdvanced() {
   btn.disabled = true; btn.textContent = 'Calculando…';
   setStatus('Calculando análisis avanzado de recurso…');
   try {
-    const wsH = parseFloat(document.getElementById('adv-ws-height').value) || 50;
+    const wsH        = parseFloat(document.getElementById('adv-ws-height')?.value)   || 50;
+    const zHub       = parseFloat(document.getElementById('adv-z-hub')?.value)       || null;
+    const orogFactor = parseFloat(document.getElementById('adv-orog-factor')?.value ?? '0.15') || 0.15;
+    const zScale     = parseFloat(document.getElementById('adv-z-scale')?.value)     || 80;
     const r = await api('/api/wind/advanced', 'POST', {
-      session_id: WP.sessionId, ws_height: wsH,
+      session_id: WP.sessionId, ws_height: wsH, z_hub: zHub,
+      orog_factor: orogFactor, z_scale: zScale,
     });
     WP.advancedResult = r;
 
@@ -2661,26 +2762,32 @@ async function runAdvanced() {
     const sh = r.shear;
     const rp = r.return_periods;
 
-    document.getElementById('adv-kpi-ti').textContent  = ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—';
-    document.getElementById('adv-kpi-ti15').textContent = ti?.ti_15ms != null ? (ti.ti_15ms * 100).toFixed(1) + '%' : '—';
-    document.getElementById('adv-kpi-iec').textContent  = ti?.iec_class || 'N/A';
-    document.getElementById('adv-kpi-alpha').textContent = sh?.alpha != null ? sh.alpha.toFixed(3) : '—';
-    document.getElementById('adv-kpi-v50').textContent  = rp?.v_50year != null ? rp.v_50year + ' m/s' : '—';
+    const _set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    _set('adv-kpi-ti',    ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-ti15',  ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-iec',   ti?.iec_class  || 'N/A');
+    _set('adv-kpi-alpha', sh?.alpha      != null ? sh.alpha.toFixed(3) : '—');
+    _set('adv-kpi-v50',   rp?.v_50year   != null ? rp.v_50year + ' m/s' : '—');
 
-    // Badges (la TI horaria MERRA-2/ERA5 NO es TI IEC 61400-1; mostrar N/A)
+    // Badges
     const iecCls = ti?.iec_class || null;
     const badgeIec = document.getElementById('adv-badge-iec');
-    badgeIec.textContent = iecCls ? `IEC Clase ${iecCls}` : 'TI proxy horario';
-    badgeIec.className = `cbadge ${iecCls === 'A' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
-    badgeIec.title = ti?.note || r.ti_warning || '';
-    document.getElementById('adv-badge-alpha').textContent = `α = ${sh?.alpha?.toFixed(3) || '—'}`;
-    if (r.sectors) {
-      document.getElementById('adv-badge-dom').textContent = `Dom: ${r.sectors.dominant_sectors?.join(', ') || '—'}`;
+    if (badgeIec) {
+      badgeIec.textContent = iecCls ? `IEC Clase ${iecCls}` : 'TI proxy horario';
+      badgeIec.className   = `cbadge ${iecCls === 'A' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
+      badgeIec.title       = ti?.note || r.ti_warning || '';
     }
-    if (rp) document.getElementById('adv-badge-method').textContent = rp.method || 'Gumbel';
+    _set('adv-badge-alpha',  `α = ${sh?.alpha?.toFixed(3) || '—'}`);
+    _set('adv-badge-z0',     `z₀ = ${sh?.z0 ?? '—'} m`);
+    _set('adv-badge-method', rp?.method || 'Gumbel');
+    if (r.sectors?.dominant_sectors) {
+      const bd = document.getElementById('wind-badge-dom');
+      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
+    }
 
     renderTIChart(ti);
     renderShearChart(sh);
+    renderHubKPIs(sh?.hub);
     populateSectorTable(r.sectors);
     renderReturnChart(rp);
     populateReturnTable(rp);
@@ -2733,29 +2840,98 @@ function renderTIChart(ti) {
 function renderShearChart(sh) {
   if (!sh) return;
   destroyChart('shear');
-  const ctx = document.getElementById('chart-shear').getContext('2d');
-  const pts = sh.multi_height ? Object.entries(sh.multi_height).map(([h, v]) => ({x: v, y: +h})) : [];
-  WP.charts.shear = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: sh.heights,
-      datasets: [
-        { label: `Hellmann α=${sh.alpha}`, data: sh.profile_hellmann,
-          borderColor: acc(), fill: false, tension: 0.2, pointRadius: 3 },
-        { label: 'Log profile', data: sh.profile_log,
-          borderColor: acc2(), borderDash: [5,4], fill: false, tension: 0.2, pointRadius: 2 },
-        ...(pts.length ? [{ label: 'Medido', data: pts.map(p => p.x), pointStyle: 'circle',
-          borderColor: gold(), backgroundColor: gold(), showLine: false, pointRadius: 6 }] : []),
-      ],
+  const ctx = document.getElementById('chart-shear')?.getContext('2d');
+  if (!ctx) return;
+
+  const lc = isLight() ? '#64748b' : '#94a3b8';
+  const gc = gridColor();
+  const H  = sh.heights;
+
+  // helper: convert parallel speed/height arrays → scatter {x,y} points
+  const pts = (speeds) => speeds.map((s, i) => ({ x: s, y: H[i] }));
+
+  // helper: build a dataset
+  const ds = (label, speeds, color, dash, width, radius = 0, extra = {}) => ({
+    label, showLine: true,
+    data: pts(speeds),
+    borderColor: color, borderWidth: width,
+    borderDash: dash || [],
+    pointRadius: radius,
+    fill: false, tension: 0.35,
+    ...extra,
+  });
+
+  const dimRef = lc + (isLight() ? '88' : '66');
+
+  const datasets = [
+    // ── Referencia α (finas, fondo) ──────────────────────────────
+    ds('α = 0.10  liso / offshore', sh.profile_smooth, dimRef, [2, 5], 1.2),
+    ds('α = 0.143  IEC abierto',    sh.profile_iec,    dimRef, [4, 4], 1.4),
+    ds('α = 0.25  rugoso / forestal', sh.profile_rough, dimRef, [2, 5], 1.2),
+    // ── Perfiles ajustados al sitio (gruesos) ───────────────────
+    ds(`Hellmann  α = ${sh.alpha}  (sitio)`, sh.profile_hellmann,
+       acc(),  [],     2.6, 3),
+    ds(`Log  z₀ = ${sh.z0} m`,              sh.profile_log,
+       acc2(), [6, 3], 2.6, 2),
+    // ── Efecto orográfico ────────────────────────────────────────
+    ...(sh.profile_orog ? [ds(
+      `Orografía  +${(sh.orog_factor * 100).toFixed(0)}%  e^(-z/${sh.z_scale}m)`,
+      sh.profile_orog, '#48C2A3', [7, 2], 2.2, 0,
+    )] : []),
+    // ── Datos multi-altura medidos ───────────────────────────────
+    ...(Object.keys(sh.multi_height || {}).length > 1 ? [{
+      label: 'Medido (multi-altura)',
+      showLine: false,
+      data: Object.entries(sh.multi_height).map(([h, v]) => ({ x: v, y: +h })),
+      borderColor: gold(), backgroundColor: gold(),
+      pointRadius: 7, pointStyle: 'crossRot', pointBorderWidth: 2,
+    }] : []),
+    // ── Punto de referencia ──────────────────────────────────────
+    {
+      label: `Ref: ${sh.ref_speed} m/s @ ${sh.ref_height} m`,
+      showLine: false,
+      data: [{ x: sh.ref_speed, y: sh.ref_height }],
+      borderColor: acc(), backgroundColor: acc() + 'cc',
+      pointRadius: 6, pointStyle: 'circle',
     },
+  ];
+
+  // Hub-height reference lines via annotation plugin
+  const annotations = {};
+  [80, 100, 120, 140].forEach(h => {
+    annotations[`hub${h}`] = {
+      type: 'line', yMin: h, yMax: h,
+      borderColor: lc + '40', borderWidth: 1, borderDash: [4, 5],
+      label: {
+        content: `${h} m`, display: true, position: 'end',
+        color: lc, font: { size: 8 }, backgroundColor: 'transparent', padding: { x: 3, y: 1 },
+      },
+    };
+  });
+
+  WP.charts.shear = new Chart(ctx, {
+    type: 'scatter',
+    data: { datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: ink(), font: { size: 10 } } } },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { color: ink(), font: { size: 9 }, boxWidth: 26, boxHeight: 8, padding: 6 },
+        },
+        annotation: { annotations },
+      },
       scales: {
-        x: { title: { display: true, text: 'Velocidad (m/s)', color: mut() },
-             ticks: { color: mut() }, grid: { color: mut() + '22' } },
-        y: { title: { display: true, text: 'Altura (m)', color: mut() },
-             ticks: { color: mut() }, grid: { color: mut() + '22' } },
+        x: {
+          type: 'linear',
+          title: { display: true, text: 'Velocidad del viento (m/s)', font: { size: 9 }, color: lc },
+          ticks: { color: lc, font: { size: 9 } }, grid: { color: gc },
+        },
+        y: {
+          type: 'linear', min: 0, max: 220,
+          title: { display: true, text: 'Altura (m)', font: { size: 9 }, color: lc },
+          ticks: { color: lc, font: { size: 9 }, stepSize: 20 }, grid: { color: gc },
+        },
       },
     },
   });
@@ -2775,6 +2951,36 @@ function populateSectorTable(sec) {
     <td>${s.weibull_k ?? '—'}</td>
     <td>${s.weibull_lambda ?? '—'}</td>
   </tr>`).join('');
+}
+
+function renderHubKPIs(hub) {
+  const row = document.getElementById('adv-hub-row');
+  if (!row) return;
+  if (!hub) { row.style.display = 'none'; return; }
+
+  row.style.display = '';
+  const _s = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+
+  _s('adv-hub-v-hell',     `${hub.v_hub_hellmann.toFixed(2)} m/s`);
+  _s('adv-hub-v-hell-sub', `z_hub = ${hub.z_hub} m`);
+  _s('adv-hub-v-log',      `${hub.v_hub_log.toFixed(2)} m/s`);
+  _s('adv-hub-v-log-sub',  `z₀ ajustada`);
+  _s('adv-hub-pd-hell',    `${hub.pd_hub_hellmann.toFixed(0)} W/m²`);
+  _s('adv-hub-pd-log',     `${hub.pd_hub_log.toFixed(0)} W/m²`);
+
+  const gainHell = hub.gain_pct_hell;
+  const gainLog  = hub.gain_pct_log;
+  _s('adv-hub-gain-hell', `${gainHell >= 0 ? '+' : ''}${gainHell.toFixed(1)}%`);
+  _s('adv-hub-gain-log',  `${gainLog  >= 0 ? '+' : ''}${gainLog.toFixed(1)}%`);
+  _s('adv-hub-cutin',     `${hub.pct_above_cutin.toFixed(1)}%`);
+
+  // Color ganancia: verde si sube, rojo si (hipotético) baja
+  ['adv-hub-gain-hell', 'adv-hub-gain-log'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const g = i === 0 ? gainHell : gainLog;
+    el.style.color = g >= 0 ? 'var(--accent)' : '#e55';
+  });
 }
 
 function renderReturnChart(rp) {

@@ -875,7 +875,7 @@ body:not(.light) .st { font-family:var(--font); font-size:1.2rem; }
 .chart-box canvas { max-width:100%; max-height:100% }
 
 /* ─── .krow / .kpi (dashboard KPI row) ─── */
-.krow { display:grid; grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:.65rem; margin-bottom:1.25rem }
+.krow { display:grid; grid-template-columns:repeat(auto-fill,minmax(130px,1fr)); gap:.65rem; margin-bottom:1.25rem }
 .kpi  {
   background:var(--bg-surface); border:1px solid var(--border); border-radius:6px;
   padding:.9rem 1rem; position:relative; overflow:hidden; transition:box-shadow .2s;

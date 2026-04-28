@@ -413,6 +413,12 @@ def compute_site_overview(df, ws_col='wind_speed', wd_col='wind_dir',
         result[f'h_above_{thr}ms'] = int((s >= thr).sum())
         result[f'pct_above_{thr}ms'] = round(float((s >= thr).mean() * 100), 2)
 
+    # % time near mean ± 1 m/s band
+    band = 1.0
+    v_mean = float(s.mean())
+    result['pct_near_mean']    = round(float((abs(s - v_mean) <= band).mean() * 100), 1)
+    result['near_mean_band_ms'] = band
+
     # Temperature stats
     if temp_col in df.columns:
         t = df[temp_col].dropna()
@@ -427,11 +433,19 @@ def compute_site_overview(df, ws_col='wind_speed', wd_col='wind_dir',
     # Daily mean time series (for overview chart)
     if isinstance(df.index, pd.DatetimeIndex):
         daily = s.resample('D').mean().dropna()
-        # send all daily points (typically ~365-3650 for 1-10 years) for zoom fidelity
         step = max(1, len(daily) // 2000)
         result['daily_series'] = {
             'labels': [str(d)[:10] for d in daily.index[::step]],
             'values': [round(float(v), 3) for v in daily.values[::step]],
+        }
+
+        # Monthly mean power density W/m²
+        pwr_series = 0.5 * rho_used * s ** 3
+        monthly_pd = pwr_series.groupby(pwr_series.index.month).mean()
+        MES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic']
+        result['monthly_power_density'] = {
+            'labels': MES,
+            'values': [round(float(monthly_pd.get(m, np.nan)), 1) for m in range(1, 13)],
         }
 
     return result
@@ -504,14 +518,16 @@ compute_turbulence_intensity = compute_wind_speed_variability
 
 # ─── WIND SHEAR ───────────────────────────────────────────────────────────────
 
-def compute_wind_shear(df, ws_col='wind_speed', ws_height=None, meta=None):
+def compute_wind_shear(df, ws_col='wind_speed', ws_height=None, meta=None,
+                       orog_factor: float = 0.15, z_scale: float = 80.0,
+                       z_hub: float = None):
     """
-    Vertical wind profile: Hellmann power law + log profile.
-    Auto-detects multi-height columns (ws_10, ws_80, wind_speed_100…)
-    and fits α; falls back to α = 0.143 (open flat terrain).
+    Vertical wind profile: Hellmann power law + log profile + orographic variants.
 
-    ws_height: altura (m) de la columna ws_col. Si None, se intenta leer de
-    meta['wind_height_m']; fallback 50.0 con warning.
+    orog_factor: fractional speed-up at surface due to ridge/escarpment
+                 (Jackson-Hunt simplified: ΔS(z) = orog_factor * exp(-z/z_scale)).
+                 0 = no orographic effect.
+    z_scale:     characteristic decay height (m) for orographic effect.
     """
     import re as _re
     if ws_col not in df.columns:
@@ -522,8 +538,7 @@ def compute_wind_shear(df, ws_col='wind_speed', ws_height=None, meta=None):
             ws_height = float(meta['wind_height_m'])
         else:
             warnings.warn(
-                "ws_height no provisto y meta['wind_height_m'] ausente; usando 50.0 m. "
-                "Para precisión pasar ws_height explícito o el meta del loader.",
+                "ws_height no provisto y meta['wind_height_m'] ausente; usando 50.0 m.",
                 stacklevel=2,
             )
             ws_height = 50.0
@@ -545,18 +560,38 @@ def compute_wind_shear(df, ws_col='wind_speed', ws_height=None, meta=None):
         V_arr = np.array([p[1] for p in pairs])
         try:
             fit   = np.polyfit(np.log(H_arr), np.log(V_arr), 1)
-            # Clip α [0.05, 0.40] — onshore México rara vez supera 0.30
             alpha = float(np.clip(fit[0], 0.05, 0.40))
         except Exception:
             pass
 
-    heights      = [10, 20, 30, 40, 50, 60, 80, 100, 120, 140, 160, 200]
-    z0_eff       = max(z0, 1e-4)
-    profile_hell = [round(V_ref * (H / ws_height) ** alpha, 3) for H in heights]
-    profile_log  = [round(max(0.0, V_ref *
-                              np.log(max(H, z0_eff * 1.01) / z0_eff) /
-                              np.log(max(ws_height, z0_eff * 1.01) / z0_eff)), 3)
-                    for H in heights]
+    heights  = [10, 20, 30, 40, 50, 60, 80, 100, 120, 140, 160, 200]
+    z0_eff   = max(z0, 1e-4)
+
+    def _hell(a):
+        return [round(V_ref * (H / ws_height) ** a, 3) for H in heights]
+
+    def _log(z0v):
+        return [round(max(0.0, V_ref *
+                          np.log(max(H, z0v * 1.01) / z0v) /
+                          np.log(max(ws_height, z0v * 1.01) / z0v)), 3)
+                for H in heights]
+
+    profile_hell   = _hell(alpha)
+    profile_log    = _log(z0_eff)
+    profile_smooth = _hell(0.10)   # α IEC offshore / terreno muy liso
+    profile_iec    = _hell(0.143)  # α IEC abierto (referencia normativa)
+    profile_rough  = _hell(0.25)   # α terreno rugoso / forestal
+
+    # Orografía — Jackson-Hunt simplificado: ΔS(z) = orog_factor · exp(-z / z_scale)
+    # Basado en velocidad logarítmica del sitio (perfil más representativo del flujo)
+    orog_factor = float(orog_factor)
+    z_scale     = max(float(z_scale), 1.0)
+    if orog_factor > 0:
+        profile_orog = [round(max(0.0, profile_log[i] *
+                                  (1.0 + orog_factor * float(np.exp(-H / z_scale)))), 3)
+                        for i, H in enumerate(heights)]
+    else:
+        profile_orog = None
 
     return {
         'alpha':            round(alpha, 4),
@@ -566,7 +601,51 @@ def compute_wind_shear(df, ws_col='wind_speed', ws_height=None, meta=None):
         'heights':          heights,
         'profile_hellmann': profile_hell,
         'profile_log':      profile_log,
+        'profile_smooth':   profile_smooth,
+        'profile_iec':      profile_iec,
+        'profile_rough':    profile_rough,
+        'profile_orog':     profile_orog,
+        'orog_factor':      round(orog_factor, 3),
+        'z_scale':          round(z_scale, 1),
         'multi_height':     {str(int(k)): round(v, 3) for k, v in sorted(multi.items())},
+        'hub':              _calc_hub(z_hub, ws_height, V_ref, alpha, z0_eff, df[ws_col]),
+    }
+
+
+def _calc_hub(z_hub, z_ref, V_ref, alpha, z0_eff, ws_series):
+    """Extrapolate wind statistics to hub height using power law and log law."""
+    if z_hub is None or z_hub <= 0:
+        return None
+
+    # Scale factors
+    sf_hell = (z_hub / z_ref) ** alpha
+    log_num = np.log(max(z_hub,  z0_eff * 1.01) / z0_eff)
+    log_den = np.log(max(z_ref,  z0_eff * 1.01) / z0_eff)
+    sf_log  = log_num / log_den if log_den > 0 else sf_hell
+
+    v_hell = V_ref * sf_hell
+    v_log  = V_ref * sf_log
+
+    rho = 1.225  # kg/m³ — ISA sea level
+    pd_hell = 0.5 * rho * v_hell ** 3
+    pd_log  = 0.5 * rho * v_log  ** 3
+
+    # Scale the full series to hub height (power law — α fitted from site data)
+    ws_hub = ws_series.dropna() * sf_hell
+    hub_mean  = float(ws_hub.mean())
+    hub_above = float((ws_hub >= 3.0).mean() * 100)   # capacity factor proxy: % ≥ 3 m/s cut-in
+
+    return {
+        'z_hub':           round(z_hub, 1),
+        'v_hub_hellmann':  round(v_hell, 3),
+        'v_hub_log':       round(v_log,  3),
+        'pd_hub_hellmann': round(pd_hell, 1),
+        'pd_hub_log':      round(pd_log,  1),
+        'gain_pct_hell':   round((sf_hell - 1.0) * 100, 1),
+        'gain_pct_log':    round((sf_log  - 1.0) * 100, 1),
+        'sf_hellmann':     round(sf_hell, 4),
+        'sf_log':          round(sf_log,  4),
+        'pct_above_cutin': round(hub_above, 1),
     }
 
 
