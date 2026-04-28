@@ -23,6 +23,8 @@ except Exception:
 
 try:
     from lightgbm import LGBMRegressor
+    from lightgbm import early_stopping as lgb_early_stopping
+    from lightgbm import log_evaluation as lgb_log_evaluation
     HAS_LGB = True
 except Exception:
     HAS_LGB = False
@@ -147,12 +149,12 @@ class QuantileGBM:
         for q in self.quantiles:
             if HAS_LGB:
                 m = LGBMRegressor(objective='quantile', alpha=q,
-                                  n_estimators=200, learning_rate=0.05,
-                                  num_leaves=31, verbose=-1)
+                                  n_estimators=120, learning_rate=0.08,
+                                  num_leaves=31, verbose=-1, n_jobs=-1)
             else:
                 m = GradientBoostingRegressor(loss='quantile', alpha=q,
-                                              n_estimators=150,
-                                              learning_rate=0.05)
+                                              n_estimators=80,
+                                              learning_rate=0.08)
             m.fit(X, y)
             self.models[q] = m
         return self
@@ -176,6 +178,7 @@ def _build_models():
             subsample=0.8, colsample_bytree=0.8,
             reg_lambda=1.0, reg_alpha=0.1,
             random_state=42, verbosity=0, n_jobs=-1,
+            early_stopping_rounds=20,
         )
         if HAS_GPU:
             xgb_kwargs['tree_method'] = 'gpu_hist'
@@ -199,10 +202,12 @@ def _build_models():
     models['mlp'] = Pipeline([
         ('scaler', StandardScaler()),
         ('mlp', MLPRegressor(hidden_layer_sizes=(128, 64, 32),
-                             activation='relu', max_iter=300,
-                             early_stopping=True, n_iter_no_change=20,
+                             activation='relu', max_iter=200,
+                             early_stopping=True, n_iter_no_change=15,
                              random_state=42, verbose=False)),
     ])
+    # tag MLP so train_all can subsample it on large datasets
+    models['mlp']._mlp_subsample = True
 
     models['svr'] = Pipeline([
         ('scaler', StandardScaler()),
@@ -369,22 +374,41 @@ class ModelArena:
             est_scale = 1.0
         if est_scale < 1.0:
             for m in models.values():
-                base = m.named_steps.get('mlp') or m.named_steps.get('svr') if hasattr(m, 'named_steps') else m
+                base = (m.named_steps.get('mlp') or m.named_steps.get('svr')) if hasattr(m, 'named_steps') else m
                 if hasattr(base, 'n_estimators'):
                     base.n_estimators = max(50, int(base.n_estimators * est_scale))
 
         total_ml = len(models)
         for i, (name, model) in enumerate(models.items()):
             try:
-                # SVR is O(n²–n³): subsample to max 4000 rows
+                # SVR is O(n²–n³): subsample to max 3000 rows
                 X_tr, y_tr = X_train, y_train
-                if getattr(model, '_svr_subsample', False) and n_train > 4000:
+                if getattr(model, '_svr_subsample', False) and n_train > 3000:
                     rng = np.random.default_rng(42)
-                    idx_sub = rng.choice(n_train, 4000, replace=False)
+                    idx_sub = rng.choice(n_train, 3000, replace=False)
+                    idx_sub.sort()
+                    X_tr, y_tr = X_train[idx_sub], y_train[idx_sub]
+                # MLP: subsample to max 8000 rows for speed
+                elif getattr(model, '_mlp_subsample', False) and n_train > 8000:
+                    rng = np.random.default_rng(42)
+                    idx_sub = rng.choice(n_train, 8000, replace=False)
                     idx_sub.sort()
                     X_tr, y_tr = X_train[idx_sub], y_train[idx_sub]
 
-                model.fit(X_tr, y_tr)
+                # XGBoost early stopping needs eval_set
+                fit_kwargs = {}
+                if name == 'xgboost' and hasattr(model, 'early_stopping_rounds'):
+                    fit_kwargs['eval_set'] = [(X_test, y_test)]
+                    fit_kwargs['verbose'] = False
+                # LightGBM early stopping via callbacks
+                elif name == 'lightgbm' and HAS_LGB:
+                    fit_kwargs['eval_set'] = [(X_test, y_test)]
+                    fit_kwargs['callbacks'] = [
+                        lgb_early_stopping(20, verbose=False),
+                        lgb_log_evaluation(-1),
+                    ]
+
+                model.fit(X_tr, y_tr, **fit_kwargs)
                 y_pred = np.maximum(model.predict(X_test), 0)
                 self.trained[name] = model
 

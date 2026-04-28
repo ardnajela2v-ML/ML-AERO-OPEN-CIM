@@ -1,5 +1,5 @@
 """
-WindPro Platform — smoke test.
+AERO by OPEN CIM — smoke test.
 Generates a synthetic wind time series and exercises all major API endpoints.
 Run: python tests/smoke_test.py
 """
@@ -60,7 +60,7 @@ def make_csv():
 
 
 def run():
-    print('\n═══ WindPro Smoke Test ═══\n')
+    print('\n═══ AERO Smoke Test ═══\n')
 
     # ── new session ──
     r = requests.post(f'{BASE}/api/session/new', json={})

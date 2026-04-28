@@ -3,7 +3,7 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'windpro-platform-2025-secret')
+    SECRET_KEY = os.environ.get('SECRET_KEY', 'aero-opencim-2025-secret')
     MAX_CONTENT_LENGTH = 256 * 1024 * 1024  # 256 MB upload limit
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     EXPORT_FOLDER = os.path.join(BASE_DIR, 'exports')
@@ -26,13 +26,13 @@ class Config:
 
     # External data folders (override via env vars if needed)
     DATA_FOLDER = os.environ.get(
-        'WINDPRO_DATA_FOLDER',
+        'AERO_DATA_FOLDER',
         '/Users/ale/Documents/suso/WindProPlatform/DATOS DE METEREOLOGICOS DE parques')
     TURBINES_FOLDER = os.environ.get(
-        'WINDPRO_TURBINES_FOLDER',
+        'AERO_TURBINES_FOLDER',
         '/Users/ale/Documents/suso/WindProPlatform/aerogeneradores')
     MARKET_DATA_FOLDER = os.environ.get(
-        'WINDPRO_MARKET_FOLDER',
+        'AERO_MARKET_FOLDER',
         '/Users/ale/Documents/suso/datos carga y precios pml compra y venta ')
 
     # Pronóstico a 25 años — escenarios de crecimiento histórico (CAGR)

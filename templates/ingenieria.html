@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OpenWAsP — Ingeniería, Matemática y Guía de Replicación</title>
+<title>AERO by OPEN CIM — Ingeniería Eólica: WAsP · PyWAsP · PyWake</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap');
 
@@ -12,7 +12,7 @@
     --surface: #111820;
     --surface2: #182030;
     --border: #1e3048;
-    --accent: #00d4aa;
+    --accent: #1D9E75;
     --accent2: #4a9eff;
     --accent3: #ff6b35;
     --accent4: #c7f464;
@@ -491,9 +491,89 @@
     border-top: 1px solid var(--border);
   }
   footer span { color: var(--accent); }
+
+  /* ── AERO TOPBAR ── */
+  .aero-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.65rem var(--gutter);
+    background: rgba(10,14,20,0.96);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(12px);
+  }
+  .aero-brand-link {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    text-decoration: none;
+  }
+  .aero-brand-name {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--text-bright);
+    letter-spacing: 0.05em;
+  }
+  .aero-brand-sub {
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-weight: 400;
+    letter-spacing: 0.1em;
+  }
+  .aero-topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+  .aero-module-tag {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: rgba(29,158,117,0.08);
+    border: 1px solid rgba(29,158,117,0.25);
+    padding: 0.25em 0.8em;
+  }
+  .aero-back-btn {
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    color: var(--accent2);
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    opacity: 0.75;
+    transition: opacity 0.2s;
+  }
+  .aero-back-btn:hover { opacity: 1; }
 </style>
 </head>
 <body>
+
+<!-- ══════════════════════ AERO TOPBAR ══════════════════════ -->
+<header class="aero-topbar">
+  <div class="aero-brand">
+    <a href="index.html" class="aero-brand-link">
+      <svg width="24" height="24" viewBox="0 0 110 110" fill="none">
+        <circle cx="55" cy="55" r="52" stroke="#1D9E75" stroke-width="2"/>
+        <circle cx="55" cy="55" r="36" stroke="#1D9E75" stroke-width="1.5" opacity="0.5"/>
+        <circle cx="55" cy="55" r="20" stroke="#1D9E75" stroke-width="1" opacity="0.3"/>
+        <line x1="55" y1="3" x2="55" y2="107" stroke="#1D9E75" stroke-width="0.5" opacity="0.2"/>
+        <line x1="3" y1="55" x2="107" y2="55" stroke="#1D9E75" stroke-width="0.5" opacity="0.2"/>
+        <line x1="55" y1="55" x2="96" y2="26" stroke="#0F6E56" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="55" cy="55" r="4" fill="#1D9E75"/>
+      </svg>
+      <span class="aero-brand-name">AERO <span class="aero-brand-sub">by OPEN CIM</span></span>
+    </a>
+  </div>
+  <div class="aero-topbar-right">
+    <span class="aero-module-tag">Módulo · Ingeniería Eólica</span>
+    <a href="index.html" class="aero-back-btn">← Plataforma</a>
+  </div>
+</header>
 
 <!-- ════════════════════════════════════════════
      HERO
@@ -503,16 +583,17 @@
   <div class="hero-glow"></div>
   <div class="hero-glow2"></div>
   <div class="container" style="position:relative">
-    <div class="tag">Ingeniería de Recursos Eólicos · DTU Wind</div>
-    <h1>Open<span class="accent">WAsP</span><br><span class="accent2">Blueprint</span></h1>
+    <div class="tag">AERO by OPEN CIM · Manual de Ingeniería Completo</div>
+    <h1><span class="accent">AERO</span> · Manual de<br><span class="accent2">Ingeniería &amp; Replicación</span></h1>
     <p class="hero-sub">
-      Toda la ingeniería y matemática detrás de <strong>WAsP, PyWAsP y PyWake</strong> —
-      con instrucciones completas para que un programador replique el sistema desde sus fundamentos físicos.
+      Física, matemática, código, ML y diseño detrás de cada módulo de la plataforma <strong>AERO by OPEN CIM</strong> —
+      manual completo y científicamente fundamentado para replicar el sistema desde sus fundamentos físicos.
     </p>
     <div class="meta-bar">
       <div>Autor · <span>José Antonio Rojas Escobar</span></div>
       <div>Institución · <span>CIIDIR Oaxaca / CCEEA</span></div>
       <div>Marco · <span>DoCiTTE — IPN</span></div>
+      <div>Módulos · <span>29 secciones</span></div>
       <div>Versión · <span>2026.1</span></div>
     </div>
   </div>
@@ -526,7 +607,7 @@
 <!-- TOC -->
 <section style="padding-top:4rem; border-bottom:none;">
   <div class="toc">
-    <h3>Tabla de Contenidos</h3>
+    <h3>Tabla de Contenidos — 29 secciones</h3>
     <ol>
       <li><a href="#s1">Arquitectura general del sistema WAsP</a></li>
       <li><a href="#s2">Matemática del modelo de flujo microscala (BZ + IBL)</a></li>
@@ -536,13 +617,27 @@
       <li><a href="#s6">Producción de energía: AEP y curvas de potencia</a></li>
       <li><a href="#s7">Efectos de estela: PyWake y modelos de déficit</a></li>
       <li><a href="#s8">Índice de rugosidad RIX y ΔRIX</a></li>
-      <li><a href="#s9">Estructura del proyecto OpenWAsP — instrucciones al programador</a></li>
-      <li><a href="#s10">Módulo 1: Datos y entrada</a></li>
-      <li><a href="#s11">Módulo 2: Motor de flujo microscala</a></li>
-      <li><a href="#s12">Módulo 3: Motor de estela (PyWake)</a></li>
-      <li><a href="#s13">Módulo 4: Recursos y salidas</a></li>
-      <li><a href="#s14">Módulo 5: Dashboard interactivo</a></li>
+      <li><a href="#s9">Estructura del módulo AERO-Ingeniería</a></li>
+      <li><a href="#s10">Módulo Data Hub: ingesta y validación de datos</a></li>
+      <li><a href="#s11">Módulo Motor de flujo microscala</a></li>
+      <li><a href="#s12">Módulo Motor de estela (PyWake)</a></li>
+      <li><a href="#s13">Módulo Recursos y mapas de salida</a></li>
+      <li><a href="#s14">Módulo Dashboard interactivo</a></li>
       <li><a href="#s15">Stack tecnológico y dependencias</a></li>
+      <li><a href="#s16">Kriging geoestadístico — interpolación espacial</a></li>
+      <li><a href="#s17">Layout de parque eólico y optimización de micrositing</a></li>
+      <li><a href="#s18">Sistema híbrido: viento + solar + almacenamiento</a></li>
+      <li><a href="#s19">Model Arena — ML para recurso y generación</a></li>
+      <li><a href="#s20">Forecast Studio — pronóstico de corto plazo</a></li>
+      <li><a href="#s21">Demanda eléctrica a largo plazo (25 años)</a></li>
+      <li><a href="#s22">Precios PML — modelo estocástico 25 años</a></li>
+      <li><a href="#s23">Energy Lab — balance energético y métricas</a></li>
+      <li><a href="#s24">Análisis Tecno-Económico completo</a></li>
+      <li><a href="#s25">Validation Center — métricas y benchmarking</a></li>
+      <li><a href="#s26">Arquitectura de software AERO</a></li>
+      <li><a href="#s27">API REST — contratos y endpoints</a></li>
+      <li><a href="#s28">Guía de replicación completa paso a paso</a></li>
+      <li><a href="#s29">Diseño de interfaz — principios y componentes UI</a></li>
     </ol>
   </div>
 </section>
@@ -1061,18 +1156,18 @@ flow_map.plot_wake_map()
 
 
 <!-- ══════════════════════════════════════
-     S9 — ESTRUCTURA OPENWASP
+     S9 — ESTRUCTURA AERO INGENIERÍA
 ══════════════════════════════════════ -->
 <section id="s9">
   <div class="section-label">09 · Instrucciones al programador</div>
-  <h2>Estructura del proyecto OpenWAsP</h2>
+  <h2>Estructura del módulo AERO — Ingeniería</h2>
 
   <div class="callout tip">
     <strong>Objetivo:</strong> Replicar la funcionalidad de WAsP/PyWAsP en Python puro (sin licencia DTU), implementando cada modelo físico desde sus ecuaciones fundamentales. PyWake se usa directamente (es open-source MIT). El stack resultante es completamente libre.
   </div>
 
   <div class="module-tree">
-<span class="tree-dir">openwasp/</span>
+<span class="tree-dir">aero_ingenieria/</span>
 │
 ├── <span class="tree-dir">core/</span>                         <span class="tree-desc">Motor físico-matemático</span>
 │   ├── <span class="tree-file">wind_profile.py</span>          <span class="tree-desc">Perfil log, extrapolación vertical, z₀</span>
@@ -1627,7 +1722,7 @@ Crear una API REST con FastAPI. Endpoints principales:
 <span class="py-kw">from</span> fastapi.middleware.cors <span class="py-kw">import</span> CORSMiddleware
 <span class="py-kw">import</span> uvicorn
 
-app = <span class="py-fn">FastAPI</span>(title=<span class="py-str">"OpenWAsP API"</span>, version=<span class="py-str">"1.0"</span>)
+app = <span class="py-fn">FastAPI</span>(title=<span class="py-str">"AERO Ingeniería API"</span>, version=<span class="py-str">"1.0"</span>)
 
 app.<span class="py-fn">add_middleware</span>(CORSMiddleware,
     allow_origins=[<span class="py-str">"*"</span>], allow_methods=[<span class="py-str">"*"</span>], allow_headers=[<span class="py-str">"*"</span>])
@@ -1778,16 +1873,1071 @@ pyyaml
   </div>
 </section>
 
+<!-- ══════════════════════════════════════
+     S16 — KRIGING GEOESTADÍSTICO
+══════════════════════════════════════ -->
+<section id="s16">
+  <div class="section-label">16 · Interpolación espacial</div>
+  <h2>Kriging geoestadístico — interpolación espacial</h2>
+
+  <p>
+    Kriging es el estimador lineal no sesgado de mínima varianza (BLUP) para variables regionalizadas. En AERO se usa para generar mapas continuos de <strong>velocidad media del viento</strong>, <strong>inversión inicial (CAPEX/MW)</strong> y <strong>VAN</strong> a partir de los puntos de reanálisis MERRA-2 / ERA5, produciendo superficies suavizadas con cuantificación de incertidumbre.
+  </p>
+
+  <h3>Semivariograma experimental</h3>
+  <p>La función semivariograma γ(h) mide cómo varía la dispersión entre pares de puntos separados una distancia h:</p>
+  <div class="math" data-label="SEMIVARIOGRAMA">
+γ(h) = (1 / 2·N(h)) · Σ [Z(xᵢ) − Z(xᵢ+h)]²
+
+donde N(h) = número de pares de puntos con separación ≈ h
+  </div>
+  <p>Se ajusta un modelo teórico al semivariograma experimental. Los modelos más usados en AERO son:</p>
+
+  <div class="card-grid">
+    <div class="card">
+      <h4>Esférico</h4>
+      <p>γ(h) = C₀ + C·[1.5·(h/a) − 0.5·(h/a)³] para h ≤ a; γ(h) = C₀ + C para h &gt; a. Sill = C₀+C, range = a. El más común en recurso eólico.</p>
+    </div>
+    <div class="card">
+      <h4>Exponencial</h4>
+      <p>γ(h) = C₀ + C·[1 − exp(−h/a)]. Alcanza el sill asintóticamente. Adecuado para variables con correlación que decae gradualmente.</p>
+    </div>
+    <div class="card">
+      <h4>Gaussiano</h4>
+      <p>γ(h) = C₀ + C·[1 − exp(−h²/a²)]. Variación muy suave cerca del origen. Útil para variables con alta continuidad espacial.</p>
+    </div>
+  </div>
+
+  <h3>Kriging Ordinario (OK)</h3>
+  <p>Asume media estacionaria desconocida. Estima Z*(x₀) como combinación lineal de los N vecinos más cercanos:</p>
+  <div class="math" data-label="KRIGING ORDINARIO">
+Z*(x₀) = Σᵢ λᵢ · Z(xᵢ)   sujeto a: Σᵢ λᵢ = 1
+
+Sistema de ecuaciones (en forma matricial):
+[Γ  1] [λ]   [γ₀]
+[1ᵀ 0] [μ] = [1 ]
+
+donde Γᵢⱼ = γ(xᵢ − xⱼ), γ₀ᵢ = γ(x₀ − xᵢ)
+Varianza de kriging: σ²K = Σᵢ λᵢ·γ₀ᵢ + μ
+  </div>
+
+  <h3>Implementación Python con PyKrige</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> pykrige.ok <span class="py-kw">import</span> OrdinaryKriging
+<span class="py-kw">from</span> pykrige.uk <span class="py-kw">import</span> UniversalKriging
+<span class="py-kw">import</span> matplotlib.pyplot <span class="py-kw">as</span> plt
+
+<span class="py-cm"># Puntos MERRA-2: lon, lat, velocidad media anual</span>
+lons = np.<span class="py-fn">array</span>([...])   <span class="py-cm"># longitudes de sitios</span>
+lats = np.<span class="py-fn">array</span>([...])   <span class="py-cm"># latitudes de sitios</span>
+vals = np.<span class="py-fn">array</span>([...])   <span class="py-cm"># velocidades medias (m/s)</span>
+
+<span class="py-cm"># Grilla de predicción</span>
+lon_grid = np.<span class="py-fn">linspace</span>(lons.min(), lons.max(), 200)
+lat_grid = np.<span class="py-fn">linspace</span>(lats.min(), lats.max(), 200)
+
+<span class="py-cm"># Kriging Ordinario con modelo esférico</span>
+ok = <span class="py-fn">OrdinaryKriging</span>(
+    lons, lats, vals,
+    variogram_model=<span class="py-str">'spherical'</span>,
+    nlags=<span class="py-num">10</span>,
+    weight=<span class="py-kw">True</span>,
+    enable_plotting=<span class="py-kw">False</span>
+)
+
+z_pred, z_var = ok.<span class="py-fn">execute</span>(<span class="py-str">'grid'</span>, lon_grid, lat_grid)
+
+<span class="py-cm"># z_pred: mapa interpolado | z_var: varianza de kriging (incertidumbre)</span>
+  </div>
+
+  <div class="callout tip">
+    <strong>Kriging en AERO:</strong> El módulo genera 3 mapas simultáneos — velocidad media (m/s), CAPEX/MW (MUSD) y VAN (MUSD) — usando todos los sitios MERRA-2/ERA5 disponibles en la sesión. El raster resultante se exporta como GeoJSON + PNG con isocontornos.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S17 — LAYOUT DE PARQUE EÓLICO
+══════════════════════════════════════ -->
+<section id="s17">
+  <div class="section-label">17 · Parque eólico</div>
+  <h2>Layout de parque eólico y optimización de micrositing</h2>
+
+  <p>
+    El módulo <em>Parque</em> de AERO calcula la disposición óptima de aerogeneradores dentro de un polígono de proyecto, considerando restricciones topográficas, distancias mínimas de separación, efectos de estela y AEP máximo como función objetivo.
+  </p>
+
+  <h3>Restricciones de layout</h3>
+  <div class="card-grid">
+    <div class="card">
+      <h4>Setback mínimo</h4>
+      <p>Distancia mínima entre turbinas: 3–5D en dirección transversal, 5–9D en dirección del viento dominante (D = diámetro del rotor).</p>
+    </div>
+    <div class="card">
+      <h4>RIX local</h4>
+      <p>Cada posición candidata se penaliza si RIX &gt; 30% o ΔRIX respecto a la estación de medición &gt; 5%. Terreno complejo requiere CFD.</p>
+    </div>
+    <div class="card">
+      <h4>Polígono de proyecto</h4>
+      <p>Contorno GeoJSON definido por el usuario. Las posiciones deben estar dentro del polígono y a &gt;500m del borde (configurable).</p>
+    </div>
+    <div class="card">
+      <h4>Capacidad objetivo</h4>
+      <p>N_turbinas = P_parque / P_nominal. El optimizador maximiza AEP total para un N fijo dentro del polígono.</p>
+    </div>
+  </div>
+
+  <h3>AEP del parque con pérdidas de estela</h3>
+  <div class="math" data-label="AEP PARQUE">
+AEP_parque = Σᵢ AEPᵢ_wake
+
+donde AEPᵢ_wake se calcula con velocidad efectiva en turbina i:
+U_eff,i = U_free − Σⱼ≠ᵢ ΔUⱼ→ᵢ
+
+ΔUⱼ→ᵢ = déficit de velocidad de turbina j sobre turbina i
+       = Uⱼ · (1 − √(1 − Ct/2)) · (r_w / (r_w + k·x))²
+
+r_w = radio de estela en distancia x: r_w = r₀ + k·x
+k   = constante de expansión de estela (0.04 offshore, 0.075 onshore)
+  </div>
+
+  <h3>Optimización greedy</h3>
+  <div class="code">
+<span class="py-kw">from</span> py_wake.wind_farm_models <span class="py-kw">import</span> PropagateDownwind
+<span class="py-kw">from</span> py_wake.deficit_models <span class="py-kw">import</span> NOJDeficit
+<span class="py-kw">from</span> py_wake.site <span class="py-kw">import</span> XRSite
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+<span class="py-kw">def</span> <span class="py-fn">greedy_layout</span>(site, wt, polygon_pts, N, D, spacing_D=<span class="py-num">5</span>):
+    <span class="py-str">"""Coloca N turbinas maximizando AEP con búsqueda greedy."""</span>
+    wfm = <span class="py-fn">PropagateDownwind</span>(site, wt, <span class="py-fn">NOJDeficit</span>(k=<span class="py-num">0.04</span>))
+    candidates = <span class="py-fn">generate_grid_candidates</span>(polygon_pts, D * spacing_D)
+    placed = []
+
+    <span class="py-kw">for</span> _ <span class="py-kw">in</span> range(N):
+        best_aep, best_pt = <span class="py-num">0</span>, <span class="py-kw">None</span>
+        <span class="py-kw">for</span> pt <span class="py-kw">in</span> candidates:
+            <span class="py-kw">if</span> <span class="py-fn">check_min_distance</span>(pt, placed, D * spacing_D):
+                test = placed + [pt]
+                xs = [p[<span class="py-num">0</span>] <span class="py-kw">for</span> p <span class="py-kw">in</span> test]
+                ys = [p[<span class="py-num">1</span>] <span class="py-kw">for</span> p <span class="py-kw">in</span> test]
+                aep = wfm(xs, ys).<span class="py-fn">aep</span>().<span class="py-fn">sum</span>().<span class="py-fn">values</span>
+                <span class="py-kw">if</span> aep &gt; best_aep:
+                    best_aep, best_pt = aep, pt
+        <span class="py-kw">if</span> best_pt: placed.<span class="py-fn">append</span>(best_pt)
+
+    <span class="py-kw">return</span> placed, best_aep
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S18 — SISTEMA HÍBRIDO
+══════════════════════════════════════ -->
+<section id="s18">
+  <div class="section-label">18 · Sistema híbrido</div>
+  <h2>Sistema híbrido: viento + solar + almacenamiento</h2>
+
+  <p>
+    El módulo <em>Sistema Híbrido</em> modela la operación conjunta de generación eólica, fotovoltaica y almacenamiento en batería (BESS). Calcula el perfil horario de generación, el estado de carga (SOC), la energía vertida (<em>curtailment</em>) y las métricas económicas del sistema integrado.
+  </p>
+
+  <h3>Modelo fotovoltaico (irradiancia → potencia)</h3>
+  <div class="math" data-label="MODELO PV">
+P_pv(t) = η_pv · A_pv · G_eff(t) · [1 − β_T · (T_cell − T_ref)]
+
+G_eff = irradiancia efectiva sobre el plano inclinado (W/m²)
+      = GHI · f_inclinación(tilt, azimut, δ, ω)
+
+T_cell = T_amb + (NOCT − 20) · G_eff / 800
+
+η_pv  = eficiencia del módulo (típico 0.18–0.22)
+β_T   = coeficiente de temperatura (típico −0.004 /°C)
+T_ref = 25°C (STC)
+  </div>
+
+  <h3>Modelo de batería (SOC)</h3>
+  <div class="math" data-label="BATERÍA SOC">
+SOC(t+1) = SOC(t) + [P_carga(t)·η_c − P_descarga(t)/η_d] · Δt / E_cap
+
+Restricciones:
+  SOC_min ≤ SOC(t) ≤ SOC_max   (típico 0.1 – 0.9)
+  0 ≤ P_carga(t) ≤ P_max_carga
+  0 ≤ P_descarga(t) ≤ P_max_desc
+
+η_c = eficiencia de carga (típico 0.95)
+η_d = eficiencia de descarga (típico 0.95)
+E_cap = capacidad nominal (MWh)
+  </div>
+
+  <h3>Balance horario y despacho</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+<span class="py-kw">def</span> <span class="py-fn">simulate_hybrid</span>(P_wind, P_pv, P_demand, bess_params):
+    <span class="py-str">"""
+    Simula operación horaria de sistema híbrido.
+    Retorna: SOC_series, P_bess, curtailment, deficit
+    """</span>
+    E_cap  = bess_params[<span class="py-str">'E_cap_MWh'</span>]
+    P_max  = bess_params[<span class="py-str">'P_max_MW'</span>]
+    eta_c  = bess_params[<span class="py-str">'eta_charge'</span>]
+    eta_d  = bess_params[<span class="py-str">'eta_discharge'</span>]
+    soc_0  = bess_params[<span class="py-str">'soc_init'</span>]
+
+    n = len(P_wind)
+    soc  = np.<span class="py-fn">zeros</span>(n+<span class="py-num">1</span>); soc[<span class="py-num">0</span>] = soc_0
+    P_bess = np.<span class="py-fn">zeros</span>(n)
+    curtail = np.<span class="py-fn">zeros</span>(n)
+    deficit = np.<span class="py-fn">zeros</span>(n)
+
+    <span class="py-kw">for</span> t <span class="py-kw">in</span> range(n):
+        surplus = P_wind[t] + P_pv[t] - P_demand[t]
+        <span class="py-kw">if</span> surplus &gt; <span class="py-num">0</span>:              <span class="py-cm"># exceso → cargar batería</span>
+            charge = <span class="py-fn">min</span>(surplus, P_max, ((<span class="py-num">0.9</span>-soc[t])*E_cap)/eta_c)
+            soc[t+<span class="py-num">1</span>] = soc[t] + charge*eta_c/E_cap
+            curtail[t] = surplus - charge
+        <span class="py-kw">else</span>:                           <span class="py-cm"># déficit → descargar batería</span>
+            discharge = <span class="py-fn">min</span>(-surplus, P_max, (soc[t]-<span class="py-num">0.1</span>)*E_cap*eta_d)
+            soc[t+<span class="py-num">1</span>] = soc[t] - discharge/(E_cap*eta_d)
+            deficit[t] = -surplus - discharge
+            P_bess[t]  = -discharge
+
+    <span class="py-kw">return</span> soc[:<span class="py-num">-1</span>], P_bess, curtail, deficit
+  </div>
+
+  <h3>Métricas del sistema híbrido</h3>
+  <div class="card-grid">
+    <div class="card"><h4>LCOE híbrido</h4><p>LCOE = (CAPEX_total·CRF + OPEX_anual) / E_neta_anual. Integra el costo del BESS en el denominador energético.</p></div>
+    <div class="card"><h4>Factor de capacidad</h4><p>CF = E_generada_anual / (P_instalada · 8760). Objetivo típico: CF_eólico &gt; 35%, CF_solar &gt; 22%.</p></div>
+    <div class="card"><h4>Curtailment</h4><p>Fracción de energía vertida por saturación de la batería o límite de red. Objetivo: curtailment &lt; 5%.</p></div>
+    <div class="card"><h4>Cobertura de demanda</h4><p>Fracción de horas con P_suministro ≥ P_demanda. Indicador de firmeza del suministro híbrido.</p></div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S19 — MODEL ARENA ML
+══════════════════════════════════════ -->
+<section id="s19">
+  <div class="section-label">19 · Machine Learning</div>
+  <h2>Model Arena — ML para recurso y generación</h2>
+
+  <p>
+    El módulo <em>Model Arena</em> permite entrenar, comparar y desplegar modelos de aprendizaje automático para predecir velocidad de viento, potencia generada o variables derivadas a partir de reanálisis y datos de torre. Implementa un pipeline ML reproducible con validación rigurosa.
+  </p>
+
+  <h3>Pipeline ML en AERO</h3>
+  <div class="pipeline">
+    <div class="pipe-step"><div class="pipe-num">01</div><div class="pipe-title">Features</div><div class="pipe-desc">U, V, T, P, Z500 de MERRA-2/ERA5. Derivados: velocidad, dirección, shear, turbulencia, hora, mes, posición geográfica.</div></div>
+    <div class="pipe-step"><div class="pipe-num">02</div><div class="pipe-title">Target</div><div class="pipe-desc">Velocidad medida en torre (m/s) o potencia activa (kW/MW) registrada en el SCADA del parque.</div></div>
+    <div class="pipe-step"><div class="pipe-num">03</div><div class="pipe-title">Split</div><div class="pipe-desc">Train / Validation / Test con respeto temporal (no aleatorio). Mínimo 1 año para test. TimeSeriesSplit para CV.</div></div>
+    <div class="pipe-step"><div class="pipe-num">04</div><div class="pipe-title">Modelo</div><div class="pipe-desc">Random Forest, XGBoost, LSTM, Transformer. Hyperparameter tuning con Optuna (Bayesian optimization).</div></div>
+    <div class="pipe-step"><div class="pipe-num">05</div><div class="pipe-title">Métricas</div><div class="pipe-desc">MAE, RMSE, R², Skill Score vs climatología. Gráficas: scatter, residuales, feature importance, curvas de aprendizaje.</div></div>
+  </div>
+
+  <h3>Random Forest para corrección de sesgo (MOS)</h3>
+  <div class="code">
+<span class="py-kw">from</span> sklearn.ensemble <span class="py-kw">import</span> RandomForestRegressor
+<span class="py-kw">from</span> sklearn.preprocessing <span class="py-kw">import</span> StandardScaler
+<span class="py-kw">from</span> sklearn.metrics <span class="py-kw">import</span> mean_absolute_error, r2_score
+<span class="py-kw">import</span> pandas <span class="py-kw">as</span> pd
+
+<span class="py-kw">def</span> <span class="py-fn">build_mos_features</span>(df):
+    <span class="py-str">"""Feature engineering para MOS (Model Output Statistics)."""</span>
+    df[<span class="py-str">'speed'</span>]     = (df[<span class="py-str">'u10'</span>]**<span class="py-num">2</span> + df[<span class="py-str">'v10'</span>]**<span class="py-num">2</span>)**<span class="py-num">0.5</span>
+    df[<span class="py-str">'direction'</span>]  = np.<span class="py-fn">degrees</span>(np.<span class="py-fn">arctan2</span>(-df[<span class="py-str">'u10'</span>], -df[<span class="py-str">'v10'</span>])) % <span class="py-num">360</span>
+    df[<span class="py-str">'shear'</span>]      = df[<span class="py-str">'u100'</span>] / df[<span class="py-str">'u10'</span>].<span class="py-fn">replace</span>(<span class="py-num">0</span>, np.nan)
+    df[<span class="py-str">'hour_sin'</span>]   = np.<span class="py-fn">sin</span>(<span class="py-num">2</span>*np.pi * df.index.hour / <span class="py-num">24</span>)
+    df[<span class="py-str">'hour_cos'</span>]   = np.<span class="py-fn">cos</span>(<span class="py-num">2</span>*np.pi * df.index.hour / <span class="py-num">24</span>)
+    df[<span class="py-str">'month_sin'</span>]  = np.<span class="py-fn">sin</span>(<span class="py-num">2</span>*np.pi * df.index.month / <span class="py-num">12</span>)
+    df[<span class="py-str">'month_cos'</span>]  = np.<span class="py-fn">cos</span>(<span class="py-num">2</span>*np.pi * df.index.month / <span class="py-num">12</span>)
+    <span class="py-kw">return</span> df
+
+feat_cols = [<span class="py-str">'speed'</span>, <span class="py-str">'direction'</span>, <span class="py-str">'shear'</span>, <span class="py-str">'t2m'</span>, <span class="py-str">'sp'</span>,
+             <span class="py-str">'hour_sin'</span>, <span class="py-str">'hour_cos'</span>, <span class="py-str">'month_sin'</span>, <span class="py-str">'month_cos'</span>]
+
+rf = <span class="py-fn">RandomForestRegressor</span>(n_estimators=<span class="py-num">300</span>, max_depth=<span class="py-num">12</span>,
+                           min_samples_leaf=<span class="py-num">5</span>, n_jobs=-<span class="py-num">1</span>)
+rf.<span class="py-fn">fit</span>(X_train, y_train)
+
+y_pred = rf.<span class="py-fn">predict</span>(X_test)
+<span class="py-fn">print</span>(<span class="py-str">f"MAE: {mean_absolute_error(y_test, y_pred):.3f} m/s"</span>)
+<span class="py-fn">print</span>(<span class="py-str">f"R²:  {r2_score(y_test, y_pred):.4f}"</span>)
+  </div>
+
+  <h3>LSTM para series temporales de viento</h3>
+  <div class="code">
+<span class="py-kw">import</span> torch
+<span class="py-kw">import</span> torch.nn <span class="py-kw">as</span> nn
+
+<span class="py-kw">class</span> <span class="py-fn">WindLSTM</span>(nn.Module):
+    <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, n_features, hidden=<span class="py-num">128</span>, layers=<span class="py-num">2</span>, dropout=<span class="py-num">0.2</span>):
+        <span class="py-fn">super</span>().<span class="py-fn">__init__</span>()
+        self.lstm = nn.<span class="py-fn">LSTM</span>(n_features, hidden, layers,
+                            batch_first=<span class="py-kw">True</span>, dropout=dropout)
+        self.fc   = nn.<span class="py-fn">Linear</span>(hidden, <span class="py-num">1</span>)
+
+    <span class="py-kw">def</span> <span class="py-fn">forward</span>(self, x):
+        out, _ = self.<span class="py-fn">lstm</span>(x)
+        <span class="py-kw">return</span> self.<span class="py-fn">fc</span>(out[:, -<span class="py-num">1</span>, :]).<span class="py-fn">squeeze</span>()
+
+<span class="py-cm"># Input: (batch, seq_len=24, n_features=9) → Output: velocidad h+1</span>
+model = <span class="py-fn">WindLSTM</span>(n_features=<span class="py-num">9</span>, hidden=<span class="py-num">128</span>, layers=<span class="py-num">2</span>)
+optimizer = torch.optim.<span class="py-fn">AdamW</span>(model.<span class="py-fn">parameters</span>(), lr=<span class="py-num">1e-3</span>, weight_decay=<span class="py-num">1e-4</span>)
+loss_fn = nn.<span class="py-fn">MSELoss</span>()
+  </div>
+
+  <div class="callout tip">
+    <strong>Skill Score:</strong> SS = 1 − RMSE_model / RMSE_climatología. Un SS &gt; 0.3 indica mejora sustancial sobre la climatología. Para pronósticos de viento a 24h, los mejores modelos ML alcanzan SS ≈ 0.6–0.75.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S20 — FORECAST STUDIO
+══════════════════════════════════════ -->
+<section id="s20">
+  <div class="section-label">20 · Pronóstico de corto plazo</div>
+  <h2>Forecast Studio — pronóstico de corto plazo</h2>
+
+  <p>
+    El módulo <em>Forecast Studio</em> implementa pronóstico de velocidad de viento y generación para horizontes de 1h a 72h, combinando predicciones de Predicción Numérica del Tiempo (NWP) con corrección estadística ML (MOS) y modelos puramente estadísticos como SARIMA.
+  </p>
+
+  <h3>Arquitectura del sistema de pronóstico</h3>
+  <div class="pipeline">
+    <div class="pipe-step"><div class="pipe-num">NWP</div><div class="pipe-title">Predicción numérica</div><div class="pipe-desc">GFS (0.25°, 3h), ERA5-RT, HRRR. Descargados vía API NOMADS / CDS. Resolución espacial: 25–50 km.</div></div>
+    <div class="pipe-step"><div class="pipe-num">MOS</div><div class="pipe-title">Corrección estadística</div><div class="pipe-desc">RF/XGBoost entrenado en histórico observado vs NWP para corregir sesgo sistemático por topografía local.</div></div>
+    <div class="pipe-step"><div class="pipe-num">SARIMA</div><div class="pipe-title">Modelo estadístico</div><div class="pipe-desc">ARIMA(p,d,q)(P,D,Q)_s con estacionalidad diaria (s=24). Baseline cuando NWP no está disponible.</div></div>
+    <div class="pipe-step"><div class="pipe-num">BLEND</div><div class="pipe-title">Ensamble</div><div class="pipe-desc">Promedio ponderado NWP-MOS y SARIMA según RMSE histórico de cada modelo por horizonte.</div></div>
+  </div>
+
+  <h3>SARIMA para viento horario</h3>
+  <div class="math" data-label="SARIMA">
+ARIMA(p,d,q)(P,D,Q)_s:
+
+Φ_P(B^s) · φ_p(B) · ∇^d · ∇_s^D · y_t = Θ_Q(B^s) · θ_q(B) · ε_t
+
+Donde:
+  B   = operador de retardo (B·y_t = y_{t-1})
+  ∇   = (1-B) = operador de diferencia
+  ∇_s = (1-B^s) = diferencia estacional
+  s   = 24 (ciclo diario) o 168 (ciclo semanal)
+
+Selección de orden: AIC/BIC + análisis ACF/PACF
+  </div>
+
+  <div class="code">
+<span class="py-kw">from</span> statsmodels.tsa.statespace.sarimax <span class="py-kw">import</span> SARIMAX
+<span class="py-kw">from</span> statsmodels.tsa.stattools <span class="py-kw">import</span> adfuller
+
+<span class="py-cm"># Test de estacionariedad (ADF)</span>
+adf_result = <span class="py-fn">adfuller</span>(wind_series)
+<span class="py-fn">print</span>(<span class="py-str">f"ADF p-value: {adf_result[1]:.4f}"</span>)  <span class="py-cm"># &lt;0.05 → estacionaria</span>
+
+<span class="py-cm"># Modelo SARIMA(2,1,2)(1,1,1,24)</span>
+model = <span class="py-fn">SARIMAX</span>(train_series,
+    order=(<span class="py-num">2</span>,<span class="py-num">1</span>,<span class="py-num">2</span>), seasonal_order=(<span class="py-num">1</span>,<span class="py-num">1</span>,<span class="py-num">1</span>,<span class="py-num">24</span>),
+    enforce_stationarity=<span class="py-kw">False</span>, enforce_invertibility=<span class="py-kw">False</span>)
+result = model.<span class="py-fn">fit</span>(disp=<span class="py-kw">False</span>)
+
+forecast = result.<span class="py-fn">forecast</span>(steps=<span class="py-num">72</span>)   <span class="py-cm"># pronóstico 72h</span>
+conf_int = result.<span class="py-fn">get_forecast</span>(<span class="py-num">72</span>).<span class="py-fn">conf_int</span>(alpha=<span class="py-num">0.1</span>)  <span class="py-cm"># IC 90%</span>
+  </div>
+
+  <div class="callout warn">
+    <strong>Degradación del pronóstico:</strong> El error de pronóstico crece con el horizonte. RMSE típico: 0.5 m/s (1h), 1.2 m/s (6h), 2.0 m/s (24h), 2.8 m/s (72h). Más allá de 48–72h, la climatología supera a NWP en términos de RMSE.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S21 — DEMANDA ELÉCTRICA 25 AÑOS
+══════════════════════════════════════ -->
+<section id="s21">
+  <div class="section-label">21 · Demanda a largo plazo</div>
+  <h2>Demanda eléctrica a largo plazo (25 años)</h2>
+
+  <p>
+    La proyección de demanda eléctrica a 25 años es insumo fundamental del análisis tecno-económico. AERO implementa tres enfoques complementarios: regresión econométrica, modelos de elasticidad y simulación de Monte Carlo para capturar la incertidumbre estructural.
+  </p>
+
+  <h3>Modelo de regresión con variables macro</h3>
+  <div class="math" data-label="MODELO DE DEMANDA">
+ln(D_t) = α + β₁·ln(PIB_t) + β₂·ln(P_elec_t) + β₃·T_t + β₄·D_{t-1} + ε_t
+
+Donde:
+  D_t       = demanda de energía eléctrica (GWh)
+  PIB_t     = Producto Interno Bruto (MUSD o MXN real)
+  P_elec_t  = precio promedio de electricidad ($/kWh)
+  T_t       = temperatura media anual (proxy de climatización)
+  β₁        = elasticidad ingreso (típico 0.8–1.2 en México)
+  β₂        = elasticidad precio (típico −0.2 a −0.5)
+  </div>
+
+  <h3>Curva de duración de carga (LDC)</h3>
+  <div class="math" data-label="CURVA DE DURACIÓN DE CARGA">
+LDC(h) = demanda ordenada de mayor a menor sobre las 8760 h del año
+
+Factor de carga = D_media / D_pico
+Factor de forma = D_pico / D_media = 1 / Factor de carga
+
+Energía anual = ∫₀^8760 P(t) dt ≈ Σ_h P(h)·1h [GWh/año]
+  </div>
+
+  <h3>Proyección con Monte Carlo</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+<span class="py-kw">def</span> <span class="py-fn">demand_mc_forecast</span>(D0, cagr_mu, cagr_std, n_years=<span class="py-num">25</span>, n_sim=<span class="py-num">5000</span>):
+    <span class="py-str">"""
+    Proyección estocástica de demanda eléctrica.
+    cagr_mu: CAGR esperado (ej. 0.035 = 3.5%)
+    cagr_std: incertidumbre del CAGR (ej. 0.008)
+    """</span>
+    np.random.<span class="py-fn">seed</span>(<span class="py-num">42</span>)
+    results = np.<span class="py-fn">zeros</span>((n_sim, n_years))
+    <span class="py-kw">for</span> i <span class="py-kw">in</span> range(n_sim):
+        cagr = np.random.<span class="py-fn">normal</span>(cagr_mu, cagr_std)
+        D = D0
+        <span class="py-kw">for</span> y <span class="py-kw">in</span> range(n_years):
+            D *= (<span class="py-num">1</span> + cagr + np.random.<span class="py-fn">normal</span>(<span class="py-num">0</span>, <span class="py-num">0.01</span>))
+            results[i, y] = D
+    p10 = np.<span class="py-fn">percentile</span>(results, <span class="py-num">10</span>, axis=<span class="py-num">0</span>)
+    p50 = np.<span class="py-fn">percentile</span>(results, <span class="py-num">50</span>, axis=<span class="py-num">0</span>)
+    p90 = np.<span class="py-fn">percentile</span>(results, <span class="py-num">90</span>, axis=<span class="py-num">0</span>)
+    <span class="py-kw">return</span> p10, p50, p90
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S22 — PRECIOS PML 25 AÑOS
+══════════════════════════════════════ -->
+<section id="s22">
+  <div class="section-label">22 · Precios de electricidad</div>
+  <h2>Precios PML — modelo estocástico 25 años</h2>
+
+  <p>
+    El Precio Marginal Local (PML) es el precio de la energía en el mercado mayorista de electricidad de México (MEM, CENACE). AERO modela su evolución a 25 años para valorizar la producción del proyecto bajo incertidumbre de mercado.
+  </p>
+
+  <h3>Componentes del PML</h3>
+  <div class="card-grid">
+    <div class="card"><h4>Energía</h4><p>Precio de la energía en el nodo de referencia. Determinado por el costo marginal de la unidad despachante.</p></div>
+    <div class="card"><h4>Pérdidas</h4><p>Factor de pérdidas marginales por transmisión entre el nodo del generador y el nodo de referencia. Puede ser &gt;1 o &lt;1.</p></div>
+    <div class="card"><h4>Congestión</h4><p>Diferencial de precio por restricciones en la red de transmisión. Altamente volátil. Puede representar ±30% del PML total.</p></div>
+  </div>
+
+  <h3>Modelo de reversión a la media (Ornstein-Uhlenbeck)</h3>
+  <div class="math" data-label="MODELO PML ESTOCÁSTICO">
+dP_t = κ · (μ - P_t) · dt + σ · dW_t
+
+Discretizado (Euler-Maruyama):
+P_{t+1} = P_t + κ·(μ − P_t)·Δt + σ·√Δt·Z_t,  Z_t ~ N(0,1)
+
+Parámetros calibrados con histórico PML horario CENACE:
+  κ (velocidad de reversión) ~ 0.1–0.3 diario
+  μ (precio de largo plazo)  ~ precio promedio histórico ajustado por inflación y penetración renovable
+  σ (volatilidad)             ~ desv. estándar de cambios en ln(P_t)
+
+Modelo extendido con estacionalidad:
+  μ_t = μ₀ · (1 + α·cos(2π·t/8760) + β·cos(2π·t/168))
+  </div>
+
+  <h3>Calibración y simulación Monte Carlo</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> scipy.optimize <span class="py-kw">import</span> minimize
+
+<span class="py-kw">def</span> <span class="py-fn">calibrate_ou</span>(pml_series):
+    <span class="py-str">"""Calibra parámetros OU por máxima verosimilitud."""</span>
+    dt = <span class="py-num">1</span>/<span class="py-num">8760</span>  <span class="py-cm"># Δt = 1 hora en fracción de año</span>
+    x = pml_series[:<span class="py-num">-1</span>]; y = pml_series[<span class="py-num">1</span>:]
+
+    <span class="py-kw">def</span> <span class="py-fn">neg_ll</span>(params):
+        kappa, mu, sigma = params
+        <span class="py-kw">if</span> kappa &lt;= <span class="py-num">0</span> <span class="py-kw">or</span> sigma &lt;= <span class="py-num">0</span>: <span class="py-kw">return</span> np.inf
+        E = x * np.<span class="py-fn">exp</span>(-kappa*dt) + mu*(<span class="py-num">1</span>-np.<span class="py-fn">exp</span>(-kappa*dt))
+        V = sigma**<span class="py-num">2</span>*(<span class="py-num">1</span>-np.<span class="py-fn">exp</span>(-<span class="py-num">2</span>*kappa*dt))/((<span class="py-num">2</span>*kappa))
+        <span class="py-kw">return</span> <span class="py-num">0.5</span>*np.<span class="py-fn">sum</span>(((y-E)**<span class="py-num">2</span>)/V + np.<span class="py-fn">log</span>(V))
+
+    res = <span class="py-fn">minimize</span>(neg_ll, [<span class="py-num">0.2</span>, pml_series.<span class="py-fn">mean</span>(), pml_series.<span class="py-fn">std</span>()],
+                  method=<span class="py-str">'Nelder-Mead'</span>)
+    <span class="py-kw">return</span> dict(<span class="py-fn">zip</span>([<span class="py-str">'kappa'</span>,<span class="py-str">'mu'</span>,<span class="py-str">'sigma'</span>], res.x))
+
+<span class="py-kw">def</span> <span class="py-fn">simulate_pml</span>(params, n_years=<span class="py-num">25</span>, n_sim=<span class="py-num">3000</span>):
+    n_steps = n_years * <span class="py-num">8760</span>; dt = <span class="py-num">1</span>/<span class="py-num">8760</span>
+    paths = np.<span class="py-fn">zeros</span>((n_sim, n_steps))
+    paths[:, <span class="py-num">0</span>] = params[<span class="py-str">'mu'</span>]
+    <span class="py-kw">for</span> t <span class="py-kw">in</span> range(<span class="py-num">1</span>, n_steps):
+        dW = np.random.<span class="py-fn">normal</span>(<span class="py-num">0</span>, np.<span class="py-fn">sqrt</span>(dt), n_sim)
+        paths[:, t] = (paths[:, t-<span class="py-num">1</span>]
+            + params[<span class="py-str">'kappa'</span>]*(params[<span class="py-str">'mu'</span>]-paths[:, t-<span class="py-num">1</span>])*dt
+            + params[<span class="py-str">'sigma'</span>]*dW)
+    <span class="py-kw">return</span> paths.<span class="py-fn">clip</span>(<span class="py-num">0</span>)  <span class="py-cm"># precios no negativos</span>
+  </div>
+</section>
+
 </div><!-- /container -->
+
+<div class="container">
+
+<!-- ══════════════════════════════════════
+     S23 — ENERGY LAB
+══════════════════════════════════════ -->
+<section id="s23">
+  <div class="section-label">23 · Balance energético</div>
+  <h2>Energy Lab — balance energético y métricas</h2>
+
+  <p>
+    El módulo <em>Energy Lab</em> consolida el balance energético completo del proyecto: producción bruta, pérdidas por categoría, energía neta inyectada a la red, factor de capacidad y curvas de duración. Es el nexo entre el recurso eólico y el análisis económico.
+  </p>
+
+  <h3>Árbol de pérdidas (Loss Tree)</h3>
+  <div class="pipeline">
+    <div class="pipe-step"><div class="pipe-num">P₁</div><div class="pipe-title">AEP bruto</div><div class="pipe-desc">Producción calculada con la curva de potencia de la turbina y la distribución de Weibull local. Sin pérdidas.</div></div>
+    <div class="pipe-step"><div class="pipe-num">P₂</div><div class="pipe-title">Pérdidas de estela</div><div class="pipe-desc">Reducción por interacción entre turbinas. Típico 8–15%. Calculado con PyWake (NOJ, Bastankhah, Jensen).</div></div>
+    <div class="pipe-step"><div class="pipe-num">P₃</div><div class="pipe-title">Disponibilidad</div><div class="pipe-desc">Horas paradas por mantenimiento. Disponibilidad mecánica típica: 97%. Factor: 0.97.</div></div>
+    <div class="pipe-step"><div class="pipe-num">P₄</div><div class="pipe-title">Pérdidas eléctricas</div><div class="pipe-desc">Resistencia en cables, transformadores. Típico 1–3%. Factor: 0.98.</div></div>
+    <div class="pipe-step"><div class="pipe-num">P₅</div><div class="pipe-title">AEP neto</div><div class="pipe-desc">AEP_neto = AEP_bruto × (1-P_estela) × η_disp × η_elec. Insumo directo del análisis económico.</div></div>
+  </div>
+
+  <div class="math" data-label="AEP NETO">
+AEP_neto = AEP_bruto · (1 − L_wake) · η_availability · η_electrical · η_others
+
+Factores típicos Mexico:
+  L_wake       = 0.10–0.15 (10–15%)
+  η_availability = 0.97
+  η_electrical  = 0.98
+  η_others      = 0.98 (hielo, polvo, corte de viento, turbulencia)
+
+AEP_neto / (P_instalada × 8760) = Factor de Capacidad (CF)
+CF objetivo México: &gt; 35% zonas clase 5–7
+  </div>
+
+  <h3>Curva de duración de potencia (Power Duration Curve)</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+<span class="py-kw">def</span> <span class="py-fn">power_duration_curve</span>(P_series, P_rated):
+    <span class="py-str">"""
+    Calcula la curva de duración de potencia.
+    P_series: array horario de potencia (MW)
+    Retorna: (horas_acumuladas, potencia_ordenada, CF)
+    """</span>
+    P_sorted = np.<span class="py-fn">sort</span>(P_series)[::-<span class="py-num">1</span>]   <span class="py-cm"># de mayor a menor</span>
+    hours = np.<span class="py-fn">arange</span>(<span class="py-num">1</span>, len(P_sorted)+<span class="py-num">1</span>)
+    AEP   = np.<span class="py-fn">trapz</span>(P_sorted, hours)         <span class="py-cm"># MWh/año</span>
+    CF    = AEP / (P_rated * <span class="py-num">8760</span>)
+    <span class="py-kw">return</span> hours, P_sorted, CF, AEP
+
+<span class="py-cm"># Porcentaje de horas a plena carga (Full Load Hours)</span>
+FLH = AEP / P_rated   <span class="py-cm"># horas equivalentes a potencia nominal</span>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S24 — ANÁLISIS TECNO-ECONÓMICO
+══════════════════════════════════════ -->
+<section id="s24">
+  <div class="section-label">24 · Economía del proyecto</div>
+  <h2>Análisis Tecno-Económico completo</h2>
+
+  <p>
+    El módulo <em>Tecno-Económico</em> de AERO calcula la viabilidad financiera del proyecto a través de los indicadores estándar de la industria: LCOE, VAN, TIR, Payback, y análisis de sensibilidad. Integra proyecciones de demanda, precios PML, AEP neto y estructura de costos del proyecto.
+  </p>
+
+  <h3>Estructura de costos CAPEX / OPEX</h3>
+  <div class="card-grid">
+    <div class="card"><h4>CAPEX turbinas</h4><p>50–60% del CAPEX total. Típico México: 800–1100 USD/kW instalado (aerogenerador + transporte + montaje).</p></div>
+    <div class="card"><h4>CAPEX BOP</h4><p>Balance of Plant: cimentaciones, red de media tensión, subestación, caminos. ~25–35% del CAPEX total.</p></div>
+    <div class="card"><h4>OPEX fijo</h4><p>Mantenimiento mayor y menor, seguro, operación. Típico: 15–25 USD/MWh o 12–18 kUSD/MW·año.</p></div>
+    <div class="card"><h4>OPEX variable</h4><p>Repuestos no planificados, arrendamiento de tierra (~1–3 USD/MWh). Escala con la generación real.</p></div>
+  </div>
+
+  <h3>LCOE — Costo Nivelado de Energía</h3>
+  <div class="math" data-label="LCOE">
+LCOE = (CAPEX · CRF + OPEX_fijo) / AEP_neto + OPEX_variable
+
+CRF = r · (1+r)^n / [(1+r)^n − 1]   (Capital Recovery Factor)
+
+r = tasa de descuento (WACC: 7–12% para proyectos eólicos México)
+n = vida útil del proyecto (típico 25 años)
+
+Ejemplo:
+  CAPEX = 1000 USD/kW → 50 MUSD para 50 MW
+  OPEX_fijo = 750 kUSD/año
+  AEP_neto  = 180,000 MWh/año (CF = 41%)
+  WACC = 9%, n = 25 años
+  CRF  = 0.1018
+  LCOE = (50,000·0.1018 + 750) / 180,000 = 32.7 USD/MWh
+  </div>
+
+  <h3>VAN, TIR y Payback</h3>
+  <div class="math" data-label="INDICADORES FINANCIEROS">
+VAN = −CAPEX + Σ_{t=1}^{n} [CF_t / (1+r)^t]
+
+donde CF_t = Ingresos_t − OPEX_t − Impuestos_t − Servicio_deuda_t
+Ingresos_t = AEP_neto · PML_t + Certificados de Energía Limpia (CELs)
+
+TIR: tasa r* tal que VAN(r*) = 0
+     Proyecto viable si TIR &gt; WACC
+
+Payback descontado: primer año t* donde VAN acumulado ≥ 0
+  </div>
+
+  <h3>Implementación completa</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+<span class="py-kw">from</span> scipy.optimize <span class="py-kw">import</span> brentq
+
+<span class="py-kw">def</span> <span class="py-fn">techno_economic</span>(capex, aep_net, opex_fixed, opex_var,
+                     pml_series_25y, wacc, n=<span class="py-num">25</span>, tax_rate=<span class="py-num">0.30</span>,
+                     depreciation_years=<span class="py-num">20</span>, debt_fraction=<span class="py-num">0.70</span>):
+    <span class="py-str">"""
+    Calcula VAN, TIR, LCOE y flujos de caja del proyecto.
+    pml_series_25y: array de 25 precios promedio anuales (USD/MWh)
+    """</span>
+    cash_flows = []
+    <span class="py-kw">for</span> t <span class="py-kw">in</span> range(<span class="py-num">1</span>, n+<span class="py-num">1</span>):
+        revenue     = aep_net * pml_series_25y[t-<span class="py-num">1</span>]
+        opex        = opex_fixed + opex_var * aep_net
+        deprec      = capex/depreciation_years <span class="py-kw">if</span> t &lt;= depreciation_years <span class="py-kw">else</span> <span class="py-num">0</span>
+        ebit        = revenue - opex - deprec
+        tax         = <span class="py-fn">max</span>(<span class="py-num">0</span>, ebit * tax_rate)
+        fcf         = ebit - tax + deprec          <span class="py-cm"># free cash flow</span>
+        cash_flows.<span class="py-fn">append</span>(fcf)
+
+    cf = np.<span class="py-fn">array</span>(cash_flows)
+    disc = np.<span class="py-fn">array</span>([(<span class="py-num">1</span>+wacc)**-t <span class="py-kw">for</span> t <span class="py-kw">in</span> range(<span class="py-num">1</span>, n+<span class="py-num">1</span>)])
+    npv  = -capex + np.<span class="py-fn">sum</span>(cf * disc)
+
+    <span class="py-kw">def</span> <span class="py-fn">npv_at_r</span>(r):
+        d = np.<span class="py-fn">array</span>([(<span class="py-num">1</span>+r)**-t <span class="py-kw">for</span> t <span class="py-kw">in</span> range(<span class="py-num">1</span>, n+<span class="py-num">1</span>)])
+        <span class="py-kw">return</span> -capex + np.<span class="py-fn">sum</span>(cf * d)
+    irr = <span class="py-fn">brentq</span>(npv_at_r, <span class="py-num">0.001</span>, <span class="py-num">0.50</span>)
+
+    crf  = wacc*(<span class="py-num">1</span>+wacc)**n / ((<span class="py-num">1</span>+wacc)**n - <span class="py-num">1</span>)
+    lcoe = (capex*crf + opex_fixed) / aep_net + opex_var
+    <span class="py-kw">return</span> {<span class="py-str">'NPV'</span>: npv, <span class="py-str">'IRR'</span>: irr, <span class="py-str">'LCOE'</span>: lcoe, <span class="py-str">'cash_flows'</span>: cf}
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S25 — VALIDATION CENTER
+══════════════════════════════════════ -->
+<section id="s25">
+  <div class="section-label">25 · Validación de modelos</div>
+  <h2>Validation Center — métricas y benchmarking</h2>
+
+  <p>
+    La validación cuantitativa es obligatoria antes de usar los resultados del modelo en decisiones de inversión. El <em>Validation Center</em> de AERO compara predicciones de reanálisis y modelos ML contra observaciones de torre anemométrica, SCADA de parque o estaciones meteorológicas certificadas.
+  </p>
+
+  <h3>Métricas de validación</h3>
+  <div class="card-grid">
+    <div class="card"><h4>MAE</h4><p>Error Absoluto Medio. MAE = (1/n)·Σ|ŷ_i − y_i|. Robusto a outliers. Unidades físicas (m/s, MWh). Objetivo: MAE &lt; 0.5 m/s para velocidad de viento.</p></div>
+    <div class="card"><h4>RMSE</h4><p>Raíz del Error Cuadrático Medio. Penaliza errores grandes. RMSE = √[(1/n)·Σ(ŷ_i − y_i)²]. Siempre RMSE ≥ MAE.</p></div>
+    <div class="card"><h4>Sesgo (Bias)</h4><p>Bias = (1/n)·Σ(ŷ_i − y_i). Indica sobreestimación (+) o subestimación (−) sistemática. Objetivo: |Bias| &lt; 0.1 m/s.</p></div>
+    <div class="card"><h4>Skill Score</h4><p>SS = 1 − RMSE_modelo/RMSE_ref. ref = persistencia o climatología. SS=1: modelo perfecto; SS=0: igual que referencia; SS&lt;0: modelo peor.</p></div>
+    <div class="card"><h4>R² de Pearson</h4><p>Coeficiente de determinación. R² = 1 − SS_res/SS_tot. Mide varianza explicada. Objetivo: R² &gt; 0.85 para predicción horaria.</p></div>
+    <div class="card"><h4>Excedencia P50/P90</h4><p>P50: producción esperada (mediana). P90: producción excedida el 90% del tiempo. Diferencia típica: 10–15% de AEP.</p></div>
+  </div>
+
+  <h3>Bootstrap para estimación de incertidumbre</h3>
+  <div class="code">
+<span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
+
+<span class="py-kw">def</span> <span class="py-fn">bootstrap_metrics</span>(y_true, y_pred, n_boot=<span class="py-num">2000</span>, ci=<span class="py-num">0.90</span>):
+    <span class="py-str">"""IC bootstrap para MAE, RMSE, Bias."""</span>
+    n = len(y_true)
+    mae_b, rmse_b, bias_b = [], [], []
+    <span class="py-kw">for</span> _ <span class="py-kw">in</span> range(n_boot):
+        idx = np.random.<span class="py-fn">randint</span>(<span class="py-num">0</span>, n, n)
+        e   = y_pred[idx] - y_true[idx]
+        mae_b.<span class="py-fn">append</span>(np.<span class="py-fn">mean</span>(np.<span class="py-fn">abs</span>(e)))
+        rmse_b.<span class="py-fn">append</span>(np.<span class="py-fn">sqrt</span>(np.<span class="py-fn">mean</span>(e**<span class="py-num">2</span>)))
+        bias_b.<span class="py-fn">append</span>(np.<span class="py-fn">mean</span>(e))
+    alpha = (<span class="py-num">1</span>-ci)/<span class="py-num">2</span>
+    <span class="py-kw">return</span> {
+        <span class="py-str">'MAE'</span>:  (<span class="py-fn">np.percentile</span>(mae_b,  alpha*<span class="py-num">100</span>), <span class="py-fn">np.percentile</span>(mae_b,  (<span class="py-num">1</span>-alpha)*<span class="py-num">100</span>)),
+        <span class="py-str">'RMSE'</span>: (<span class="py-fn">np.percentile</span>(rmse_b, alpha*<span class="py-num">100</span>), <span class="py-fn">np.percentile</span>(rmse_b, (<span class="py-num">1</span>-alpha)*<span class="py-num">100</span>)),
+        <span class="py-str">'Bias'</span>: (<span class="py-fn">np.percentile</span>(bias_b, alpha*<span class="py-num">100</span>), <span class="py-fn">np.percentile</span>(bias_b, (<span class="py-num">1</span>-alpha)*<span class="py-num">100</span>))
+    }
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S26 — ARQUITECTURA DE SOFTWARE AERO
+══════════════════════════════════════ -->
+<section id="s26">
+  <div class="section-label">26 · Arquitectura de software</div>
+  <h2>Arquitectura de software AERO</h2>
+
+  <p>
+    AERO es una Single-Page Application (SPA) con un backend Python y un frontend JavaScript vanilla. La arquitectura sigue el patrón <strong>módulos desacoplados</strong>: cada módulo (Data Hub, Model Arena, etc.) es un componente independiente con su propio estado, lógica y vista. La comunicación entre frontend y backend se hace mediante una API REST.
+  </p>
+
+  <h3>Stack tecnológico</h3>
+  <div class="card-grid">
+    <div class="card"><h4>Frontend</h4><p>HTML5 + CSS3 + JavaScript ES2022. Sin frameworks (vanilla). Chart.js para gráficas. Leaflet.js para mapas. Space Grotesk + DM Mono (tipografía).</p></div>
+    <div class="card"><h4>Backend</h4><p>Python 3.11+. FastAPI para la API REST. NumPy, Pandas, SciPy para cómputo científico. PyWake para estelas. PyKrige para interpolación.</p></div>
+    <div class="card"><h4>ML</h4><p>Scikit-learn, XGBoost, LightGBM para modelos clásicos. PyTorch para redes neuronales. Optuna para hyperparameter tuning. MLflow para experimentos.</p></div>
+    <div class="card"><h4>Datos</h4><p>MERRA-2 (NASA GES DISC), ERA5 (ECMWF CDS). Procesados a CSV con windpowerlib / cfgrib. Almacenados en carpeta local /data/.</p></div>
+    <div class="card"><h4>Despliegue</h4><p>Docker + docker-compose. Nginx como reverse proxy. Gunicorn + Uvicorn workers. Opcional: Railway, Render, AWS EC2.</p></div>
+    <div class="card"><h4>Testing</h4><p>Pytest con fixtures de datos sintéticos. Coverage mínimo 80%. GitHub Actions para CI/CD. Pre-commit hooks (ruff, mypy).</p></div>
+  </div>
+
+  <h3>Árbol de directorios AERO completo</h3>
+  <div class="module-tree">
+<span class="tree-dir">aero/</span>
+├── <span class="tree-dir">backend/</span>
+│   ├── <span class="tree-file">main.py</span>              <span class="tree-desc">FastAPI app, routers, CORS, middleware</span>
+│   ├── <span class="tree-dir">api/</span>
+│   │   ├── <span class="tree-file">data.py</span>          <span class="tree-desc">POST /upload, GET /presets, GET /inspect</span>
+│   │   ├── <span class="tree-file">wind.py</span>          <span class="tree-desc">POST /wind/analyze, POST /wind/weibull</span>
+│   │   ├── <span class="tree-file">kriging.py</span>       <span class="tree-desc">POST /kriging/fit, POST /kriging/predict</span>
+│   │   ├── <span class="tree-file">wake.py</span>          <span class="tree-desc">POST /wake/simulate (PyWake)</span>
+│   │   ├── <span class="tree-file">hybrid.py</span>        <span class="tree-desc">POST /hybrid/simulate</span>
+│   │   ├── <span class="tree-file">forecast.py</span>      <span class="tree-desc">POST /forecast/sarima, POST /forecast/lstm</span>
+│   │   ├── <span class="tree-file">techno.py</span>        <span class="tree-desc">POST /techno/lcoe, POST /techno/npv</span>
+│   │   └── <span class="tree-file">validate.py</span>      <span class="tree-desc">POST /validate/metrics, POST /validate/bootstrap</span>
+│   ├── <span class="tree-dir">core/</span>
+│   │   ├── <span class="tree-file">weibull.py</span>       <span class="tree-desc">MLE, fitting, PDF/CDF</span>
+│   │   ├── <span class="tree-file">wind_profile.py</span>  <span class="tree-desc">Perfil log, IBL, shear</span>
+│   │   ├── <span class="tree-file">orography.py</span>     <span class="tree-desc">BZ linealizado, RIX, ΔRIX</span>
+│   │   ├── <span class="tree-file">aep.py</span>           <span class="tree-desc">AEP bruto, power curve integration</span>
+│   │   ├── <span class="tree-file">kriging_engine.py</span> <span class="tree-desc">OK, UK, variogram fitting</span>
+│   │   ├── <span class="tree-file">pv_model.py</span>      <span class="tree-desc">Irradiancia → potencia PV</span>
+│   │   ├── <span class="tree-file">battery.py</span>       <span class="tree-desc">Modelo SOC, despacho</span>
+│   │   └── <span class="tree-file">financial.py</span>     <span class="tree-desc">LCOE, VAN, TIR, CRF</span>
+│   ├── <span class="tree-dir">ml/</span>
+│   │   ├── <span class="tree-file">mos_rf.py</span>        <span class="tree-desc">MOS con Random Forest</span>
+│   │   ├── <span class="tree-file">lstm_wind.py</span>     <span class="tree-desc">LSTM para pronóstico de viento</span>
+│   │   ├── <span class="tree-file">sarima_engine.py</span> <span class="tree-desc">SARIMA con statsmodels</span>
+│   │   ├── <span class="tree-file">ou_pml.py</span>        <span class="tree-desc">Ornstein-Uhlenbeck para PML</span>
+│   │   └── <span class="tree-file">features.py</span>      <span class="tree-desc">Feature engineering común</span>
+│   └── <span class="tree-dir">schemas/</span>
+│       ├── <span class="tree-file">wind_schema.py</span>   <span class="tree-desc">Pydantic models request/response</span>
+│       └── <span class="tree-file">techno_schema.py</span> <span class="tree-desc">Parámetros financieros</span>
+├── <span class="tree-dir">frontend/</span>
+│   ├── <span class="tree-file">index.html</span>           <span class="tree-desc">SPA principal — todos los módulos</span>
+│   ├── <span class="tree-file">ingenieria.html</span>      <span class="tree-desc">Este manual</span>
+│   └── <span class="tree-dir">static/</span>
+│       ├── <span class="tree-file">css/aero.css</span>     <span class="tree-desc">Design system completo</span>
+│       └── <span class="tree-file">js/aero.js</span>       <span class="tree-desc">Lógica SPA, módulos, API calls</span>
+├── <span class="tree-dir">data/</span>                    <span class="tree-desc">CSVs MERRA-2/ERA5 y curvas de potencia</span>
+├── <span class="tree-dir">tests/</span>                   <span class="tree-desc">pytest fixtures y casos de prueba</span>
+├── <span class="tree-file">Dockerfile</span>
+├── <span class="tree-file">docker-compose.yml</span>
+└── <span class="tree-file">requirements.txt</span>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S27 — API REST ENDPOINTS
+══════════════════════════════════════ -->
+<section id="s27">
+  <div class="section-label">27 · API REST</div>
+  <h2>API REST — contratos y endpoints</h2>
+
+  <p>
+    Todos los módulos del frontend se comunican con el backend mediante una API REST documentada con OpenAPI/Swagger. Los endpoints siguen convenciones REST y retornan JSON con estructura predecible. La autenticación es opcional (Bearer token JWT en despliegues productivos).
+  </p>
+
+  <div class="code">
+<span class="py-cm">## ── DATA HUB ──────────────────────────────────────────────────────</span>
+POST   /api/upload                <span class="py-cm"># Sube CSV/TXT meteorológico</span>
+GET    /api/presets                <span class="py-cm"># Lista archivos MERRA-2/ERA5 disponibles</span>
+GET    /api/inspect/{session_id}   <span class="py-cm"># Estadísticos básicos del dataset cargado</span>
+
+<span class="py-cm">## ── VIENTO / WEIBULL ──────────────────────────────────────────────</span>
+POST   /api/wind/analyze           <span class="py-cm"># Rosa de viento, sector stats</span>
+POST   /api/wind/weibull           <span class="py-cm"># Fit Weibull MLE, retorna A, k, PDF, CDF</span>
+POST   /api/wind/extrapolate       <span class="py-cm"># Extrapolación vertical (ley log + power law)</span>
+
+<span class="py-cm">## ── KRIGING ───────────────────────────────────────────────────────</span>
+POST   /api/kriging/variogram      <span class="py-cm"># Calcula semivariograma experimental + fit</span>
+POST   /api/kriging/predict        <span class="py-cm"># Kriging sobre grilla, retorna GeoJSON + varianza</span>
+
+<span class="py-cm">## ── PARQUE / WAKE ─────────────────────────────────────────────────</span>
+POST   /api/wake/simulate          <span class="py-cm"># Simula estelas con PyWake (NOJ/Bastankhah)</span>
+POST   /api/layout/optimize        <span class="py-cm"># Greedy layout en polígono dado</span>
+
+<span class="py-cm">## ── SISTEMA HÍBRIDO ───────────────────────────────────────────────</span>
+POST   /api/hybrid/simulate        <span class="py-cm"># Balance horario viento+PV+BESS</span>
+POST   /api/pv/power               <span class="py-cm"># Irradiancia → P_pv(t) horaria</span>
+
+<span class="py-cm">## ── ML / FORECAST ─────────────────────────────────────────────────</span>
+POST   /api/ml/train               <span class="py-cm"># Entrena RF/XGBoost/LSTM y retorna métricas</span>
+POST   /api/ml/predict             <span class="py-cm"># Predicción con modelo entrenado</span>
+POST   /api/forecast/sarima        <span class="py-cm"># Pronóstico SARIMA n pasos adelante</span>
+POST   /api/forecast/nwp_mos       <span class="py-cm"># Corrección MOS sobre salida NWP</span>
+
+<span class="py-cm">## ── DEMANDA / PML ─────────────────────────────────────────────────</span>
+POST   /api/demand/forecast        <span class="py-cm"># Proyección demanda 25 años Monte Carlo</span>
+POST   /api/pml/simulate           <span class="py-cm"># Simulación PML 25 años (OU model)</span>
+POST   /api/pml/calibrate          <span class="py-cm"># Calibra kappa, mu, sigma con histórico</span>
+
+<span class="py-cm">## ── TECNO-ECONÓMICO ───────────────────────────────────────────────</span>
+POST   /api/techno/lcoe            <span class="py-cm"># Calcula LCOE dado CAPEX, OPEX, AEP, WACC</span>
+POST   /api/techno/npv_irr         <span class="py-cm"># VAN, TIR, Payback, flujos de caja</span>
+POST   /api/techno/sensitivity     <span class="py-cm"># Análisis de sensibilidad multivariable</span>
+
+<span class="py-cm">## ── VALIDACIÓN ────────────────────────────────────────────────────</span>
+POST   /api/validate/metrics       <span class="py-cm"># MAE, RMSE, R², Bias, Skill Score</span>
+POST   /api/validate/bootstrap     <span class="py-cm"># IC bootstrap para métricas</span>
+
+<span class="py-cm">## ── EXPORTACIÓN ───────────────────────────────────────────────────</span>
+GET    /api/export/csv/{session_id} <span class="py-cm"># Descarga resultados en CSV</span>
+GET    /api/export/xlsx/{session_id} <span class="py-cm"># Excel con múltiples hojas</span>
+GET    /api/export/pdf/{session_id}  <span class="py-cm"># Reporte PDF ejecutivo</span>
+  </div>
+
+  <h3>Estructura de respuesta estándar</h3>
+  <div class="code">
+<span class="py-cm"># Todas las respuestas siguen este contrato JSON:</span>
+{
+  <span class="py-str">"status"</span>:  <span class="py-str">"ok"</span> | <span class="py-str">"error"</span>,
+  <span class="py-str">"data"</span>:    { ... },           <span class="py-cm"># payload del resultado</span>
+  <span class="py-str">"meta"</span>:    {
+    <span class="py-str">"session_id"</span>: <span class="py-str">"uuid"</span>,
+    <span class="py-str">"timestamp"</span>:  <span class="py-str">"ISO8601"</span>,
+    <span class="py-str">"version"</span>:    <span class="py-str">"1.0"</span>,
+    <span class="py-str">"duration_ms"</span>: 142
+  },
+  <span class="py-str">"error"</span>:   <span class="py-kw">null</span> | <span class="py-str">"mensaje de error"</span>
+}
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S28 — GUÍA DE REPLICACIÓN COMPLETA
+══════════════════════════════════════ -->
+<section id="s28">
+  <div class="section-label">28 · Replicación completa</div>
+  <h2>Guía de replicación completa paso a paso</h2>
+
+  <p>
+    Esta guía lleva al programador desde cero hasta un sistema AERO funcional. Se asume familiaridad básica con Python, terminal Unix/Mac y Git. Tiempo estimado de setup inicial: 45–90 minutos.
+  </p>
+
+  <div class="pipeline">
+    <div class="pipe-step"><div class="pipe-num">PASO 1</div><div class="pipe-title">Entorno Python</div><div class="pipe-desc">Python 3.11+, virtualenv o conda, instalación de dependencias base.</div></div>
+    <div class="pipe-step"><div class="pipe-num">PASO 2</div><div class="pipe-title">Datos reanálisis</div><div class="pipe-desc">Descarga de MERRA-2 (NASA GES DISC) o ERA5 (CDS ECMWF). Procesamiento a CSV horario.</div></div>
+    <div class="pipe-step"><div class="pipe-num">PASO 3</div><div class="pipe-title">Backend FastAPI</div><div class="pipe-desc">Estructura de carpetas, main.py, routers, modelos Pydantic, cómputo científico.</div></div>
+    <div class="pipe-step"><div class="pipe-num">PASO 4</div><div class="pipe-title">Frontend SPA</div><div class="pipe-desc">index.html, aero.css, aero.js. Módulos: DataHub, WindAnalysis, Kriging, etc.</div></div>
+    <div class="pipe-step"><div class="pipe-num">PASO 5</div><div class="pipe-title">Docker deploy</div><div class="pipe-desc">Dockerfile + docker-compose. Nginx reverse proxy. Variables de entorno. Test end-to-end.</div></div>
+  </div>
+
+  <h3>Setup del entorno de desarrollo</h3>
+  <div class="code">
+<span class="py-cm"># 1. Clonar repositorio y crear entorno</span>
+git clone https://github.com/opencim/aero-platform.git
+cd aero-platform
+python -m venv .venv && source .venv/bin/activate
+
+<span class="py-cm"># 2. Instalar dependencias</span>
+pip install fastapi uvicorn[standard] numpy pandas scipy matplotlib \
+            pykrige py_wake statsmodels scikit-learn xgboost \
+            torch torchvision torchaudio \
+            optuna mlflow python-multipart pydantic
+
+<span class="py-cm"># 3. Levantar backend (desarrollo)</span>
+cd backend
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+<span class="py-cm"># Swagger UI: http://localhost:8000/docs</span>
+
+<span class="py-cm"># 4. Servir frontend</span>
+cd ../frontend
+python -m http.server 3000
+<span class="py-cm"># Abrir: http://localhost:3000/index.html</span>
+  </div>
+
+  <h3>Descarga y procesamiento de MERRA-2</h3>
+  <div class="code">
+<span class="py-cm"># Script de descarga MERRA-2 (requiere cuenta NASA Earthdata)</span>
+<span class="py-kw">import</span> requests, os, datetime
+<span class="py-kw">from</span> pathlib <span class="py-kw">import</span> Path
+
+BASE_URL = <span class="py-str">"https://goldsmr4.gesdisc.eosdis.nasa.gov/data/MERRA2/M2T1NXSLV.5.12.4"</span>
+
+<span class="py-kw">def</span> <span class="py-fn">download_merra2_month</span>(year, month, lat_bbox, lon_bbox, token):
+    <span class="py-str">"""Descarga MERRA-2 M2T1NXSLV para un mes dado."""</span>
+    session = requests.<span class="py-fn">Session</span>()
+    session.headers[<span class="py-str">'Authorization'</span>] = <span class="py-str">f'Bearer {token}'</span>
+    <span class="py-kw">for</span> day <span class="py-kw">in</span> range(<span class="py-num">1</span>, <span class="py-num">32</span>):
+        <span class="py-kw">try</span>:
+            d = datetime.date(year, month, day)
+            fname = <span class="py-str">f"MERRA2_400.tavg1_2d_slv_Nx.{d:%Y%m%d}.nc4"</span>
+            url   = <span class="py-str">f"{BASE_URL}/{year}/{month:02d}/{fname}"</span>
+            r = session.<span class="py-fn">get</span>(url, stream=<span class="py-kw">True</span>)
+            Path(<span class="py-str">"data/raw"</span>).<span class="py-fn">mkdir</span>(exist_ok=<span class="py-kw">True</span>)
+            <span class="py-kw">with</span> <span class="py-fn">open</span>(<span class="py-str">f"data/raw/{fname}"</span>, <span class="py-str">'wb'</span>) <span class="py-kw">as</span> f:
+                <span class="py-kw">for</span> chunk <span class="py-kw">in</span> r.<span class="py-fn">iter_content</span>(<span class="py-num">8192</span>):
+                    f.<span class="py-fn">write</span>(chunk)
+        <span class="py-kw">except</span>: <span class="py-kw">pass</span>
+
+<span class="py-cm"># Procesamiento NC4 → CSV horario por sitio</span>
+<span class="py-kw">import</span> xarray <span class="py-kw">as</span> xr
+
+<span class="py-kw">def</span> <span class="py-fn">extract_site_csv</span>(nc4_files, lat, lon, out_csv):
+    <span class="py-str">"""Extrae serie horaria de viento para un punto lat/lon."""</span>
+    ds = xr.<span class="py-fn">open_mfdataset</span>(nc4_files, combine=<span class="py-str">'by_coords'</span>)
+    site = ds.<span class="py-fn">sel</span>(lat=lat, lon=lon, method=<span class="py-str">'nearest'</span>)
+    df = site[[<span class="py-str">'U10M'</span>, <span class="py-str">'V10M'</span>, <span class="py-str">'U50M'</span>, <span class="py-str">'V50M'</span>,
+               <span class="py-str">'T2M'</span>, <span class="py-str">'PS'</span>]].<span class="py-fn">to_dataframe</span>()
+    df.<span class="py-fn">to_csv</span>(out_csv)
+  </div>
+
+  <h3>Docker Compose para producción</h3>
+  <div class="code">
+<span class="py-cm"># docker-compose.yml</span>
+version: <span class="py-str">'3.9'</span>
+services:
+  backend:
+    build: ./backend
+    environment:
+      - AERO_ENV=production
+      - SECRET_KEY=${SECRET_KEY}
+    volumes:
+      - ./data:/app/data:ro
+    ports: [<span class="py-str">"8000:8000"</span>]
+    restart: unless-stopped
+
+  frontend:
+    image: nginx:alpine
+    volumes:
+      - ./frontend:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: [<span class="py-str">"80:80"</span>, <span class="py-str">"443:443"</span>]
+    depends_on: [backend]
+    restart: unless-stopped
+  </div>
+
+  <div class="callout tip">
+    <strong>Checklist de deploy:</strong> (1) Variables de entorno configuradas, (2) Datos MERRA-2/ERA5 en /data/, (3) SECRET_KEY generada (openssl rand -hex 32), (4) CORS origins restringidos al dominio de producción, (5) HTTPS habilitado (Let's Encrypt), (6) Backups de sesiones/resultados configurados.
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════
+     S29 — DISEÑO DE INTERFAZ UI/UX
+══════════════════════════════════════ -->
+<section id="s29">
+  <div class="section-label">29 · Diseño de interfaz</div>
+  <h2>Diseño de interfaz — principios y componentes UI</h2>
+
+  <p>
+    El design system de AERO sigue los principios de <strong>información densa, legibilidad máxima en pantallas oscuras y densidad funcional</strong>. Está diseñado para analistas y científicos de datos que trabajan con grandes volúmenes de información numérica.
+  </p>
+
+  <h3>Paleta de colores y tokens</h3>
+  <div class="code">
+<span class="py-cm">/* aero.css — Design tokens */</span>
+:root {
+  <span class="py-cm">/* Fondos */</span>
+  --bg-base:    #0C1117;   /* fondo principal (muy oscuro azul-negro) */
+  --bg-surface: #141C26;   /* cards, paneles */
+  --bg-raised:  #1A2535;   /* tooltips, dropdowns */
+
+  <span class="py-cm">/* Bordes */</span>
+  --border:     #1E3048;   /* bordes sutiles */
+  --border-mid: #2A4060;   /* énfasis medio */
+
+  <span class="py-cm">/* Tipografía */</span>
+  --text:       #C8D8E8;   /* texto base */
+  --text-muted: #5A7A96;   /* texto secundario */
+  --text-bright:#F0F8FF;   /* títulos, énfasis */
+
+  <span class="py-cm">/* Acento OPEN CIM */</span>
+  --accent:     #1D9E75;   /* verde AERO — acción primaria */
+  --accent2:    #4A9EFF;   /* azul — información */
+  --accent3:    #FF6B35;   /* naranja — advertencias */
+  --accent4:    #C7F464;   /* lima — datos positivos */
+
+  <span class="py-cm">/* Tipografías */</span>
+  --font-sans:  'Space Grotesk', system-ui, sans-serif;
+  --font-mono:  'DM Mono', 'Fira Code', monospace;
+  --font-data:  'Inter', system-ui, sans-serif;
+}
+  </div>
+
+  <h3>Componentes del design system</h3>
+  <div class="card-grid">
+    <div class="card"><h4>Cards</h4><p>Fondo --bg-surface, borde --border, radio 8px. Header con title + badge. Body con padding 1.25rem. Variante card--accent con borde izquierdo --accent.</p></div>
+    <div class="card"><h4>Botones</h4><p>btn-primary (fondo --accent), btn-secondary (fondo transparente, borde --border), btn-icon (24px, solo ícono). Estados: :hover +5% brillo, :active scale(0.97), :disabled opacidad 0.4.</p></div>
+    <div class="card"><h4>Formularios</h4><p>form-label (mono, 0.78rem, --text-muted), form-input (fondo --bg-raised, borde --border), form-select, form-grid-4 (CSS grid 4 columnas responsive).</p></div>
+    <div class="card"><h4>Badges</h4><p>badge--info (azul), badge--ok (verde), badge--warn (naranja), badge--error (rojo). Todos usan opacity 0.15 como fondo y color sólido en texto.</p></div>
+    <div class="card"><h4>Topbar dock</h4><p>position:sticky, backdrop-filter:blur(12px), height:48px. Se oculta al hacer scroll down y reaparece al subir. Logo + nav-btns + session-badge + theme-toggle.</p></div>
+    <div class="card"><h4>Módulos SPA</h4><p>Cada módulo es section.module con display:none por defecto y class.active para mostrar. Transición: opacity 0.2s + translateY(8px→0). Activado vía data-module en nav-btn.</p></div>
+  </div>
+
+  <h3>Patrón de módulo SPA (JavaScript)</h3>
+  <div class="code">
+<span class="py-cm">// Patrón estándar para todos los módulos AERO</span>
+<span class="py-kw">const</span> ModuloEjemplo = {
+  state: { data: <span class="py-kw">null</span>, loading: <span class="py-kw">false</span>, error: <span class="py-kw">null</span> },
+
+  <span class="py-fn">init</span>() {
+    <span class="py-fn">document</span>.<span class="py-fn">getElementById</span>(<span class="py-str">'btn-run-ejemplo'</span>)
+      .<span class="py-fn">addEventListener</span>(<span class="py-str">'click'</span>, () => this.<span class="py-fn">run</span>());
+  },
+
+  <span class="py-kw">async</span> <span class="py-fn">run</span>() {
+    this.state.loading = <span class="py-kw">true</span>; this.<span class="py-fn">render</span>();
+    <span class="py-kw">try</span> {
+      <span class="py-kw">const</span> params = this.<span class="py-fn">collectParams</span>();
+      <span class="py-kw">const</span> res   = <span class="py-kw">await</span> <span class="py-fn">fetch</span>(<span class="py-str">'/api/ejemplo/run'</span>, {
+        method: <span class="py-str">'POST'</span>,
+        headers: { <span class="py-str">'Content-Type'</span>: <span class="py-str">'application/json'</span> },
+        body: JSON.<span class="py-fn">stringify</span>(params)
+      });
+      this.state.data  = <span class="py-kw">await</span> res.<span class="py-fn">json</span>();
+      this.state.error = <span class="py-kw">null</span>;
+    } <span class="py-kw">catch</span>(e) {
+      this.state.error = e.message;
+    } <span class="py-kw">finally</span> {
+      this.state.loading = <span class="py-kw">false</span>; this.<span class="py-fn">render</span>();
+    }
+  },
+
+  <span class="py-fn">collectParams</span>() {
+    <span class="py-kw">return</span> {
+      param1: +<span class="py-fn">document</span>.<span class="py-fn">getElementById</span>(<span class="py-str">'input-param1'</span>).value,
+      param2: <span class="py-fn">document</span>.<span class="py-fn">getElementById</span>(<span class="py-str">'select-param2'</span>).value
+    };
+  },
+
+  <span class="py-fn">render</span>() {
+    <span class="py-kw">const</span> container = <span class="py-fn">document</span>.<span class="py-fn">getElementById</span>(<span class="py-str">'resultado-ejemplo'</span>);
+    <span class="py-kw">if</span> (this.state.loading) { container.innerHTML = <span class="py-str">'&lt;div class="spinner"&gt;&lt;/div&gt;'</span>; <span class="py-kw">return</span>; }
+    <span class="py-kw">if</span> (this.state.error)   { container.innerHTML = <span class="py-str">`&lt;div class="alert-error"&gt;${this.state.error}&lt;/div&gt;`</span>; <span class="py-kw">return</span>; }
+    <span class="py-kw">if</span> (this.state.data)    { this.<span class="py-fn">renderCharts</span>(this.state.data); }
+  }
+};
+
+<span class="py-cm">// Inicializar todos los módulos al cargar la SPA</span>
+<span class="py-fn">document</span>.<span class="py-fn">addEventListener</span>(<span class="py-str">'DOMContentLoaded'</span>, () => {
+  ModuloEjemplo.<span class="py-fn">init</span>();
+  <span class="py-cm">// ... otros módulos</span>
+});
+  </div>
+
+  <div class="callout tip">
+    <strong>Principio de diseño AERO:</strong> Cada módulo sigue el ciclo <em>input → run → output</em>. Los controles de entrada están siempre en la parte superior (cards con form-grid), el botón de acción es el elemento más prominente, y los resultados (tablas, gráficas, mapas) aparecen debajo en secciones colapsables. El estado vacío siempre tiene un mensaje descriptivo con instrucción de acción.
+  </div>
+</section>
+
+</div><!-- /container nuevo -->
 
 <footer>
   <p>
-    <span>OpenWAsP Blueprint</span> · José Antonio Rojas Escobar ·
-    CIIDIR Oaxaca / IPN · DoCiTTE · <span>2026</span>
+    <span>AERO by OPEN CIM</span> · Módulo de Ingeniería Eólica ·
+    José Antonio Rojas Escobar · CIIDIR Oaxaca / IPN · DoCiTTE · <span>2026</span>
   </p>
   <p style="margin-top:0.5rem; font-size:0.6rem; opacity:0.5;">
-    Basado en: Troen & Petersen (1989), Jensen (1983), Bastankhah & Porté-Agel (2014),
-    DTU Wind Energy, Global Wind Atlas methodology
+    Troen &amp; Petersen (1989) · Jensen (1983) · Bastankhah &amp; Porté-Agel (2014) · DTU Wind Energy · Global Wind Atlas ·
+    Matheron (1963) Kriging · Cressie (1993) Statistics for Spatial Data ·
+    Hull (2009) Options Futures and Other Derivatives (OU process) ·
+    CENACE MEM México · NASA MERRA-2 · ECMWF ERA5 · IEA Wind Task 31 ·
+    Hochreiter &amp; Schmidhuber (1997) LSTM · Chen &amp; Guestrin (2016) XGBoost
   </p>
 </footer>
 

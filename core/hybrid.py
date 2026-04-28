@@ -1,5 +1,5 @@
 """
-WindPro Platform — Hybrid Energy System Module (HOMER Pro-style)
+AERO by OPEN CIM — Hybrid Energy System Module (HOMER Pro-style)
 Wind + Solar PV + Battery + Diesel generator + Load profile
 Hourly dispatch simulation, NPC/LCOE, CO2 savings.
 """

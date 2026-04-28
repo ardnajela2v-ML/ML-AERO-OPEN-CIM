@@ -712,26 +712,29 @@ class FeatureEngineer:
         base['ws_diff1'] = base[target_col].diff(1)
         base['ws_diff3'] = base[target_col].diff(3)
 
+        # Pre-compute feature columns (shared across all horizons)
+        feature_cols = [c for c in base.columns if c != target_col]
+        base_features = base[feature_cols]
+        base_target_series = base[target_col]
+        # Pre-compute NaN mask for feature columns (shared)
+        feat_valid = base_features.notna().all(axis=1)
+
         result = {}
         for h in horizons_h:
-            df_h = base.copy()
-            # target: wind speed h hours ahead
-            df_h['target'] = df_h[target_col].shift(-h)
-            # Lags ws(t-1)...ws(t-k) disponibles en t; no son leaky bajo esta convención
-            # (target = ws(t+h), features = info hasta t).
-            df_h.drop(columns=[target_col], inplace=True, errors='ignore')
-            n_before = len(df_h)
-            df_h.dropna(inplace=True)
-            n_dropped = n_before - len(df_h)
+            target_shifted = base_target_series.shift(-h)
+            # Combined mask: features valid AND target valid
+            valid = feat_valid & target_shifted.notna()
+            n_before = len(base)
+            n_valid = int(valid.sum())
+            n_dropped = n_before - n_valid
             if n_dropped > 0:
                 pct = (n_dropped / n_before) if n_before > 0 else 0.0
                 log.info("Horizonte h=%d: %d filas eliminadas por NaN (%.1f%%)",
                          h, n_dropped, pct * 100)
 
-            feature_cols = [c for c in df_h.columns if c != 'target']
-            X = df_h[feature_cols].values.astype(np.float32)
-            y = df_h['target'].values.astype(np.float32)
-            result[h] = (X, y, feature_cols, df_h.index)
+            X = base_features.loc[valid].values.astype(np.float32)
+            y = target_shifted.loc[valid].values.astype(np.float32)
+            result[h] = (X, y, feature_cols, base.index[valid])
 
         return result
 
