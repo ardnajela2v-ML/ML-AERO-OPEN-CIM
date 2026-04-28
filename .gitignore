@@ -43,3 +43,6 @@ logs/
 # Variables de entorno
 .env
 .env.*
+
+# Claude Code (worktrees y estado local)
+.claude/
