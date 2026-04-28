@@ -766,19 +766,27 @@ async function loadForecast() {
 function renderForecastMainChart(r) {
   destroyChart('fc-main');
   const ctx = document.getElementById('fc-main-chart').getContext('2d');
+  const resetBtn = document.getElementById('btn-reset-zoom-fc');
+  const hoverCommon = {
+    pointRadius: 0,
+    pointHoverRadius: 5,
+    pointHoverBorderColor: '#fff',
+    pointHoverBorderWidth: 2,
+  };
   const datasets = [
     { label: 'Observado', data: r.y_true, borderColor: ink(),
-      borderWidth: 1.5, pointRadius: 0, fill: false },
+      borderWidth: 1.5, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
     { label: 'Predicho', data: r.y_pred, borderColor: acc(),
-      borderWidth: 1.5, pointRadius: 0, fill: false },
+      borderWidth: 1.5, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
     ...(r.persistence ? [{ label: 'Persistencia', data: r.persistence,
-      borderColor: acc2(), borderWidth: 1, borderDash: [4,3], pointRadius: 0, fill: false }] : []),
+      borderColor: acc2(), borderWidth: 1, borderDash: [4,3], fill: false,
+      pointHoverBackgroundColor: acc2(), ...hoverCommon }] : []),
   ];
   if (r.q10 && r.q90) {
     datasets.push({ label: 'Q10', data: r.q10, borderColor: acc3()+'44',
-      borderWidth: 1, pointRadius: 0, fill: false });
+      borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, fill: false });
     datasets.push({ label: 'Q90', data: r.q90, borderColor: acc3()+'44',
-      borderWidth: 1, pointRadius: 0, fill: '-1', backgroundColor: acc3()+'12' });
+      borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'12' });
   }
   WP.charts['fc-main'] = new Chart(ctx, {
     type: 'line',
@@ -786,13 +794,45 @@ function renderForecastMainChart(r) {
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { position: 'top' } },
+      plugins: {
+        legend: { position: 'top' },
+        tooltip: {
+          enabled: true,
+          backgroundColor: isLight() ? '#fff' : '#1B2230',
+          titleColor: isLight() ? '#0B1220' : '#F4F7FB',
+          bodyColor: isLight() ? '#3D4A5C' : '#A6B3C8',
+          borderColor: isLight() ? '#D6DEE9' : '#2A3346',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            title: (items) => items[0] ? `📅 ${items[0].label}` : '',
+            label: (item) => `${item.dataset.label}: ${item.formattedValue} m/s`,
+          }
+        },
+        zoom: {
+          pan: { enabled: true, mode: 'x', modifierKey: null },
+          zoom: {
+            wheel: { enabled: true, modifierKey: null },
+            pinch: { enabled: true },
+            drag: { enabled: false },
+            mode: 'x',
+            onZoomComplete: () => { if (resetBtn) resetBtn.style.display = 'inline-block'; },
+          },
+        },
+      },
       scales: {
-        x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 12 } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'm/s' } }
+        x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 14, font:{size:9} } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: 'm/s' }, ticks:{font:{size:9}} }
       }
     }
   });
+  if (resetBtn) {
+    resetBtn.style.display = 'none';
+    resetBtn.onclick = () => {
+      WP.charts['fc-main']?.resetZoom();
+      resetBtn.style.display = 'none';
+    };
+  }
 }
 
 function renderScatterChart(r) {
@@ -1759,30 +1799,189 @@ async function calcWindAnalysis() {
   }
 }
 
+// Cardinal labels for 16 sectors starting at N (0°), going CW
+const ROSE_DIR_LABELS = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
+                         'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+// Sequential 6-bin palette (low → high speed) — works on dark + light, no neon
+const ROSE_PALETTE = ['#4A7BC8', '#52A6E8', '#48C2A3',
+                      '#F2C94C', '#F39C5A', '#D9534F'];
+
+function _niceRoseStep(maxPct) {
+  const target = Math.max(maxPct, 1) / 5;
+  const exp = Math.pow(10, Math.floor(Math.log10(target)));
+  const f = target / exp;
+  const nice = f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10;
+  return nice * exp;
+}
+
+function _drawWindRose(rose) {
+  const canvas = document.getElementById('chart-rose');
+  if (!canvas || !rose?.bin_matrix) return;
+
+  const matrix = rose.bin_matrix;             // [16][6] in % of total
+  const nSectors = matrix.length;
+  const nBins    = matrix[0].length;
+  const binLabels = (rose.bin_labels || []).map((l, i, arr) =>
+    i === arr.length - 1 ? `≥${l.split('-')[0]}` : l);
+
+  // Legend
+  const legendEl = document.getElementById('rose-legend');
+  if (legendEl) {
+    legendEl.innerHTML =
+      `<span style="opacity:.75;font-weight:600;letter-spacing:.02em">Velocidad (m/s)</span>` +
+      binLabels.map((l, i) =>
+        `<span style="display:inline-flex;align-items:center;gap:.3rem">
+           <span style="width:14px;height:10px;background:${ROSE_PALETTE[i]};border-radius:1px"></span>${l}
+         </span>`).join('');
+  }
+
+  // DPI-correct canvas sizing
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth  || 380;
+  const cssH = canvas.clientHeight || 360;
+  canvas.width  = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const cx = cssW / 2;
+  const cy = cssH / 2 + 4;
+  const R  = Math.min(cssW, cssH) / 2 - 30;
+
+  const light    = isLight();
+  const ringCol  = light ? 'rgba(11,18,32,0.10)' : 'rgba(166,179,200,0.18)';
+  const spokeCol = light ? 'rgba(11,18,32,0.12)' : 'rgba(166,179,200,0.20)';
+  const txtCol   = light ? '#3D4A5C' : '#A6B3C8';
+  const txtBold  = light ? '#0B1220' : '#F4F7FB';
+  const sepCol   = light ? 'rgba(255,255,255,0.85)' : 'rgba(11,18,32,0.55)';
+  const labelBg  = light ? 'rgba(255,255,255,0.85)' : 'rgba(18,24,35,0.85)';
+
+  // Ring scale
+  const sectorTotals = matrix.map(row => row.reduce((s, v) => s + v, 0));
+  const maxPct = Math.max(...sectorTotals, 1);
+  const step   = _niceRoseStep(maxPct);
+  const nRings = Math.max(2, Math.ceil(maxPct / step));
+  const rMax   = step * nRings;
+
+  // Concentric rings
+  ctx.lineWidth   = 1;
+  ctx.strokeStyle = ringCol;
+  for (let k = 1; k <= nRings; k++) {
+    const r = (R * k) / nRings;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+
+  // Radial spokes
+  ctx.strokeStyle = spokeCol;
+  for (let i = 0; i < nSectors; i++) {
+    const ang = (i * 360 / nSectors - 90) * Math.PI / 180;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + R * Math.cos(ang), cy + R * Math.sin(ang));
+    ctx.stroke();
+  }
+
+  // Stacked annular sectors (low speed near center, high speed outside)
+  const sectorWidthDeg = 360 / nSectors;
+  const padFrac        = 0.12;  // gap between sectors
+  const halfW          = (sectorWidthDeg * (1 - padFrac)) / 2;
+
+  for (let i = 0; i < nSectors; i++) {
+    const centerDeg = i * sectorWidthDeg - 90;  // N at top
+    const a0 = (centerDeg - halfW) * Math.PI / 180;
+    const a1 = (centerDeg + halfW) * Math.PI / 180;
+    let cum = 0;
+    for (let b = 0; b < nBins; b++) {
+      const v = matrix[i][b];
+      if (v <= 0) continue;
+      const r0 = (R * cum) / rMax;
+      const r1 = (R * (cum + v)) / rMax;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r1, a0, a1, false);
+      ctx.arc(cx, cy, r0, a1, a0, true);
+      ctx.closePath();
+      ctx.fillStyle   = ROSE_PALETTE[b] + 'E6';
+      ctx.fill();
+      ctx.lineWidth   = 0.7;
+      ctx.strokeStyle = sepCol;
+      ctx.stroke();
+      cum += v;
+    }
+  }
+
+  // % ring labels (along N axis)
+  ctx.font         = '600 9px "JetBrains Mono", ui-monospace, monospace';
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'middle';
+  for (let k = 1; k <= nRings; k++) {
+    const r = (R * k) / nRings;
+    const txt = `${(step * k).toFixed(step < 1 ? 1 : 0)}%`;
+    const tw = ctx.measureText(txt).width;
+    ctx.fillStyle = labelBg;
+    ctx.fillRect(cx + 3, cy - r - 7, tw + 4, 12);
+    ctx.fillStyle = txtCol;
+    ctx.fillText(txt, cx + 5, cy - r);
+  }
+
+  // Direction labels
+  const labelR = R + 16;
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < nSectors; i++) {
+    const ang = (i * sectorWidthDeg - 90) * Math.PI / 180;
+    const x = cx + labelR * Math.cos(ang);
+    const y = cy + labelR * Math.sin(ang);
+    const cardinal = (i % 4 === 0);
+    ctx.font      = cardinal
+      ? '700 11px "JetBrains Mono", ui-monospace, monospace'
+      : '500 9px "JetBrains Mono", ui-monospace, monospace';
+    ctx.fillStyle = cardinal ? txtBold : txtCol;
+    ctx.fillText(ROSE_DIR_LABELS[i], x, y);
+  }
+
+  // Stats annotation (bottom-left)
+  const meanWS = (rose.mean_speed || []).reduce((acc, v, i) =>
+    acc + v * (sectorTotals[i] / 100), 0);
+  ctx.font         = '500 10px Inter, system-ui, sans-serif';
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'bottom';
+  ctx.fillStyle    = txtCol;
+  ctx.fillText(`media = ${meanWS.toFixed(2)} m/s`, 6, cssH - 18);
+  ctx.fillText(`calma = ${(rose.calm_pct ?? 0).toFixed(1)}%`, 6, cssH - 4);
+}
+
 function renderWindRose(rose) {
   if (!rose) return;
-  destroyChart('chart-rose');
-  const ctx = document.getElementById('chart-rose')?.getContext('2d');
-  if (!ctx) return;
+  destroyChart('chart-rose');  // safe: handles previous Chart.js instance if any
+  if (!document.getElementById('chart-rose')) return;
   document.getElementById('rose-dom').textContent =
     `${rose.dominant_direction} ${rose.dominant_pct}%`;
-  const a = acc();
-  WP.charts['chart-rose'] = new Chart(ctx, {
-    type: 'radar',
-    data: {
-      labels: rose.labels,
-      datasets: [{
-        label: 'Frecuencia (h)',
-        data: rose.frequency_pct,
-        backgroundColor: a+'28', borderColor: a, borderWidth: 1.5,
-        pointRadius: 2, pointBackgroundColor: a
-      }]
+
+  // Cache rose for redraw on resize / theme change
+  WP._lastRose = rose;
+  _drawWindRose(rose);
+
+  // Re-bind resize listener (debounced)
+  if (!WP._roseResizeBound) {
+    let t;
+    window.addEventListener('resize', () => {
+      clearTimeout(t);
+      t = setTimeout(() => { if (WP._lastRose) _drawWindRose(WP._lastRose); }, 120);
+    });
+    WP._roseResizeBound = true;
+  }
+
+  // Stub so destroyChart() / theme-update loop don't throw on next render
+  WP.charts['chart-rose'] = {
+    destroy: () => {
+      const c = document.getElementById('chart-rose');
+      if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
     },
-    options: { responsive:true, maintainAspectRatio:true,
-      plugins:{ legend:{display:false} },
-      scales:{ r:{ grid:{color: isLight()?'rgba(11,18,32,0.07)':'rgba(58,70,93,0.35)'},
-        pointLabels:{font:{size:9}}, ticks:{display:false} } } }
-  });
+    update: () => { if (WP._lastRose) _drawWindRose(WP._lastRose); }
+  };
 }
 
 function renderDiurnal(d) {
@@ -2452,21 +2651,22 @@ async function runAdvanced() {
     // KPI row
     const kpiRow = document.getElementById('adv-kpi-row');
     kpiRow.style.display = '';
-    const ti = r.turbulence;
+    const ti = r.wind_speed_variability || r.turbulence;
     const sh = r.shear;
     const rp = r.return_periods;
 
     document.getElementById('adv-kpi-ti').textContent  = ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—';
     document.getElementById('adv-kpi-ti15').textContent = ti?.ti_15ms != null ? (ti.ti_15ms * 100).toFixed(1) + '%' : '—';
-    document.getElementById('adv-kpi-iec').textContent  = ti?.iec_class || '—';
+    document.getElementById('adv-kpi-iec').textContent  = ti?.iec_class || 'N/A';
     document.getElementById('adv-kpi-alpha').textContent = sh?.alpha != null ? sh.alpha.toFixed(3) : '—';
     document.getElementById('adv-kpi-v50').textContent  = rp?.v_50year != null ? rp.v_50year + ' m/s' : '—';
 
-    // Badges
-    const iecCls = ti?.iec_class || '—';
+    // Badges (la TI horaria MERRA-2/ERA5 NO es TI IEC 61400-1; mostrar N/A)
+    const iecCls = ti?.iec_class || null;
     const badgeIec = document.getElementById('adv-badge-iec');
-    badgeIec.textContent = `IEC Clase ${iecCls}`;
+    badgeIec.textContent = iecCls ? `IEC Clase ${iecCls}` : 'TI proxy horario';
     badgeIec.className = `cbadge ${iecCls === 'A' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
+    badgeIec.title = ti?.note || r.ti_warning || '';
     document.getElementById('adv-badge-alpha').textContent = `α = ${sh?.alpha?.toFixed(3) || '—'}`;
     if (r.sectors) {
       document.getElementById('adv-badge-dom').textContent = `Dom: ${r.sectors.dominant_sectors?.join(', ') || '—'}`;
@@ -3572,9 +3772,13 @@ document.addEventListener('DOMContentLoaded', () => {
 async function renderMonthHourHeatmap() {
   const container = document.getElementById('mh-heatmap');
   if (!container) return;
+  if (!(window.WP && WP.sessionId)) {
+    container.innerHTML = '<span class="text-muted">Carga datos en Data Hub para ver el mapa de calor.</span>';
+    return;
+  }
   try {
     const r = await api('/api/wind_stats/month_hour_heatmap', 'POST', {
-      session_id: (window.WP && WP.sessionId) || 'default',
+      session_id: WP.sessionId,
       col: 'wind_speed',
     });
     const { matrix, months, hours, vmin, vmax, overall_mean } = r;
