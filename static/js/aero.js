@@ -5055,7 +5055,7 @@ function renderInterestProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#4ade80' : WP.colors[colorIdx % WP.colors.length];
+    const color = isBest ? '#4ade80' : FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
     const lw = isBest ? 3 : 1;
     const ldash = isBest ? [] : [5, 5];
@@ -5200,7 +5200,7 @@ function renderFxProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#4ade80' : WP.colors[colorIdx % WP.colors.length];
+    const color = isBest ? '#4ade80' : FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
     const lw = isBest ? 3 : 1;
     const ldash = isBest ? [] : [5, 5];
