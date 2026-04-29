@@ -856,7 +856,7 @@ function renderForecastMainChart(r, prefix='fs-wind') {
   if (resetBtn) {
     resetBtn.style.display = 'none';
     resetBtn.onclick = () => {
-      WP.charts['fc-main']?.resetZoom();
+      WP.charts[`${prefix}-main`]?.resetZoom();
       resetBtn.style.display = 'none';
     };
   }
@@ -894,9 +894,10 @@ function renderResidualHistogram(r, prefix='fs-wind') {
   destroyChart('residual-hist');
   const residuals = r.y_pred.map((yp, i) => yp - r.y_true[i])
     .filter(v => v != null && !isNaN(v));
+  if (!residuals.length) return;
   const min = Math.min(...residuals), max = Math.max(...residuals);
   const nbins = 30;
-  const binW = (max - min) / nbins;
+  const binW = (max - min) / nbins || 1;
   const bins = Array.from({length: nbins}, (_, i) => ({
     x: +(min + (i + 0.5) * binW).toFixed(2),
     count: 0
@@ -918,7 +919,7 @@ function renderResidualHistogram(r, prefix='fs-wind') {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { display: false }, title: { display: true, text: 'Residuo (m/s)' } },
+        x: { grid: { display: false }, title: { display: true, text: `Residuo (${r.unit || 'm/s'})` } },
         y: { grid: { color: gridColor() }, title: { display: true, text: 'Frecuencia' } }
       }
     }
@@ -977,15 +978,18 @@ function renderBinnedBiasChart(binnedBias) {
   });
 }
 
-function renderForecastMetricPills(metrics, prefix='fs-wind') {
+function renderForecastMetricPills(metrics, prefix='fs-wind', unit='m/s') {
   if (!metrics) return;
   const el = document.getElementById(`${prefix}-metric-pills`);
+  if (!el) return;
+  const fmt = (value, digits = 4) => value != null && isFinite(value) ? value.toFixed(digits) : '—';
+  const pct = value => value != null && isFinite(value) ? (value * 100).toFixed(1) : '—';
   el.innerHTML = [
-    ['RMSE', metrics.rmse?.toFixed(4), 'm/s'],
-    ['MAE', metrics.mae?.toFixed(4), 'm/s'],
-    ['R²', metrics.r2?.toFixed(4), ''],
-    ['nRMSE', (metrics.nrmse * 100)?.toFixed(1), '%'],
-    ['Skill', metrics.skill_vs_persistence != null ? (metrics.skill_vs_persistence*100).toFixed(1) : '—', '%'],
+    ['RMSE', fmt(metrics.rmse), unit],
+    ['MAE', fmt(metrics.mae), unit],
+    ['R²', fmt(metrics.r2), ''],
+    ['nRMSE', pct(metrics.nrmse), '%'],
+    ['Skill', metrics.skill_vs_persistence != null ? pct(metrics.skill_vs_persistence) : '—', '%'],
   ].map(([l, v, u]) =>
     `<div class="metric-pill">${l}: <span>${v}${u}</span></div>`
   ).join('');
@@ -4681,6 +4685,13 @@ async function runDemandArenaHourly() {
   const btn = document.getElementById('btn-dem-train-hourly');
   btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
   try {
+    const baseInfo = await api('/api/demand/load', 'POST', {
+      session_id: WP.sessionId, preset
+    });
+    renderDemandKPIs(baseInfo);
+    renderDemandProfile(baseInfo.stats);
+    renderDemandDuration(baseInfo.stats);
+
     const fc = await api('/api/demand/forecast_hourly', 'POST', {
       session_id: WP.sessionId, preset, models
     });
@@ -4846,6 +4857,14 @@ function bindPMLArena() {
   
   const btnHourly = document.getElementById('btn-pml-train-hourly');
   if (btnHourly) btnHourly.addEventListener('click', runPmlArenaHourly);
+
+  const sideSelect = document.getElementById('pml-side');
+  if (sideSelect) {
+    sideSelect.addEventListener('change', () => {
+      if (WP.arenaCache.pml) populateForecastStudioSelect('pml');
+      if (WP.arenaCache.pml_hourly) populateForecastStudioSelect('pml_hourly');
+    });
+  }
 }
 
 async function runPMLArena() {
@@ -4896,12 +4915,20 @@ async function runPMLArena() {
 
 async function runPmlArenaHourly() {
   const preset = document.getElementById('pml-preset').value;
+  const side = document.getElementById('pml-side').value;
   const models = fcGetSelectedModels('pml-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
   const btn = document.getElementById('btn-pml-train-hourly');
   btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
   try {
+    const baseInfo = await api('/api/pml/load', 'POST', {
+      session_id: WP.sessionId, preset
+    });
+    renderPMLKPIs(baseInfo, side);
+    renderPMLDiurnal(baseInfo);
+    renderPMLDuration(baseInfo, side === 'compra' ? 'compra' : 'venta');
+
     const fc = await api('/api/pml/forecast_hourly', 'POST', {
       session_id: WP.sessionId, preset, models
     });
@@ -5577,7 +5604,7 @@ function bindForecastTabs() {
     });
   });
 
-  ['demand', 'demand-hourly', 'pml', 'pml-hourly', 'interest', 'fx'].forEach(key => {
+  ['demand', 'demand_hourly', 'pml', 'pml_hourly', 'interest', 'fx'].forEach(key => {
     const sel = document.getElementById(`fs-${key}-model-select`);
     if (sel) {
       sel.addEventListener('change', () => loadForecastFromCache(key));
@@ -5585,18 +5612,22 @@ function bindForecastTabs() {
   });
 }
 
-function populateForecastStudioSelect(key) {
+function getForecastStudioTargetCache(key) {
   const cache = WP.arenaCache[key];
+  if ((key === 'pml' || key === 'pml_hourly') && cache?.sides) {
+    const selectedSide = document.getElementById('pml-side')?.value;
+    const sideKey = selectedSide && selectedSide !== 'both' && cache.sides[selectedSide]
+      ? selectedSide
+      : (cache.sides.venta ? 'venta' : Object.keys(cache.sides)[0]);
+    return { cache, targetCache: cache.sides[sideKey], sideKey };
+  }
+  return { cache, targetCache: cache, sideKey: null };
+}
+
+function populateForecastStudioSelect(key) {
+  const { targetCache, sideKey } = getForecastStudioTargetCache(key);
   const sel = document.getElementById(`fs-${key}-model-select`);
   if (!sel) return;
-  
-  
-  let targetCache = cache;
-  if ((key === 'pml' || key === 'pml-hourly') && cache && cache.sides) {
-    // PML uses sides, we will just use the first available side (venta usually)
-    const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
-    targetCache = cache.sides[sideKey];
-  }
 
   if (!targetCache || !targetCache.fitted || Object.keys(targetCache.fitted).length === 0) {
     sel.innerHTML = '<option value="">Aún no hay modelos entrenados en Arena</option>';
@@ -5610,7 +5641,8 @@ function populateForecastStudioSelect(key) {
     if (m.error) continue;
     const opt = document.createElement('option');
     opt.value = modelName;
-    opt.textContent = `${modelName} (R² = ${m.metrics?.r2?.toFixed(2) || 'N/A'})`;
+    const sideLabel = sideKey ? ` · ${sideKey}` : '';
+    opt.textContent = `${modelName}${sideLabel} (R² = ${m.metrics?.r2?.toFixed(2) || 'N/A'})`;
     sel.appendChild(opt);
   }
   
@@ -5626,18 +5658,13 @@ function populateForecastStudioSelect(key) {
 }
 
 function loadForecastFromCache(key) {
-  const cache = WP.arenaCache[key];
+  const { cache, targetCache } = getForecastStudioTargetCache(key);
   const sel = document.getElementById(`fs-${key}-model-select`);
   if (!cache) { console.warn(`Forecast Studio: no hay caché para "${key}"`); return; }
   if (!sel || !sel.value) return;
 
   const modelName = sel.value;
 
-  let targetCache = cache;
-  if (key === 'pml' && cache.sides) {
-    const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
-    targetCache = cache.sides[sideKey];
-  }
   if (!targetCache || !targetCache.fitted) { console.warn(`Forecast Studio: fitted no disponible para "${key}"`); return; }
   const m = targetCache.fitted[modelName];
   if (!m || m.error) { console.warn(`Forecast Studio: modelo "${modelName}" no disponible`); return; }
@@ -5655,13 +5682,17 @@ function loadForecastFromCache(key) {
     y_true  = full_true.slice(full_true.length - train_len);
     y_pred  = y_pred_raw;
     labels  = full_years.slice(full_years.length - train_len).map(y => y.toString());
+  } else if (key === 'demand_hourly' || key === 'pml_hourly') {
+    y_true = (targetCache.raw_values || []).slice(0, y_pred_raw.length);
+    y_pred = y_pred_raw;
+    labels = y_true.map((_, i) => 'h=' + (i + 1));
   } else {
     // Demanda / PML: entrenadas sobre agregados anuales (sintéticos o reales)
     y_true  = targetCache.history_annual || [];
     y_pred  = y_pred_raw;
     labels  = (targetCache.history_t || []).map(t => 't=' + t);
 
-    if (key === 'demand' || key === 'demand_hourly') {
+    if (key === 'demand') {
       y_true = y_true.map(v => v / 1000);  // MWh → GWh
       y_pred = y_pred.map(v => v / 1000);
     }
@@ -5669,9 +5700,9 @@ function loadForecastFromCache(key) {
 
   const unitMap = {
     'demand':   'GWh',
-    'demand_hourly': 'GWh',
-    'pml':      'USD/MWh',
-    'pml_hourly': 'USD/MWh',
+    'demand_hourly': 'MW',
+    'pml':      '$/kWh',
+    'pml_hourly': '$/kWh',
     'interest': '%',
     'fx':       'MXN/USD',
     'wind':     'm/s'
@@ -5691,7 +5722,7 @@ function loadForecastFromCache(key) {
   renderForecastMainChart(r, prefix);
   renderScatterChart(r, prefix);
   renderResidualHistogram(r, prefix);
-  renderForecastMetricPills(r.metrics, prefix);
+  renderForecastMetricPills(r.metrics, prefix, r.unit);
 
   // Ocultar tarjeta de estabilidad (solo para viento)
   const stabEl = document.getElementById(`${prefix}-stability-chart`);
@@ -5753,5 +5784,3 @@ function renderRawHourlyProfile(rawValues, key, unit) {
     }
   });
 }
-
-

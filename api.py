@@ -1936,7 +1936,15 @@ def create_app():
         sess = get_session(sid)
         cache = (sess.get('demand') or {}).get(key)
         if not cache:
-            return jsonify({'error': 'Load demand first.'}), 400
+            meta = DEMAND_PRESETS.get(key)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+            values = read_one_column(fpath)
+            sess.setdefault('demand', {})[key] = {'values': values.tolist(), 'meta': meta}
+            cache = sess['demand'][key]
 
         try:
             values = np.asarray(cache['values'], dtype=float)
@@ -2093,7 +2101,19 @@ def create_app():
         sess = get_session(sid)
         cache = (sess.get('pml') or {}).get(preset)
         if not cache:
-            return jsonify({'error': 'Load PML first.'}), 400
+            meta = PML_PRESETS.get(preset)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {preset}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+            data = read_pml(fpath)
+            sess.setdefault('pml', {})[preset] = {
+                'compra': data['compra'].tolist(),
+                'venta': data['venta'].tolist(),
+                'meta': meta,
+            }
+            cache = sess['pml'][preset]
 
         try:
             from core.forecasting import fit_all_hourly_models

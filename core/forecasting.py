@@ -102,6 +102,10 @@ def _rmse(y, yhat):
     return float(np.sqrt(np.mean((np.asarray(y) - np.asarray(yhat)) ** 2)))
 
 
+def _mae(y, yhat):
+    return float(np.mean(np.abs(np.asarray(y) - np.asarray(yhat))))
+
+
 def _mape(y, yhat):
     y, yhat = np.asarray(y), np.asarray(yhat)
     mask = np.abs(y) > 1e-9
