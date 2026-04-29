@@ -5208,6 +5208,7 @@ async function runFxArena() {
     const fc = await api('/api/fx/forecast', 'POST', {
       session_id: WP.sessionId, preset, depreciation, horizon, models
     });
+    WP.arenaCache.fx = fc;
     
     renderFxKPIs(fc);
     renderFxProjection(fc);
@@ -5608,17 +5609,30 @@ function loadForecastFromCache(key) {
     // For demand/PML
     y_true = targetCache.history_annual;
     labels = targetCache.history_t ? targetCache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
+    
+    if (key === 'demand') {
+      y_true = y_true.map(v => v / 1000);
+      y_pred = y_pred.map(v => v / 1000);
+    }
   }
 
+  const unitMap = {
+    'demand': 'GWh',
+    'pml': 'USD/MWh',
+    'interest': '%',
+    'fx': 'MXN/USD',
+    'wind': 'm/s'
+  };
   const r = {
     y_true: y_true,
     y_pred: y_pred,
     labels: labels,
+    unit: unitMap[key] || 'm/s',
     metrics: m.metrics,
     residuals: {
-       binned_bias: [] // Optional, could compute if needed
+       binned_bias: [] 
     },
-    stability: [] // Annual data doesn't have temporal RMSE stability across months
+    stability: []
   };
 
   const prefix = `fs-${key}`;
