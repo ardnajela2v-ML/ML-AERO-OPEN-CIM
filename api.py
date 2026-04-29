@@ -2075,6 +2075,15 @@ def create_app():
                     fitted['mean_reversion'].pop('predict', None)
             
             projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
+            
+            # ── Piso mínimo realista: tasas de interés no bajan de 2% en México ──
+            min_rate = max(2.0, target * 0.25)  # al menos 2% o 25% del target
+            for pk, pv in projection.items():
+                if 'annual' in pv:
+                    pv['annual'] = [max(v, min_rate) for v in pv['annual']]
+                if 'ci_low' in pv:
+                    pv['ci_low'] = [max(v, min_rate * 0.5) for v in pv['ci_low']]
+            
             best = fc.best_trend_model(fitted)
             
             summary = []
@@ -2094,6 +2103,7 @@ def create_app():
             
             return jsonify(numpy_to_python({
                 'preset': key, 'horizon_years': horizon, 'target_rate': target,
+                'min_rate_floor': min_rate,
                 'history_years': [int(y) for y in years],
                 'history_annual': [float(v) for v in values],
                 'fitted': fitted, 'projection': projection,
