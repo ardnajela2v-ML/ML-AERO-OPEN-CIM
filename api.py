@@ -2033,7 +2033,6 @@ def create_app():
         """Proyecta Tasa de Interés a 25 años usando históricos anuales."""
         body = request.get_json(silent=True) or {}
         key     = body.get('preset', 'tiie_28d')
-        target  = float(body.get('target', 8.0))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         models  = body.get('models')
 
@@ -2062,33 +2061,28 @@ def create_app():
             # Años relativos t=0..N
             t = years - years[0]
             
-            # Para mean_reversion, pasamos el target_b
             import core.forecasting as fc
             
-            # Hack para pasar target_b al fit_all_trend_models, ya que no lo recibe directamente
+            # Ajustar todos los modelos (Vasicek usa media histórica automáticamente)
             fitted = fc.fit_all_trend_models(t, values, models=models)
-            if 'mean_reversion' in fitted and 'mean_reversion' in (models or ['mean_reversion']):
-                fitted['mean_reversion'] = fc.fit_mean_reversion(t, values, target_b=target)
-                if 'metrics' not in fitted['mean_reversion']:
-                    yhat = fitted['mean_reversion']['fitted']
-                    fitted['mean_reversion']['metrics'] = {
+            
+            # Si mean_reversion está, re-ajustarlo con predict limpio para JSON
+            if 'mean_reversion' in fitted and '_predict' not in fitted.get('mean_reversion', {}):
+                mr = fc.fit_mean_reversion(t, values)  # sin target_b = usa media histórica
+                yhat = mr['fitted']
+                fitted['mean_reversion'] = {
+                    'kind': mr['kind'],
+                    'params': mr['params'],
+                    'metrics': {
                         'r2': fc._r2(values, yhat),
                         'rmse': fc._rmse(values, yhat),
                         'mape': fc._mape(values, yhat)
-                    }
-                    fitted['mean_reversion']['_predict'] = fitted['mean_reversion']['predict']
-                    fitted['mean_reversion'].pop('predict', None)
+                    },
+                    '_predict': mr['predict'],
+                    'fitted': [float(x) for x in yhat],
+                }
             
             projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
-            
-            # ── Piso mínimo realista: tasas de interés no bajan de 2% en México ──
-            min_rate = max(2.0, target * 0.25)  # al menos 2% o 25% del target
-            for pk, pv in projection.items():
-                if 'annual' in pv:
-                    pv['annual'] = [max(v, min_rate) for v in pv['annual']]
-                if 'ci_low' in pv:
-                    pv['ci_low'] = [max(v, min_rate * 0.5) for v in pv['ci_low']]
-            
             best = fc.best_trend_model(fitted)
             
             summary = []
@@ -2107,8 +2101,7 @@ def create_app():
             for m in fitted.values(): m.pop('_predict', None)
             
             return jsonify(numpy_to_python({
-                'preset': key, 'horizon_years': horizon, 'target_rate': target,
-                'min_rate_floor': min_rate,
+                'preset': key, 'horizon_years': horizon,
                 'history_years': [int(y) for y in years],
                 'history_annual': [float(v) for v in values],
                 'fitted': fitted, 'projection': projection,

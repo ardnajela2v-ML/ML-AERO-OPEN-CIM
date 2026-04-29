@@ -5014,7 +5014,6 @@ function bindInterestArena() {
 
 async function runInterestArena() {
   const preset = document.getElementById('interest-preset').value;
-  const target = parseFloat(document.getElementById('interest-target').value || '8.0');
   const horizon = parseInt(document.getElementById('interest-horizon').value || '25');
   const models = fcGetSelectedModels('interest-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
@@ -5023,7 +5022,7 @@ async function runInterestArena() {
   btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
   try {
     const fc = await api('/api/interest/forecast', 'POST', {
-      session_id: WP.sessionId, preset, target, horizon, models
+      session_id: WP.sessionId, preset, horizon, models
     });
     
     // KPIs (Año Base)
