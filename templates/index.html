@@ -627,6 +627,17 @@
     <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
   </div>
 
+  <!-- Forecast Studio Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="fs-wind">Viento</button>
+    <button class="tab-btn" data-tab="fs-demand">Demanda</button>
+    <button class="tab-btn" data-tab="fs-pml">PML</button>
+    <button class="tab-btn" data-tab="fs-interest">Tasa de Interés</button>
+    <button class="tab-btn" data-tab="fs-fx">Tipo de Cambio</button>
+  </div>
+
+  <div id="fs-wind-tab" class="tab-content active">
+    
   <div class="toolbar mb-3">
     <div class="toolbar-group">
       <label class="form-label">Horizonte</label>
@@ -647,44 +658,213 @@
     </div>
     <button class="btn-primary" id="btn-load-forecast">Cargar Predicciones</button>
   </div>
-
-  <div class="card">
-    <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-      <button class="btn-secondary" id="btn-reset-zoom-fc" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-      <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-      <div class="metric-pills" id="fc-metric-pills"></div>
-    </div>
-    <div class="card-body" style="height:320px;">
-      <canvas id="fc-main-chart"></canvas>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-3">
     <div class="card">
-      <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-      <div class="card-body" style="height:250px;">
-        <canvas id="scatter-chart"></canvas>
+      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-wind" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-wind-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-wind-main-chart"></canvas>
       </div>
     </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-      <div class="card-body" style="height:250px;">
-        <canvas id="residual-hist-chart"></canvas>
+
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-wind-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-wind-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
+      <div class="card-body" style="height:220px;">
+        <canvas id="fs-wind-stability-chart"></canvas>
       </div>
     </div>
   </div>
 
-  <div class="card mt-3">
-    <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE mensual)</span></div>
-    <div class="card-body" style="height:220px;">
-      <canvas id="stability-chart"></canvas>
+  <div id="fs-demand-tab" class="tab-content">
+    
+  <div class="toolbar mb-3">
+    <div class="toolbar-group">
+      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <select class="form-select" id="fs-demand-model-select">
+        <option value="">Aún no hay modelos entrenados</option>
+      </select>
+    </div>
+  </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-demand" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-demand-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-demand-main-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-demand-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-demand-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
+      <div class="card-body" style="height:220px;">
+        <canvas id="fs-demand-stability-chart"></canvas>
+      </div>
     </div>
   </div>
 
-  <div class="card mt-3">
-    <div class="card-header"><span class="card-title">Sesgo por Rango de Velocidad</span></div>
-    <div class="card-body" style="height:220px;">
-      <canvas id="binned-bias-chart"></canvas>
+  <div id="fs-pml-tab" class="tab-content">
+    
+  <div class="toolbar mb-3">
+    <div class="toolbar-group">
+      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <select class="form-select" id="fs-pml-model-select">
+        <option value="">Aún no hay modelos entrenados</option>
+      </select>
+    </div>
+  </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-pml" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-pml-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-pml-main-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-pml-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-pml-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
+      <div class="card-body" style="height:220px;">
+        <canvas id="fs-pml-stability-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="fs-interest-tab" class="tab-content">
+    
+  <div class="toolbar mb-3">
+    <div class="toolbar-group">
+      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <select class="form-select" id="fs-interest-model-select">
+        <option value="">Aún no hay modelos entrenados</option>
+      </select>
+    </div>
+  </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-interest" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-interest-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-interest-main-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-interest-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-interest-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
+      <div class="card-body" style="height:220px;">
+        <canvas id="fs-interest-stability-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="fs-fx-tab" class="tab-content">
+    
+  <div class="toolbar mb-3">
+    <div class="toolbar-group">
+      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <select class="form-select" id="fs-fx-model-select">
+        <option value="">Aún no hay modelos entrenados</option>
+      </select>
+    </div>
+  </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-fx" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-fx-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-fx-main-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-fx-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-fx-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
+      <div class="card-body" style="height:220px;">
+        <canvas id="fs-fx-stability-chart"></canvas>
+      </div>
     </div>
   </div>
 </section>

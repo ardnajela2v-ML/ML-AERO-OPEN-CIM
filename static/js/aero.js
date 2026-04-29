@@ -773,12 +773,12 @@ async function loadForecast() {
       session_id: WP.sessionId, horizon_h: horizonH, model: modelName
     });
 
-    renderForecastMainChart(r);
-    renderScatterChart(r);
-    renderResidualHistogram(r);
-    renderStabilityChart(r.stability || []);
-    renderBinnedBiasChart(r.residuals?.binned_bias || []);
-    renderForecastMetricPills(r.metrics);
+    renderForecastMainChart(r, 'fs-wind');
+    renderScatterChart(r, 'fs-wind');
+    renderResidualHistogram(r, 'fs-wind');
+    renderStabilityChart(r.stability || [], 'fs-wind');
+    if(typeof renderBinnedBiasChart !== 'undefined') renderBinnedBiasChart(r.residuals?.binned_bias || [], 'fs-wind');
+    renderForecastMetricPills(r.metrics, 'fs-wind');
     updateCalibration(r.calibration);
     populateValidationMetrics(r.metrics);
 
@@ -788,10 +788,10 @@ async function loadForecast() {
   }
 }
 
-function renderForecastMainChart(r) {
-  destroyChart('fc-main');
-  const ctx = document.getElementById('fc-main-chart').getContext('2d');
-  const resetBtn = document.getElementById('btn-reset-zoom-fc');
+function renderForecastMainChart(r, prefix='fs-wind') {
+  destroyChart(`${prefix}-main`);
+  const ctx = document.getElementById(`${prefix}-main-chart`).getContext('2d');
+  const resetBtn = document.getElementById(`btn-reset-zoom-${prefix}`);
   const hoverCommon = {
     pointRadius: 0,
     pointHoverRadius: 5,
@@ -813,7 +813,7 @@ function renderForecastMainChart(r) {
     datasets.push({ label: 'Q90', data: r.q90, borderColor: acc3()+'44',
       borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'12' });
   }
-  WP.charts['fc-main'] = new Chart(ctx, {
+  WP.charts[`${prefix}-main`] = new Chart(ctx, {
     type: 'line',
     data: { labels: r.labels, datasets },
     options: {
@@ -860,12 +860,12 @@ function renderForecastMainChart(r) {
   }
 }
 
-function renderScatterChart(r) {
+function renderScatterChart(r, prefix='fs-wind') {
   destroyChart('scatter');
   const pts = r.y_true.map((y, i) => ({ x: y, y: r.y_pred[i] }))
     .filter(p => p.x != null && p.y != null);
   const maxVal = Math.max(...pts.map(p => Math.max(p.x, p.y)));
-  const ctx = document.getElementById('scatter-chart').getContext('2d');
+  const ctx = document.getElementById(`${prefix}-scatter-chart`).getContext('2d');
   WP.charts['scatter'] = new Chart(ctx, {
     type: 'scatter',
     data: {
@@ -888,7 +888,7 @@ function renderScatterChart(r) {
   });
 }
 
-function renderResidualHistogram(r) {
+function renderResidualHistogram(r, prefix='fs-wind') {
   destroyChart('residual-hist');
   const residuals = r.y_pred.map((yp, i) => yp - r.y_true[i])
     .filter(v => v != null && !isNaN(v));
@@ -903,7 +903,7 @@ function renderResidualHistogram(r) {
     const idx = Math.min(Math.floor((v - min) / binW), nbins - 1);
     bins[idx].count++;
   });
-  const ctx = document.getElementById('residual-hist-chart').getContext('2d');
+  const ctx = document.getElementById(`${prefix}-residual-hist-chart`).getContext('2d');
   destroyChart('residual-hist');
   WP.charts['residual-hist'] = new Chart(ctx, {
     type: 'bar',
@@ -923,10 +923,10 @@ function renderResidualHistogram(r) {
   });
 }
 
-function renderStabilityChart(stability) {
+function renderStabilityChart(stability, prefix='fs-wind') {
   destroyChart('stability');
   if (!stability.length) return;
-  const ctx = document.getElementById('stability-chart').getContext('2d');
+  const ctx = document.getElementById(`${prefix}-stability-chart`).getContext('2d');
   WP.charts['stability'] = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -975,9 +975,9 @@ function renderBinnedBiasChart(binnedBias) {
   });
 }
 
-function renderForecastMetricPills(metrics) {
+function renderForecastMetricPills(metrics, prefix='fs-wind') {
   if (!metrics) return;
-  const el = document.getElementById('fc-metric-pills');
+  const el = document.getElementById(`${prefix}-metric-pills`);
   el.innerHTML = [
     ['RMSE', metrics.rmse?.toFixed(4), 'm/s'],
     ['MAE', metrics.mae?.toFixed(4), 'm/s'],
@@ -4643,6 +4643,7 @@ async function runDemandArena() {
     const fc = await api('/api/demand/forecast', 'POST', {
       session_id: WP.sessionId, preset, growth, horizon, models
     });
+    WP.arenaCache.demand = fc;
     renderDemandProjection(fc, baseInfo.meta);
     // Predicción continua (histórico + proyección)
     const baseYear = new Date().getFullYear();
@@ -4840,6 +4841,7 @@ async function runPMLArena() {
     const fc = await api('/api/pml/forecast', 'POST', {
       session_id: WP.sessionId, preset, growth, horizon, side, models
     });
+    WP.arenaCache.pml = fc;
     renderPMLProjection(fc);
     // Predicción continua: tomamos el primer lado disponible (o venta por defecto)
     const sideKey = (fc.sides && fc.sides.venta) ? 'venta' : Object.keys(fc.sides || {})[0];
@@ -5047,6 +5049,7 @@ async function runInterestArena() {
     const fc = await api('/api/interest/forecast', 'POST', {
       session_id: WP.sessionId, preset, horizon, models
     });
+    WP.arenaCache.interest = fc;
     
     // KPIs (Año Base)
     renderInterestKPIs(fc);
@@ -5507,3 +5510,111 @@ function renderWindKPIs(fc) {
   box.innerHTML = html;
 }
 
+
+
+// ─── FORECAST STUDIO TABS & DATA LOADING ─────────────────────────────────────
+function bindForecastTabs() {
+  document.querySelectorAll('.tab-btn[data-tab^="fs-"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.tab-btn[data-tab^="fs-"], .tab-content[id^="fs-"]').forEach(el => el.classList.remove('active'));
+      btn.classList.add('active');
+      const targetId = btn.dataset.tab + '-tab';
+      document.getElementById(targetId).classList.add('active');
+      
+      const key = btn.dataset.tab.replace('fs-', '');
+      if (key !== 'wind') {
+        populateForecastStudioSelect(key);
+      }
+    });
+  });
+
+  ['demand', 'pml', 'interest', 'fx'].forEach(key => {
+    const sel = document.getElementById(`fs-${key}-model-select`);
+    if (sel) {
+      sel.addEventListener('change', () => loadForecastFromCache(key));
+    }
+  });
+}
+
+function populateForecastStudioSelect(key) {
+  const cache = WP.arenaCache[key];
+  const sel = document.getElementById(`fs-${key}-model-select`);
+  if (!sel) return;
+  
+  if (!cache || !cache.fitted || Object.keys(cache.fitted).length === 0) {
+    sel.innerHTML = '<option value="">Aún no hay modelos entrenados en Arena</option>';
+    return;
+  }
+  
+  const currentVal = sel.value;
+  sel.innerHTML = '<option value="">-- Seleccionar Modelo --</option>';
+  for (const modelName of Object.keys(cache.fitted)) {
+    const m = cache.fitted[modelName];
+    if (m.error) continue;
+    const opt = document.createElement('option');
+    opt.value = modelName;
+    opt.textContent = `${modelName} (R² = ${m.metrics?.r2?.toFixed(2) || 'N/A'})`;
+    sel.appendChild(opt);
+  }
+  
+  if (currentVal && cache.fitted[currentVal] && !cache.fitted[currentVal].error) {
+    sel.value = currentVal;
+  } else if (cache.best_model) {
+    sel.value = cache.best_model;
+  }
+  
+  if (sel.value) {
+    loadForecastFromCache(key);
+  }
+}
+
+function loadForecastFromCache(key) {
+  const cache = WP.arenaCache[key];
+  const sel = document.getElementById(`fs-${key}-model-select`);
+  if (!cache || !sel || !sel.value) return;
+
+  const modelName = sel.value;
+  const m = cache.fitted[modelName];
+  if (!m || m.error) return;
+
+  const y_pred = m.fitted_values || m.fitted || [];
+  let y_true = [];
+  let labels = [];
+
+  if (key === 'interest' || key === 'fx') {
+    // For interest/FX, the model is trained on a subset (e.g., from 2001)
+    // The length of y_pred corresponds to the tail of history_annual
+    const full_true = cache.history_annual;
+    const full_years = cache.history_years;
+    const train_len = y_pred.length;
+    y_true = full_true.slice(full_true.length - train_len);
+    labels = full_years.slice(full_years.length - train_len).map(y => y.toString());
+  } else {
+    // For demand/PML
+    y_true = cache.history_annual;
+    labels = cache.history_t ? cache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
+  }
+
+  const r = {
+    y_true: y_true,
+    y_pred: y_pred,
+    labels: labels,
+    metrics: m.metrics,
+    residuals: {
+       binned_bias: [] // Optional, could compute if needed
+    },
+    stability: [] // Annual data doesn't have temporal RMSE stability across months
+  };
+
+  const prefix = `fs-${key}`;
+  renderForecastMainChart(r, prefix);
+  renderScatterChart(r, prefix);
+  renderResidualHistogram(r, prefix);
+  
+  // Hide stability for annual models
+  document.getElementById(`${prefix}-stability-chart`).parentElement.parentElement.style.display = 'none';
+  
+  renderForecastMetricPills(r.metrics, prefix);
+}
+
+document.addEventListener('DOMContentLoaded', bindForecastTabs);

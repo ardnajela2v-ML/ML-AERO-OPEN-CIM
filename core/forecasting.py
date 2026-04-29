@@ -481,6 +481,7 @@ def fit_all_trend_models(t, y, models=None):
                     'rmse': _rmse(y, yhat),
                     'mape': _mape(y, yhat),
                 },
+                'fitted_values': [float(x) for x in yhat],
                 '_predict': res['predict'],
                 'fitted':   [float(x) for x in yhat],
             }
