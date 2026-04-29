@@ -352,7 +352,10 @@
               <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
             </div>
           </div>
-          <button class="btn-primary mt-3 w-full" id="btn-dem-train">Cargar y entrenar arena</button>
+          <div style="display: flex; gap: 8px; margin-top: 1rem;">
+            <button class="btn-primary" id="btn-dem-train" style="flex: 1;">Cargar y entrenar arena (Anual)</button>
+            <button class="btn-secondary" id="btn-dem-train-hourly" style="flex: 1;">Entrenar Perfil Horario (8760 pts)</button>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -441,7 +444,10 @@
               <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
             </div>
           </div>
-          <button class="btn-primary mt-3 w-full" id="btn-pml-train">Cargar y entrenar arena</button>
+          <div style="display: flex; gap: 8px; margin-top: 1rem;">
+            <button class="btn-primary" id="btn-pml-train" style="flex: 1;">Cargar y entrenar arena (Anual)</button>
+            <button class="btn-secondary" id="btn-pml-train-hourly" style="flex: 1;">Entrenar Perfil Horario (8760 pts)</button>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -627,11 +633,12 @@
     <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
   </div>
 
-  <!-- Forecast Studio Tabs -->
   <div class="tabs">
     <button class="tab-btn active" data-tab="fs-wind">Viento</button>
-    <button class="tab-btn" data-tab="fs-demand">Demanda</button>
-    <button class="tab-btn" data-tab="fs-pml">PML</button>
+    <button class="tab-btn" data-tab="fs-demand">Demanda (Anual)</button>
+    <button class="tab-btn" data-tab="fs-demand_hourly">Demanda (Horaria)</button>
+    <button class="tab-btn" data-tab="fs-pml">PML (Anual)</button>
+    <button class="tab-btn" data-tab="fs-pml_hourly">PML (Horaria)</button>
     <button class="tab-btn" data-tab="fs-interest">Tasa de Interés</button>
     <button class="tab-btn" data-tab="fs-fx">Tipo de Cambio</button>
   </div>
@@ -736,6 +743,41 @@
     </div>
   </div>
 
+  <div id="fs-demand_hourly-tab" class="tab-content">
+    <div class="toolbar mb-3">
+      <div class="toolbar-group">
+        <label class="form-label">Seleccionar modelo entrenado (Horario)</label>
+        <select class="form-select" id="fs-demand_hourly-model-select">
+          <option value="">Aún no hay modelos entrenados</option>
+        </select>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho (8760 horas)</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-demand_hourly" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-demand_hourly-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-demand_hourly-main-chart"></canvas>
+      </div>
+    </div>
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-demand_hourly-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-demand_hourly-residual-hist-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="fs-pml-tab" class="tab-content">
     
   <div class="toolbar mb-3">
@@ -776,6 +818,41 @@
       <div class="card-header"><span class="card-title">Perfil Horario Real (datos del archivo)</span></div>
       <div class="card-body" style="height:220px;">
         <canvas id="fs-pml-raw-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div id="fs-pml_hourly-tab" class="tab-content">
+    <div class="toolbar mb-3">
+      <div class="toolbar-group">
+        <label class="form-label">Seleccionar modelo entrenado (Horario)</label>
+        <select class="form-select" id="fs-pml_hourly-model-select">
+          <option value="">Aún no hay modelos entrenados</option>
+        </select>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Observado vs Predicho (8760 horas)</span>
+        <button class="btn-secondary" id="btn-reset-zoom-fs-pml_hourly" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
+        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
+        <div class="metric-pills" id="fs-pml_hourly-metric-pills"></div>
+      </div>
+      <div class="card-body" style="height:320px;">
+        <canvas id="fs-pml_hourly-main-chart"></canvas>
+      </div>
+    </div>
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-pml_hourly-scatter-chart"></canvas>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
+        <div class="card-body" style="height:250px;">
+          <canvas id="fs-pml_hourly-residual-hist-chart"></canvas>
+        </div>
       </div>
     </div>
   </div>

@@ -1925,6 +1925,51 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/api/demand/forecast_hourly', methods=['POST'])
+    @limiter.limit('5 per minute')
+    def demand_forecast_hourly():
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
+        key = body.get('preset', 'juchitan')
+        models = body.get('models')
+
+        sess = get_session(sid)
+        cache = (sess.get('demand') or {}).get(key)
+        if not cache:
+            return jsonify({'error': 'Load demand first.'}), 400
+
+        try:
+            values = np.asarray(cache['values'], dtype=float)
+            t = np.arange(len(values))
+            
+            from core.forecasting import fit_all_hourly_models
+            fitted = fit_all_hourly_models(t, values, models)
+            
+            summary = []
+            for name, m in fitted.items():
+                summary.append({'model': name, **m['metrics']})
+                
+            best = max(summary, key=lambda r: r.get('r2') or -1)['model'] if summary else None
+
+            # Usamos raw_values completos para Demanda/PML Horario
+            raw = values.tolist()
+            
+            for m in fitted.values():
+                m['fitted_values'] = m['fitted']
+                m.pop('fitted', None)
+
+            return jsonify(numpy_to_python({
+                'preset': key,
+                'fitted': fitted,
+                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'best_model': best,
+                'raw_values': raw,
+                'raw_n': len(raw),
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
     @app.route('/api/pml/load', methods=['POST'])
     def pml_load():
         """Carga PML_IPO.txt y devuelve estadísticos compra/venta."""
@@ -2027,6 +2072,53 @@ def create_app():
                     'history_annual': [float(x) for x in annual_hist],
                     'fitted': fitted,
                     'projection': projection,
+                    'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                    'best_model': best,
+                    'raw_values': raw_s,
+                    'raw_n': len(raw_s),
+                }
+            return jsonify(numpy_to_python(result))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/pml/forecast_hourly', methods=['POST'])
+    @limiter.limit('5 per minute')
+    def pml_forecast_hourly():
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
+        preset = body.get('preset', 'pml_ipo')
+        models = body.get('models')
+
+        sess = get_session(sid)
+        cache = (sess.get('pml') or {}).get(preset)
+        if not cache:
+            return jsonify({'error': 'Load PML first.'}), 400
+
+        try:
+            from core.forecasting import fit_all_hourly_models
+            result = {'preset': preset, 'sides': {}}
+            for s in ['compra', 'venta']:
+                if s not in cache: continue
+                values = np.asarray(cache[s], dtype=float)
+                t = np.arange(len(values))
+                
+                fitted = fit_all_hourly_models(t, values, models)
+                
+                summary = []
+                for name, m in fitted.items():
+                    summary.append({'model': name, **m['metrics']})
+                    
+                best = max(summary, key=lambda r: r.get('r2') or -1)['model'] if summary else None
+
+                raw_s = cache[s]
+                
+                for m in fitted.values():
+                    m['fitted_values'] = m['fitted']
+                    m.pop('fitted', None)
+
+                result['sides'][s] = {
+                    'fitted': fitted,
                     'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                     'best_model': best,
                     'raw_values': raw_s,

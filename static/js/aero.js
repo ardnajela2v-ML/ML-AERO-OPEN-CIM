@@ -4623,6 +4623,9 @@ function bindDemandArena() {
   }
   const btn = document.getElementById('btn-dem-train');
   if (btn) btn.addEventListener('click', runDemandArena);
+  
+  const btnHourly = document.getElementById('btn-dem-train-hourly');
+  if (btnHourly) btnHourly.addEventListener('click', runDemandArenaHourly);
 }
 
 async function runDemandArena() {
@@ -4666,7 +4669,27 @@ async function runDemandArena() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena (Anual)';
+  }
+}
+
+async function runDemandArenaHourly() {
+  const preset = document.getElementById('dem-preset').value;
+  const models = fcGetSelectedModels('dem-model-tags');
+  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
+
+  const btn = document.getElementById('btn-dem-train-hourly');
+  btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
+  try {
+    const fc = await api('/api/demand/forecast_hourly', 'POST', {
+      session_id: WP.sessionId, preset, models
+    });
+    WP.arenaCache.demand_hourly = fc;
+    toast('Perfil horario ajustado. Ve al Forecast Studio.', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Entrenar Perfil Horario (8760 pts)';
   }
 }
 
@@ -4820,6 +4843,9 @@ function bindPMLArena() {
   }
   const btn = document.getElementById('btn-pml-train');
   if (btn) btn.addEventListener('click', runPMLArena);
+  
+  const btnHourly = document.getElementById('btn-pml-train-hourly');
+  if (btnHourly) btnHourly.addEventListener('click', runPmlArenaHourly);
 }
 
 async function runPMLArena() {
@@ -4864,7 +4890,27 @@ async function runPMLArena() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena (Anual)';
+  }
+}
+
+async function runPmlArenaHourly() {
+  const preset = document.getElementById('pml-preset').value;
+  const models = fcGetSelectedModels('pml-model-tags');
+  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
+
+  const btn = document.getElementById('btn-pml-train-hourly');
+  btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
+  try {
+    const fc = await api('/api/pml/forecast_hourly', 'POST', {
+      session_id: WP.sessionId, preset, models
+    });
+    WP.arenaCache.pml_hourly = fc;
+    toast('Perfil horario de PML ajustado. Ve al Forecast Studio.', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Entrenar Perfil Horario (8760 pts)';
   }
 }
 
@@ -5531,7 +5577,7 @@ function bindForecastTabs() {
     });
   });
 
-  ['demand', 'pml', 'interest', 'fx'].forEach(key => {
+  ['demand', 'demand-hourly', 'pml', 'pml-hourly', 'interest', 'fx'].forEach(key => {
     const sel = document.getElementById(`fs-${key}-model-select`);
     if (sel) {
       sel.addEventListener('change', () => loadForecastFromCache(key));
@@ -5546,7 +5592,7 @@ function populateForecastStudioSelect(key) {
   
   
   let targetCache = cache;
-  if (key === 'pml' && cache && cache.sides) {
+  if ((key === 'pml' || key === 'pml-hourly') && cache && cache.sides) {
     // PML uses sides, we will just use the first available side (venta usually)
     const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
     targetCache = cache.sides[sideKey];
@@ -5615,7 +5661,7 @@ function loadForecastFromCache(key) {
     y_pred  = y_pred_raw;
     labels  = (targetCache.history_t || []).map(t => 't=' + t);
 
-    if (key === 'demand') {
+    if (key === 'demand' || key === 'demand_hourly') {
       y_true = y_true.map(v => v / 1000);  // MWh → GWh
       y_pred = y_pred.map(v => v / 1000);
     }
@@ -5623,7 +5669,9 @@ function loadForecastFromCache(key) {
 
   const unitMap = {
     'demand':   'GWh',
+    'demand_hourly': 'GWh',
     'pml':      'USD/MWh',
+    'pml_hourly': 'USD/MWh',
     'interest': '%',
     'fx':       'MXN/USD',
     'wind':     'm/s'

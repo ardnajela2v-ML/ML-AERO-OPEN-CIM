@@ -566,3 +566,30 @@ def best_trend_model(fitted_models):
         if score > best_score:
             best_key, best_score = k, score
     return best_key
+
+
+def fit_all_hourly_models(t, y, models=None):
+    """Ajusta modelos de serie de tiempo horaria, optimizado para 8760 puntos."""
+    keys = ['linear', 'holt_winters', 'mean_reversion'] if models is None else models
+    out = {}
+    for k in keys:
+        fitter = TREND_FITTERS.get(k)
+        if fitter is None:
+            continue
+        try:
+            res = fitter(t, y)
+            yhat = res['fitted']
+            out[k] = {
+                'kind':    res['kind'],
+                'params':  res['params'],
+                'metrics': {
+                    'r2':   _r2(y, yhat),
+                    'rmse': _rmse(y, yhat),
+                    'mae':  _mae(y, yhat),
+                    'mape': _mape(y, yhat),
+                },
+                'fitted': yhat.tolist(),
+            }
+        except Exception:
+            pass
+    return out
