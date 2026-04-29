@@ -5596,27 +5596,50 @@ function loadForecastFromCache(key) {
   const m = targetCache.fitted[modelName];
   if (!m || m.error) { console.warn(`Forecast Studio: modelo "${modelName}" no disponible`); return; }
 
-  let y_pred = m.fitted_values || m.fitted || [];
+  const y_pred_raw = m.fitted_values || m.fitted || [];
   let y_true = [];
+  let y_pred = [];
   let labels = [];
+  let useRaw = false;
 
   if (key === 'interest' || key === 'fx') {
-    // For interest/FX, the model is trained on a subset (e.g., from 2001)
-    // The length of y_pred corresponds to the tail of history_annual
+    // Financial models trained on a subset (2001+); use history_annual
     const full_true = targetCache.history_annual;
     const full_years = targetCache.history_years;
-    const train_len = y_pred.length;
-    y_true = full_true.slice(full_true.length - train_len);
-    labels = full_years.slice(full_years.length - train_len).map(y => y.toString());
-  } else {
-    // For demand/PML
-    y_true = targetCache.history_annual;
-    labels = targetCache.history_t ? targetCache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
-    
-    if (key === 'demand') {
-      y_true = y_true.map(v => v / 1000);
-      y_pred = y_pred.map(v => v / 1000);
+    const train_len = y_pred_raw.length;
+    y_true = (full_true || []).slice((full_true||[]).length - train_len);
+    y_pred = y_pred_raw;
+    labels = (full_years || []).slice((full_years||[]).length - train_len).map(y => y.toString());
+  } else if (targetCache.raw_values && targetCache.raw_values.length > 0) {
+    // Demand / PML — show the REAL hourly data from the file as Observado
+    useRaw = true;
+    y_true = targetCache.raw_values;
+    labels = y_true.map((_, i) => i + 1);
+
+    // Scale the annual fitted values to hourly mean for a reference trend line
+    // (fitted has N_years points; we distribute them evenly across the raw data)
+    const annualFitted = y_pred_raw;
+    const n = y_true.length;
+    const nYears = annualFitted.length;
+    if (nYears > 0) {
+      const pointsPerYear = Math.floor(n / nYears);
+      y_pred = y_true.map((_, i) => {
+        const yearIdx = Math.min(Math.floor(i / pointsPerYear), nYears - 1);
+        return annualFitted[yearIdx];
+      });
+    } else {
+      y_pred = [];
     }
+
+    if (key === 'demand') {
+      y_true = y_true.map(v => v / 1000);  // MWh → GWh
+      y_pred  = y_pred.map(v => v / 1000);
+    }
+  } else {
+    // Fallback: use synthetic annual history
+    y_true = targetCache.history_annual || [];
+    y_pred = y_pred_raw;
+    labels = targetCache.history_t ? targetCache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
   }
 
   const unitMap = {
