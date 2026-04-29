@@ -518,6 +518,17 @@ const FAST_MODELS = ['persistence','climatology','ridge','lightgbm','random_fore
 const ML_MODELS   = ['random_forest','xgboost','lightgbm','ridge','mlp','svr'];
 
 function bindModelArena() {
+  // Tab switching (same pattern as Energy Lab)
+  document.querySelectorAll('#mod-models .tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tabName = btn.dataset.tab;
+      document.querySelectorAll('#mod-models .tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('#mod-models .tab-content').forEach(c => c.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(`${tabName}-tab`).classList.add('active');
+    });
+  });
+
   document.getElementById('btn-build-features').addEventListener('click', buildFeatures);
   document.getElementById('btn-train').addEventListener('click', trainModels);
 

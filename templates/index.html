@@ -177,282 +177,267 @@
 <section class="module" id="mod-models">
   <div class="module-header">
     <h1 class="module-title">Model Arena</h1>
-    <p class="module-desc">Entrena y compara todos los modelos automáticamente. Separación cronológica estricta, sin data leakage.</p>
+    <p class="module-desc">Entrena y compara modelos de pronóstico. Predicción de viento (ML), demanda eléctrica y precios PML a largo plazo.</p>
   </div>
 
-  <!-- Feature engineering config -->
-  <div class="card mb-3">
-    <div class="card-header"><span class="card-title">Preparar Features & Configuración de Entrenamiento</span></div>
-    <div class="card-body">
-      <div class="form-grid-4">
-        <div>
-          <label class="form-label">Columna objetivo</label>
-          <select class="form-select" id="target-col-select"><option value="wind_speed">wind_speed</option></select>
-        </div>
-        <div>
-          <label class="form-label">Hold-out test (%)</label>
-          <input type="number" class="form-input" id="test-frac" value="20" min="10" max="40">
-        </div>
-        <div>
-          <label class="form-label">Horizontes (h)</label>
-          <input type="text" class="form-input" id="horizons-input" value="1,6,24" placeholder="1,6,24,72">
-        </div>
-        <div class="flex-end">
-          <button class="btn-primary" id="btn-build-features">Generar Features</button>
-        </div>
-      </div>
-      <div id="features-summary" class="features-summary mt-2 hidden"></div>
-    </div>
+  <!-- Model Arena Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="arena-wind">Viento</button>
+    <button class="tab-btn" data-tab="arena-demand">Demanda</button>
+    <button class="tab-btn" data-tab="arena-pml">PML</button>
   </div>
 
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Configuración de Entrenamiento</span></div>
+  <!-- ═══ TAB: VIENTO ═══════════════════════════════════════════════════════ -->
+  <div id="arena-wind-tab" class="tab-content active">
+
+    <div class="card mb-3">
+      <div class="card-header"><span class="card-title">Preparar Features &amp; Configuración de Entrenamiento</span></div>
       <div class="card-body">
-        <div class="form-row">
-          <label class="form-label">Horizonte de pronóstico</label>
-          <select class="form-select" id="train-horizon">
-            <option value="1">h = +1h (muy corto plazo)</option>
-            <option value="6">h = +6h (corto plazo)</option>
-            <option value="24">h = +24h (día siguiente)</option>
-            <option value="72">h = +72h (3 días)</option>
-          </select>
-        </div>
-        <div class="model-checklist mt-2">
-          <p class="text-muted mb-1">Modelos a entrenar <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
-          <div class="model-tags" id="model-tag-list">
-            <span class="model-tag model-tag--baseline active" data-model="persistence">Persistencia</span>
-            <span class="model-tag model-tag--baseline active" data-model="climatology">Climatología</span>
-            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
-            <span class="model-tag model-tag--ml active" data-model="random_forest">Random Forest</span>
-            <span class="model-tag model-tag--ml active" data-model="xgboost">XGBoost</span>
-            <span class="model-tag model-tag--ml active" data-model="lightgbm">LightGBM</span>
-            <span class="model-tag model-tag--ml active" data-model="ridge">Ridge LR</span>
-            <span class="model-tag model-tag--ml active" data-model="mlp">MLP</span>
-            <span class="model-tag model-tag--ml active" data-model="svr">SVR</span>
+        <div class="form-grid-4">
+          <div>
+            <label class="form-label">Columna objetivo</label>
+            <select class="form-select" id="target-col-select"><option value="wind_speed">wind_speed</option></select>
           </div>
-          <div style="display:flex;gap:.5rem;margin-top:.5rem">
-            <button class="btn-sm" id="btn-models-all">Todos</button>
-            <button class="btn-sm" id="btn-models-fast">Solo rápidos</button>
-            <button class="btn-sm" id="btn-models-ml">Solo ML</button>
+          <div>
+            <label class="form-label">Hold-out test (%)</label>
+            <input type="number" class="form-input" id="test-frac" value="20" min="10" max="40">
+          </div>
+          <div>
+            <label class="form-label">Horizontes (h)</label>
+            <input type="text" class="form-input" id="horizons-input" value="1,6,24" placeholder="1,6,24,72">
+          </div>
+          <div class="flex-end">
+            <button class="btn-primary" id="btn-build-features">Generar Features</button>
           </div>
         </div>
-        <button class="btn-primary mt-3 w-full" id="btn-train">
-          <span id="btn-train-label">Entrenar modelos seleccionados</span>
-        </button>
-        <div class="progress-bar-container mt-2 hidden" id="train-progress-container">
-          <div class="progress-bar" id="train-progress-bar" style="width:0%"></div>
-          <span class="progress-label" id="train-progress-label">Iniciando...</span>
-        </div>
+        <div id="features-summary" class="features-summary mt-2 hidden"></div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header"><span class="card-title">Feature Importance</span></div>
-      <div class="card-body" style="height:280px;">
-        <canvas id="fi-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <!-- Comparison table (dashboard .tbl style) -->
-  <div class="card mt-3">
-    <div class="ch">
-      <span class="ct">Tabla comparativa de modelos</span>
-      <span class="cbadge g" id="best-model-badge">—</span>
-    </div>
-    <div class="cb" style="overflow-x:auto">
-      <table class="tbl" id="comparison-table">
-        <thead>
-          <tr><th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th><th>Skill</th></tr>
-        </thead>
-        <tbody id="comparison-tbody"><tr><td colspan="8" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Feature importance table -->
-  <div class="card mt-3" id="fi-table-card" style="display:none">
-    <div class="ch">
-      <span class="ct">Importancia de variables · GBM (top 10)</span>
-      <span class="cbadge b">Feature importance</span>
-    </div>
-    <div class="cb" style="overflow-x:auto">
-      <table class="tbl" id="fi-tbl">
-        <thead><tr><th>#</th><th>Variable</th><th>Importancia</th><th>%</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ─── ARENA DEMANDA (sub-sección) ─────────────────────────────────────── -->
-  <hr style="border:none;border-top:2px solid var(--accent);margin:2rem 0 1.5rem;opacity:.35">
-  <div class="sh" style="margin-bottom:1rem">
-    <div>
-      <div class="st" style="font-size:1.1rem">Arena de Pronóstico — Demanda Eléctrica</div>
-      <div class="ss">Ajusta varios modelos de tendencia sobre la serie horaria de demanda y proyecta el crecimiento agregado a 25 años conservando el perfil horario observado.</div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Configuración</span></div>
-      <div class="card-body">
-        <div class="form-row">
-          <label class="form-label">Serie de demanda</label>
-          <select class="form-select" id="dem-preset">
-            <option value="juchitan">Juchitán — Demanda nodal (MW)</option>
-            <option value="load">Carga del sistema (MW)</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Tasa anual de crecimiento histórica supuesta (CAGR base)</label>
-          <input type="number" class="form-input" id="dem-growth" step="0.005" min="0" max="0.10" value="0.025">
-          <span class="text-muted" style="font-size:.7rem">Referencia: PRODESEN ~2.5–3.0 % anual.</span>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Horizonte de proyección (años)</label>
-          <input type="number" class="form-input" id="dem-horizon" min="5" max="40" value="25">
-        </div>
-        <div class="model-checklist mt-2">
-          <p class="text-muted mb-1">Modelos de tendencia <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
-          <div class="model-tags" id="dem-model-tags">
-            <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
-            <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
-            <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
-            <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
-            <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
-            <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
-            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Configuración de Entrenamiento</span></div>
+        <div class="card-body">
+          <div class="form-row">
+            <label class="form-label">Horizonte de pronóstico</label>
+            <select class="form-select" id="train-horizon">
+              <option value="1">h = +1h (muy corto plazo)</option>
+              <option value="6">h = +6h (corto plazo)</option>
+              <option value="24">h = +24h (día siguiente)</option>
+              <option value="72">h = +72h (3 días)</option>
+            </select>
+          </div>
+          <div class="model-checklist mt-2">
+            <p class="text-muted mb-1">Modelos a entrenar <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
+            <div class="model-tags" id="model-tag-list">
+              <span class="model-tag model-tag--baseline active" data-model="persistence">Persistencia</span>
+              <span class="model-tag model-tag--baseline active" data-model="climatology">Climatología</span>
+              <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+              <span class="model-tag model-tag--ml active" data-model="random_forest">Random Forest</span>
+              <span class="model-tag model-tag--ml active" data-model="xgboost">XGBoost</span>
+              <span class="model-tag model-tag--ml active" data-model="lightgbm">LightGBM</span>
+              <span class="model-tag model-tag--ml active" data-model="ridge">Ridge LR</span>
+              <span class="model-tag model-tag--ml active" data-model="mlp">MLP</span>
+              <span class="model-tag model-tag--ml active" data-model="svr">SVR</span>
+            </div>
+            <div style="display:flex;gap:.5rem;margin-top:.5rem">
+              <button class="btn-sm" id="btn-models-all">Todos</button>
+              <button class="btn-sm" id="btn-models-fast">Solo rápidos</button>
+              <button class="btn-sm" id="btn-models-ml">Solo ML</button>
+            </div>
+          </div>
+          <button class="btn-primary mt-3 w-full" id="btn-train">
+            <span id="btn-train-label">Entrenar modelos seleccionados</span>
+          </button>
+          <div class="progress-bar-container mt-2 hidden" id="train-progress-container">
+            <div class="progress-bar" id="train-progress-bar" style="width:0%"></div>
+            <span class="progress-label" id="train-progress-label">Iniciando...</span>
           </div>
         </div>
-        <button class="btn-primary mt-3 w-full" id="btn-dem-train">Cargar y entrenar arena</button>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Feature Importance</span></div>
+        <div class="card-body" style="height:280px;">
+          <canvas id="fi-chart"></canvas>
+        </div>
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header"><span class="card-title">Estadísticos del año base</span></div>
-      <div class="card-body">
-        <div class="kpi-grid" id="dem-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Tabla comparativa de modelos</span>
+        <span class="cbadge g" id="best-model-badge">—</span>
+      </div>
+      <div class="cb" style="overflow-x:auto">
+        <table class="tbl" id="comparison-table">
+          <thead><tr><th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th><th>Skill</th></tr></thead>
+          <tbody id="comparison-tbody"><tr><td colspan="8" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card mt-3" id="fi-table-card" style="display:none">
+      <div class="ch">
+        <span class="ct">Importancia de variables · GBM (top 10)</span>
+        <span class="cbadge b">Feature importance</span>
+      </div>
+      <div class="cb" style="overflow-x:auto">
+        <table class="tbl" id="fi-tbl">
+          <thead><tr><th>#</th><th>Variable</th><th>Importancia</th><th>%</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <div class="card mt-3">
-    <div class="ch">
-      <span class="ct">Proyección anual a 25 años</span>
-      <span class="cbadge g" id="dem-best-badge">—</span>
-    </div>
-    <div class="cb" style="height:340px"><canvas id="dem-projection-chart"></canvas></div>
-  </div>
-
-  <div class="grid-2 mt-3">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Perfil diurno y mensual del año base</span></div>
-      <div class="card-body" style="height:260px"><canvas id="dem-profile-chart"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Curva de duración de carga</span></div>
-      <div class="card-body" style="height:260px"><canvas id="dem-duration-chart"></canvas></div>
-    </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
-    <div class="cb" style="overflow-x:auto">
-      <table class="tbl" id="dem-compare-tbl">
-        <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
-        <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena la arena.</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ─── ARENA PML (sub-sección) ─────────────────────────────────────────── -->
-  <hr style="border:none;border-top:2px solid var(--accent);margin:2rem 0 1.5rem;opacity:.35">
-  <div class="sh" style="margin-bottom:1rem">
-    <div>
-      <div class="st" style="font-size:1.1rem">Arena de Pronóstico — Precios PML</div>
-      <div class="ss">Modela el incremento histórico del Precio Marginal Local (compra y venta) y proyecta su evolución anual hasta 25 años, escalando el patrón horario observado.</div>
-    </div>
-  </div>
-
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Configuración</span></div>
-      <div class="card-body">
-        <div class="form-row">
-          <label class="form-label">Serie de PML</label>
-          <select class="form-select" id="pml-preset">
-            <option value="pml_ipo">PML horario — Ipomeas/Juchitán ($/kWh)</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Lado del mercado</label>
-          <select class="form-select" id="pml-side">
-            <option value="venta">Venta (inyección)</option>
-            <option value="compra">Compra (extracción)</option>
-            <option value="both">Ambos lados</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Tasa anual de incremento histórica (nominal)</label>
-          <input type="number" class="form-input" id="pml-growth" step="0.005" min="0" max="0.15" value="0.030">
-          <span class="text-muted" style="font-size:.7rem">Referencia: 3 – 5 % nominal según inflación e índice CRE.</span>
-        </div>
-        <div class="form-row">
-          <label class="form-label">Horizonte de proyección (años)</label>
-          <input type="number" class="form-input" id="pml-horizon" min="5" max="40" value="25">
-        </div>
-        <div class="model-checklist mt-2">
-          <p class="text-muted mb-1">Modelos de tendencia</p>
-          <div class="model-tags" id="pml-model-tags">
-            <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
-            <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
-            <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
-            <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
-            <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
-            <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
-            <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+  <!-- ═══ TAB: DEMANDA ══════════════════════════════════════════════════════ -->
+  <div id="arena-demand-tab" class="tab-content">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Configuración</span></div>
+        <div class="card-body">
+          <div class="form-row">
+            <label class="form-label">Serie de demanda</label>
+            <select class="form-select" id="dem-preset">
+              <option value="juchitan">Juchitán — Demanda nodal (MW)</option>
+              <option value="load">Carga del sistema (MW)</option>
+            </select>
           </div>
+          <div class="form-row">
+            <label class="form-label">Tasa anual de crecimiento histórica supuesta (CAGR base)</label>
+            <input type="number" class="form-input" id="dem-growth" step="0.005" min="0" max="0.10" value="0.025">
+            <span class="text-muted" style="font-size:.7rem">Referencia: PRODESEN ~2.5–3.0 % anual.</span>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Horizonte de proyección (años)</label>
+            <input type="number" class="form-input" id="dem-horizon" min="5" max="40" value="25">
+          </div>
+          <div class="model-checklist mt-2">
+            <p class="text-muted mb-1">Modelos de tendencia <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
+            <div class="model-tags" id="dem-model-tags">
+              <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
+              <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
+              <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
+              <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
+              <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
+              <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
+              <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+            </div>
+          </div>
+          <button class="btn-primary mt-3 w-full" id="btn-dem-train">Cargar y entrenar arena</button>
         </div>
-        <button class="btn-primary mt-3 w-full" id="btn-pml-train">Cargar y entrenar arena</button>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Estadísticos del año base</span></div>
+        <div class="card-body">
+          <div class="kpi-grid" id="dem-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+        </div>
       </div>
     </div>
-
-    <div class="card">
-      <div class="card-header"><span class="card-title">Resumen del año base</span></div>
-      <div class="card-body">
-        <div class="kpi-grid" id="pml-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Proyección anual a 25 años</span>
+        <span class="cbadge g" id="dem-best-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="dem-projection-chart"></canvas></div>
+    </div>
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Perfil diurno y mensual del año base</span></div>
+        <div class="card-body" style="height:260px"><canvas id="dem-profile-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Curva de duración de carga</span></div>
+        <div class="card-body" style="height:260px"><canvas id="dem-duration-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="card mt-3">
+      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="cb" style="overflow-x:auto">
+        <table class="tbl" id="dem-compare-tbl">
+          <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
+          <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena la arena.</td></tr></tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <div class="card mt-3">
-    <div class="ch">
-      <span class="ct">Proyección anual del PML a 25 años</span>
-      <span class="cbadge g" id="pml-best-badge">—</span>
+  <!-- ═══ TAB: PML ══════════════════════════════════════════════════════════ -->
+  <div id="arena-pml-tab" class="tab-content">
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Configuración</span></div>
+        <div class="card-body">
+          <div class="form-row">
+            <label class="form-label">Serie de PML</label>
+            <select class="form-select" id="pml-preset">
+              <option value="pml_ipo">PML horario — Ipomeas/Juchitán ($/kWh)</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Lado del mercado</label>
+            <select class="form-select" id="pml-side">
+              <option value="venta">Venta (inyección)</option>
+              <option value="compra">Compra (extracción)</option>
+              <option value="both">Ambos lados</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Tasa anual de incremento histórica (nominal)</label>
+            <input type="number" class="form-input" id="pml-growth" step="0.005" min="0" max="0.15" value="0.030">
+            <span class="text-muted" style="font-size:.7rem">Referencia: 3 – 5 % nominal según inflación e índice CRE.</span>
+          </div>
+          <div class="form-row">
+            <label class="form-label">Horizonte de proyección (años)</label>
+            <input type="number" class="form-input" id="pml-horizon" min="5" max="40" value="25">
+          </div>
+          <div class="model-checklist mt-2">
+            <p class="text-muted mb-1">Modelos de tendencia</p>
+            <div class="model-tags" id="pml-model-tags">
+              <span class="model-tag model-tag--baseline active" data-model="linear">Lineal</span>
+              <span class="model-tag model-tag--baseline active" data-model="polynomial">Polinómico</span>
+              <span class="model-tag model-tag--ml active" data-model="exponential">Exponencial</span>
+              <span class="model-tag model-tag--ml active" data-model="logarithmic">Logarítmico</span>
+              <span class="model-tag model-tag--ml active" data-model="logistic">Logístico</span>
+              <span class="model-tag model-tag--ml active" data-model="holt_winters">Holt-Winters</span>
+              <span class="model-tag model-tag--baseline active" data-model="arima">ARIMA</span>
+            </div>
+          </div>
+          <button class="btn-primary mt-3 w-full" id="btn-pml-train">Cargar y entrenar arena</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Resumen del año base</span></div>
+        <div class="card-body">
+          <div class="kpi-grid" id="pml-kpis"><span class="text-muted">Sin datos cargados.</span></div>
+        </div>
+      </div>
     </div>
-    <div class="cb" style="height:340px"><canvas id="pml-projection-chart"></canvas></div>
-  </div>
-
-  <div class="grid-2 mt-3">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Perfil horario del PML (año base)</span></div>
-      <div class="card-body" style="height:260px"><canvas id="pml-diurnal-chart"></canvas></div>
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Proyección anual del PML a 25 años</span>
+        <span class="cbadge g" id="pml-best-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="pml-projection-chart"></canvas></div>
     </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Curva de duración del precio</span></div>
-      <div class="card-body" style="height:260px"><canvas id="pml-duration-chart"></canvas></div>
+    <div class="grid-2 mt-3">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Perfil horario del PML (año base)</span></div>
+        <div class="card-body" style="height:260px"><canvas id="pml-diurnal-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Curva de duración del precio</span></div>
+        <div class="card-body" style="height:260px"><canvas id="pml-duration-chart"></canvas></div>
+      </div>
     </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
-    <div class="cb" style="overflow-x:auto">
-      <table class="tbl" id="pml-compare-tbl">
-        <thead><tr><th>Modelo</th><th>Lado</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Precio año final</th></tr></thead>
-        <tbody><tr><td colspan="7" class="ks" style="text-align:center;padding:1.5rem">Carga la serie de PML y entrena la arena.</td></tr></tbody>
-      </table>
+    <div class="card mt-3">
+      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="cb" style="overflow-x:auto">
+        <table class="tbl" id="pml-compare-tbl">
+          <thead><tr><th>Modelo</th><th>Lado</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Precio año final</th></tr></thead>
+          <tbody><tr><td colspan="7" class="ks" style="text-align:center;padding:1.5rem">Carga la serie de PML y entrena la arena.</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
