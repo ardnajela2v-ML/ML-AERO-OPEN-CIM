@@ -2161,13 +2161,13 @@ def create_app():
             if not isinstance(values, np.ndarray):
                 values = np.asarray(values, dtype=float)
 
-            # Intentar construir historia anual REAL a partir de datos horarios
-            real_annual = _real_annual_from_hourly(values, agg='mean')
+            # Demanda: agregamos por SUMA anual (MWh totales) para mantener
+            # consistencia con synthesize_annual_series (que también usa sumas).
+            real_annual = _real_annual_from_hourly(values, agg='sum')
             if real_annual is not None:
                 t, annual_hist, base_year = real_annual
                 use_real = True
             else:
-                # Fallback: sintetizar si hay <2 años
                 t, annual_hist = synthesize_annual_series(
                     values, n_years_history=hist_y, growth_seed=growth)
                 base_year = 2024
@@ -2213,6 +2213,7 @@ def create_app():
                 'raw_values': raw,
                 'raw_n': len(raw),
                 'used_real_annual': use_real,
+                'annual_kind': 'sum',
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2366,8 +2367,8 @@ def create_app():
             for s in sides:
                 values = np.asarray(cache[s], dtype=float)
 
-                # Intentar historia anual REAL
-                real_annual = _real_annual_from_hourly(values, agg='mean')
+                # PML: usamos suma anual para mantener consistencia con synthesize
+                real_annual = _real_annual_from_hourly(values, agg='sum')
                 if real_annual is not None:
                     t, annual_hist, base_year = real_annual
                     use_real = True
@@ -2409,6 +2410,7 @@ def create_app():
                     'raw_values': raw_s,
                     'raw_n': len(raw_s),
                     'used_real_annual': use_real,
+                    'annual_kind': 'sum',
                 }
             return jsonify(numpy_to_python(result))
         except Exception as e:
@@ -2582,6 +2584,7 @@ def create_app():
                 'raw_values': all_raw,
                 'raw_n': len(all_raw),
                 'used_real_annual': True,
+                'annual_kind': 'mean',
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2660,6 +2663,7 @@ def create_app():
                 'raw_values': all_raw,
                 'raw_n': len(all_raw),
                 'used_real_annual': True,
+                'annual_kind': 'mean',
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2760,6 +2764,7 @@ def create_app():
                 'used_real_annual': bool(use_real),
             }
 
+            raw_values = [float(x) for x in series.values]
             return jsonify(numpy_to_python({
                 'horizon_years': horizon,
                 'growth_seed':   growth,
@@ -2770,6 +2775,10 @@ def create_app():
                 'best_model': best,
                 'stats': stats_summary,
                 'unit': 'm/s',
+                'raw_values': raw_values,
+                'raw_n': len(raw_values),
+                'annual_kind': 'mean',
+                'used_real_annual': bool(use_real),
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)

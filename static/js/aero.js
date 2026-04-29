@@ -812,7 +812,8 @@ function getForecastFutureConfig(key) {
     if (!fc?.projection) return null;
     return {
       projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Velocidad media anual (m/s)', unitLabel: 'm/s', decimals: 2,
+      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
+      ylabel: 'Velocidad del viento (m/s)', unitLabel: 'm/s', decimals: 2,
       scaler: v => v, filename: 'forecast_studio_wind_future_25y.csv',
       source: 'wind',
     };
@@ -823,8 +824,9 @@ function getForecastFutureConfig(key) {
     if (!fc?.projection) return null;
     return {
       projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Energía anual (GWh)', unitLabel: 'GWh', decimals: 1,
-      scaler: v => v / 1000, filename: `forecast_studio_${key}_future_25y.csv`,
+      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'sum',
+      ylabel: 'Demanda (MW)', unitLabel: 'MW', decimals: 1,
+      scaler: v => v, filename: `forecast_studio_${key}_future_25y.csv`,
       source: key,
     };
   }
@@ -835,7 +837,8 @@ function getForecastFutureConfig(key) {
     if (!sideCache?.projection) return null;
     return {
       projection: sideCache.projection, bestModel: sideCache.best_model,
-      ylabel: `PML anual ($/kWh) — ${sideKey}`, unitLabel: '$/kWh', decimals: 4,
+      rawValues: sideCache.raw_values || null, annualKind: sideCache.annual_kind || 'sum',
+      ylabel: `PML ($/kWh) — ${sideKey}`, unitLabel: '$/kWh', decimals: 4,
       scaler: v => v, filename: `forecast_studio_${key}_${sideKey}_future_25y.csv`,
       source: `${key}_${sideKey}`,
     };
@@ -846,6 +849,7 @@ function getForecastFutureConfig(key) {
     if (!fc?.projection) return null;
     return {
       projection: fc.projection, bestModel: fc.best_model,
+      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
       ylabel: 'Tasa (%)', unitLabel: '%', decimals: 2,
       scaler: v => v, filename: 'forecast_studio_interest_future_25y.csv',
       source: 'interest',
@@ -857,6 +861,7 @@ function getForecastFutureConfig(key) {
     if (!fc?.projection) return null;
     return {
       projection: fc.projection, bestModel: fc.best_model,
+      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
       ylabel: 'MXN / USD', unitLabel: 'MXN/USD', decimals: 2,
       scaler: v => v, filename: 'forecast_studio_fx_future_25y.csv',
       source: 'fx',
@@ -880,12 +885,26 @@ function renderForecastFutureChart(key) {
     return;
   }
 
-  renderArena25Years({
-    canvasId, badgeId: `${prefix}-future-badge`,
-    projection: cfg.projection, bestModel: cfg.bestModel,
-    ylabel: cfg.ylabel, scaler: cfg.scaler,
-    decimals: cfg.decimals, unitLabel: cfg.unitLabel,
-  });
+  // Si hay raw_values (serie histórica), renderizar continuación HORA A HORA.
+  // Si no, fallback a vista anual con todos los modelos.
+  let renderedHourly = false;
+  if (cfg.rawValues && cfg.rawValues.length) {
+    renderedHourly = renderArena25YearsHourly({
+      canvasId, badgeId: `${prefix}-future-badge`,
+      rawValues: cfg.rawValues, annualKind: cfg.annualKind,
+      projection: cfg.projection, bestModel: cfg.bestModel,
+      ylabel: cfg.ylabel, scaler: cfg.scaler,
+      decimals: cfg.decimals, unitLabel: cfg.unitLabel,
+    });
+  }
+  if (!renderedHourly) {
+    renderArena25Years({
+      canvasId, badgeId: `${prefix}-future-badge`,
+      projection: cfg.projection, bestModel: cfg.bestModel,
+      ylabel: cfg.ylabel, scaler: cfg.scaler,
+      decimals: cfg.decimals, unitLabel: cfg.unitLabel,
+    });
+  }
   if (btn) btn.disabled = false;
 }
 
@@ -5710,6 +5729,127 @@ function renderArenaPrediction({ canvasId, badgeId, history, projection, bestMod
     const bd = document.getElementById(badgeId);
     if (bd) bd.textContent = txt;
   }
+}
+
+// Proyección continua hora a hora a N años: escala el último ciclo (8760 h o 365 d)
+// del histórico por annual[y] / mean(perfil) para cada año proyectado.
+function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, bestModel,
+                                     ylabel, scaler = (v) => v, decimals = 2, unitLabel = '',
+                                     baseYearLabel = null, annualKind = 'mean' }) {
+  destroyChart(canvasId);
+  const ctxEl = document.getElementById(canvasId);
+  if (!ctxEl) return false;
+  if (!rawValues || !rawValues.length) return false;
+
+  const proj = projection || {};
+  const best = (bestModel && proj[bestModel] && !proj[bestModel].error) ? proj[bestModel] : null;
+  if (!best || !best.annual?.length) return false;
+
+  // Determinar tamaño del ciclo (último año de datos)
+  const n = rawValues.length;
+  let cycleLen;
+  if (n >= 8760) cycleLen = 8760;
+  else if (n >= 365) cycleLen = 365;
+  else cycleLen = n;
+  const baseProfile = rawValues.slice(-cycleLen);
+
+  // Suma y media del perfil base
+  let baseSum = 0;
+  for (let i = 0; i < baseProfile.length; i++) baseSum += baseProfile[i];
+  const baseMean = baseSum / baseProfile.length;
+  // Denominador según tipo de agregación anual del backend
+  const denom = (annualKind === 'sum') ? baseSum : baseMean;
+  if (!isFinite(denom) || denom === 0) return false;
+
+  const annual = best.annual;
+  const ciLow  = best.ci_low  || [];
+  const ciHigh = best.ci_high || [];
+  const horizon = annual.length;
+  const totalLen = horizon * cycleLen;
+
+  const startYear = (best.years && best.years[0]) ||
+                    (baseYearLabel ? baseYearLabel + 1 : new Date().getFullYear() + 1);
+
+  // Pre-asignar arrays
+  const labels = new Array(totalLen);
+  const dataBest = new Array(totalLen);
+  const dataLow  = new Array(totalLen);
+  const dataHigh = new Array(totalLen);
+
+  for (let y = 0; y < horizon; y++) {
+    const factor    = annual[y] / denom;
+    const factorLow  = (ciLow[y]  != null) ? ciLow[y]  / denom : null;
+    const factorHigh = (ciHigh[y] != null) ? ciHigh[y] / denom : null;
+    const yearLabel = startYear + y;
+    for (let h = 0; h < cycleLen; h++) {
+      const idx = y * cycleLen + h;
+      labels[idx] = `${yearLabel} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
+      dataBest[idx] = scaler(baseProfile[h] * factor);
+      if (factorLow  !== null) dataLow[idx]  = scaler(baseProfile[h] * factorLow);
+      if (factorHigh !== null) dataHigh[idx] = scaler(baseProfile[h] * factorHigh);
+    }
+  }
+
+  const datasets = [];
+  // Bandas IC (renderizadas detrás)
+  if (dataHigh.some(v => v !== undefined)) {
+    datasets.push({
+      label: 'IC 95% sup', data: dataHigh,
+      borderColor: 'transparent', backgroundColor: '#22c55e22',
+      fill: '+1', pointRadius: 0, borderWidth: 0,
+    });
+    datasets.push({
+      label: 'IC 95% inf', data: dataLow,
+      borderColor: 'transparent', backgroundColor: 'transparent',
+      fill: false, pointRadius: 0, borderWidth: 0,
+    });
+  }
+  // Línea principal del mejor modelo (hora a hora)
+  datasets.push({
+    label: `${bestModel} ★ (hora a hora)`, data: dataBest,
+    borderColor: '#22c55e', backgroundColor: '#22c55e22',
+    borderWidth: 0.8, fill: false, tension: 0, pointRadius: 0,
+  });
+
+  const ctx = ctxEl.getContext('2d');
+  WP.charts[canvasId] = new Chart(ctx, {
+    type: 'line', data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
+        decimation: { enabled: true, algorithm: 'lttb', samples: 4000, threshold: 4000 },
+        tooltip: { callbacks: {
+          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
+        } }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: `Hora futura (${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'horas' : 'días'} × ${horizon} años)` },
+          grid: { color: gridColor() },
+          ticks: {
+            maxTicksLimit: Math.min(horizon, 26),
+            callback: function(_val, idx) {
+              if (idx % cycleLen === 0) {
+                const yIdx = Math.floor(idx / cycleLen);
+                return startYear + yIdx;
+              }
+              return '';
+            }
+          }
+        },
+        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
+      }
+    }
+  });
+
+  if (badgeId) {
+    const txt = `Best: ${bestModel} · ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} · CAGR ${fcPct(best.cagr)} · Año final ${fcFormatNumber(scaler(annual[annual.length-1]), decimals)} ${unitLabel}`;
+    const bd = document.getElementById(badgeId);
+    if (bd) bd.textContent = txt;
+  }
+  return true;
 }
 
 // Proyección 25 años (solo futuro) con bandas IC del mejor modelo
