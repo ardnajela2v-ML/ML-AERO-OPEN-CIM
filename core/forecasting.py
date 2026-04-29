@@ -293,133 +293,135 @@ def fit_arima(t, y, order=(1, 1, 1)):
         return fit_linear(t, y)
 
 
-# ─── MODELOS DE MACHINE LEARNING (lags + tiempo, predicción recursiva) ────────
+# ─── MODELOS DE MACHINE LEARNING (detrend + ML residual + retrend) ────────────
+# Los árboles no extrapolan: convergen a constante fuera del rango entrenado.
+# Solución: separamos tendencia (regresión polinomial que extrapola) y residuos
+# (lo que el ML aprende). Así la proyección sigue la tendencia histórica y el
+# ML añade variabilidad/patrón realista por encima.
 
-def _build_lag_features(y, n_lags=3):
-    """Construye matriz X = [t, lag_1, lag_2, lag_n] y vector y_target."""
+def _build_lag_only(y, n_lags):
+    """Matriz X = [lag_1..lag_n] (sin t) y vector y_target."""
     y = np.asarray(y, dtype=float)
     n = len(y)
     if n <= n_lags:
         return None, None
     rows = n - n_lags
-    X = np.zeros((rows, n_lags + 1))
-    y_tgt = np.zeros(rows)
+    X = np.zeros((rows, n_lags))
+    tgt = np.zeros(rows)
     for i in range(rows):
-        X[i, 0] = i + n_lags
         for k in range(n_lags):
-            X[i, k + 1] = y[i + n_lags - 1 - k]
-        y_tgt[i] = y[i + n_lags]
-    return X, y_tgt
+            X[i, k] = y[i + n_lags - 1 - k]
+        tgt[i] = y[i + n_lags]
+    return X, tgt
 
 
-def _ml_recursive_predict(model, t_array, y_history, n_lags,
-                           noise_sigma=0.0, noise_factor=0.5, seed=42):
-    """Predicción recursiva. Si noise_sigma>0, inyecta ruido gaussiano en cada
-    paso para que árboles (que extrapolan a constante) muestren variabilidad
-    consistente con los residuos del ajuste."""
-    history = list(np.asarray(y_history, dtype=float))
-    rng = np.random.default_rng(seed)
-    out = []
-    for tval in np.asarray(t_array, dtype=float):
-        feats = [float(tval)] + [history[-(k + 1)] for k in range(n_lags)]
-        pred = float(model.predict(np.array([feats]))[0])
-        if noise_sigma > 0:
-            pred = pred + rng.normal(0, noise_sigma * noise_factor)
-        out.append(pred)
-        history.append(pred)
-    return np.array(out)
+def _fit_ml_trend_residual(t, y, build_model, kind, params,
+                            n_lags=3, trend_degree=1, scale_x=False):
+    """Patrón general:
+        1. Ajusta tendencia polinomial sobre y → y_trend(t)
+        2. Calcula residuos r = y - y_trend
+        3. Entrena ML sobre lags de residuos
+        4. Predicción: y_trend_futuro(t) + ML_recursivo_residuos + ruido
+    Esto evita la convergencia a constante porque la tendencia extrapola y el
+    ML solo aporta el patrón residual con variabilidad."""
+    from sklearn.preprocessing import StandardScaler
+    t_arr = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
+    # 1) Tendencia
+    coef = np.polyfit(t_arr, y, trend_degree)
+    y_trend = np.polyval(coef, t_arr)
+    residuals = y - y_trend
+
+    # 2) Lags sobre residuos
+    n_lags = max(1, min(n_lags, len(residuals) // 4))
+    X, r_tgt = _build_lag_only(residuals, n_lags)
+    if X is None or len(X) < 4:
+        return fit_linear(t_arr, y)
+
+    # 3) Entrenar (con escalado opcional para MLP)
+    if scale_x:
+        scaler = StandardScaler().fit(X)
+        Xs = scaler.transform(X)
+        r_std = float(np.std(r_tgt) + 1e-9)
+        r_mean = float(np.mean(r_tgt))
+        rs = (r_tgt - r_mean) / r_std
+        model = build_model()
+        model.fit(Xs, rs)
+        r_fit = model.predict(Xs) * r_std + r_mean
+    else:
+        scaler = None
+        model = build_model()
+        model.fit(X, r_tgt)
+        r_fit = model.predict(X)
+
+    fitted = np.concatenate([y[:n_lags], y_trend[n_lags:] + r_fit])
+
+    def predictor(tt, m=model, sc=scaler, c=coef,
+                  hist_r=residuals.tolist(), nl=n_lags,
+                  sx=scale_x,
+                  rmean=(float(np.mean(r_tgt)) if scale_x else 0.0),
+                  rstd=(float(np.std(r_tgt) + 1e-9) if scale_x else 1.0)):
+        tt = np.asarray(tt, dtype=float)
+        y_trend_f = np.polyval(c, tt)
+        history_r = list(hist_r)
+        r_future = []
+        for _ in tt:
+            feats = np.array([[history_r[-(k + 1)] for k in range(nl)]])
+            if sx:
+                feats = sc.transform(feats)
+                rp = float(m.predict(feats)[0]) * rstd + rmean
+            else:
+                rp = float(m.predict(feats)[0])
+            r_future.append(rp)
+            history_r.append(rp)
+        return y_trend_f + np.array(r_future)
+
+    return {'kind': kind, 'params': params, 'predict': predictor, 'fitted': fitted}
 
 
 def fit_random_forest_ts(t, y, n_lags=3):
-    """Random Forest sobre features [t, lag_1..lag_n]. Predicción recursiva."""
+    """RF sobre residuos de tendencia lineal. Extrapola por tendencia + variación residual."""
     from sklearn.ensemble import RandomForestRegressor
-    y = np.asarray(y, dtype=float)
-    n_lags = min(n_lags, max(1, len(y) // 4))
-    X, y_tgt = _build_lag_features(y, n_lags)
-    if X is None or len(X) < 4:
-        return fit_linear(t, y)
-    rf = RandomForestRegressor(n_estimators=200, max_depth=5,
-                                min_samples_leaf=2, random_state=42)
-    rf.fit(X, y_tgt)
-    yhat_recent = rf.predict(X)
-    fitted = np.concatenate([y[:n_lags], yhat_recent])
-    resid_sigma = max(float(np.std(y_tgt - yhat_recent)),
-                       float(np.std(np.diff(y))) * 0.7)
-
-    def predictor(tt, model=rf, hist=y.tolist(), nl=n_lags, sg=resid_sigma):
-        return _ml_recursive_predict(model, tt, hist, nl,
-                                      noise_sigma=sg, noise_factor=0.6)
-
-    return {'kind': 'ml_random_forest',
-            'params': {'n_estimators': 200, 'max_depth': 5, 'n_lags': int(n_lags)},
-            'predict': predictor,
-            'fitted': fitted}
+    return _fit_ml_trend_residual(
+        t, y,
+        build_model=lambda: RandomForestRegressor(
+            n_estimators=200, max_depth=5, min_samples_leaf=2, random_state=42),
+        kind='ml_random_forest',
+        params={'n_estimators': 200, 'max_depth': 5, 'n_lags': int(min(n_lags, len(y) // 4 or 1)),
+                'detrend': 'linear'},
+        n_lags=n_lags, trend_degree=1, scale_x=False,
+    )
 
 
 def fit_gradient_boost_ts(t, y, n_lags=3):
-    """Gradient Boosting sobre features [t, lag_1..lag_n]."""
+    """Gradient Boosting sobre residuos de tendencia lineal."""
     from sklearn.ensemble import GradientBoostingRegressor
-    y = np.asarray(y, dtype=float)
-    n_lags = min(n_lags, max(1, len(y) // 4))
-    X, y_tgt = _build_lag_features(y, n_lags)
-    if X is None or len(X) < 4:
-        return fit_linear(t, y)
-    gb = GradientBoostingRegressor(n_estimators=200, max_depth=3,
-                                    learning_rate=0.05, random_state=42)
-    gb.fit(X, y_tgt)
-    yhat_recent = gb.predict(X)
-    fitted = np.concatenate([y[:n_lags], yhat_recent])
-    resid_sigma = max(float(np.std(y_tgt - yhat_recent)),
-                       float(np.std(np.diff(y))) * 0.7)
-
-    def predictor(tt, model=gb, hist=y.tolist(), nl=n_lags, sg=resid_sigma):
-        return _ml_recursive_predict(model, tt, hist, nl,
-                                      noise_sigma=sg, noise_factor=0.6)
-
-    return {'kind': 'ml_gradient_boost',
-            'params': {'n_estimators': 200, 'max_depth': 3,
-                       'learning_rate': 0.05, 'n_lags': int(n_lags)},
-            'predict': predictor,
-            'fitted': fitted}
+    return _fit_ml_trend_residual(
+        t, y,
+        build_model=lambda: GradientBoostingRegressor(
+            n_estimators=200, max_depth=3, learning_rate=0.05, random_state=42),
+        kind='ml_gradient_boost',
+        params={'n_estimators': 200, 'max_depth': 3, 'learning_rate': 0.05,
+                'n_lags': int(min(n_lags, len(y) // 4 or 1)), 'detrend': 'linear'},
+        n_lags=n_lags, trend_degree=1, scale_x=False,
+    )
 
 
 def fit_mlp_ts(t, y, n_lags=3):
-    """MLP (red neuronal) sobre [t, lag_1..lag_n] con escalado robusto."""
+    """MLP sobre residuos de tendencia lineal con escalado. La red aprende patrones
+    no-lineales del residuo y la tendencia se aplica por encima."""
     from sklearn.neural_network import MLPRegressor
-    from sklearn.preprocessing import StandardScaler
-    y = np.asarray(y, dtype=float)
-    n_lags = min(n_lags, max(1, len(y) // 4))
-    X, y_tgt = _build_lag_features(y, n_lags)
-    if X is None or len(X) < 4:
-        return fit_linear(t, y)
-    scaler_x = StandardScaler().fit(X)
-    Xs = scaler_x.transform(X)
-    y_mean, y_std = float(np.mean(y_tgt)), float(np.std(y_tgt) + 1e-9)
-    ys = (y_tgt - y_mean) / y_std
-    mlp = MLPRegressor(hidden_layer_sizes=(32, 16), activation='tanh',
-                       solver='lbfgs', max_iter=600, random_state=42,
-                       alpha=1e-2)
-    mlp.fit(Xs, ys)
-    yhat_recent = mlp.predict(Xs) * y_std + y_mean
-    fitted = np.concatenate([y[:n_lags], yhat_recent])
-
-    def predictor(tt, model=mlp, sx=scaler_x, ym=y_mean, ys_=y_std,
-                  hist=y.tolist(), nl=n_lags):
-        history = list(hist)
-        out = []
-        for tval in np.asarray(tt, dtype=float):
-            feats = np.array([[float(tval)] + [history[-(k + 1)] for k in range(nl)]])
-            pred_s = float(model.predict(sx.transform(feats))[0])
-            pred = pred_s * ys_ + ym
-            out.append(pred)
-            history.append(pred)
-        return np.array(out)
-
-    return {'kind': 'ml_mlp',
-            'params': {'hidden': '(32,16)', 'activation': 'tanh',
-                       'alpha': 0.01, 'n_lags': int(n_lags)},
-            'predict': predictor,
-            'fitted': fitted}
+    return _fit_ml_trend_residual(
+        t, y,
+        build_model=lambda: MLPRegressor(
+            hidden_layer_sizes=(32, 16), activation='tanh', solver='lbfgs',
+            max_iter=800, random_state=42, alpha=1e-2),
+        kind='ml_mlp',
+        params={'hidden': '(32,16)', 'activation': 'tanh', 'alpha': 0.01,
+                'n_lags': int(min(n_lags, len(y) // 4 or 1)), 'detrend': 'linear'},
+        n_lags=n_lags, trend_degree=1, scale_x=True,
+    )
 
 
 TREND_FITTERS = {
