@@ -5058,12 +5058,12 @@ function renderInterestKPIs(fc) {
   const first = vals[0], last = vals[vals.length - 1];
   const max = Math.max(...vals), min = Math.min(...vals);
   
-  kpiBox.innerHTML = `
-    <div class="kpi-card"><div class="kpi-label">Año Inicio (${fc.history_years[0]})</div><div class="kpi-val">${first.toFixed(2)} %</div></div>
-    <div class="kpi-card"><div class="kpi-label">Año Base (${fc.history_years[fc.history_years.length-1]})</div><div class="kpi-val">${last.toFixed(2)} %</div></div>
-    <div class="kpi-card"><div class="kpi-label">Máximo Histórico</div><div class="kpi-val">${max.toFixed(2)} %</div></div>
-    <div class="kpi-card"><div class="kpi-label">Mínimo Histórico</div><div class="kpi-val">${min.toFixed(2)} %</div></div>
-  `;
+  kpiBox.innerHTML = [
+    fcKpiCard(`Año Inicio (${fc.history_years[0]})`, `${fcFormatNumber(first)} %`),
+    fcKpiCard(`Año Base (${fc.history_years[fc.history_years.length-1]})`, `${fcFormatNumber(last)} %`),
+    fcKpiCard('Máximo Histórico', `${fcFormatNumber(max)} %`),
+    fcKpiCard('Mínimo Histórico', `${fcFormatNumber(min)} %`)
+  ].join('');
 }
 
 let interestProjChart = null;
@@ -5208,12 +5208,12 @@ function renderFxKPIs(fc) {
   const first = vals[0], last = vals[vals.length - 1];
   const max = Math.max(...vals), min = Math.min(...vals);
   
-  kpiBox.innerHTML = `
-    <div class="kpi-card"><div class="kpi-label">Año Inicio (${fc.history_years[0]})</div><div class="kpi-val">$ ${first.toFixed(2)}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Año Base (${fc.history_years[fc.history_years.length-1]})</div><div class="kpi-val">$ ${last.toFixed(2)}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Máximo Histórico</div><div class="kpi-val">$ ${max.toFixed(2)}</div></div>
-    <div class="kpi-card"><div class="kpi-label">Mínimo Histórico</div><div class="kpi-val">$ ${min.toFixed(2)}</div></div>
-  `;
+  kpiBox.innerHTML = [
+    fcKpiCard(`Año Inicio (${fc.history_years[0]})`, `$ ${fcFormatNumber(first)}`),
+    fcKpiCard(`Año Base (${fc.history_years[fc.history_years.length-1]})`, `$ ${fcFormatNumber(last)}`),
+    fcKpiCard('Máximo Histórico', `$ ${fcFormatNumber(max)}`),
+    fcKpiCard('Mínimo Histórico', `$ ${fcFormatNumber(min)}`)
+  ].join('');
 }
 
 let fxProjChart = null;
