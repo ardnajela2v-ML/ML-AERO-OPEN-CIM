@@ -779,7 +779,7 @@ async function loadForecast() {
     renderScatterChart(r, 'fs-wind');
     renderResidualHistogram(r, 'fs-wind');
     renderStabilityChart(r.stability || [], 'fs-wind');
-    if(typeof renderBinnedBiasChart !== 'undefined') renderBinnedBiasChart(r.residuals?.binned_bias || [], 'fs-wind');
+    renderBinnedBiasChart(r, 'fs-wind');
     renderForecastMetricPills(r.metrics, 'fs-wind');
     updateCalibration(r.calibration);
     populateValidationMetrics(r.metrics);
@@ -952,16 +952,67 @@ function renderStabilityChart(stability, prefix='fs-wind') {
   });
 }
 
-function renderBinnedBiasChart(binnedBias) {
-  destroyChart('binned-bias');
+function buildBinnedBiasFromSeries(yTrue, yPred, nBins = 20) {
+  const pts = yTrue.map((obs, i) => ({ obs, res: yPred[i] - obs }))
+    .filter(p => p.obs != null && p.res != null && isFinite(p.obs) && isFinite(p.res));
+  if (pts.length < 3) return [];
+
+  const sorted = pts.map(p => p.obs).sort((a, b) => a - b);
+  const binCount = Math.min(nBins, Math.max(3, Math.floor(pts.length / 3)));
+  const quantile = q => {
+    const pos = (sorted.length - 1) * q;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+  };
+
+  const edges = [];
+  for (let i = 0; i <= binCount; i++) edges.push(quantile(i / binCount));
+  const uniqueEdges = [...new Set(edges.map(v => Number(v.toFixed(8))))];
+  if (uniqueEdges.length < 2) return [];
+
+  const bins = [];
+  for (let i = 0; i < uniqueEdges.length - 1; i++) {
+    const lo = uniqueEdges[i];
+    const hi = uniqueEdges[i + 1];
+    const inBin = pts.filter(p => p.obs >= lo && (i === uniqueEdges.length - 2 ? p.obs <= hi : p.obs < hi));
+    if (inBin.length < 3) continue;
+    const residuals = inBin.map(p => p.res);
+    const bias = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+    const rmse = Math.sqrt(residuals.reduce((a, b) => a + b * b, 0) / residuals.length);
+    bins.push({
+      ws_center: (lo + hi) / 2,
+      bias,
+      rmse,
+      n: inBin.length,
+    });
+  }
+  return bins;
+}
+
+function renderBinnedBiasChart(r, prefix='fs-wind') {
+  const chartKey = `${prefix}-binned-bias`;
+  destroyChart(chartKey);
+  const canvas = document.getElementById(`${prefix}-binned-bias-chart`);
+  if (!canvas) return;
+
+  const binnedBias = r.residuals?.binned_bias?.length
+    ? r.residuals.binned_bias
+    : buildBinnedBiasFromSeries(r.y_true || [], r.y_pred || []);
   if (!binnedBias.length) return;
-  const ctx = document.getElementById('binned-bias-chart').getContext('2d');
-  WP.charts['binned-bias'] = new Chart(ctx, {
+
+  const unit = r.unit || (prefix === 'fs-wind' ? 'm/s' : '');
+  const xTitle = prefix === 'fs-wind'
+    ? 'Velocidad observada (m/s)'
+    : `Valor observado${unit ? ` (${unit})` : ''}`;
+
+  const ctx = canvas.getContext('2d');
+  WP.charts[chartKey] = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: binnedBias.map(b => `${b.ws_center} m/s`),
+      labels: binnedBias.map(b => fcFormatNumber(b.ws_center, 2)),
       datasets: [{
-        label: 'Sesgo medio (m/s)',
+        label: `Sesgo medio${unit ? ` (${unit})` : ''}`,
         data: binnedBias.map(b => b.bias),
         backgroundColor: binnedBias.map(b => b.bias >= 0 ? acc()+'60' : acc2()+'60'),
         borderWidth: 0, borderRadius:2,
@@ -969,10 +1020,22 @@ function renderBinnedBiasChart(binnedBias) {
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: item => {
+              const bin = binnedBias[item.dataIndex] || {};
+              const bias = fcFormatNumber(item.parsed.y, 4);
+              const rmse = fcFormatNumber(bin.rmse, 4);
+              return [`Sesgo: ${bias} ${unit}`.trim(), `RMSE: ${rmse} ${unit}`.trim(), `n: ${bin.n || '—'}`];
+            }
+          }
+        }
+      },
       scales: {
-        x: { grid: { display: false }, title: { display: true, text: 'Velocidad de viento (m/s)' } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'Sesgo (m/s)' } }
+        x: { grid: { display: false }, title: { display: true, text: xTitle } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: `Sesgo${unit ? ` (${unit})` : ''}` } }
       }
     }
   });
@@ -5722,6 +5785,7 @@ function loadForecastFromCache(key) {
   renderForecastMainChart(r, prefix);
   renderScatterChart(r, prefix);
   renderResidualHistogram(r, prefix);
+  renderBinnedBiasChart(r, prefix);
   renderForecastMetricPills(r.metrics, prefix, r.unit);
 
   // Ocultar tarjeta de estabilidad (solo para viento)
