@@ -95,6 +95,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindDataHub();
   bindModelArena();
   bindForecastStudio();
+  bindForecastTabs();
   bindDemandArena();
   bindPMLArena();
   bindInterestArena();
@@ -5581,17 +5582,19 @@ function populateForecastStudioSelect(key) {
 function loadForecastFromCache(key) {
   const cache = WP.arenaCache[key];
   const sel = document.getElementById(`fs-${key}-model-select`);
-  if (!cache || !sel || !sel.value) return;
+  if (!cache) { console.warn(`Forecast Studio: no hay caché para "${key}"`); return; }
+  if (!sel || !sel.value) return;
 
   const modelName = sel.value;
-  
+
   let targetCache = cache;
   if (key === 'pml' && cache.sides) {
     const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
     targetCache = cache.sides[sideKey];
   }
+  if (!targetCache || !targetCache.fitted) { console.warn(`Forecast Studio: fitted no disponible para "${key}"`); return; }
   const m = targetCache.fitted[modelName];
-  if (!m || m.error) return;
+  if (!m || m.error) { console.warn(`Forecast Studio: modelo "${modelName}" no disponible`); return; }
 
   const y_pred = m.fitted_values || m.fitted || [];
   let y_true = [];
@@ -5646,4 +5649,4 @@ function loadForecastFromCache(key) {
   renderForecastMetricPills(r.metrics, prefix);
 }
 
-document.addEventListener('DOMContentLoaded', bindForecastTabs);
+
