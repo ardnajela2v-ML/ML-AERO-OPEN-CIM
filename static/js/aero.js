@@ -96,6 +96,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindForecastStudio();
   bindDemandArena();
   bindPMLArena();
+  bindInterestArena();
+  bindFxArena();
   bindEnergyLab();
   bindAI();
   bindOverview();
@@ -4968,3 +4970,298 @@ function renderPMLTable(fc) {
       <td>${fcFormatNumber(r.final, 4)} $/kWh</td>
     </tr>`).join('');
 }
+
+// ─── TASA DE INTERÉS ARENA ───────────────────────────────────────────────────
+function bindInterestArena() {
+  const tagBox = document.getElementById('interest-model-tags');
+  if (tagBox) {
+    tagBox.addEventListener('click', e => {
+      const tag = e.target.closest('[data-model]');
+      if (tag) tag.classList.toggle('active');
+    });
+  }
+  const btn = document.getElementById('btn-interest-train');
+  if (btn) btn.addEventListener('click', runInterestArena);
+}
+
+async function runInterestArena() {
+  const preset = document.getElementById('interest-preset').value;
+  const target = parseFloat(document.getElementById('interest-target').value || '8.0');
+  const horizon = parseInt(document.getElementById('interest-horizon').value || '25');
+  const models = fcGetSelectedModels('interest-model-tags');
+  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
+
+  const btn = document.getElementById('btn-interest-train');
+  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
+  try {
+    const fc = await api('/api/interest/forecast', 'POST', {
+      session_id: WP.sessionId, preset, target, horizon, models
+    });
+    
+    // KPIs (Año Base)
+    renderInterestKPIs(fc);
+    
+    // Proyección Chart
+    renderInterestProjection(fc);
+    
+    // Tabla Comparativa
+    renderInterestCompareTable(fc);
+
+    document.getElementById('interest-best-badge').textContent = `★ Mejor: ${fc.best_model}`;
+    toast('Arena de Tasa de Interés entrenada con éxito');
+  } catch (err) {
+    console.error(err);
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+  }
+}
+
+function renderInterestKPIs(fc) {
+  const kpiBox = document.getElementById('interest-kpis');
+  if (!fc.history_annual || !fc.history_annual.length) return;
+  const vals = fc.history_annual;
+  const first = vals[0], last = vals[vals.length - 1];
+  const max = Math.max(...vals), min = Math.min(...vals);
+  
+  kpiBox.innerHTML = `
+    <div class="kpi-card"><div class="kpi-label">Año Inicio (${fc.history_years[0]})</div><div class="kpi-val">${first.toFixed(2)} %</div></div>
+    <div class="kpi-card"><div class="kpi-label">Año Base (${fc.history_years[fc.history_years.length-1]})</div><div class="kpi-val">${last.toFixed(2)} %</div></div>
+    <div class="kpi-card"><div class="kpi-label">Máximo Histórico</div><div class="kpi-val">${max.toFixed(2)} %</div></div>
+    <div class="kpi-card"><div class="kpi-label">Mínimo Histórico</div><div class="kpi-val">${min.toFixed(2)} %</div></div>
+  `;
+}
+
+let interestProjChart = null;
+function renderInterestProjection(fc) {
+  const ctx = document.getElementById('interest-projection-chart');
+  if (!ctx) return;
+  if (interestProjChart) interestProjChart.destroy();
+
+  const datasets = [];
+  const histYears = fc.history_years;
+  const histVals = fc.history_annual;
+  
+  datasets.push({
+    label: 'Histórico',
+    data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
+    borderColor: '#ffffff', backgroundColor: '#ffffff',
+    borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false,
+    order: 10
+  });
+
+  const best = fc.best_model;
+  let colorIdx = 0;
+  for (const [key, m] of Object.entries(fc.projection)) {
+    if (m.error) continue;
+    const isBest = (key === best);
+    const color = isBest ? '#4ade80' : WP.colors[colorIdx % WP.colors.length];
+    if (!isBest) colorIdx++;
+    const lw = isBest ? 3 : 1;
+    const ldash = isBest ? [] : [5, 5];
+    const alpha = isBest ? 1.0 : 0.6;
+
+    datasets.push({
+      label: `Proj: ${key}`,
+      data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
+      borderColor: color, backgroundColor: 'transparent',
+      borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
+      borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
+    });
+    
+    if (isBest && m.ci_low && m.ci_high) {
+       datasets.push({
+         label: `${key} Límite Sup`,
+         data: m.years.map((y, i) => ({ x: y, y: m.ci_high[i] })),
+         borderColor: 'transparent', backgroundColor: Chart.helpers.color(color).alpha(0.1).rgbString(),
+         fill: '+1', pointRadius: 0, order: 20
+       });
+       datasets.push({
+         label: `${key} Límite Inf`,
+         data: m.years.map((y, i) => ({ x: y, y: m.ci_low[i] })),
+         borderColor: 'transparent', backgroundColor: 'transparent',
+         fill: false, pointRadius: 0, order: 20
+       });
+    }
+  }
+
+  interestProjChart = new Chart(ctx, {
+    type: 'line', data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#a0a0a0' } } },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Año', color: '#a0a0a0' },
+             grid: { color: '#333' }, ticks: { color: '#a0a0a0', callback: v => v.toString() } },
+        y: { title: { display: true, text: 'Tasa (%)', color: '#a0a0a0' },
+             grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }
+      }
+    }
+  });
+}
+
+function renderInterestCompareTable(fc) {
+  const tbody = document.querySelector('#interest-compare-tbl tbody');
+  if (!tbody || !fc.summary) return;
+  const best = fc.best_model;
+  
+  const rows = fc.summary.map(r => {
+    return { ...r, isBest: (r.model === best) };
+  });
+  
+  tbody.innerHTML = rows.map(r => `
+    <tr class="${r.isBest ? 'best-row' : ''}">
+      <td>${r.isBest ? '★ ' : ''}${r.model}</td>
+      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
+      <td>${fcFormatNumber(r.rmse, 4)}</td>
+      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
+      <td>${fcFormatNumber(r.final, 2)} %</td>
+    </tr>`).join('');
+}
+
+
+// ─── TIPO DE CAMBIO ARENA ────────────────────────────────────────────────────
+function bindFxArena() {
+  const tagBox = document.getElementById('fx-model-tags');
+  if (tagBox) {
+    tagBox.addEventListener('click', e => {
+      const tag = e.target.closest('[data-model]');
+      if (tag) tag.classList.toggle('active');
+    });
+  }
+  const btn = document.getElementById('btn-fx-train');
+  if (btn) btn.addEventListener('click', runFxArena);
+}
+
+async function runFxArena() {
+  const preset = document.getElementById('fx-preset').value;
+  const depreciation = parseFloat(document.getElementById('fx-depreciation').value || '2.5');
+  const horizon = parseInt(document.getElementById('fx-horizon').value || '25');
+  const models = fcGetSelectedModels('fx-model-tags');
+  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
+
+  const btn = document.getElementById('btn-fx-train');
+  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
+  try {
+    const fc = await api('/api/fx/forecast', 'POST', {
+      session_id: WP.sessionId, preset, depreciation, horizon, models
+    });
+    
+    renderFxKPIs(fc);
+    renderFxProjection(fc);
+    renderFxCompareTable(fc);
+
+    document.getElementById('fx-best-badge').textContent = `★ Mejor: ${fc.best_model}`;
+    toast('Arena de Tipo de Cambio entrenada con éxito');
+  } catch (err) {
+    console.error(err);
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+  }
+}
+
+function renderFxKPIs(fc) {
+  const kpiBox = document.getElementById('fx-kpis');
+  if (!fc.history_annual || !fc.history_annual.length) return;
+  const vals = fc.history_annual;
+  const first = vals[0], last = vals[vals.length - 1];
+  const max = Math.max(...vals), min = Math.min(...vals);
+  
+  kpiBox.innerHTML = `
+    <div class="kpi-card"><div class="kpi-label">Año Inicio (${fc.history_years[0]})</div><div class="kpi-val">$ ${first.toFixed(2)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Año Base (${fc.history_years[fc.history_years.length-1]})</div><div class="kpi-val">$ ${last.toFixed(2)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Máximo Histórico</div><div class="kpi-val">$ ${max.toFixed(2)}</div></div>
+    <div class="kpi-card"><div class="kpi-label">Mínimo Histórico</div><div class="kpi-val">$ ${min.toFixed(2)}</div></div>
+  `;
+}
+
+let fxProjChart = null;
+function renderFxProjection(fc) {
+  const ctx = document.getElementById('fx-projection-chart');
+  if (!ctx) return;
+  if (fxProjChart) fxProjChart.destroy();
+
+  const datasets = [];
+  const histYears = fc.history_years;
+  const histVals = fc.history_annual;
+  
+  datasets.push({
+    label: 'Histórico',
+    data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
+    borderColor: '#ffffff', backgroundColor: '#ffffff',
+    borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false,
+    order: 10
+  });
+
+  const best = fc.best_model;
+  let colorIdx = 0;
+  for (const [key, m] of Object.entries(fc.projection)) {
+    if (m.error) continue;
+    const isBest = (key === best);
+    const color = isBest ? '#4ade80' : WP.colors[colorIdx % WP.colors.length];
+    if (!isBest) colorIdx++;
+    const lw = isBest ? 3 : 1;
+    const ldash = isBest ? [] : [5, 5];
+    const alpha = isBest ? 1.0 : 0.6;
+
+    datasets.push({
+      label: `Proj: ${key}`,
+      data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
+      borderColor: color, backgroundColor: 'transparent',
+      borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
+      borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
+    });
+    
+    if (isBest && m.ci_low && m.ci_high) {
+       datasets.push({
+         label: `${key} Límite Sup`,
+         data: m.years.map((y, i) => ({ x: y, y: m.ci_high[i] })),
+         borderColor: 'transparent', backgroundColor: Chart.helpers.color(color).alpha(0.1).rgbString(),
+         fill: '+1', pointRadius: 0, order: 20
+       });
+       datasets.push({
+         label: `${key} Límite Inf`,
+         data: m.years.map((y, i) => ({ x: y, y: m.ci_low[i] })),
+         borderColor: 'transparent', backgroundColor: 'transparent',
+         fill: false, pointRadius: 0, order: 20
+       });
+    }
+  }
+
+  fxProjChart = new Chart(ctx, {
+    type: 'line', data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#a0a0a0' } } },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Año', color: '#a0a0a0' },
+             grid: { color: '#333' }, ticks: { color: '#a0a0a0', callback: v => v.toString() } },
+        y: { title: { display: true, text: 'MXN / USD', color: '#a0a0a0' },
+             grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }
+      }
+    }
+  });
+}
+
+function renderFxCompareTable(fc) {
+  const tbody = document.querySelector('#fx-compare-tbl tbody');
+  if (!tbody || !fc.summary) return;
+  const best = fc.best_model;
+  
+  const rows = fc.summary.map(r => {
+    return { ...r, isBest: (r.model === best) };
+  });
+  
+  tbody.innerHTML = rows.map(r => `
+    <tr class="${r.isBest ? 'best-row' : ''}">
+      <td>${r.isBest ? '★ ' : ''}${r.model}</td>
+      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
+      <td>${fcFormatNumber(r.rmse, 4)}</td>
+      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
+      <td>$ ${fcFormatNumber(r.final, 2)}</td>
+    </tr>`).join('');
+}
+

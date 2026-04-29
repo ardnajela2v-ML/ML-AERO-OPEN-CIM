@@ -210,6 +210,38 @@ def fit_holt_winters(t, y):
         return fit_linear(t, y)
 
 
+def fit_mean_reversion(t, y, target_b=None):
+    """Modelo de reversión a la media tipo Vasicek: y(t) tiende asintóticamente a b."""
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(y) < 3:
+        return fit_linear(t, y)
+    
+    # Si no se provee target_b, estimamos la media histórica
+    b = float(target_b) if target_b is not None else float(np.mean(y))
+    
+    try:
+        from scipy.optimize import curve_fit
+        def vasicek_mean(tt, a, r0):
+            # tt es tiempo relativo, asumimos t[0] = 0
+            t_rel = tt - t[0]
+            return r0 * np.exp(-a * t_rel) + b * (1 - np.exp(-a * t_rel))
+        
+        p0 = [0.1, y[0]]  # a=0.1 (velocidad de reversión), r0=y[0]
+        popt, _ = curve_fit(vasicek_mean, t, y, p0=p0, maxfev=2000)
+        a, r0 = popt
+        yhat = vasicek_mean(t, *popt)
+        
+        def predictor(tt, popt=popt):
+            return vasicek_mean(tt, *popt)
+            
+        return {'kind': 'mean_reversion',
+                'params': {'a': float(a), 'b': float(b), 'r0': float(r0)},
+                'predict': predictor,
+                'fitted': yhat}
+    except Exception:
+        return fit_linear(t, y)
+
 def fit_arima(t, y, order=(1, 1, 1)):
     """ARIMA simple para extrapolación anual."""
     if not HAS_STATSMODELS or len(y) < 5:
@@ -250,13 +282,14 @@ def fit_arima(t, y, order=(1, 1, 1)):
 
 
 TREND_FITTERS = {
-    'linear':       fit_linear,
-    'polynomial':   lambda t, y: fit_polynomial(t, y, degree=2),
-    'exponential':  fit_exponential,
-    'logarithmic':  fit_logarithmic,
-    'logistic':     fit_logistic,
-    'holt_winters': fit_holt_winters,
-    'arima':        fit_arima,
+    'linear':         fit_linear,
+    'polynomial':     lambda t, y: fit_polynomial(t, y, degree=2),
+    'exponential':    fit_exponential,
+    'logarithmic':    fit_logarithmic,
+    'logistic':       fit_logistic,
+    'holt_winters':   fit_holt_winters,
+    'arima':          fit_arima,
+    'mean_reversion': fit_mean_reversion,
 }
 
 

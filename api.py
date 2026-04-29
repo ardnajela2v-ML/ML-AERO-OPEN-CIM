@@ -1773,6 +1773,14 @@ def create_app():
         'pml_ipo':   {'file': 'PML_IPO.txt',        'label': 'PML horario (compra/venta)',
                       'unit': '$/kWh', 'kind': 'pml'},
     }
+    INTEREST_PRESETS = {
+        'tiie_28d':  {'file': 'TIIE_28D_HISTORICO.txt', 'label': 'TIIE 28 Días (Banxico)',
+                      'unit': '%', 'kind': 'interest'},
+    }
+    FX_PRESETS = {
+        'usdmxn':    {'file': 'USDMXN_HISTORICO.txt',   'label': 'USD/MXN FIX (Banxico)',
+                      'unit': 'MXN', 'kind': 'fx'},
+    }
 
     def _market_path(filename):
         safe = os.path.basename(filename)
@@ -1780,22 +1788,37 @@ def create_app():
 
     @app.route('/api/market/list_presets', methods=['GET'])
     def market_list_presets():
-        """Lista los presets de demanda y PML disponibles en MARKET_DATA_FOLDER."""
+        """Lista los presets de demanda, PML, TIIE y USD/MXN disponibles en MARKET_DATA_FOLDER."""
         folder = Config.MARKET_DATA_FOLDER
-        out = {'folder': folder, 'demand': [], 'pml': []}
+        out = {'folder': folder, 'demand': [], 'pml': [], 'interest': [], 'fx': []}
         if not os.path.isdir(folder):
             out['error'] = 'MARKET_DATA_FOLDER not found'
             return jsonify(out)
+        
         for key, meta in DEMAND_PRESETS.items():
             fpath = os.path.join(folder, meta['file'])
             if os.path.isfile(fpath):
                 size_kb = round(os.path.getsize(fpath) / 1024, 1)
                 out['demand'].append({'key': key, **meta, 'size_kb': size_kb})
+                
         for key, meta in PML_PRESETS.items():
             fpath = os.path.join(folder, meta['file'])
             if os.path.isfile(fpath):
                 size_kb = round(os.path.getsize(fpath) / 1024, 1)
                 out['pml'].append({'key': key, **meta, 'size_kb': size_kb})
+                
+        for key, meta in INTEREST_PRESETS.items():
+            fpath = os.path.join(folder, meta['file'])
+            if os.path.isfile(fpath):
+                size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                out['interest'].append({'key': key, **meta, 'size_kb': size_kb})
+                
+        for key, meta in FX_PRESETS.items():
+            fpath = os.path.join(folder, meta['file'])
+            if os.path.isfile(fpath):
+                size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                out['fx'].append({'key': key, **meta, 'size_kb': size_kb})
+                
         return jsonify(out)
 
     @app.route('/api/demand/load', methods=['POST'])
@@ -2001,6 +2024,139 @@ def create_app():
                     'best_model': best,
                 }
             return jsonify(numpy_to_python(result))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/interest/forecast', methods=['POST'])
+    def interest_forecast():
+        """Proyecta Tasa de Interés a 25 años usando históricos anuales."""
+        body = request.get_json(silent=True) or {}
+        key     = body.get('preset', 'tiie_28d')
+        target  = float(body.get('target', 8.0))
+        horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
+        models  = body.get('models')
+
+        meta = INTEREST_PRESETS.get(key)
+        if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
+        fpath = _market_path(meta['file'])
+        if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+
+        try:
+            # Leer TSV diario (date, value)
+            df = pd.read_csv(fpath, sep='\t')
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            col_name = df.columns[0]
+            
+            # Agregar anualmente (promedio)
+            annual_df = df.resample('YE').mean().dropna()
+            years = annual_df.index.year.values
+            values = annual_df[col_name].values
+            
+            # Años relativos t=0..N
+            t = years - years[0]
+            
+            # Para mean_reversion, pasamos el target_b
+            import core.forecasting as fc
+            
+            # Hack para pasar target_b al fit_all_trend_models, ya que no lo recibe directamente
+            fitted = fc.fit_all_trend_models(t, values, models=models)
+            if 'mean_reversion' in fitted and 'mean_reversion' in (models or ['mean_reversion']):
+                fitted['mean_reversion'] = fc.fit_mean_reversion(t, values, target_b=target)
+                if 'metrics' not in fitted['mean_reversion']:
+                    yhat = fitted['mean_reversion']['fitted']
+                    fitted['mean_reversion']['metrics'] = {
+                        'r2': fc._r2(values, yhat),
+                        'rmse': fc._rmse(values, yhat),
+                        'mape': fc._mape(values, yhat)
+                    }
+                    fitted['mean_reversion']['_predict'] = fitted['mean_reversion']['predict']
+            
+            projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
+            best = fc.best_trend_model(fitted)
+            
+            summary = []
+            for k, m in fitted.items():
+                if 'error' in m:
+                    summary.append({'model': k, 'error': m['error']}); continue
+                proj = projection.get(k, {})
+                summary.append({
+                    'model':   k,
+                    'r2':      m['metrics'].get('r2'),
+                    'rmse':    m['metrics'].get('rmse'),
+                    'mape':    m['metrics'].get('mape'),
+                    'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
+                })
+            
+            for m in fitted.values(): m.pop('_predict', None)
+            
+            return jsonify(numpy_to_python({
+                'preset': key, 'horizon_years': horizon, 'target_rate': target,
+                'history_years': [int(y) for y in years],
+                'history_annual': [float(v) for v in values],
+                'fitted': fitted, 'projection': projection,
+                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'best_model': best,
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/fx/forecast', methods=['POST'])
+    def fx_forecast():
+        """Proyecta Tipo de Cambio a 25 años usando históricos anuales."""
+        body = request.get_json(silent=True) or {}
+        key     = body.get('preset', 'usdmxn')
+        depr    = float(body.get('depreciation', 2.5))
+        horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
+        models  = body.get('models')
+
+        meta = FX_PRESETS.get(key)
+        if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
+        fpath = _market_path(meta['file'])
+        if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+
+        try:
+            df = pd.read_csv(fpath, sep='\t')
+            df['date'] = pd.to_datetime(df['date'])
+            df.set_index('date', inplace=True)
+            col_name = df.columns[0]
+            
+            annual_df = df.resample('YE').mean().dropna()
+            years = annual_df.index.year.values
+            values = annual_df[col_name].values
+            t = years - years[0]
+            
+            import core.forecasting as fc
+            fitted = fc.fit_all_trend_models(t, values, models=models)
+            
+            projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
+            best = fc.best_trend_model(fitted)
+            
+            summary = []
+            for k, m in fitted.items():
+                if 'error' in m:
+                    summary.append({'model': k, 'error': m['error']}); continue
+                proj = projection.get(k, {})
+                summary.append({
+                    'model':   k,
+                    'r2':      m['metrics'].get('r2'),
+                    'rmse':    m['metrics'].get('rmse'),
+                    'mape':    m['metrics'].get('mape'),
+                    'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
+                })
+            
+            for m in fitted.values(): m.pop('_predict', None)
+            
+            return jsonify(numpy_to_python({
+                'preset': key, 'horizon_years': horizon, 'depreciation': depr,
+                'history_years': [int(y) for y in years],
+                'history_annual': [float(v) for v in values],
+                'fitted': fitted, 'projection': projection,
+                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'best_model': best,
+            }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
