@@ -5600,48 +5600,42 @@ function loadForecastFromCache(key) {
   let y_true = [];
   let y_pred = [];
   let labels = [];
-  let useRaw = false;
 
   if (key === 'interest' || key === 'fx') {
-    // Financial models trained on a subset (2001+); use history_annual
-    const full_true = targetCache.history_annual;
-    const full_years = targetCache.history_years;
-    const train_len = y_pred_raw.length;
-    y_true = (full_true || []).slice((full_true||[]).length - train_len);
-    y_pred = y_pred_raw;
-    labels = (full_years || []).slice((full_years||[]).length - train_len).map(y => y.toString());
-  } else if (targetCache.raw_values && targetCache.raw_values.length > 0) {
-    // Demand / PML — datos reales completos del archivo
-    y_true = targetCache.raw_values.slice(); // todos los puntos
-    labels = y_true.map((_, i) => i + 1);
-    y_pred = []; // sin línea predicha — la tendencia anual no es comparable hora a hora
+    // Financieras: entrenadas sobre datos anuales reales (desde 2001)
+    const full_true = targetCache.history_annual || [];
+    const full_years = targetCache.history_years || [];
+    const train_len  = y_pred_raw.length;
+    y_true  = full_true.slice(full_true.length - train_len);
+    y_pred  = y_pred_raw;
+    labels  = full_years.slice(full_years.length - train_len).map(y => y.toString());
+  } else {
+    // Demanda / PML: entrenadas sobre agregados anuales (sintéticos o reales)
+    y_true  = targetCache.history_annual || [];
+    y_pred  = y_pred_raw;
+    labels  = (targetCache.history_t || []).map(t => 't=' + t);
 
     if (key === 'demand') {
       y_true = y_true.map(v => v / 1000);  // MWh → GWh
+      y_pred = y_pred.map(v => v / 1000);
     }
-  } else {
-    // Fallback: use synthetic annual history
-    y_true = targetCache.history_annual || [];
-    y_pred = y_pred_raw;
-    labels = targetCache.history_t ? targetCache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
   }
 
   const unitMap = {
-    'demand': 'GWh',
-    'pml': 'USD/MWh',
+    'demand':   'GWh',
+    'pml':      'USD/MWh',
     'interest': '%',
-    'fx': 'MXN/USD',
-    'wind': 'm/s'
+    'fx':       'MXN/USD',
+    'wind':     'm/s'
   };
+
   const r = {
-    y_true: y_true,
-    y_pred: y_pred,
-    labels: labels,
-    unit: unitMap[key] || 'm/s',
+    y_true,
+    y_pred,
+    labels,
+    unit:    unitMap[key] || '',
     metrics: m.metrics,
-    residuals: {
-       binned_bias: [] 
-    },
+    residuals: { binned_bias: [] },
     stability: []
   };
 
@@ -5649,11 +5643,68 @@ function loadForecastFromCache(key) {
   renderForecastMainChart(r, prefix);
   renderScatterChart(r, prefix);
   renderResidualHistogram(r, prefix);
-  
-  // Hide stability for annual models
-  document.getElementById(`${prefix}-stability-chart`).parentElement.parentElement.style.display = 'none';
-  
   renderForecastMetricPills(r.metrics, prefix);
+
+  // Ocultar tarjeta de estabilidad (solo para viento)
+  const stabEl = document.getElementById(`${prefix}-stability-chart`);
+  if (stabEl) stabEl.parentElement.parentElement.style.display = 'none';
+
+  // Perfil horario real (solo Demanda y PML)
+  if ((key === 'demand' || key === 'pml') && targetCache.raw_values?.length) {
+    renderRawHourlyProfile(targetCache.raw_values, key, unitMap[key]);
+  }
+}
+
+function renderRawHourlyProfile(rawValues, key, unit) {
+  const canvasId = `fs-${key}-raw-chart`;
+  const el = document.getElementById(canvasId);
+  if (!el) return;
+
+  const chartKey = `${key}-raw`;
+  destroyChart(chartKey);
+
+  const vals = key === 'demand' ? rawValues.map(v => v / 1000) : rawValues;
+  const labels = vals.map((_, i) => i + 1);
+
+  WP.charts[chartKey] = new Chart(el.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: `Perfil horario (${unit})`,
+        data: vals,
+        borderColor: acc(),
+        borderWidth: 1,
+        pointRadius: 0,
+        fill: false,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: item => `Hora ${item.label}: ${item.formattedValue} ${unit}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: gridColor() },
+          ticks: { maxTicksLimit: 12, font: { size: 9 } }
+        },
+        y: {
+          grid: { color: gridColor() },
+          title: { display: true, text: unit },
+          ticks: { font: { size: 9 } }
+        }
+      }
+    }
+  });
+}
 }
 
 
