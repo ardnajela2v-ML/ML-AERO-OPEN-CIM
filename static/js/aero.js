@@ -15,6 +15,7 @@ const WP = {
   energyResult: null,
   compareResult:null,
   forecastResult:null,
+  arenaCache: {},
 };
 
 // ─── CHART.JS DEFAULTS ───────────────────────────────────────────────────────
