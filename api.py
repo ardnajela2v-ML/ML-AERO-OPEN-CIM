@@ -859,6 +859,7 @@ def create_app():
                 'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
                 'histogram':    numpy_to_python(compute_histogram(df, ws_col)),
                 'sectors':      numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
+                'month_hour_heatmap': numpy_to_python(compute_month_hour_heatmap(df, col=ws_col)),
             }
             sess['wind_stats'] = result
             return jsonify(result)

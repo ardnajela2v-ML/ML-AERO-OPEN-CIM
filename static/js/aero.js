@@ -226,6 +226,8 @@ async function loadPresetFileByName(filename, source) {
 
     document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
     WP.meta = r.meta;
+    // Invalidate cached wind analysis when new data is loaded
+    WP.windStats = null;
 
     // meta grid
     const meta = r.meta;
@@ -340,6 +342,7 @@ async function uploadFile(file) {
   try {
     const r = await apiFD('/api/data/upload', fd);
     document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
+    WP.windStats = null; // Invalidate cached wind analysis
 
     // meta grid
     const meta = r.meta;
@@ -1894,7 +1897,8 @@ async function calcWindAnalysis() {
   setStatus('Calculando análisis de viento…');
   document.getElementById('wind-status').textContent = 'Calculando…';
   try {
-    const r = WP.windStats || await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
+    WP.windStats = null; // force fresh fetch
+    const r = await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
     WP.windStats = r;
     renderWindRose(r.rose);
     renderDiurnal(r.diurnal);
@@ -1903,7 +1907,7 @@ async function calcWindAnalysis() {
     renderWbHist(r.histogram);
     renderHistColored(r.histogram);
     renderMonthlyWS(r.climatology);
-    await renderMonthHourHeatmap();
+    renderMonthHourHeatmap(r.month_hour_heatmap);
     populateSectorTable(r.sectors);
     if (r.sectors?.dominant_sectors) {
       const bd = document.getElementById('wind-badge-dom');
@@ -3987,44 +3991,66 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ═══════════════════════ MONTH × HOUR HEATMAP ═══════════════════════════════
-async function renderMonthHourHeatmap() {
+function renderMonthHourHeatmap(data) {
   const container = document.getElementById('mh-heatmap');
   if (!container) return;
-  if (!(window.WP && WP.sessionId)) {
-    container.innerHTML = '<span class="text-muted">Carga datos en Data Hub para ver el mapa de calor.</span>';
+  if (!data || !data.matrix) {
+    container.innerHTML = '<span class="text-muted">Sin datos de mapa de calor. Verifica que el archivo tenga fechas e índice temporal.</span>';
     return;
   }
   try {
-    const r = await api('/api/wind_stats/month_hour_heatmap', 'POST', {
-      session_id: WP.sessionId,
-      col: 'wind_speed',
-    });
-    const { matrix, months, hours, vmin, vmax, overall_mean } = r;
+    const { matrix, months, hours, vmin, vmax, overall_mean } = data;
     const rng = Math.max(1e-9, vmax - vmin);
     const norm = v => (v - vmin) / rng;
-    // HTML grid
-    let html = '<div style="display:grid;grid-template-columns:auto repeat(24,1fr);gap:2px;font-family:var(--font-mono);font-size:.62rem">';
-    html += '<div></div>' + hours.map(h => `<div style="text-align:center;color:var(--text-muted)">${h}</div>`).join('');
+
+    // HTML grid with value labels
+    let html = '<div style="display:grid;grid-template-columns:42px repeat(24,1fr);gap:2px;font-family:var(--font-mono);font-size:.60rem;line-height:1">';
+    // Hour headers
+    html += '<div></div>' + hours.map(h => `<div style="text-align:center;color:var(--text-muted);font-weight:600;padding-bottom:4px">${h}</div>`).join('');
     for (let m = 0; m < 12; m++) {
-      html += `<div style="color:var(--text-muted);padding-right:6px;text-align:right;align-self:center">${months[m]}</div>`;
+      html += `<div style="color:var(--text-muted);font-weight:600;padding-right:6px;text-align:right;align-self:center">${months[m]}</div>`;
       for (let h = 0; h < 24; h++) {
         const v = matrix[m][h];
         const t = norm(v);
         const [r_, g_, b_] = krigColor(t);
-        html += `<div title="${months[m]} ${hours[h]}h · ${v} m/s"
-                       style="background:rgb(${r_|0},${g_|0},${b_|0});height:22px;border-radius:2px;"></div>`;
+        // Contrast: light text on dark cells, dark text on bright cells
+        const lum = 0.299 * r_ + 0.587 * g_ + 0.114 * b_;
+        const txtCol = lum > 140 ? '#1a1a2e' : '#f0f0f0';
+        html += `<div title="${months[m]} ${hours[h]}:00 h · ${v.toFixed(2)} m/s"
+                      style="background:rgb(${r_|0},${g_|0},${b_|0});height:26px;border-radius:3px;
+                             display:flex;align-items:center;justify-content:center;
+                             color:${txtCol};font-size:.52rem;font-weight:500;cursor:default;
+                             transition:transform .1s;" 
+                      onmouseenter="this.style.transform='scale(1.15)';this.style.zIndex='2'" 
+                      onmouseleave="this.style.transform='';this.style.zIndex=''">${v.toFixed(1)}</div>`;
       }
     }
     html += '</div>';
+
+    // Color scale bar
+    const nSteps = 60;
+    let scaleHtml = '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:.68rem;color:var(--text-muted)">';
+    scaleHtml += `<span style="font-weight:600">${vmin.toFixed(1)}</span>`;
+    scaleHtml += '<div style="display:flex;flex:1;height:10px;border-radius:4px;overflow:hidden">';
+    for (let i = 0; i < nSteps; i++) {
+      const t = i / (nSteps - 1);
+      const [r_, g_, b_] = krigColor(t);
+      scaleHtml += `<div style="flex:1;background:rgb(${r_|0},${g_|0},${b_|0})"></div>`;
+    }
+    scaleHtml += '</div>';
+    scaleHtml += `<span style="font-weight:600">${vmax.toFixed(1)}</span>`;
+    scaleHtml += '<span style="margin-left:8px">m/s</span></div>';
+    html += scaleHtml;
+
     container.innerHTML = html;
     document.getElementById('mh-legend').textContent =
-      `${vmin.toFixed(1)} → ${vmax.toFixed(1)} m/s · μ=${overall_mean} m/s`;
+      `${vmin.toFixed(1)} → ${vmax.toFixed(1)} m/s · μ = ${overall_mean} m/s`;
   } catch (e) {
-    container.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+    container.innerHTML = `<span style="color:var(--red)">Error renderizando heatmap: ${e.message}</span>`;
   }
 }
 
-// renderMonthHourHeatmap is now called from within calcWindAnalysis() after data loads.
+// renderMonthHourHeatmap is now called from within calcWindAnalysis() with pre-fetched data.
 
 
 // ═══════════════════════ PARQUE EÓLICO ═══════════════════════════════════════
