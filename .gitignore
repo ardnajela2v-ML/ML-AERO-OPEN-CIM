@@ -28,6 +28,7 @@ Thumbs.db
 exports/*.csv
 uploads/*
 saved_models/*
+.cache/
 !uploads/.gitkeep
 !saved_models/.gitkeep
 

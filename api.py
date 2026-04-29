@@ -3,6 +3,7 @@ AERO by OPEN CIM — Flask application and REST API.
 All scientific computation is delegated to core/ modules.
 """
 import os
+import io
 import json
 import uuid
 import time
@@ -44,6 +45,7 @@ def _cached_list_files(folder):
     ))
 
 from config import Config
+from core.cache import bytes_hash, file_signature, get as cache_get, get_or_compute, set as cache_set, stable_hash, timed
 from core.data import DataLoader, DataQualityChecker, FeatureEngineer, df_to_json_safe, series_to_chart
 from core.models import ModelArena
 from core.validate import (compute_all_metrics, build_comparison_table,
@@ -210,6 +212,68 @@ def create_app():
             sessions[sid]['_last_access'] = time.time()
             return sessions[sid]
 
+    def _load_dataframe_from_path_cached(path, source_hint='auto'):
+        """Parse meteorological files once per file signature + source hint."""
+        loader = DataLoader()
+        sig = file_signature(path)
+        parts = ('dataframe-v1', sig, source_hint)
+
+        def compute():
+            with timed(f'parse {os.path.basename(path)}', logger):
+                return loader.load_file(path, source_hint=source_hint)
+
+        (df, meta), hit = get_or_compute('dataframe', parts, compute)
+        meta = dict(meta)
+        meta['cache_hit'] = bool(hit)
+        meta['cache_key'] = stable_hash(parts)
+        return df.copy(), meta
+
+    def _load_dataframe_from_upload_cached(file_storage, source_hint='auto'):
+        """Cache uploaded parse results by file content hash + source hint."""
+        raw = file_storage.read()
+        digest = bytes_hash(raw)
+        filename = getattr(file_storage, 'filename', 'upload.csv')
+        loader = DataLoader()
+        parts = ('upload-dataframe-v1', digest, filename, source_hint)
+
+        def compute():
+            bio = io.BytesIO(raw)
+            bio.filename = filename
+            with timed(f'parse upload {filename}', logger):
+                return loader.load_file(bio, source_hint=source_hint)
+
+        (df, meta), hit = get_or_compute('dataframe', parts, compute)
+        meta = dict(meta)
+        meta['cache_hit'] = bool(hit)
+        meta['cache_key'] = stable_hash(parts)
+        meta['upload_sha256'] = digest
+        return df.copy(), meta
+
+    def _df_cache_signature(sess, extra=None):
+        meta = sess.get('meta') or {}
+        if meta.get('cache_key'):
+            base = meta['cache_key']
+        elif 'df' in sess:
+            df = sess['df']
+            base = stable_hash({
+                'shape': getattr(df, 'shape', None),
+                'columns': list(getattr(df, 'columns', [])),
+                'index_start': str(df.index[0]) if len(df.index) else None,
+                'index_end': str(df.index[-1]) if len(df.index) else None,
+            })
+        else:
+            base = 'no-dataframe'
+        return stable_hash({'base': base, 'extra': extra or {}})
+
+    def _array_cache_signature(values, extra=None):
+        arr = np.asarray(values, dtype=np.float64)
+        raw = np.ascontiguousarray(arr).view(np.uint8).tobytes()
+        return stable_hash({
+            'sha256': bytes_hash(raw),
+            'shape': arr.shape,
+            'extra': extra or {},
+        })
+
     def allowed_file(filename):
         return ('.' in filename and
                 filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS)
@@ -325,8 +389,7 @@ def create_app():
             return jsonify({'error': f'File not found: {safe_name}'}), 404
 
         try:
-            loader = DataLoader()
-            df, meta = loader.load_file(fpath, source_hint=source)
+            df, meta = _load_dataframe_from_path_cached(fpath, source_hint=source)
             sess = get_session(sid)
             sess['df']   = df
             sess['meta'] = meta
@@ -371,8 +434,7 @@ def create_app():
         f.filename = secure_filename(f.filename) or 'upload.csv'
 
         try:
-            loader = DataLoader()
-            df, meta = loader.load_file(f, source_hint=source_hint)
+            df, meta = _load_dataframe_from_upload_cached(f, source_hint=source_hint)
             sess = get_session(sid)
             sess['df'] = df
             sess['meta'] = meta
@@ -409,8 +471,18 @@ def create_app():
             return jsonify({'error': 'No data loaded. Upload a file first.'}), 400
 
         try:
-            checker = DataQualityChecker()
-            report, flags = checker.run(sess['df'], target_col=target_col)
+            cache_parts = (
+                'quality-v1',
+                _df_cache_signature(sess, {'target_col': target_col}),
+            )
+
+            def compute_quality():
+                checker = DataQualityChecker()
+                return checker.run(sess['df'], target_col=target_col)
+
+            (report, flags), cache_hit = get_or_compute('quality', cache_parts, compute_quality)
+            report = dict(report)
+            report['cache_hit'] = bool(cache_hit)
             sess['qc_report'] = report
             sess['qc_flags']  = flags
 
@@ -463,13 +535,30 @@ def create_app():
             return jsonify({'error': 'No data loaded.'}), 400
 
         try:
-            fe = FeatureEngineer()
-            feat_dict = fe.build(sess['df'], target_col=target_col,
-                                 horizons_h=horizons_h)
+            feature_params = {
+                'target_col': target_col,
+                'horizons_h': horizons_h,
+                'lags': Config.DEFAULT_LAG_HOURS,
+                'rolling_windows': Config.DEFAULT_ROLLING_WINDOWS,
+            }
+            cache_parts = (
+                'features-v1',
+                _df_cache_signature(sess, feature_params),
+            )
+
+            def compute_features():
+                fe = FeatureEngineer()
+                with timed('build features', logger):
+                    return fe.build(sess['df'], target_col=target_col,
+                                    horizons_h=horizons_h)
+
+            feat_dict, cache_hit = get_or_compute('features', cache_parts, compute_features)
             sess['features']   = feat_dict
             sess['target_col'] = target_col
             sess['test_frac']  = test_frac
             sess['horizons']   = horizons_h
+            sess['features_cache_hit'] = bool(cache_hit)
+            sess['features_cache_key'] = stable_hash(cache_parts)
 
             # return summary
             summary = {}
@@ -484,7 +573,8 @@ def create_app():
                     'target_mean_train': round(float(np.mean(y[:split])), 3),
                     'target_mean_test':  round(float(np.mean(y[split:])), 3),
                 }
-            return jsonify({'summary': summary, 'horizons': horizons_h})
+            return jsonify({'summary': summary, 'horizons': horizons_h,
+                            'cache_hit': bool(cache_hit)})
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
@@ -516,6 +606,40 @@ def create_app():
                 X_tr, X_te, y_tr, y_te, idx_tr, idx_te = \
                     fe.train_test_split_temporal(X, y, idx, test_frac)
 
+                train_parts = (
+                    'model-results-v1',
+                    sess.get('features_cache_key') or _df_cache_signature(sess),
+                    int(horizon_h),
+                    float(test_frac),
+                    tuple(sorted(enabled_models)) if enabled_models else 'all',
+                )
+                cached_results = cache_get('model_results', *train_parts)
+                if cached_results is not None:
+                    sess[f'results_h{horizon_h}'] = cached_results
+                    sess[f'split_h{horizon_h}'] = {
+                        'X_tr': X_tr, 'y_tr': y_tr, 'X_te': X_te, 'y_te': y_te,
+                        'idx_tr': idx_tr, 'idx_te': idx_te,
+                    }
+                    out = {}
+                    for name, res in cached_results.items():
+                        if name.startswith('_'):
+                            out[name] = res
+                            continue
+                        if 'error' in res:
+                            out[name] = {'error': res['error']}
+                            continue
+                        out[name] = {
+                            'metrics': numpy_to_python(res['metrics']),
+                            'type': res.get('type', 'ml'),
+                            'feature_importance': res.get('feature_importance', [])[:10],
+                            'cache_hit': True,
+                        }
+                    tasks[task_id]['result'] = out
+                    tasks[task_id]['status'] = 'done'
+                    tasks[task_id]['progress'] = 100
+                    tasks[task_id]['message'] = 'Training loaded from cache'
+                    return
+
                 def cb(pct, msg):
                     tasks[task_id]['progress'] = pct
                     tasks[task_id]['message'] = msg
@@ -528,6 +652,7 @@ def create_app():
                                           enabled_models=enabled_models)
                 arena_store[sid] = arena
                 sess[f'results_h{horizon_h}'] = results
+                cache_set('model_results', results, *train_parts)
                 sess[f'split_h{horizon_h}'] = {
                     'X_tr': X_tr, 'y_tr': y_tr, 'X_te': X_te, 'y_te': y_te,
                     'idx_tr': idx_tr, 'idx_te': idx_te,
@@ -852,17 +977,29 @@ def create_app():
 
         try:
             df = sess['df']
-            result = {
-                'overview':     numpy_to_python(compute_site_overview(
-                                    df, ws_col, wd_col, temp_col, pres_col)),
-                'rose':         numpy_to_python(compute_wind_rose(df, ws_col, wd_col)),
-                'diurnal':      numpy_to_python(compute_diurnal_profile(df, ws_col)),
-                'climatology':  numpy_to_python(compute_monthly_climatology(df, ws_col)),
-                'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
-                'histogram':    numpy_to_python(compute_histogram(df, ws_col)),
-                'sectors':      numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
-                'month_hour_heatmap': numpy_to_python(compute_month_hour_heatmap(df, col=ws_col)),
+            params = {
+                'ws_col': ws_col, 'wd_col': wd_col,
+                'temp_col': temp_col, 'pres_col': pres_col,
             }
+            cache_parts = ('wind-stats-v1', _df_cache_signature(sess, params))
+
+            def compute_stats():
+                with timed('wind stats', logger):
+                    return {
+                        'overview':     numpy_to_python(compute_site_overview(
+                                            df, ws_col, wd_col, temp_col, pres_col)),
+                        'rose':         numpy_to_python(compute_wind_rose(df, ws_col, wd_col)),
+                        'diurnal':      numpy_to_python(compute_diurnal_profile(df, ws_col)),
+                        'climatology':  numpy_to_python(compute_monthly_climatology(df, ws_col)),
+                        'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
+                        'histogram':    numpy_to_python(compute_histogram(df, ws_col)),
+                        'sectors':      numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
+                        'month_hour_heatmap': numpy_to_python(compute_month_hour_heatmap(df, col=ws_col)),
+                    }
+
+            result, cache_hit = get_or_compute('wind_stats', cache_parts, compute_stats)
+            result = dict(result)
+            result['cache_hit'] = bool(cache_hit)
             sess['wind_stats'] = result
             return jsonify(result)
         except Exception as e:
@@ -2141,7 +2278,13 @@ def create_app():
                 vals = values
             else:
                 vals = np.asarray(values, dtype=float)
-            stats = base_year_stats(vals)
+            stats, stats_hit = get_or_compute(
+                'market_stats',
+                ('base-year-stats-v1', _array_cache_signature(vals, {'category': 'demand', 'key': key})),
+                lambda: base_year_stats(vals),
+            )
+            stats = dict(stats)
+            stats['cache_hit'] = bool(stats_hit)
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta, 'stats': stats,
                 'sample_first_24h': vals[:24].tolist(),
@@ -2326,8 +2469,20 @@ def create_app():
                 vals = np.asarray(pml_data if isinstance(pml_data, np.ndarray) else pml_data, dtype=float)
                 compra = venta = vals
 
-            stats_compra = base_year_stats(compra)
-            stats_venta  = base_year_stats(venta)
+            stats_compra, hit_compra = get_or_compute(
+                'market_stats',
+                ('base-year-stats-v1', _array_cache_signature(compra, {'category': 'pml', 'key': key, 'side': 'compra'})),
+                lambda: base_year_stats(compra),
+            )
+            stats_venta, hit_venta = get_or_compute(
+                'market_stats',
+                ('base-year-stats-v1', _array_cache_signature(venta, {'category': 'pml', 'key': key, 'side': 'venta'})),
+                lambda: base_year_stats(venta),
+            )
+            stats_compra = dict(stats_compra)
+            stats_venta = dict(stats_venta)
+            stats_compra['cache_hit'] = bool(hit_compra)
+            stats_venta['cache_hit'] = bool(hit_venta)
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta,
                 'stats_compra': stats_compra,
