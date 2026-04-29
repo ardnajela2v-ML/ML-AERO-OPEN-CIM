@@ -2051,6 +2051,11 @@ def create_app():
             
             # Agregar anualmente (promedio)
             annual_df = df.resample('YE').mean().dropna()
+            
+            # Filtrar desde 1998: la crisis del 94-95 (TIIE >75%) distorsiona
+            # los modelos de tendencia. Post-1998 = era de estabilidad Banxico.
+            annual_df = annual_df[annual_df.index.year >= 1998]
+            
             years = annual_df.index.year.values
             values = annual_df[col_name].values
             
