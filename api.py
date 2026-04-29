@@ -2162,4 +2162,114 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/api/wind/annual_forecast', methods=['POST'])
+    def wind_annual_forecast():
+        """Proyecta velocidad media anual del viento a 25 años a partir de la
+        serie cargada en sesión. Si hay >=2 años de histórico, usa la media
+        anual real; si no, sintetiza una historia con growth_seed pequeño."""
+        body = request.get_json(silent=True) or {}
+        sid     = _require_sid(body)
+        ws_col  = body.get('ws_col', 'wind_speed')
+        growth  = float(body.get('growth', 0.005))
+        horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
+        hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
+        models  = body.get('models')
+
+        sess = get_session(sid)
+        if 'df' not in sess:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        try:
+            import core.forecasting as fc
+            df = sess['df']
+            if ws_col not in df.columns:
+                ws_col = sess.get('target_col', 'wind_speed')
+            if ws_col not in df.columns:
+                return jsonify({'error': f'Columna {ws_col} no encontrada'}), 400
+
+            series = pd.to_numeric(df[ws_col], errors='coerce').dropna()
+            if len(series) == 0:
+                return jsonify({'error': 'Serie de viento vacía'}), 400
+
+            # Determinar año base (último timestamp si hay índice temporal)
+            try:
+                idx = pd.to_datetime(df.index)
+                base_year = int(idx.year.max())
+            except Exception:
+                base_year = 2024
+
+            # Si hay >=2 años reales, usar promedio anual real
+            try:
+                idx = pd.to_datetime(df.index)
+                ser = pd.Series(series.values, index=idx[:len(series)])
+                annual_real = ser.resample('YE').mean().dropna()
+                if len(annual_real) >= 2:
+                    years_rel = np.arange(len(annual_real))
+                    annual_hist = annual_real.values
+                    base_year = int(annual_real.index.year.max())
+                    use_real = True
+                else:
+                    use_real = False
+            except Exception:
+                use_real = False
+
+            if not use_real:
+                base_mean = float(np.nanmean(series.values))
+                rng = np.random.default_rng(42)
+                years_rel = np.arange(hist_y + 1)
+                factors = np.array([(1.0 + growth) ** (y - hist_y) for y in years_rel])
+                noise = rng.normal(0, 0.02, size=len(years_rel))
+                annual_hist = base_mean * factors * (1.0 + noise)
+
+            fitted = fc.fit_all_trend_models(years_rel, annual_hist, models=models)
+            projection = fc.project_25_years(
+                series.values, fitted,
+                horizon_years=horizon, base_year_label=base_year
+            )
+            best = fc.best_trend_model(fitted)
+
+            summary = []
+            for k, m in fitted.items():
+                if 'error' in m:
+                    summary.append({'model': k, 'error': m['error']}); continue
+                proj = projection.get(k, {})
+                summary.append({
+                    'model': k,
+                    'kind':  m.get('kind'),
+                    'r2':    m['metrics'].get('r2'),
+                    'rmse':  m['metrics'].get('rmse'),
+                    'mape':  m['metrics'].get('mape'),
+                    'cagr':  proj.get('cagr'),
+                    'final': proj.get('annual', [None])[-1] if proj.get('annual') else None,
+                })
+
+            for m in fitted.values(): m.pop('_predict', None)
+
+            base_value = float(np.nanmean(series.values))
+            stats_summary = {
+                'mean':   base_value,
+                'std':    float(np.nanstd(series.values)),
+                'min':    float(np.nanmin(series.values)),
+                'max':    float(np.nanmax(series.values)),
+                'p10':    float(np.nanpercentile(series.values, 10)),
+                'p90':    float(np.nanpercentile(series.values, 90)),
+                'n_hours': int(len(series)),
+                'used_real_annual': bool(use_real),
+            }
+
+            return jsonify(numpy_to_python({
+                'horizon_years': horizon,
+                'growth_seed':   growth,
+                'history_years': [int(base_year - len(annual_hist) + 1 + i) for i in range(len(annual_hist))],
+                'history_annual': [float(v) for v in annual_hist],
+                'fitted': fitted, 'projection': projection,
+                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'best_model': best,
+                'stats': stats_summary,
+                'unit': 'm/s',
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
     return app
