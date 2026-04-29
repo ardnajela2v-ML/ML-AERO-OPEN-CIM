@@ -171,6 +171,133 @@
     </div>
   </div>
 
+  <!-- ═══ DATOS DE MERCADO ═══════════════════════════════════════════════════ -->
+  <div class="card mt-3" id="market-data-panel">
+    <div class="card-header">
+      <span class="card-title">Datos de Mercado (Demanda, PML, Tasas, FX)</span>
+      <span class="badge badge--info" id="market-file-count">Cargando…</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable de mercado. Se usarán como datos reales en Model Arena y Forecast Studio.</p>
+
+      <!-- DEMANDA -->
+      <div class="market-data-row mb-3" style="border-left:3px solid var(--accent);padding-left:12px;">
+        <div class="form-grid-4" style="align-items:end">
+          <div style="grid-column:span 2">
+            <label class="form-label">Demanda Eléctrica (MW)</label>
+            <select class="form-select" id="market-demand-select" style="width:100%">
+              <option value="">— Selecciona archivo de demanda —</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn-primary" id="btn-load-market-demand">Cargar</button>
+          </div>
+          <div>
+            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
+              Subir archivo
+              <input type="file" id="market-demand-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+            </label>
+          </div>
+        </div>
+        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
+          <span class="badge badge--warn" id="market-demand-badge" style="display:none"></span>
+          <span class="text-muted" id="market-demand-info" style="font-size:.75rem">Sin datos cargados</span>
+        </div>
+      </div>
+
+      <!-- PML -->
+      <div class="market-data-row mb-3" style="border-left:3px solid #f59e0b;padding-left:12px;">
+        <div class="form-grid-4" style="align-items:end">
+          <div style="grid-column:span 2">
+            <label class="form-label">PML — Precio Marginal Local ($/kWh)</label>
+            <select class="form-select" id="market-pml-select" style="width:100%">
+              <option value="">— Selecciona archivo de PML —</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn-primary" id="btn-load-market-pml">Cargar</button>
+          </div>
+          <div>
+            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
+              Subir archivo
+              <input type="file" id="market-pml-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+            </label>
+          </div>
+        </div>
+        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
+          <span class="badge badge--warn" id="market-pml-badge" style="display:none"></span>
+          <span class="text-muted" id="market-pml-info" style="font-size:.75rem">Sin datos cargados</span>
+        </div>
+      </div>
+
+      <!-- TASA DE INTERÉS -->
+      <div class="market-data-row mb-3" style="border-left:3px solid #8b5cf6;padding-left:12px;">
+        <div class="form-grid-4" style="align-items:end">
+          <div style="grid-column:span 2">
+            <label class="form-label">Tasa de Interés (%)</label>
+            <select class="form-select" id="market-interest-select" style="width:100%">
+              <option value="">— Selecciona archivo de tasa —</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn-primary" id="btn-load-market-interest">Cargar</button>
+          </div>
+          <div>
+            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
+              Subir archivo
+              <input type="file" id="market-interest-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+            </label>
+          </div>
+        </div>
+        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
+          <span class="badge badge--warn" id="market-interest-badge" style="display:none"></span>
+          <span class="text-muted" id="market-interest-info" style="font-size:.75rem">Sin datos cargados</span>
+        </div>
+      </div>
+
+      <!-- TIPO DE CAMBIO -->
+      <div class="market-data-row mb-3" style="border-left:3px solid #10b981;padding-left:12px;">
+        <div class="form-grid-4" style="align-items:end">
+          <div style="grid-column:span 2">
+            <label class="form-label">Tipo de Cambio USD/MXN</label>
+            <select class="form-select" id="market-fx-select" style="width:100%">
+              <option value="">— Selecciona archivo de tipo de cambio —</option>
+            </select>
+          </div>
+          <div>
+            <button class="btn-primary" id="btn-load-market-fx">Cargar</button>
+          </div>
+          <div>
+            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
+              Subir archivo
+              <input type="file" id="market-fx-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+            </label>
+          </div>
+        </div>
+        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
+          <span class="badge badge--warn" id="market-fx-badge" style="display:none"></span>
+          <span class="text-muted" id="market-fx-info" style="font-size:.75rem">Sin datos cargados</span>
+        </div>
+      </div>
+
+      <!-- Vista previa de datos de mercado -->
+      <div class="grid-2 mt-2">
+        <div class="card">
+          <div class="card-header"><span class="card-title">Vista Previa — Dato de Mercado</span></div>
+          <div class="card-body" style="height:200px;">
+            <canvas id="market-preview-chart"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Estadísticos</span></div>
+          <div class="card-body">
+            <div id="market-stats-grid" class="meta-grid"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </section>
 
 <!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->

@@ -108,7 +108,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindHybrid();
   bindTechno();
   bindExport();
+  bindMarketDataHub();
   await loadPresetFiles();   // populate preset file dropdown
+  await loadMarketFiles();   // populate market data selectors
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   setStatus('Plataforma iniciada — selecciona un parque eólico o carga tu archivo.');
 });
@@ -6016,4 +6018,166 @@ function renderRawHourlyProfile(rawValues, key, unit) {
       }
     }
   });
+}
+
+// ─── MARKET DATA HUB ─────────────────────────────────────────────────────────
+
+const MARKET_CATS = ['demand', 'pml', 'interest', 'fx'];
+const MARKET_LABELS = {
+  demand: 'Demanda', pml: 'PML', interest: 'Tasa de Interés', fx: 'Tipo de Cambio'
+};
+
+async function loadMarketFiles() {
+  try {
+    const r = await api('/api/market/list_files', 'GET');
+    const badge = document.getElementById('market-file-count');
+    badge.textContent = `${r.count} archivos`;
+
+    MARKET_CATS.forEach(cat => {
+      const sel = document.getElementById(`market-${cat}-select`);
+      if (!sel) return;
+      const files = (r.grouped && r.grouped[cat]) || [];
+      // Preserve the default empty option
+      sel.innerHTML = sel.options[0] ? sel.options[0].outerHTML : '';
+      files.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f.filename;
+        opt.textContent = `${f.filename}  (${f.size_kb} KB)`;
+        sel.appendChild(opt);
+      });
+    });
+  } catch (e) {
+    const badge = document.getElementById('market-file-count');
+    if (badge) badge.textContent = 'Error';
+  }
+}
+
+function bindMarketDataHub() {
+  MARKET_CATS.forEach(cat => {
+    // Load button
+    const btn = document.getElementById(`btn-load-market-${cat}`);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const sel = document.getElementById(`market-${cat}-select`);
+        if (!sel || !sel.value) { toast('Selecciona un archivo primero', 'warn'); return; }
+        loadMarketFile(cat, sel.value);
+      });
+    }
+    // Upload input
+    const uploadInput = document.getElementById(`market-${cat}-upload`);
+    if (uploadInput) {
+      uploadInput.addEventListener('change', () => {
+        if (uploadInput.files[0]) uploadMarketFile(cat, uploadInput.files[0]);
+      });
+    }
+  });
+}
+
+async function loadMarketFile(category, filename) {
+  setStatus(`Cargando ${filename}…`);
+  try {
+    const r = await api('/api/market/load_file', 'POST', {
+      session_id: WP.sessionId,
+      filename: filename,
+      category: category,
+    });
+    _renderMarketResult(category, r);
+    toast(`${MARKET_LABELS[category]}: ${r.filename} cargado — ${r.n_rows.toLocaleString()} registros`, 'success');
+    setStatus(`${MARKET_LABELS[category]} listo: ${r.filename}`);
+  } catch (e) {
+    toast(`Error cargando ${filename}: ${e.message}`, 'error');
+    setStatus('Error al cargar datos de mercado.');
+  }
+}
+
+async function uploadMarketFile(category, file) {
+  setStatus(`Subiendo ${file.name}…`);
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('session_id', WP.sessionId);
+  fd.append('category', category);
+  try {
+    const r = await apiFD('/api/market/upload', fd);
+    _renderMarketResult(category, r);
+    // Reload file list so the new file appears in the selector
+    await loadMarketFiles();
+    toast(`${MARKET_LABELS[category]}: ${r.filename} subido — ${r.n_rows.toLocaleString()} registros`, 'success');
+    setStatus(`${MARKET_LABELS[category]} listo: ${r.filename}`);
+  } catch (e) {
+    toast(`Error subiendo ${file.name}: ${e.message}`, 'error');
+    setStatus('Error al subir archivo de mercado.');
+  }
+}
+
+function _renderMarketResult(category, r) {
+  // Badge
+  const badge = document.getElementById(`market-${category}-badge`);
+  if (badge) {
+    badge.textContent = `${r.n_rows.toLocaleString()} registros`;
+    badge.style.display = '';
+  }
+  // Info text
+  const info = document.getElementById(`market-${category}-info`);
+  if (info) {
+    const meta = r.meta || {};
+    const parts = [r.filename];
+    if (meta.date_range) parts.push(`${meta.date_range[0]?.substring(0,10)} → ${meta.date_range[1]?.substring(0,10)}`);
+    parts.push(`${r.n_rows.toLocaleString()} registros`);
+    info.textContent = parts.join(' · ');
+  }
+
+  // Chart preview
+  if (r.chart && r.chart.values) {
+    const ctx = document.getElementById('market-preview-chart');
+    if (ctx) {
+      if (WP.charts['market-preview']) WP.charts['market-preview'].destroy();
+      const step = Math.max(1, Math.floor(r.chart.values.length / 1500));
+      const vals = r.chart.values.filter((_, i) => i % step === 0);
+      const labels = vals.map((_, i) => i * step);
+      WP.charts['market-preview'] = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: r.chart.label || MARKET_LABELS[category],
+            data: vals,
+            borderColor: acc(),
+            borderWidth: 1.2,
+            pointRadius: 0,
+            fill: false,
+          }]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: true, position: 'top' } },
+          scales: {
+            x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 10, font: { size: 9 } } },
+            y: { grid: { color: gridColor() }, title: { display: true, text: (r.meta && r.meta.unit) || '' }, ticks: { font: { size: 9 } } },
+          }
+        }
+      });
+    }
+  }
+
+  // Stats grid
+  const statsGrid = document.getElementById('market-stats-grid');
+  if (statsGrid && r.stats) {
+    const s = r.stats.compra ? r.stats.compra : r.stats;  // Use compra for PML, or the stats directly
+    const items = [
+      ['Registros', s.n_hours?.toLocaleString() || r.n_rows?.toLocaleString()],
+      ['Media', s.mean?.toFixed(4)],
+      ['Desv. Est.', s.std?.toFixed(4)],
+      ['Mín', s.min?.toFixed(4)],
+      ['Máx', s.max?.toFixed(4)],
+      ['P10', s.p10?.toFixed(4)],
+      ['P90', s.p90?.toFixed(4)],
+      ['Factor de carga', s.load_factor?.toFixed(3)],
+    ];
+    statsGrid.innerHTML = items.map(([label, val]) =>
+      `<div class="meta-item"><div class="meta-item-label">${label}</div><div class="meta-item-val">${val ?? '—'}</div></div>`
+    ).join('');
+  }
+
+  // Store in WP for later use by Model Arena / Forecast Studio
+  WP.arenaCache[`market_${category}`] = r;
 }
