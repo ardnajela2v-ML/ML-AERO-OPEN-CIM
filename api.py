@@ -64,7 +64,9 @@ from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
 from core.site_catalog import get_site_info
 from core.kriging import (parse_coords_from_filename, read_wind_file,
                           site_wind_stats, kriging_grid, analyze_sites,
-                          legacy_three_maps)
+                          legacy_three_maps, parallel_read_sites,
+                          _compute_site_stats_cached, clear_site_stats_cache,
+                          _haversine_km)
 from core.farm import simulate_wind_farm, jensen_deficit, dominant_direction
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
@@ -1227,11 +1229,13 @@ def create_app():
         """
         Build a multi-variable resource grid centred on a session site (or an
         arbitrary lat/lon) using Ordinary Kriging across all sites within
-        ``radius_km``. Returns 4 grids in one shot (speed/power/AEP/CF) plus
-        the per-site values, so the frontend can switch variables instantly.
+        radius_km. Returns 4 grids in one shot (speed/power/AEP/CF) plus
+        the per-site values.
+
+        OPTIMIZADO: lee archivos en paralelo (ThreadPool, 6 workers) y usa
+        cache mtime-aware. Segunda llamada ~instantanea (O(n) vs O(n*IO)).
         """
         from math import gamma as _gamma
-        from core.kriging import _haversine_km
         from scipy.stats import weibull_min as _wbl
 
         body = request.get_json(silent=True) or {}
@@ -1265,7 +1269,8 @@ def create_app():
         A_rotor = np.pi * (rotor_m ** 2) / 4
         p_kw    = np.minimum(0.5 * 1.225 * A_rotor * cp * v_arr ** 3 / 1000.0, p_nom_kw)
 
-        sites = []
+        # 1. Filtrar por radio (solo parse de nombre, sin IO de disco)
+        candidate_paths = []
         for fn in sorted(os.listdir(folder)):
             if fn.startswith('.') or not fn.lower().endswith('.txt'):
                 continue
@@ -1275,40 +1280,50 @@ def create_app():
             lat, lon = coords
             if _haversine_km(lat, lon, cen_lat, cen_lon) > radius_km:
                 continue
-            try:
-                site  = read_wind_file(os.path.join(folder, fn), year=year)
-                if site['n'] < 24:
-                    continue
-                stats = site_wind_stats(site)
-                if stats is None:
-                    continue
-            except Exception:
+            candidate_paths.append(os.path.join(folder, fn))
+
+        if not candidate_paths:
+            return jsonify({'error': f'Sin archivos .txt en radio {radius_km} km'}), 400
+
+        # 2. Leer en paralelo con cache mtime-aware (I/O bound -> ThreadPool)
+        stat_list = parallel_read_sites(candidate_paths, year=year)
+
+        # 3. Calcular AEP/CF por sitio (vectorial, rapido)
+        sites = []
+        for path, stats in zip(candidate_paths, stat_list):
+            if stats is None or stats['_n'] < 24:
                 continue
-            C, K, rho = stats['weibull_C'], stats['weibull_K'], stats['rho_mean']
+            fn  = os.path.basename(path)
+            C   = stats['weibull_C']
+            K   = stats['weibull_K']
+            rho = stats['rho_mean']
             try:
-                pdf = _wbl.pdf(v_arr, K, scale=C)
+                pdf     = _wbl.pdf(v_arr, K, scale=C)
                 aep_kwh = float(np.trapz(p_kw * pdf, v_arr) * 8760)
                 pd_wm2  = 0.5 * rho * (C ** 3) * _gamma(1 + 3 / max(K, 0.1))
             except Exception:
                 aep_kwh, pd_wm2 = 0.0, 0.0
             cf_pct = 100.0 * aep_kwh / (p_nom_kw * 8760) if p_nom_kw > 0 else 0.0
             sites.append({
-                'filename': fn, 'lat': lat, 'lon': lon,
-                'speed': float(stats['v_mean']),
-                'power': float(pd_wm2),
-                'aep':   float(aep_kwh / 1000.0),    # MWh/year
-                'cf':    float(cf_pct),
-                'weibull_C': float(C), 'weibull_K': float(K),
+                'filename':  fn,
+                'lat':       stats['_lat'],
+                'lon':       stats['_lon'],
+                'speed':     float(stats['v_mean']),
+                'power':     float(pd_wm2),
+                'aep':       float(aep_kwh / 1000.0),
+                'cf':        float(cf_pct),
+                'weibull_C': float(C),
+                'weibull_K': float(K),
             })
 
         if len(sites) < 3:
             return jsonify({'error':
-                f'Necesitas ≥3 sitios en {radius_km} km del centro (hay {len(sites)})'}), 400
+                f'Necesitas ≥ 3 sitios en {radius_km} km del centro (hay {len(sites)})'}), 400
 
         lats = [s['lat'] for s in sites]
         lons = [s['lon'] for s in sites]
 
-        units = {'speed': 'm/s', 'power': 'W/m²', 'aep': 'MWh/año', 'cf': '%'}
+        units  = {'speed': 'm/s', 'power': 'W/m²', 'aep': 'MWh/año', 'cf': '%'}
         titles = {
             'speed': 'Velocidad media @ hub (m/s)',
             'power': 'Densidad de potencia (W/m²)',
@@ -1329,14 +1344,14 @@ def create_app():
 
         bounds = grids['speed']['bounds']
         return jsonify(numpy_to_python({
-            'center':  {'lat': cen_lat, 'lon': cen_lon},
+            'center':    {'lat': cen_lat, 'lon': cen_lon},
             'radius_km': radius_km,
-            'n_sites': len(sites),
-            'sites':   sites,
-            'bounds':  bounds,
-            'grids':   grids,
-            'p_nom_kw': p_nom_kw,
-            'rotor_m':  rotor_m,
+            'n_sites':   len(sites),
+            'sites':     sites,
+            'bounds':    bounds,
+            'grids':     grids,
+            'p_nom_kw':  p_nom_kw,
+            'rotor_m':   rotor_m,
         }))
 
     @app.route('/api/farm/wake_profile', methods=['POST'])
@@ -1544,49 +1559,54 @@ def create_app():
     # ─── KRIGING & MULTI-SITE ─────────────────────────────────────────────────
     @app.route('/api/kriging/sites', methods=['GET'])
     def kriging_list_sites():
-        """Scan the meteorological folder and return sites with parsed coords + quick Weibull stats."""
+        """Escanea la carpeta meteorologica y devuelve sitios con stats Weibull.
+        OPTIMIZADO: cache mtime-aware + lectura en paralelo (ThreadPool).
+        """
         folder = Config.DATA_FOLDER
         year = request.args.get('year', type=int)
         if not os.path.isdir(folder):
             return jsonify({'error': f'DATA_FOLDER not found: {folder}'}), 404
 
-        sites = []
-        skipped = []
+        # 1. Listar y filtrar nombres validos (sin IO)
+        candidate_paths = []
+        skipped_names   = []
         for fname in _cached_list_files(folder):
             if not fname.lower().endswith('.txt'):
                 continue
-            path = os.path.join(folder, fname)
-            coords = parse_coords_from_filename(fname)
-            if coords is None:
+            if parse_coords_from_filename(fname) is None:
+                skipped_names.append(fname)
+                continue
+            candidate_paths.append(os.path.join(folder, fname))
+
+        # 2. Leer en paralelo con cache
+        stat_list = parallel_read_sites(candidate_paths, year=year)
+
+        sites   = []
+        skipped = list(skipped_names)
+        for path, stats in zip(candidate_paths, stat_list):
+            fname = os.path.basename(path)
+            if stats is None or stats['_n'] < 24:
                 skipped.append(fname)
                 continue
-            try:
-                site = read_wind_file(path, year=year)
-                if site['n'] < 24:
-                    skipped.append(fname)
-                    continue
-                stats = site_wind_stats(site)
-                krig_info = get_site_info(fname)
-                sites.append({
-                    'filename':     fname,
-                    'display_name': krig_info['display_name'],
-                    'state':        krig_info['state'],
-                    'municipality': krig_info['municipality'],
-                    'lat':          site['lat'],
-                    'lon':          site['lon'],
-                    'n_hours':      int(site['n']),
-                    'v_mean':       round(stats['v_mean'], 3),
-                    'v_mean_raw':   round(stats['v_mean_raw'], 3),
-                    'v_max':        round(stats['v_max'], 2),
-                    'weibull_C':    round(stats['weibull_C'], 3),
-                    'weibull_K':    round(stats['weibull_K'], 3),
-                    'rho_mean':     round(stats['rho_mean'], 4),
-                    'source':       ('merra2' if 'MERRA' in fname.upper()
-                                     else 'era5' if 'ERA5' in fname.upper()
-                                     else 'other'),
-                })
-            except Exception as e:
-                skipped.append(f'{fname}: {e}')
+            krig_info = get_site_info(fname)
+            sites.append({
+                'filename':     fname,
+                'display_name': krig_info['display_name'],
+                'state':        krig_info['state'],
+                'municipality': krig_info['municipality'],
+                'lat':          stats['_lat'],
+                'lon':          stats['_lon'],
+                'n_hours':      int(stats['_n']),
+                'v_mean':       round(stats['v_mean'],     3),
+                'v_mean_raw':   round(stats['v_mean_raw'], 3),
+                'v_max':        round(stats['v_max'],      2),
+                'weibull_C':    round(stats['weibull_C'],  3),
+                'weibull_K':    round(stats['weibull_K'],  3),
+                'rho_mean':     round(stats['rho_mean'],   4),
+                'source': ('merra2' if 'MERRA' in fname.upper()
+                           else 'era5' if 'ERA5' in fname.upper()
+                           else 'other'),
+            })
 
         return jsonify({
             'folder':  folder,
