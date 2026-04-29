@@ -5045,8 +5045,8 @@ function renderInterestProjection(fc) {
   datasets.push({
     label: 'Histórico',
     data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
-    borderColor: '#ffffff', backgroundColor: '#ffffff',
-    borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false,
+    borderColor: isLight() ? '#1e293b' : '#ffffff', backgroundColor: isLight() ? '#1e293b' : '#ffffff',
+    borderWidth: 3, pointRadius: 2, pointHoverRadius: 5, fill: false,
     order: 10
   });
 
@@ -5055,9 +5055,9 @@ function renderInterestProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#4ade80' : FC_PALETTE[colorIdx % FC_PALETTE.length];
+    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
-    const lw = isBest ? 3 : 1;
+    const lw = isBest ? 4 : 2;
     const ldash = isBest ? [] : [5, 5];
     const alpha = isBest ? 1.0 : 0.6;
 
@@ -5190,8 +5190,8 @@ function renderFxProjection(fc) {
   datasets.push({
     label: 'Histórico',
     data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
-    borderColor: '#ffffff', backgroundColor: '#ffffff',
-    borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false,
+    borderColor: isLight() ? '#1e293b' : '#ffffff', backgroundColor: isLight() ? '#1e293b' : '#ffffff',
+    borderWidth: 3, pointRadius: 2, pointHoverRadius: 5, fill: false,
     order: 10
   });
 
@@ -5200,9 +5200,9 @@ function renderFxProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#4ade80' : FC_PALETTE[colorIdx % FC_PALETTE.length];
+    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
-    const lw = isBest ? 3 : 1;
+    const lw = isBest ? 4 : 2;
     const ldash = isBest ? [] : [5, 5];
     const alpha = isBest ? 1.0 : 0.6;
 

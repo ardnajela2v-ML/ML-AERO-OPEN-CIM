@@ -228,12 +228,24 @@ def fit_mean_reversion(t, y, target_b=None):
             return r0 * np.exp(-a * t_rel) + b * (1 - np.exp(-a * t_rel))
         
         p0 = [0.1, y[0]]  # a=0.1 (velocidad de reversión), r0=y[0]
-        popt, _ = curve_fit(vasicek_mean, t, y, p0=p0, maxfev=2000)
+        # Restringimos a > 0 para forzar reversión, r0 > 0
+        popt, _ = curve_fit(vasicek_mean, t, y, p0=p0, bounds=([1e-5, 0], [np.inf, np.inf]), maxfev=2000)
         a, r0 = popt
         yhat = vasicek_mean(t, *popt)
         
-        def predictor(tt, popt=popt):
-            return vasicek_mean(tt, *popt)
+        last_t = t[-1]
+        last_y = y[-1]
+        
+        def predictor(tt, a_fit=a, r0_fit=r0, last_y=last_y, last_t=last_t, target_b=b):
+            tt = np.asarray(tt)
+            preds = np.zeros_like(tt, dtype=float)
+            for i, val in enumerate(tt):
+                if val <= last_t:
+                    preds[i] = r0_fit * np.exp(-a_fit * (val - t[0])) + target_b * (1 - np.exp(-a_fit * (val - t[0])))
+                else:
+                    dt = val - last_t
+                    preds[i] = last_y * np.exp(-a_fit * dt) + target_b * (1 - np.exp(-a_fit * dt))
+            return preds
             
         return {'kind': 'mean_reversion',
                 'params': {'a': float(a), 'b': float(b), 'r0': float(r0)},
