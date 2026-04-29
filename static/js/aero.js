@@ -5705,6 +5705,5 @@ function renderRawHourlyProfile(rawValues, key, unit) {
     }
   });
 }
-}
 
 
