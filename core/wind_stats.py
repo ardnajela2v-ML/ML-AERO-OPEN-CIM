@@ -499,16 +499,31 @@ def compute_wind_speed_variability(df, ws_col='wind_speed', ws_bins=None):
         vals = [b['ti_mean'] for b in bins_out if b['ti_mean'] and 8 < b['ws_center'] <= 16]
         ti_15 = float(np.mean(vals)) if vals else None
 
-    # Clasificación IEC excluida: la TI horaria NO es comparable con TI 10-min IEC
     ws_clip    = ws.clip(lower=0.5)
     ti_overall = float((rolling_std / ws_clip).replace([np.inf, -np.inf], np.nan).dropna().mean())
 
+    # Clase IEC proxy — asignada por umbral sobre ti_15ms (IEC 61400-1 Ed.4)
+    # ADVERTENCIA: dato horario reanálisis ≠ TI IEC (requiere 1 Hz / 10-min).
+    # Úsese solo como referencia indicativa con los umbrales normativos.
+    if ti_15 is not None:
+        if   ti_15 <= 0.12: iec_class_proxy = 'C'
+        elif ti_15 <= 0.14: iec_class_proxy = 'B'
+        elif ti_15 <= 0.16: iec_class_proxy = 'A'
+        else:               iec_class_proxy = 'S'   # por encima de clase A
+    else:
+        iec_class_proxy = None
+
     return {
-        'bins':       bins_out,
-        'ti_15ms':    round(ti_15, 4) if ti_15 else None,
-        'ti_class_WARNING_not_IEC': 'N/A: requiere datos 1Hz/10-min',
-        'ti_overall': round(ti_overall, 4),
-        'note':       'Proxy de variabilidad sub-diaria, NO TI IEC 61400-1',
+        'bins':             bins_out,
+        'ti_15ms':          round(ti_15, 4) if ti_15 else None,
+        'ti_overall':       round(ti_overall, 4),
+        'iec_class':        iec_class_proxy,
+        'iec_is_proxy':     True,
+        'note':             (
+            'Proxy de variabilidad inter-horaria (rolling σ 6 h / V̄). '
+            'NO equivale a TI IEC 61400-1 (requiere ≥1 Hz, ventanas 10 min). '
+            'Clase IEC indicativa — supuesto sobre umbrales normativos.'
+        ),
     }
 
 

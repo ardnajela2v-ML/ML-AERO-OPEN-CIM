@@ -2765,17 +2765,21 @@ async function runAdvanced() {
     const _set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
     _set('adv-kpi-ti',    ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
     _set('adv-kpi-ti15',  ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
-    _set('adv-kpi-iec',   ti?.iec_class  || 'N/A');
-    _set('adv-kpi-alpha', sh?.alpha      != null ? sh.alpha.toFixed(3) : '—');
-    _set('adv-kpi-v50',   rp?.v_50year   != null ? rp.v_50year + ' m/s' : '—');
+    // KPI clase IEC con asterisco si es proxy
+    const iecCls   = ti?.iec_class || null;
+    const iecLabel = iecCls ? `Clase ${iecCls}${ti?.iec_is_proxy ? '*' : ''}` : '—';
+    _set('adv-kpi-iec',   iecLabel);
+    _set('adv-kpi-alpha', sh?.alpha != null ? sh.alpha.toFixed(3) : '—');
+    _set('adv-kpi-v50',   rp?.v_50year != null ? rp.v_50year + ' m/s' : '—');
 
     // Badges
-    const iecCls = ti?.iec_class || null;
     const badgeIec = document.getElementById('adv-badge-iec');
     if (badgeIec) {
-      badgeIec.textContent = iecCls ? `IEC Clase ${iecCls}` : 'TI proxy horario';
-      badgeIec.className   = `cbadge ${iecCls === 'A' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
-      badgeIec.title       = ti?.note || r.ti_warning || '';
+      badgeIec.textContent = iecCls
+        ? `IEC ${iecCls}${ti?.iec_is_proxy ? '* (supuesto proxy)' : ''}`
+        : 'TI proxy horario';
+      badgeIec.className = `cbadge ${iecCls === 'A' || iecCls === 'S' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
+      badgeIec.title     = ti?.note || '';
     }
     _set('adv-badge-alpha',  `α = ${sh?.alpha?.toFixed(3) || '—'}`);
     _set('adv-badge-z0',     `z₀ = ${sh?.z0 ?? '—'} m`);
