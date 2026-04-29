@@ -5596,7 +5596,7 @@ function loadForecastFromCache(key) {
   const m = targetCache.fitted[modelName];
   if (!m || m.error) { console.warn(`Forecast Studio: modelo "${modelName}" no disponible`); return; }
 
-  const y_pred = m.fitted_values || m.fitted || [];
+  let y_pred = m.fitted_values || m.fitted || [];
   let y_true = [];
   let labels = [];
 
