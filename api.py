@@ -2051,38 +2051,41 @@ def create_app():
             # Agregar anualmente (promedio)
             annual_df = df.resample('YE').mean().dropna()
             
-            # Filtrar desde 1998: la crisis del 94-95 (TIIE >75%) distorsiona
-            # los modelos de tendencia. Post-1998 = era de estabilidad Banxico.
-            annual_df = annual_df[annual_df.index.year >= 1998]
+            # 1) Serie completa para la gráfica (histórico)
+            years_full = annual_df.index.year.values
+            values_full = annual_df[col_name].values
             
-            years = annual_df.index.year.values
-            values = annual_df[col_name].values
+            # 2) Serie de entrenamiento (desde 2001) para evitar que
+            # la crisis distorsione la pendiente de los modelos
+            train_df = annual_df[annual_df.index.year >= 2001]
+            years_train = train_df.index.year.values
+            values_train = train_df[col_name].values
             
-            # Años relativos t=0..N
-            t = years - years[0]
+            # Años relativos t=0..N para entrenamiento
+            t_train = years_train - years_train[0]
             
             import core.forecasting as fc
             
             # Ajustar todos los modelos (Vasicek usa media histórica automáticamente)
-            fitted = fc.fit_all_trend_models(t, values, models=models)
+            fitted = fc.fit_all_trend_models(t_train, values_train, models=models)
             
             # Si mean_reversion está, re-ajustarlo con predict limpio para JSON
             if 'mean_reversion' in fitted and '_predict' not in fitted.get('mean_reversion', {}):
-                mr = fc.fit_mean_reversion(t, values)  # sin target_b = usa media histórica
+                mr = fc.fit_mean_reversion(t_train, values_train)  # sin target_b = usa media histórica
                 yhat = mr['fitted']
                 fitted['mean_reversion'] = {
                     'kind': mr['kind'],
                     'params': mr['params'],
                     'metrics': {
-                        'r2': fc._r2(values, yhat),
-                        'rmse': fc._rmse(values, yhat),
-                        'mape': fc._mape(values, yhat)
+                        'r2': fc._r2(values_train, yhat),
+                        'rmse': fc._rmse(values_train, yhat),
+                        'mape': fc._mape(values_train, yhat)
                     },
                     '_predict': mr['predict'],
                     'fitted': [float(x) for x in yhat],
                 }
             
-            projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
+            projection = fc.project_25_years(values_train, fitted, horizon_years=horizon, base_year_label=years_train[-1])
             best = fc.best_trend_model(fitted)
             
             summary = []
@@ -2102,8 +2105,8 @@ def create_app():
             
             return jsonify(numpy_to_python({
                 'preset': key, 'horizon_years': horizon,
-                'history_years': [int(y) for y in years],
-                'history_annual': [float(v) for v in values],
+                'history_years': [int(y) for y in years_full],
+                'history_annual': [float(v) for v in values_full],
                 'fitted': fitted, 'projection': projection,
                 'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                 'best_model': best,
