@@ -763,6 +763,10 @@ function populateOverviewModelTable(rows) {
 // ─── FORECAST STUDIO ─────────────────────────────────────────────────────────
 function bindForecastStudio() {
   document.getElementById('btn-load-forecast').addEventListener('click', loadForecast);
+  ['wind', 'demand', 'demand_hourly', 'pml', 'pml_hourly', 'interest', 'fx'].forEach(key => {
+    const btn = document.getElementById(`btn-download-fs-${key}-future`);
+    if (btn) btn.addEventListener('click', () => downloadForecastFutureCsv(key));
+  });
 }
 
 async function loadForecast() {
@@ -780,6 +784,7 @@ async function loadForecast() {
     renderResidualHistogram(r, 'fs-wind');
     renderStabilityChart(r.stability || [], 'fs-wind');
     renderBinnedBiasChart(r, 'fs-wind');
+    renderForecastFutureChart('wind');
     renderForecastMetricPills(r.metrics, 'fs-wind');
     updateCalibration(r.calibration);
     populateValidationMetrics(r.metrics);
@@ -788,6 +793,139 @@ async function loadForecast() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   }
+}
+
+function getPmlForecastStudioSide(cache) {
+  if (!cache?.sides) return { sideKey: null, sideCache: null };
+  const selectedSide = document.getElementById('pml-side')?.value;
+  const sideKey = selectedSide && selectedSide !== 'both' && cache.sides[selectedSide]
+    ? selectedSide
+    : (cache.sides.venta ? 'venta' : Object.keys(cache.sides)[0]);
+  return { sideKey, sideCache: cache.sides[sideKey] };
+}
+
+function getForecastFutureConfig(key) {
+  if (key === 'wind') {
+    const fc = WP.arenaCache.wind;
+    if (!fc?.projection) return null;
+    return {
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Velocidad media anual (m/s)', unitLabel: 'm/s', decimals: 2,
+      scaler: v => v, filename: 'forecast_studio_wind_future_25y.csv',
+      source: 'wind',
+    };
+  }
+
+  if (key === 'demand' || key === 'demand_hourly') {
+    const fc = WP.arenaCache.demand;
+    if (!fc?.projection) return null;
+    return {
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Energía anual (GWh)', unitLabel: 'GWh', decimals: 1,
+      scaler: v => v / 1000, filename: `forecast_studio_${key}_future_25y.csv`,
+      source: key,
+    };
+  }
+
+  if (key === 'pml' || key === 'pml_hourly') {
+    const fc = WP.arenaCache.pml;
+    const { sideKey, sideCache } = getPmlForecastStudioSide(fc);
+    if (!sideCache?.projection) return null;
+    return {
+      projection: sideCache.projection, bestModel: sideCache.best_model,
+      ylabel: `PML anual ($/kWh) — ${sideKey}`, unitLabel: '$/kWh', decimals: 4,
+      scaler: v => v, filename: `forecast_studio_${key}_${sideKey}_future_25y.csv`,
+      source: `${key}_${sideKey}`,
+    };
+  }
+
+  if (key === 'interest') {
+    const fc = WP.arenaCache.interest;
+    if (!fc?.projection) return null;
+    return {
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Tasa (%)', unitLabel: '%', decimals: 2,
+      scaler: v => v, filename: 'forecast_studio_interest_future_25y.csv',
+      source: 'interest',
+    };
+  }
+
+  if (key === 'fx') {
+    const fc = WP.arenaCache.fx;
+    if (!fc?.projection) return null;
+    return {
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'MXN / USD', unitLabel: 'MXN/USD', decimals: 2,
+      scaler: v => v, filename: 'forecast_studio_fx_future_25y.csv',
+      source: 'fx',
+    };
+  }
+
+  return null;
+}
+
+function renderForecastFutureChart(key) {
+  const prefix = `fs-${key}`;
+  const cfg = getForecastFutureConfig(key);
+  const badge = document.getElementById(`${prefix}-future-badge`);
+  const btn = document.getElementById(`btn-download-${prefix}-future`);
+  const canvasId = `${prefix}-future-chart`;
+
+  if (!cfg) {
+    destroyChart(canvasId);
+    if (badge) badge.textContent = 'Entrena el modelo para generar futuro';
+    if (btn) btn.disabled = true;
+    return;
+  }
+
+  renderArena25Years({
+    canvasId, badgeId: `${prefix}-future-badge`,
+    projection: cfg.projection, bestModel: cfg.bestModel,
+    ylabel: cfg.ylabel, scaler: cfg.scaler,
+    decimals: cfg.decimals, unitLabel: cfg.unitLabel,
+  });
+  if (btn) btn.disabled = false;
+}
+
+function buildForecastFutureCsv(key) {
+  const cfg = getForecastFutureConfig(key);
+  if (!cfg) return '';
+  const rows = [['subtab', 'modelo', 'best_model', 'year', 'predicted', 'unit', 'ci_low', 'ci_high', 'cagr']];
+  for (const [model, proj] of Object.entries(cfg.projection || {})) {
+    if (!proj || proj.error || !proj.years?.length) continue;
+    proj.years.forEach((year, i) => {
+      rows.push([
+        cfg.source,
+        model,
+        model === cfg.bestModel ? 'yes' : 'no',
+        year,
+        cfg.scaler(proj.annual?.[i]),
+        cfg.unitLabel,
+        proj.ci_low?.[i] != null ? cfg.scaler(proj.ci_low[i]) : '',
+        proj.ci_high?.[i] != null ? cfg.scaler(proj.ci_high[i]) : '',
+        proj.cagr ?? '',
+      ]);
+    });
+  }
+  return rows.map(row => row.map(v => {
+    const s = v == null ? '' : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(',')).join('\n');
+}
+
+function downloadForecastFutureCsv(key) {
+  const cfg = getForecastFutureConfig(key);
+  if (!cfg) {
+    toast('Primero entrena o carga la proyección del subtab.', 'warn');
+    return;
+  }
+  const csv = buildForecastFutureCsv(key);
+  if (!csv) {
+    toast('No hay datos futuros para descargar.', 'warn');
+    return;
+  }
+  downloadText(csv, cfg.filename);
+  toast(`Descargado: ${cfg.filename}`, 'success');
 }
 
 function renderForecastMainChart(r, prefix='fs-wind') {
@@ -4698,7 +4836,7 @@ function bindDemandArena() {
 async function runDemandArena() {
   const preset = document.getElementById('dem-preset').value;
   const growth = parseFloat(document.getElementById('dem-growth').value || '0.025');
-  const horizon = parseInt(document.getElementById('dem-horizon').value || '25');
+  const horizon = Math.max(25, parseInt(document.getElementById('dem-horizon').value || '25'));
   const models = fcGetSelectedModels('dem-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
@@ -4716,6 +4854,8 @@ async function runDemandArena() {
       session_id: WP.sessionId, preset, growth, horizon, models
     });
     WP.arenaCache.demand = fc;
+    renderForecastFutureChart('demand');
+    renderForecastFutureChart('demand_hourly');
     renderDemandProjection(fc, baseInfo.meta);
     // Predicción continua (histórico + proyección)
     const baseYear = new Date().getFullYear();
@@ -4759,6 +4899,15 @@ async function runDemandArenaHourly() {
       session_id: WP.sessionId, preset, models
     });
     WP.arenaCache.demand_hourly = fc;
+
+    const growth = parseFloat(document.getElementById('dem-growth').value || '0.025');
+    const horizon = Math.max(25, parseInt(document.getElementById('dem-horizon').value || '25'));
+    const annualFc = await api('/api/demand/forecast', 'POST', {
+      session_id: WP.sessionId, preset, growth, horizon, models
+    });
+    WP.arenaCache.demand = annualFc;
+    renderForecastFutureChart('demand');
+    renderForecastFutureChart('demand_hourly');
     toast('Perfil horario ajustado. Ve al Forecast Studio.', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
@@ -4926,6 +5075,8 @@ function bindPMLArena() {
     sideSelect.addEventListener('change', () => {
       if (WP.arenaCache.pml) populateForecastStudioSelect('pml');
       if (WP.arenaCache.pml_hourly) populateForecastStudioSelect('pml_hourly');
+      renderForecastFutureChart('pml');
+      renderForecastFutureChart('pml_hourly');
     });
   }
 }
@@ -4934,7 +5085,7 @@ async function runPMLArena() {
   const preset = document.getElementById('pml-preset').value;
   const side = document.getElementById('pml-side').value;
   const growth = parseFloat(document.getElementById('pml-growth').value || '0.030');
-  const horizon = parseInt(document.getElementById('pml-horizon').value || '25');
+  const horizon = Math.max(25, parseInt(document.getElementById('pml-horizon').value || '25'));
   const models = fcGetSelectedModels('pml-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
@@ -4952,6 +5103,8 @@ async function runPMLArena() {
       session_id: WP.sessionId, preset, growth, horizon, side, models
     });
     WP.arenaCache.pml = fc;
+    renderForecastFutureChart('pml');
+    renderForecastFutureChart('pml_hourly');
     renderPMLProjection(fc);
     // Predicción continua: tomamos el primer lado disponible (o venta por defecto)
     const sideKey = (fc.sides && fc.sides.venta) ? 'venta' : Object.keys(fc.sides || {})[0];
@@ -4996,6 +5149,15 @@ async function runPmlArenaHourly() {
       session_id: WP.sessionId, preset, models
     });
     WP.arenaCache.pml_hourly = fc;
+
+    const growth = parseFloat(document.getElementById('pml-growth').value || '0.030');
+    const horizon = Math.max(25, parseInt(document.getElementById('pml-horizon').value || '25'));
+    const annualFc = await api('/api/pml/forecast', 'POST', {
+      session_id: WP.sessionId, preset, growth, horizon, side, models
+    });
+    WP.arenaCache.pml = annualFc;
+    renderForecastFutureChart('pml');
+    renderForecastFutureChart('pml_hourly');
     toast('Perfil horario de PML ajustado. Ve al Forecast Studio.', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
@@ -5177,7 +5339,7 @@ function bindInterestArena() {
 
 async function runInterestArena() {
   const preset = document.getElementById('interest-preset').value;
-  const horizon = parseInt(document.getElementById('interest-horizon').value || '25');
+  const horizon = Math.max(25, parseInt(document.getElementById('interest-horizon').value || '25'));
   const models = fcGetSelectedModels('interest-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
@@ -5188,6 +5350,7 @@ async function runInterestArena() {
       session_id: WP.sessionId, preset, horizon, models
     });
     WP.arenaCache.interest = fc;
+    renderForecastFutureChart('interest');
     
     // KPIs (Año Base)
     renderInterestKPIs(fc);
@@ -5335,7 +5498,7 @@ function bindFxArena() {
 async function runFxArena() {
   const preset = document.getElementById('fx-preset').value;
   const depreciation = parseFloat(document.getElementById('fx-depreciation').value || '2.5');
-  const horizon = parseInt(document.getElementById('fx-horizon').value || '25');
+  const horizon = Math.max(25, parseInt(document.getElementById('fx-horizon').value || '25'));
   const models = fcGetSelectedModels('fx-model-tags');
   if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
@@ -5346,6 +5509,7 @@ async function runFxArena() {
       session_id: WP.sessionId, preset, depreciation, horizon, models
     });
     WP.arenaCache.fx = fc;
+    renderForecastFutureChart('fx');
     
     renderFxKPIs(fc);
     renderFxProjection(fc);
@@ -5617,6 +5781,8 @@ async function runWindAnnualForecast() {
     const fc = await api('/api/wind/annual_forecast', 'POST', {
       session_id: WP.sessionId, ws_col: 'wind_speed', growth: 0.005, horizon: 25,
     });
+    WP.arenaCache.wind = fc;
+    renderForecastFutureChart('wind');
     renderWindKPIs(fc);
     renderArenaPrediction({
       canvasId: 'wind-prediction-chart', badgeId: 'wind-prediction-badge',
@@ -5664,6 +5830,7 @@ function bindForecastTabs() {
       if (key !== 'wind') {
         populateForecastStudioSelect(key);
       }
+      renderForecastFutureChart(key);
     });
   });
 
@@ -5673,6 +5840,7 @@ function bindForecastTabs() {
       sel.addEventListener('change', () => loadForecastFromCache(key));
     }
   });
+  renderForecastFutureChart('wind');
 }
 
 function getForecastStudioTargetCache(key) {
@@ -5786,6 +5954,7 @@ function loadForecastFromCache(key) {
   renderScatterChart(r, prefix);
   renderResidualHistogram(r, prefix);
   renderBinnedBiasChart(r, prefix);
+  renderForecastFutureChart(key);
   renderForecastMetricPills(r.metrics, prefix, r.unit);
 
   // Ocultar tarjeta de estabilidad (solo para viento)
