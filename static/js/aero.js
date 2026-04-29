@@ -623,6 +623,8 @@ async function trainModels() {
           updateTrainBtnLabel();
           populateComparisonTable(s.result, horizonH);
           renderFeatureImportance(s.result);
+          // Proyección anual de viento (predicción + 25 años)
+          runWindAnnualForecast();
           toast(`Entrenamiento completo (${selectedModels.length} modelos)`, 'success');
           setStatus(`Modelos entrenados para h=+${horizonH}h`);
         } else if (s.status === 'error') {
@@ -4619,6 +4621,19 @@ async function runDemandArena() {
       session_id: WP.sessionId, preset, growth, horizon, models
     });
     renderDemandProjection(fc, baseInfo.meta);
+    // Predicción continua (histórico + proyección)
+    const baseYear = new Date().getFullYear();
+    const histYearsAbs = (fc.history_t || []).map(t => baseYear - (fc.history_t.length - 1) + t);
+    renderArenaPrediction({
+      canvasId: 'dem-prediction-chart', badgeId: 'dem-prediction-badge',
+      history: { years: histYearsAbs, annual: (fc.history_annual || []).map(v => v / 1000) },
+      projection: Object.fromEntries(Object.entries(fc.projection || {}).map(([k, v]) => [k, {
+        ...v, annual: (v.annual || []).map(x => x / 1000),
+        ci_low:  (v.ci_low  || []).map(x => x / 1000),
+        ci_high: (v.ci_high || []).map(x => x / 1000),
+      }])),
+      bestModel: fc.best_model, ylabel: 'Energía anual (GWh)', decimals: 1, unitLabel: 'GWh',
+    });
     renderDemandTable(fc);
     setStatus(`Demanda proyectada — modelo recomendado: ${fc.best_model}`);
     toast('Pronóstico de demanda completado', 'success');
@@ -4803,6 +4818,19 @@ async function runPMLArena() {
       session_id: WP.sessionId, preset, growth, horizon, side, models
     });
     renderPMLProjection(fc);
+    // Predicción continua: tomamos el primer lado disponible (o venta por defecto)
+    const sideKey = (fc.sides && fc.sides.venta) ? 'venta' : Object.keys(fc.sides || {})[0];
+    if (sideKey && fc.sides[sideKey]) {
+      const sd = fc.sides[sideKey];
+      const baseYear = new Date().getFullYear();
+      const histYearsAbs = (sd.history_t || []).map(t => baseYear - (sd.history_t.length - 1) + t);
+      renderArenaPrediction({
+        canvasId: 'pml-prediction-chart', badgeId: 'pml-prediction-badge',
+        history: { years: histYearsAbs, annual: sd.history_annual || [] },
+        projection: sd.projection, bestModel: sd.best_model,
+        ylabel: `PML anual ($/kWh) — ${sideKey}`, decimals: 4, unitLabel: '$/kWh',
+      });
+    }
     renderPMLTable(fc);
     setStatus(`PML proyectado — lados: ${Object.keys(fc.sides).join(', ')}`);
     toast('Pronóstico de PML completado', 'success');
@@ -5001,9 +5029,16 @@ async function runInterestArena() {
     // KPIs (Año Base)
     renderInterestKPIs(fc);
     
-    // Proyección Chart
+    // Proyección Chart (continua: histórico + futuro)
     renderInterestProjection(fc);
-    
+
+    // Proyección 25 años (solo futuro)
+    renderArena25Years({
+      canvasId: 'interest-25y-chart', badgeId: 'interest-25y-badge',
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Tasa (%)', decimals: 2, unitLabel: '%',
+    });
+
     // Tabla Comparativa
     renderInterestCompareTable(fc);
 
@@ -5150,6 +5185,11 @@ async function runFxArena() {
     
     renderFxKPIs(fc);
     renderFxProjection(fc);
+    renderArena25Years({
+      canvasId: 'fx-25y-chart', badgeId: 'fx-25y-badge',
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'MXN / USD', decimals: 2, unitLabel: 'MXN',
+    });
     renderFxCompareTable(fc);
 
     document.getElementById('fx-best-badge').textContent = `★ Mejor: ${fc.best_model}`;
@@ -5263,5 +5303,185 @@ function renderFxCompareTable(fc) {
       <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
       <td>$ ${fcFormatNumber(r.final, 2)}</td>
     </tr>`).join('');
+}
+
+// ─── HELPERS GENÉRICOS DE GRÁFICA UNIFICADA ──────────────────────────────────
+// Predicción continua: histórico + todas las proyecciones en el mismo eje
+function renderArenaPrediction({ canvasId, badgeId, history, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '' }) {
+  destroyChart(canvasId);
+  const ctxEl = document.getElementById(canvasId);
+  if (!ctxEl) return;
+  const ctx = ctxEl.getContext('2d');
+
+  const datasets = [];
+  const histYears = history.years || [];
+  const histVals  = history.annual || [];
+  datasets.push({
+    label: 'Histórico',
+    data: histYears.map((y, i) => ({ x: y, y: scaler(histVals[i]) })),
+    borderColor: ink(), backgroundColor: ink(),
+    borderWidth: 2.6, pointRadius: 1.6, fill: false, order: 10,
+  });
+
+  let colorIdx = 0;
+  for (const [key, m] of Object.entries(projection || {})) {
+    if (!m || m.error || !m.years) continue;
+    const isBest = (key === bestModel);
+    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
+    if (!isBest) colorIdx++;
+    datasets.push({
+      label: `Proj: ${key}${isBest ? ' ★' : ''}`,
+      data: m.years.map((y, i) => ({ x: y, y: scaler(m.annual[i]) })),
+      borderColor: color, backgroundColor: 'transparent',
+      borderWidth: isBest ? 2.8 : 1.4,
+      borderDash: isBest ? [] : [5, 4],
+      pointRadius: 0, tension: 0.2,
+    });
+    if (isBest && m.ci_low && m.ci_high) {
+      datasets.push({
+        label: `${key} IC sup`,
+        data: m.years.map((y, i) => ({ x: y, y: scaler(m.ci_high[i]) })),
+        borderColor: 'transparent',
+        backgroundColor: Chart.helpers.color(color).alpha(0.12).rgbString(),
+        fill: '+1', pointRadius: 0, order: 20,
+      });
+      datasets.push({
+        label: `${key} IC inf`,
+        data: m.years.map((y, i) => ({ x: y, y: scaler(m.ci_low[i]) })),
+        borderColor: 'transparent', backgroundColor: 'transparent',
+        fill: false, pointRadius: 0, order: 20,
+      });
+    }
+  }
+
+  WP.charts[canvasId] = new Chart(ctx, {
+    type: 'line', data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { filter: it => !/IC (sup|inf)$/.test(it.text) } },
+        tooltip: { callbacks: {
+          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
+        } }
+      },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Año' }, grid: { color: gridColor() }, ticks: { callback: v => v.toString() } },
+        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
+      }
+    }
+  });
+
+  if (badgeId && bestModel) {
+    const b = projection?.[bestModel];
+    const last = b?.annual?.at(-1);
+    const cagr = b?.cagr;
+    const txt = `Best: ${bestModel}` + (cagr != null ? ` · CAGR ${fcPct(cagr)}` : '') + (last != null ? ` · Año final ${fcFormatNumber(scaler(last), decimals)} ${unitLabel}` : '');
+    const bd = document.getElementById(badgeId);
+    if (bd) bd.textContent = txt;
+  }
+}
+
+// Proyección 25 años (solo futuro) con bandas IC del mejor modelo
+function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '' }) {
+  destroyChart(canvasId);
+  const ctxEl = document.getElementById(canvasId);
+  if (!ctxEl) return;
+  const ctx = ctxEl.getContext('2d');
+  const proj = projection || {};
+  const keys = Object.keys(proj).filter(k => proj[k] && !proj[k].error);
+  if (!keys.length) return;
+  const labels = proj[keys[0]].years;
+
+  const datasets = keys.map((k, i) => {
+    const isBest = (k === bestModel);
+    return {
+      label: `${k}${isBest ? ' ★' : ''}`,
+      data: proj[k].annual.map(scaler),
+      borderColor: isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length],
+      backgroundColor: (isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length]) + '22',
+      borderWidth: isBest ? 2.8 : 1.4,
+      borderDash: isBest ? [] : [5, 4],
+      fill: false, tension: 0.25, pointRadius: 0,
+    };
+  });
+
+  if (bestModel && proj[bestModel]) {
+    const b = proj[bestModel];
+    datasets.push({
+      label: 'IC 95% sup', data: b.ci_high.map(scaler),
+      borderColor: 'transparent', backgroundColor: '#22c55e22',
+      fill: '+1', pointRadius: 0, borderWidth: 0,
+    });
+    datasets.push({
+      label: 'IC 95% inf', data: b.ci_low.map(scaler),
+      borderColor: 'transparent', backgroundColor: 'transparent',
+      pointRadius: 0, borderWidth: 0, fill: false,
+    });
+  }
+
+  WP.charts[canvasId] = new Chart(ctx, {
+    type: 'line', data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: {
+        legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
+        tooltip: { callbacks: {
+          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
+        } }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Año' }, grid: { color: gridColor() } },
+        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
+      }
+    }
+  });
+
+  if (badgeId && bestModel && proj[bestModel]) {
+    const b = proj[bestModel];
+    const txt = `Best: ${bestModel} · CAGR ${fcPct(b.cagr)} · Año final ${fcFormatNumber(scaler(b.annual.at(-1)), decimals)} ${unitLabel}`;
+    const bd = document.getElementById(badgeId);
+    if (bd) bd.textContent = txt;
+  }
+}
+
+// ─── VIENTO: PROYECCIÓN ANUAL (motor de tendencia, post-entrenamiento ML) ────
+async function runWindAnnualForecast() {
+  if (!WP.sessionId) return;
+  try {
+    const fc = await api('/api/wind/annual_forecast', 'POST', {
+      session_id: WP.sessionId, ws_col: 'wind_speed', growth: 0.005, horizon: 25,
+    });
+    renderWindKPIs(fc);
+    renderArenaPrediction({
+      canvasId: 'wind-prediction-chart', badgeId: 'wind-prediction-badge',
+      history: { years: fc.history_years, annual: fc.history_annual },
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Velocidad media anual (m/s)', decimals: 2, unitLabel: 'm/s',
+    });
+    renderArena25Years({
+      canvasId: 'wind-25y-chart', badgeId: 'wind-25y-badge',
+      projection: fc.projection, bestModel: fc.best_model,
+      ylabel: 'Velocidad media anual (m/s)', decimals: 2, unitLabel: 'm/s',
+    });
+  } catch (e) {
+    console.warn('wind annual forecast skipped:', e.message);
+  }
+}
+
+function renderWindKPIs(fc) {
+  const box = document.getElementById('wind-kpis');
+  if (!box) return;
+  const s = fc.stats || {};
+  const html = [
+    fcKpiCard('Horas observadas', fcFormatNumber(s.n_hours), 'serie horaria'),
+    fcKpiCard('Velocidad media', `${fcFormatNumber(s.mean, 2)} m/s`),
+    fcKpiCard('P10 / P90', `${fcFormatNumber(s.p10, 2)} / ${fcFormatNumber(s.p90, 2)}`, 'm/s'),
+    fcKpiCard('Mín / Máx', `${fcFormatNumber(s.min, 2)} / ${fcFormatNumber(s.max, 2)}`, 'm/s'),
+    fcKpiCard('Desviación', `${fcFormatNumber(s.std, 2)} m/s`),
+    fcKpiCard('Histórico anual', s.used_real_annual ? 'Real (>=2 años)' : 'Sintético'),
+  ].join('');
+  box.innerHTML = html;
 }
 
