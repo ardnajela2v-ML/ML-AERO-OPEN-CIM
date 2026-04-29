@@ -5732,7 +5732,8 @@ function renderArenaPrediction({ canvasId, badgeId, history, projection, bestMod
 }
 
 // Proyección continua hora a hora a N años: escala el último ciclo (8760 h o 365 d)
-// del histórico por annual[y] / mean(perfil) para cada año proyectado.
+// del histórico por annual[y] / aggregate(perfil) para CADA modelo proyectado.
+// Incluye zoom con scroll y pan con drag igual que la gráfica observado-vs-predicho.
 function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, bestModel,
                                      ylabel, scaler = (v) => v, decimals = 2, unitLabel = '',
                                      baseYearLabel = null, annualKind = 'mean' }) {
@@ -5742,8 +5743,9 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
   if (!rawValues || !rawValues.length) return false;
 
   const proj = projection || {};
-  const best = (bestModel && proj[bestModel] && !proj[bestModel].error) ? proj[bestModel] : null;
-  if (!best || !best.annual?.length) return false;
+  const modelKeys = Object.keys(proj).filter(k => proj[k] && !proj[k].error && proj[k].annual?.length);
+  if (!modelKeys.length) return false;
+  const refModel = (bestModel && proj[bestModel]) ? proj[bestModel] : proj[modelKeys[0]];
 
   // Determinar tamaño del ciclo (último año de datos)
   const n = rawValues.length;
@@ -5757,59 +5759,86 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
   let baseSum = 0;
   for (let i = 0; i < baseProfile.length; i++) baseSum += baseProfile[i];
   const baseMean = baseSum / baseProfile.length;
-  // Denominador según tipo de agregación anual del backend
   const denom = (annualKind === 'sum') ? baseSum : baseMean;
   if (!isFinite(denom) || denom === 0) return false;
 
-  const annual = best.annual;
-  const ciLow  = best.ci_low  || [];
-  const ciHigh = best.ci_high || [];
-  const horizon = annual.length;
+  const horizon = refModel.annual.length;
   const totalLen = horizon * cycleLen;
-
-  const startYear = (best.years && best.years[0]) ||
+  const startYear = (refModel.years && refModel.years[0]) ||
                     (baseYearLabel ? baseYearLabel + 1 : new Date().getFullYear() + 1);
 
-  // Pre-asignar arrays
+  // Etiquetas (compartidas)
   const labels = new Array(totalLen);
-  const dataBest = new Array(totalLen);
-  const dataLow  = new Array(totalLen);
-  const dataHigh = new Array(totalLen);
-
   for (let y = 0; y < horizon; y++) {
-    const factor    = annual[y] / denom;
-    const factorLow  = (ciLow[y]  != null) ? ciLow[y]  / denom : null;
-    const factorHigh = (ciHigh[y] != null) ? ciHigh[y] / denom : null;
     const yearLabel = startYear + y;
     for (let h = 0; h < cycleLen; h++) {
-      const idx = y * cycleLen + h;
-      labels[idx] = `${yearLabel} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
-      dataBest[idx] = scaler(baseProfile[h] * factor);
-      if (factorLow  !== null) dataLow[idx]  = scaler(baseProfile[h] * factorLow);
-      if (factorHigh !== null) dataHigh[idx] = scaler(baseProfile[h] * factorHigh);
+      labels[y * cycleLen + h] = `${yearLabel} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
     }
   }
 
+  // Construir serie horaria por modelo
+  function buildHourlySeries(annualArr) {
+    const arr = new Array(totalLen);
+    for (let y = 0; y < annualArr.length && y < horizon; y++) {
+      const factor = annualArr[y] / denom;
+      for (let h = 0; h < cycleLen; h++) {
+        arr[y * cycleLen + h] = scaler(baseProfile[h] * factor);
+      }
+    }
+    return arr;
+  }
+
   const datasets = [];
-  // Bandas IC (renderizadas detrás)
-  if (dataHigh.some(v => v !== undefined)) {
+
+  // Bandas IC del mejor modelo (al fondo)
+  const best = bestModel && proj[bestModel] && !proj[bestModel].error ? proj[bestModel] : null;
+  if (best && best.ci_high?.length && best.ci_low?.length) {
     datasets.push({
-      label: 'IC 95% sup', data: dataHigh,
-      borderColor: 'transparent', backgroundColor: '#22c55e22',
-      fill: '+1', pointRadius: 0, borderWidth: 0,
+      label: 'IC 95% sup', data: buildHourlySeries(best.ci_high),
+      borderColor: 'transparent', backgroundColor: '#22c55e1a',
+      fill: '+1', pointRadius: 0, borderWidth: 0, order: 99,
     });
     datasets.push({
-      label: 'IC 95% inf', data: dataLow,
+      label: 'IC 95% inf', data: buildHourlySeries(best.ci_low),
       borderColor: 'transparent', backgroundColor: 'transparent',
-      fill: false, pointRadius: 0, borderWidth: 0,
+      fill: false, pointRadius: 0, borderWidth: 0, order: 99,
     });
   }
-  // Línea principal del mejor modelo (hora a hora)
-  datasets.push({
-    label: `${bestModel} ★ (hora a hora)`, data: dataBest,
-    borderColor: '#22c55e', backgroundColor: '#22c55e22',
-    borderWidth: 0.8, fill: false, tension: 0, pointRadius: 0,
+
+  // Una línea por modelo (mejor en verde y grueso, otros en paleta y dash)
+  modelKeys.forEach((k, i) => {
+    const isBest = (k === bestModel);
+    datasets.push({
+      label: `${k}${isBest ? ' ★' : ''}`,
+      data: buildHourlySeries(proj[k].annual),
+      borderColor: isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length],
+      backgroundColor: (isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length]) + '22',
+      borderWidth: isBest ? 1.4 : 0.8,
+      borderDash: isBest ? [] : [3, 2],
+      fill: false, tension: 0, pointRadius: 0,
+      order: isBest ? 1 : 10 + i,
+    });
   });
+
+  // Botón Reset Zoom (toolbar opcional sobre el canvas)
+  let resetBtn = ctxEl.parentElement?.querySelector('.zoom-reset-btn');
+  if (!resetBtn && ctxEl.parentElement) {
+    resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.textContent = '↺ Reset Zoom';
+    resetBtn.className = 'zoom-reset-btn';
+    resetBtn.style.cssText = 'position:absolute;top:6px;right:6px;z-index:10;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--line,#2A3346);background:var(--surface,#1B2230);color:inherit;cursor:pointer;display:none;';
+    ctxEl.parentElement.style.position = ctxEl.parentElement.style.position || 'relative';
+    ctxEl.parentElement.appendChild(resetBtn);
+  }
+  if (resetBtn) {
+    resetBtn.style.display = 'none';
+    resetBtn.onclick = () => {
+      const ch = WP.charts[canvasId];
+      if (ch && ch.resetZoom) ch.resetZoom();
+      resetBtn.style.display = 'none';
+    };
+  }
 
   const ctx = ctxEl.getContext('2d');
   WP.charts[canvasId] = new Chart(ctx, {
@@ -5819,17 +5848,27 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
       interaction: { intersect: false, mode: 'index' },
       plugins: {
         legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 4000, threshold: 4000 },
+        decimation: { enabled: true, algorithm: 'lttb', samples: 3000, threshold: 3000 },
         tooltip: { callbacks: {
           label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
-        } }
+        } },
+        zoom: {
+          pan: { enabled: true, mode: 'x', modifierKey: null },
+          zoom: {
+            wheel: { enabled: true, modifierKey: null },
+            pinch: { enabled: true },
+            drag: { enabled: false },
+            mode: 'x',
+            onZoomComplete: () => { if (resetBtn) resetBtn.style.display = 'inline-block'; },
+          },
+        },
       },
       scales: {
         x: {
-          title: { display: true, text: `Hora futura (${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'horas' : 'días'} × ${horizon} años)` },
+          title: { display: true, text: `Hora futura (${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'horas' : 'días'} × ${horizon} años) — scroll para zoom · drag para pan` },
           grid: { color: gridColor() },
           ticks: {
-            maxTicksLimit: Math.min(horizon, 26),
+            maxTicksLimit: Math.min(horizon, 26), font: { size: 9 },
             callback: function(_val, idx) {
               if (idx % cycleLen === 0) {
                 const yIdx = Math.floor(idx / cycleLen);
@@ -5839,13 +5878,14 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
             }
           }
         },
-        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
+        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() }, ticks: { font: { size: 9 } } }
       }
     }
   });
 
-  if (badgeId) {
-    const txt = `Best: ${bestModel} · ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} · CAGR ${fcPct(best.cagr)} · Año final ${fcFormatNumber(scaler(annual[annual.length-1]), decimals)} ${unitLabel}`;
+  if (badgeId && best) {
+    const lastVal = best.annual[best.annual.length - 1];
+    const txt = `Best: ${bestModel} · ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} · CAGR ${fcPct(best.cagr)} · Año final ${fcFormatNumber(scaler(lastVal), decimals)} ${unitLabel}`;
     const bd = document.getElementById(badgeId);
     if (bd) bd.textContent = txt;
   }
