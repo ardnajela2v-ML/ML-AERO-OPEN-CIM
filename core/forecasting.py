@@ -293,6 +293,135 @@ def fit_arima(t, y, order=(1, 1, 1)):
         return fit_linear(t, y)
 
 
+# ─── MODELOS DE MACHINE LEARNING (lags + tiempo, predicción recursiva) ────────
+
+def _build_lag_features(y, n_lags=3):
+    """Construye matriz X = [t, lag_1, lag_2, lag_n] y vector y_target."""
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    if n <= n_lags:
+        return None, None
+    rows = n - n_lags
+    X = np.zeros((rows, n_lags + 1))
+    y_tgt = np.zeros(rows)
+    for i in range(rows):
+        X[i, 0] = i + n_lags
+        for k in range(n_lags):
+            X[i, k + 1] = y[i + n_lags - 1 - k]
+        y_tgt[i] = y[i + n_lags]
+    return X, y_tgt
+
+
+def _ml_recursive_predict(model, t_array, y_history, n_lags,
+                           noise_sigma=0.0, noise_factor=0.5, seed=42):
+    """Predicción recursiva. Si noise_sigma>0, inyecta ruido gaussiano en cada
+    paso para que árboles (que extrapolan a constante) muestren variabilidad
+    consistente con los residuos del ajuste."""
+    history = list(np.asarray(y_history, dtype=float))
+    rng = np.random.default_rng(seed)
+    out = []
+    for tval in np.asarray(t_array, dtype=float):
+        feats = [float(tval)] + [history[-(k + 1)] for k in range(n_lags)]
+        pred = float(model.predict(np.array([feats]))[0])
+        if noise_sigma > 0:
+            pred = pred + rng.normal(0, noise_sigma * noise_factor)
+        out.append(pred)
+        history.append(pred)
+    return np.array(out)
+
+
+def fit_random_forest_ts(t, y, n_lags=3):
+    """Random Forest sobre features [t, lag_1..lag_n]. Predicción recursiva."""
+    from sklearn.ensemble import RandomForestRegressor
+    y = np.asarray(y, dtype=float)
+    n_lags = min(n_lags, max(1, len(y) // 4))
+    X, y_tgt = _build_lag_features(y, n_lags)
+    if X is None or len(X) < 4:
+        return fit_linear(t, y)
+    rf = RandomForestRegressor(n_estimators=200, max_depth=5,
+                                min_samples_leaf=2, random_state=42)
+    rf.fit(X, y_tgt)
+    yhat_recent = rf.predict(X)
+    fitted = np.concatenate([y[:n_lags], yhat_recent])
+    resid_sigma = max(float(np.std(y_tgt - yhat_recent)),
+                       float(np.std(np.diff(y))) * 0.7)
+
+    def predictor(tt, model=rf, hist=y.tolist(), nl=n_lags, sg=resid_sigma):
+        return _ml_recursive_predict(model, tt, hist, nl,
+                                      noise_sigma=sg, noise_factor=0.6)
+
+    return {'kind': 'ml_random_forest',
+            'params': {'n_estimators': 200, 'max_depth': 5, 'n_lags': int(n_lags)},
+            'predict': predictor,
+            'fitted': fitted}
+
+
+def fit_gradient_boost_ts(t, y, n_lags=3):
+    """Gradient Boosting sobre features [t, lag_1..lag_n]."""
+    from sklearn.ensemble import GradientBoostingRegressor
+    y = np.asarray(y, dtype=float)
+    n_lags = min(n_lags, max(1, len(y) // 4))
+    X, y_tgt = _build_lag_features(y, n_lags)
+    if X is None or len(X) < 4:
+        return fit_linear(t, y)
+    gb = GradientBoostingRegressor(n_estimators=200, max_depth=3,
+                                    learning_rate=0.05, random_state=42)
+    gb.fit(X, y_tgt)
+    yhat_recent = gb.predict(X)
+    fitted = np.concatenate([y[:n_lags], yhat_recent])
+    resid_sigma = max(float(np.std(y_tgt - yhat_recent)),
+                       float(np.std(np.diff(y))) * 0.7)
+
+    def predictor(tt, model=gb, hist=y.tolist(), nl=n_lags, sg=resid_sigma):
+        return _ml_recursive_predict(model, tt, hist, nl,
+                                      noise_sigma=sg, noise_factor=0.6)
+
+    return {'kind': 'ml_gradient_boost',
+            'params': {'n_estimators': 200, 'max_depth': 3,
+                       'learning_rate': 0.05, 'n_lags': int(n_lags)},
+            'predict': predictor,
+            'fitted': fitted}
+
+
+def fit_mlp_ts(t, y, n_lags=3):
+    """MLP (red neuronal) sobre [t, lag_1..lag_n] con escalado robusto."""
+    from sklearn.neural_network import MLPRegressor
+    from sklearn.preprocessing import StandardScaler
+    y = np.asarray(y, dtype=float)
+    n_lags = min(n_lags, max(1, len(y) // 4))
+    X, y_tgt = _build_lag_features(y, n_lags)
+    if X is None or len(X) < 4:
+        return fit_linear(t, y)
+    scaler_x = StandardScaler().fit(X)
+    Xs = scaler_x.transform(X)
+    y_mean, y_std = float(np.mean(y_tgt)), float(np.std(y_tgt) + 1e-9)
+    ys = (y_tgt - y_mean) / y_std
+    mlp = MLPRegressor(hidden_layer_sizes=(32, 16), activation='tanh',
+                       solver='lbfgs', max_iter=600, random_state=42,
+                       alpha=1e-2)
+    mlp.fit(Xs, ys)
+    yhat_recent = mlp.predict(Xs) * y_std + y_mean
+    fitted = np.concatenate([y[:n_lags], yhat_recent])
+
+    def predictor(tt, model=mlp, sx=scaler_x, ym=y_mean, ys_=y_std,
+                  hist=y.tolist(), nl=n_lags):
+        history = list(hist)
+        out = []
+        for tval in np.asarray(tt, dtype=float):
+            feats = np.array([[float(tval)] + [history[-(k + 1)] for k in range(nl)]])
+            pred_s = float(model.predict(sx.transform(feats))[0])
+            pred = pred_s * ys_ + ym
+            out.append(pred)
+            history.append(pred)
+        return np.array(out)
+
+    return {'kind': 'ml_mlp',
+            'params': {'hidden': '(32,16)', 'activation': 'tanh',
+                       'alpha': 0.01, 'n_lags': int(n_lags)},
+            'predict': predictor,
+            'fitted': fitted}
+
+
 TREND_FITTERS = {
     'linear':         fit_linear,
     'polynomial':     lambda t, y: fit_polynomial(t, y, degree=2),
@@ -302,6 +431,9 @@ TREND_FITTERS = {
     'holt_winters':   fit_holt_winters,
     'arima':          fit_arima,
     'mean_reversion': fit_mean_reversion,
+    'random_forest':  fit_random_forest_ts,
+    'gradient_boost': fit_gradient_boost_ts,
+    'mlp':            fit_mlp_ts,
 }
 
 
