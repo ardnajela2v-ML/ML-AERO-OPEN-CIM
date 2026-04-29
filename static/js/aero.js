@@ -832,7 +832,7 @@ function renderForecastMainChart(r, prefix='fs-wind') {
           padding: 10,
           callbacks: {
             title: (items) => items[0] ? `📅 ${items[0].label}` : '',
-            label: (item) => `${item.dataset.label}: ${item.formattedValue} m/s`,
+            label: (item) => `${item.dataset.label}: ${item.formattedValue} ${r.unit || 'm/s'}`,
           }
         },
         zoom: {
@@ -848,7 +848,7 @@ function renderForecastMainChart(r, prefix='fs-wind') {
       },
       scales: {
         x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 14, font:{size:9} } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'm/s' }, ticks:{font:{size:9}} }
+        y: { grid: { color: gridColor() }, title: { display: true, text: r.unit || 'm/s' }, ticks:{font:{size:9}} }
       }
     }
   });
@@ -882,8 +882,8 @@ function renderScatterChart(r, prefix='fs-wind') {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Observado (m/s)' } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'Predicho (m/s)' } }
+        x: { grid: { color: gridColor() }, title: { display: true, text: `Observado (${r.unit || 'm/s'})` } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: `Predicho (${r.unit || 'm/s'})` } }
       }
     }
   });
@@ -5542,15 +5542,23 @@ function populateForecastStudioSelect(key) {
   const sel = document.getElementById(`fs-${key}-model-select`);
   if (!sel) return;
   
-  if (!cache || !cache.fitted || Object.keys(cache.fitted).length === 0) {
+  
+  let targetCache = cache;
+  if (key === 'pml' && cache && cache.sides) {
+    // PML uses sides, we will just use the first available side (venta usually)
+    const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
+    targetCache = cache.sides[sideKey];
+  }
+
+  if (!targetCache || !targetCache.fitted || Object.keys(targetCache.fitted).length === 0) {
     sel.innerHTML = '<option value="">Aún no hay modelos entrenados en Arena</option>';
     return;
   }
   
   const currentVal = sel.value;
   sel.innerHTML = '<option value="">-- Seleccionar Modelo --</option>';
-  for (const modelName of Object.keys(cache.fitted)) {
-    const m = cache.fitted[modelName];
+  for (const modelName of Object.keys(targetCache.fitted)) {
+    const m = targetCache.fitted[modelName];
     if (m.error) continue;
     const opt = document.createElement('option');
     opt.value = modelName;
@@ -5558,10 +5566,10 @@ function populateForecastStudioSelect(key) {
     sel.appendChild(opt);
   }
   
-  if (currentVal && cache.fitted[currentVal] && !cache.fitted[currentVal].error) {
+  if (currentVal && targetCache.fitted[currentVal] && !targetCache.fitted[currentVal].error) {
     sel.value = currentVal;
-  } else if (cache.best_model) {
-    sel.value = cache.best_model;
+  } else if (targetCache.best_model) {
+    sel.value = targetCache.best_model;
   }
   
   if (sel.value) {
@@ -5575,7 +5583,13 @@ function loadForecastFromCache(key) {
   if (!cache || !sel || !sel.value) return;
 
   const modelName = sel.value;
-  const m = cache.fitted[modelName];
+  
+  let targetCache = cache;
+  if (key === 'pml' && cache.sides) {
+    const sideKey = (cache.sides && cache.sides.venta) ? 'venta' : Object.keys(cache.sides)[0];
+    targetCache = cache.sides[sideKey];
+  }
+  const m = targetCache.fitted[modelName];
   if (!m || m.error) return;
 
   const y_pred = m.fitted_values || m.fitted || [];
@@ -5585,15 +5599,15 @@ function loadForecastFromCache(key) {
   if (key === 'interest' || key === 'fx') {
     // For interest/FX, the model is trained on a subset (e.g., from 2001)
     // The length of y_pred corresponds to the tail of history_annual
-    const full_true = cache.history_annual;
-    const full_years = cache.history_years;
+    const full_true = targetCache.history_annual;
+    const full_years = targetCache.history_years;
     const train_len = y_pred.length;
     y_true = full_true.slice(full_true.length - train_len);
     labels = full_years.slice(full_years.length - train_len).map(y => y.toString());
   } else {
     // For demand/PML
-    y_true = cache.history_annual;
-    labels = cache.history_t ? cache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
+    y_true = targetCache.history_annual;
+    labels = targetCache.history_t ? targetCache.history_t.map(t => 't=' + t) : y_true.map((_, i) => 't=' + i);
   }
 
   const r = {
