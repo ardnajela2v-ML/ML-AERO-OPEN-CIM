@@ -40,9 +40,9 @@
     <button class="nav-btn" data-module="advanced">Recurso Avanzado</button>
     <button class="nav-btn" data-module="models">Model Arena</button>
     <button class="nav-btn" data-module="forecast">Forecast Studio</button>
-    <button class="nav-btn" data-module="kriging">Mapa & Kriging</button>
+    <button class="nav-btn" data-module="kriging">Kriging Clásico</button>
     <button class="nav-btn" data-module="parque">Parque</button>
-    <button class="nav-btn" data-module="mapa">Mapa</button>
+    <button class="nav-btn" data-module="mapa">Mapa & Kriging</button>
     <button class="nav-btn" data-module="hybrid">Sistema Híbrido</button>
     <button class="nav-btn" data-module="energy">Energy Lab</button>
     <button class="nav-btn" data-module="techno">Tecno-Económico</button>
@@ -2160,8 +2160,8 @@
 <!-- ╔══════════════════ MAPA & GRILLA DE RECURSO ══════════════════╗ -->
 <section class="module" id="mod-mapa">
   <div class="module-header">
-    <h1 class="module-title">Mapa & Grilla de recurso</h1>
-    <p class="module-desc">Mapa interactivo Leaflet centrado en el sitio cargado. Interpola por Kriging las variables (velocidad, densidad de potencia, AEP, CF) usando los sitios MERRA-2/ERA5 reales en un radio configurable.</p>
+    <h1 class="module-title">Mapa & Kriging — México</h1>
+    <p class="module-desc">Mapa Leaflet centrado en México y en el sitio cargado desde Data Hub. Permite fijar un área de estudio, interpolar variables de recurso eólico por Kriging y detectar sitios candidatos para emplazamiento.</p>
   </div>
 
   <div class="grid-2 mt-1" style="grid-template-columns:340px 1fr;gap:.8rem">
@@ -2175,22 +2175,35 @@
         <div class="card-body">
           <label class="form-label">Capa base</label>
           <select class="form-select" id="mapa-baselayer">
-            <option value="dark" selected>Carto Dark</option>
-            <option value="voyager">Carto Voyager</option>
+            <option value="voyager" selected>Carto Voyager</option>
+            <option value="dark">Carto Dark</option>
             <option value="osm">OpenStreetMap</option>
             <option value="topo">OpenTopoMap</option>
             <option value="sat">Satélite ESRI</option>
           </select>
+          <div class="flex-end mt-2" style="gap:.4rem;justify-content:flex-start">
+            <button class="btn-secondary is-active" id="btn-mapa-mexico" type="button">México</button>
+            <button class="btn-secondary" id="btn-mapa-world" type="button">Ver resto</button>
+            <button class="btn-secondary" id="btn-mapa-site" type="button">Sitio</button>
+          </div>
+          <label class="form-label mt-2">Año</label>
+          <select class="form-select" id="mapa-year">
+            <option value="2018" selected>2018</option>
+            <option value="2019">2019</option>
+            <option value="2020">2020</option>
+            <option value="2021">2021</option>
+            <option value="2022">2022</option>
+          </select>
           <label class="form-label mt-2">Variable en grilla</label>
           <select class="form-select" id="mapa-var">
-            <option value="speed" selected>Velocidad media (m/s)</option>
+            <option value="speed" selected>Velocidad de viento (m/s)</option>
+            <option value="gust">Ráfagas / extremos anuales (m/s)</option>
             <option value="power">Densidad de potencia (W/m²)</option>
-            <option value="aep">AEP estimado (MWh/año)</option>
-            <option value="cf">Factor de capacidad (%)</option>
+            <option value="resource_score">KPI recurso eólico (0-100)</option>
           </select>
-          <label class="form-label mt-2">Radio (km) alrededor del sitio</label>
+          <label class="form-label mt-2">Zoom tras Kriging (km)</label>
           <input class="form-input" type="number" id="mapa-radius" value="200" step="25" min="25">
-          <label class="form-label mt-2">Resolución de grilla</label>
+          <label class="form-label mt-2">Grilla</label>
           <select class="form-select" id="mapa-n">
             <option value="40">40×40 (rápido)</option>
             <option value="60" selected>60×60</option>
@@ -2202,11 +2215,14 @@
             <option value="exponential" selected>Exponencial</option>
             <option value="gaussian">Gaussiano</option>
           </select>
-          <div class="form-grid-2 mt-2">
-            <div><label class="form-label">P nom. (kW)</label>
-              <input class="form-input" type="number" id="mapa-pnom" value="2000" step="100"></div>
-            <div><label class="form-label">Rotor (m)</label>
-              <input class="form-input" type="number" id="mapa-rotor" value="80" step="5"></div>
+          <div class="mt-2" style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <button class="btn-secondary" id="btn-mapa-select-area" type="button">Seleccionar área</button>
+            <button class="btn-secondary" id="btn-mapa-clear-area" type="button">Liberar área</button>
+          </div>
+          <div class="mt-2" style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <button class="btn-secondary" id="btn-mapa-draw-park" type="button">Dibujar parque</button>
+            <button class="btn-secondary" id="btn-mapa-finish-park" type="button">Cerrar figura</button>
+            <button class="btn-secondary" id="btn-mapa-clear-park" type="button">Limpiar figura</button>
           </div>
           <div class="flex-end mt-2" style="gap:.4rem">
             <button class="btn-secondary" id="btn-mapa-export" type="button">↓ GeoJSON</button>
@@ -2227,6 +2243,18 @@
           </div>
           <div id="mapa-pt" class="text-muted mt-2" style="font-size:.72rem;line-height:1.7;border-top:1px solid var(--border);padding-top:.4rem">
             Click en el mapa para inspeccionar la celda más cercana.
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Sitios óptimos</span></div>
+        <div class="card-body">
+          <div id="mapa-optimal-list" class="text-muted" style="font-size:.72rem;line-height:1.65">
+            Genera la grilla para calcular candidatos.
+          </div>
+          <div id="mapa-park-info" class="text-muted mt-2" style="font-size:.72rem;line-height:1.65;border-top:1px solid var(--border);padding-top:.4rem">
+            Dibuja una figura sobre Leaflet para delimitar la zona del parque.
           </div>
         </div>
       </div>

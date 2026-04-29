@@ -161,18 +161,29 @@ simple_kriging = kriging_interp
 interpolate_wind = kriging_interp
 
 
-def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential'):
+def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential',
+                 bounds=None):
     """Build a regular lat/lon grid, interpolate, return dict ready for JSON."""
     la = np.asarray(lats, dtype=float)
     lo = np.asarray(lons, dtype=float)
     va = np.asarray(values, dtype=float)
     if len(la) < 3:
         raise ValueError(f'Kriging requires >= 3 sites (got {len(la)}).')
-    lon_margin = max(0.1, (lo.max() - lo.min()) * margin_frac)
-    lat_margin = max(0.1, (la.max() - la.min()) * margin_frac)
+    if bounds:
+        lat_min = float(bounds['lat_min'])
+        lat_max = float(bounds['lat_max'])
+        lon_min = float(bounds['lon_min'])
+        lon_max = float(bounds['lon_max'])
+    else:
+        lon_margin = max(0.1, (lo.max() - lo.min()) * margin_frac)
+        lat_margin = max(0.1, (la.max() - la.min()) * margin_frac)
+        lat_min = float(la.min() - lat_margin)
+        lat_max = float(la.max() + lat_margin)
+        lon_min = float(lo.min() - lon_margin)
+        lon_max = float(lo.max() + lon_margin)
     xq, yq = np.meshgrid(
-        np.linspace(lo.min() - lon_margin, lo.max() + lon_margin, n),
-        np.linspace(la.min() - lat_margin, la.max() + lat_margin, n))
+        np.linspace(lon_min, lon_max, n),
+        np.linspace(lat_min, lat_max, n))
     zq, var = kriging_interp(lo, la, va, xq, yq, model=model)
     return {
         'lon_grid': xq.tolist(),
@@ -180,10 +191,10 @@ def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential'
         'z':        zq.tolist(),
         'variance': var.tolist(),
         'bounds': {
-            'lat_min': float(la.min() - lat_margin),
-            'lat_max': float(la.max() + lat_margin),
-            'lon_min': float(lo.min() - lon_margin),
-            'lon_max': float(lo.max() + lon_margin),
+            'lat_min': lat_min,
+            'lat_max': lat_max,
+            'lon_min': lon_min,
+            'lon_max': lon_max,
         },
         'z_min': float(np.nanmin(zq)),
         'z_max': float(np.nanmax(zq)),

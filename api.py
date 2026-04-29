@@ -1394,6 +1394,21 @@ def create_app():
         year      = body.get('year')
         if year is not None:
             year = int(year)
+        fixed_bounds = body.get('bounds') or None
+        if fixed_bounds:
+            try:
+                fixed_bounds = {
+                    'lat_min': float(fixed_bounds['lat_min']),
+                    'lat_max': float(fixed_bounds['lat_max']),
+                    'lon_min': float(fixed_bounds['lon_min']),
+                    'lon_max': float(fixed_bounds['lon_max']),
+                }
+                if fixed_bounds['lat_min'] > fixed_bounds['lat_max']:
+                    fixed_bounds['lat_min'], fixed_bounds['lat_max'] = fixed_bounds['lat_max'], fixed_bounds['lat_min']
+                if fixed_bounds['lon_min'] > fixed_bounds['lon_max']:
+                    fixed_bounds['lon_min'], fixed_bounds['lon_max'] = fixed_bounds['lon_max'], fixed_bounds['lon_min']
+            except Exception:
+                return jsonify({'error': 'Bounds inválidos para el área seleccionada'}), 400
         p_nom_kw  = float(body.get('p_nom_kw', 2000))
         rotor_m   = float(body.get('rotor_m', 80))
         cp        = float(body.get('cp', 0.4))
@@ -1415,12 +1430,18 @@ def create_app():
             if not coords:
                 continue
             lat, lon = coords
-            if _haversine_km(lat, lon, cen_lat, cen_lon) > radius_km:
-                continue
+            if fixed_bounds:
+                if not (fixed_bounds['lat_min'] <= lat <= fixed_bounds['lat_max'] and
+                        fixed_bounds['lon_min'] <= lon <= fixed_bounds['lon_max']):
+                    continue
+            else:
+                if _haversine_km(lat, lon, cen_lat, cen_lon) > radius_km:
+                    continue
             candidate_paths.append(os.path.join(folder, fn))
 
         if not candidate_paths:
-            return jsonify({'error': f'Sin archivos .txt en radio {radius_km} km'}), 400
+            msg = 'el área seleccionada' if fixed_bounds else f'radio {radius_km} km'
+            return jsonify({'error': f'Sin archivos .txt en {msg}'}), 400
 
         # 2. Leer en paralelo con cache mtime-aware (I/O bound -> ThreadPool)
         stat_list = parallel_read_sites(candidate_paths, year=year)
@@ -1441,11 +1462,14 @@ def create_app():
             except Exception:
                 aep_kwh, pd_wm2 = 0.0, 0.0
             cf_pct = 100.0 * aep_kwh / (p_nom_kw * 8760) if p_nom_kw > 0 else 0.0
+            ws_hub = np.asarray(stats.get('ws_hub', []), dtype=float)
+            gust_ms = float(np.nanpercentile(ws_hub, 99.5)) if ws_hub.size else float(stats.get('v_max', 0.0))
             sites.append({
                 'filename':  fn,
                 'lat':       stats['_lat'],
                 'lon':       stats['_lon'],
                 'speed':     float(stats['v_mean']),
+                'gust':      gust_ms,
                 'power':     float(pd_wm2),
                 'aep':       float(aep_kwh / 1000.0),
                 'cf':        float(cf_pct),
@@ -1454,25 +1478,57 @@ def create_app():
             })
 
         if len(sites) < 3:
+            msg = 'del área seleccionada' if fixed_bounds else f'en {radius_km} km del centro'
             return jsonify({'error':
-                f'Necesitas ≥ 3 sitios en {radius_km} km del centro (hay {len(sites)})'}), 400
+                f'Necesitas ≥ 3 sitios {msg} (hay {len(sites)})'}), 400
+
+        def _scaled(vals):
+            arr = np.asarray(vals, dtype=float)
+            lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+                return np.full(len(arr), 50.0)
+            return 100.0 * (arr - lo) / (hi - lo)
+
+        speed_s = _scaled([s['speed'] for s in sites])
+        power_s = _scaled([s['power'] for s in sites])
+        gust_s  = _scaled([s['gust'] for s in sites])
+        for idx, s in enumerate(sites):
+            s['resource_score'] = float(0.45 * speed_s[idx] + 0.35 * power_s[idx] + 0.20 * gust_s[idx])
+
+        optimal_sites = sorted(sites, key=lambda s: s['resource_score'], reverse=True)[:12]
+        optimal_sites = [
+            {
+                'rank': i + 1,
+                'score': float(s['resource_score']),
+                'filename': s['filename'],
+                'lat': s['lat'],
+                'lon': s['lon'],
+                'speed': s['speed'],
+                'gust': s['gust'],
+                'power': s['power'],
+                'aep': s['aep'],
+                'cf': s['cf'],
+            }
+            for i, s in enumerate(optimal_sites)
+        ]
 
         lats = [s['lat'] for s in sites]
         lons = [s['lon'] for s in sites]
 
-        units  = {'speed': 'm/s', 'power': 'W/m²', 'aep': 'MWh/año', 'cf': '%'}
+        units  = {'speed': 'm/s', 'gust': 'm/s', 'power': 'W/m²', 'resource_score': 'pts'}
         titles = {
-            'speed': 'Velocidad media @ hub (m/s)',
-            'power': 'Densidad de potencia (W/m²)',
-            'aep':   f'AEP estimado ({int(p_nom_kw)} kW, MWh/año)',
-            'cf':    f'Factor de capacidad ({int(p_nom_kw)} kW, %)',
+            'speed': 'Velocidad de viento @ hub (m/s)',
+            'gust':  'Ráfaga/extremo anual P99.5 @ hub (m/s)',
+            'power': 'Densidad de potencia del viento (W/m²)',
+            'resource_score': 'KPI compuesto de recurso eólico (0-100)',
         }
 
         grids = {}
-        for var in ('speed', 'power', 'aep', 'cf'):
+        for var in ('speed', 'gust', 'power', 'resource_score'):
             vals = [s[var] for s in sites]
             try:
-                g = kriging_grid(lons, lats, vals, n=n_grid, model=model)
+                g = kriging_grid(lons, lats, vals, n=n_grid, model=model,
+                                 bounds=fixed_bounds)
             except Exception as e:
                 return jsonify({'error': f'Kriging falló para {var}: {e}'}), 500
             g['unit']  = units[var]
@@ -1485,10 +1541,12 @@ def create_app():
             'radius_km': radius_km,
             'n_sites':   len(sites),
             'sites':     sites,
+            'optimal_sites': optimal_sites,
             'bounds':    bounds,
             'grids':     grids,
             'p_nom_kw':  p_nom_kw,
             'rotor_m':   rotor_m,
+            'area_bounds': fixed_bounds,
         }))
 
     @app.route('/api/farm/wake_profile', methods=['POST'])

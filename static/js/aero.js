@@ -4568,7 +4568,12 @@ document.addEventListener('DOMContentLoaded', () => {
 const MAPA = {
   map: null, baseLayer: null, gridLayer: null,
   result: null, sites: [], grid: null, var: 'speed',
+  mode: 'mexico',
+  areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
+  drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
 };
+
+const MAPA_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const MAPA_TILES = {
   dark:    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
@@ -4585,7 +4590,11 @@ function mapaInit() {
   });
   MAPA.map = map;
   mapaSetBase(document.getElementById('mapa-baselayer').value);
-  map.on('click', mapaOnClick);
+  mapaSetExtent('mexico');
+  map.on('click', mapaHandleClick);
+  map.on('mousedown', mapaAreaMouseDown);
+  map.on('mousemove', mapaAreaMouseMove);
+  map.on('mouseup', mapaAreaMouseUp);
   return map;
 }
 
@@ -4597,6 +4606,19 @@ function mapaSetBase(key) {
     maxZoom: 18, subdomains: 'abcd',
     attribution: '© OpenStreetMap · © CARTO · ESRI',
   }).addTo(MAPA.map);
+}
+
+function mapaSetExtent(mode) {
+  if (!MAPA.map) return;
+  MAPA.mode = mode;
+  document.getElementById('btn-mapa-mexico')?.classList.toggle('is-active', mode === 'mexico');
+  document.getElementById('btn-mapa-world')?.classList.toggle('is-active', mode === 'world');
+  if (mode === 'mexico') {
+    MAPA.map.setMaxBounds(MAPA_MEXICO_BOUNDS);
+    MAPA.map.fitBounds(MAPA_MEXICO_BOUNDS, { padding: [18, 18] });
+  } else {
+    MAPA.map.setMaxBounds(null);
+  }
 }
 
 function mapaCenterFromSession() {
@@ -4612,6 +4634,31 @@ function mapaCenterFromSession() {
   return (lat != null && lon != null) ? { lat, lon } : null;
 }
 
+function mapaFocusSite() {
+  mapaInit();
+  const center = mapaCenterFromSession() || MAPA.result?.center;
+  if (!center) {
+    toast('Carga un sitio en Data Hub primero.', 'warning');
+    return;
+  }
+  MAPA.map.setView([center.lat, center.lon], 9);
+}
+
+function mapaBoundsPayload() {
+  if (!MAPA.areaBounds) return null;
+  const sw = MAPA.areaBounds.getSouthWest();
+  const ne = MAPA.areaBounds.getNorthEast();
+  return {
+    lat_min: sw.lat, lat_max: ne.lat,
+    lon_min: sw.lng, lon_max: ne.lng,
+  };
+}
+
+function mapaSetStatus(msg) {
+  const el = document.getElementById('mapa-status');
+  if (el) el.textContent = msg;
+}
+
 async function mapaBuild() {
   if (!WP.sessionId) { toast('Sin sesión.', 'error'); return; }
   mapaInit();
@@ -4624,29 +4671,32 @@ async function mapaBuild() {
     session_id: WP.sessionId,
     center_lat: center.lat,
     center_lon: center.lon,
+    year:       parseInt(document.getElementById('mapa-year').value),
     radius_km:  parseFloat(document.getElementById('mapa-radius').value),
     n_grid:     parseInt(document.getElementById('mapa-n').value),
     model:      document.getElementById('mapa-model').value,
-    p_nom_kw:   parseFloat(document.getElementById('mapa-pnom').value),
-    rotor_m:    parseFloat(document.getElementById('mapa-rotor').value),
+    p_nom_kw:   2000,
+    rotor_m:    80,
   };
-  document.getElementById('mapa-status').textContent = 'Calculando…';
+  const fixedBounds = mapaBoundsPayload();
+  if (fixedBounds) body.bounds = fixedBounds;
+  mapaSetStatus('Calculando…');
   try {
     const r = await api('/api/grid/build', 'POST', body);
     if (r.error) throw new Error(r.error);
     MAPA.result = r;
     MAPA.sites  = r.sites || [];
-    document.getElementById('mapa-status').textContent =
-      `${r.n_sites} sitios · ${body.n_grid}×${body.n_grid}`;
+    mapaSetStatus(`${r.n_sites} sitios · ${body.n_grid}×${body.n_grid}`);
     mapaRenderVariable(MAPA.var);
+    const targetBounds = fixedBounds || r.bounds;
     MAPA.map.fitBounds(
-      [[r.bounds.lat_min, r.bounds.lon_min], [r.bounds.lat_max, r.bounds.lon_max]],
+      [[targetBounds.lat_min, targetBounds.lon_min], [targetBounds.lat_max, targetBounds.lon_max]],
       { padding: [25, 25] });
     setTimeout(() => MAPA.map.invalidateSize(), 60);
     toast('Grilla generada', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
-    document.getElementById('mapa-status').textContent = 'Error';
+    mapaSetStatus('Error');
   }
 }
 
@@ -4683,7 +4733,7 @@ function mapaRenderVariable(varKey) {
 
   // Site markers colored by the same variable
   (MAPA.sites || []).forEach(s => {
-    const v = s[varKey];
+    const v = Number(s[varKey] ?? 0);
     const t = rng > 0 ? (v - z_min) / rng : 0.5;
     const [r_, g_, b_] = krigColor(t);
     const m = window.L.circleMarker([s.lat, s.lon], {
@@ -4693,9 +4743,9 @@ function mapaRenderVariable(varKey) {
       `<b>${s.filename}</b><br>` +
       `Lat ${s.lat.toFixed(3)} · Lon ${s.lon.toFixed(3)}<br>` +
       `Vel: <b>${s.speed.toFixed(2)}</b> m/s<br>` +
+      `Ráfaga: <b>${(s.gust || 0).toFixed(2)}</b> m/s<br>` +
       `Pd: <b>${s.power.toFixed(0)}</b> W/m²<br>` +
-      `AEP: <b>${s.aep.toFixed(0)}</b> MWh/año<br>` +
-      `CF: <b>${s.cf.toFixed(1)}</b> %`);
+      `KPI: <b>${(s.resource_score || 0).toFixed(1)}</b>/100`);
     group.addLayer(m);
   });
 
@@ -4706,6 +4756,20 @@ function mapaRenderVariable(varKey) {
       radius: 9, color: '#fff', weight: 2, fillColor: '#facc15', fillOpacity: 1,
     }).bindPopup(`<b>Sitio cargado</b><br>${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`));
   }
+
+  // Optimal candidate markers
+  (MAPA.result.optimal_sites || []).forEach(s => {
+    if (MAPA.parkPoints.length >= 3 && !mapaPointInPolygon([s.lat, s.lon], MAPA.parkPoints)) return;
+    const radius = Math.max(7, 13 - (s.rank || 6));
+    group.addLayer(window.L.circleMarker([s.lat, s.lon], {
+      radius, color: '#0f172a', weight: 2,
+      fillColor: '#22c55e', fillOpacity: 0.95,
+    }).bindPopup(
+      `<b>#${s.rank} sitio candidato</b><br>${s.filename}<br>` +
+      `Score: <b>${s.score.toFixed(1)}</b>/100<br>` +
+      `Vel: ${s.speed.toFixed(2)} m/s · Ráfaga: ${s.gust.toFixed(2)} m/s<br>` +
+      `Densidad: ${s.power.toFixed(0)} W/m²`));
+  });
 
   group.addTo(MAPA.map);
   MAPA.gridLayer = group;
@@ -4726,7 +4790,17 @@ function mapaRenderVariable(varKey) {
     `<b>Min:</b> ${Math.min(...vals).toFixed(2)} ${grid.unit}<br>` +
     `<b>Max:</b> ${Math.max(...vals).toFixed(2)} ${grid.unit}<br>` +
     `<b>Media:</b> ${mean.toFixed(2)} ${grid.unit}<br>` +
-    `<b>Modelo:</b> ${grid.model}`;
+    `<b>Modelo:</b> ${grid.model}<br>` +
+    `<b>Área fija:</b> ${MAPA.areaBounds ? 'sí' : 'no'}`;
+  mapaRenderOptimalList();
+}
+
+function mapaHandleClick(e) {
+  if (MAPA.drawingPark) {
+    mapaAddParkPoint(e.latlng);
+    return;
+  }
+  mapaOnClick(e);
 }
 
 function mapaOnClick(e) {
@@ -4744,6 +4818,169 @@ function mapaOnClick(e) {
     `<b>Celda (${i},${j}):</b> ${v.toFixed(2)} ${MAPA.grid.unit}`;
 }
 
+function mapaBeginAreaSelection() {
+  mapaInit();
+  MAPA.selectingArea = true;
+  mapaSetStatus('Dibuja rectángulo');
+  toast('Arrastra sobre el mapa para fijar el área de estudio.', 'info');
+}
+
+function mapaAreaMouseDown(e) {
+  if (!MAPA.selectingArea) return;
+  MAPA.areaStart = e.latlng;
+  MAPA.map.dragging.disable();
+  e.originalEvent.preventDefault();
+}
+
+function mapaAreaMouseMove(e) {
+  if (!MAPA.selectingArea || !MAPA.areaStart) return;
+  if (MAPA.areaDraft) MAPA.map.removeLayer(MAPA.areaDraft);
+  MAPA.areaDraft = window.L.rectangle([MAPA.areaStart, e.latlng], {
+    color: '#22c55e', weight: 2, fillOpacity: 0.12, dashArray: '6 4',
+  }).addTo(MAPA.map);
+}
+
+function mapaAreaMouseUp(e) {
+  if (!MAPA.selectingArea || !MAPA.areaStart) return;
+  const bounds = window.L.latLngBounds(MAPA.areaStart, e.latlng);
+  MAPA.selectingArea = false;
+  MAPA.areaStart = null;
+  MAPA.map.dragging.enable();
+  if (MAPA.areaDraft) {
+    MAPA.map.removeLayer(MAPA.areaDraft);
+    MAPA.areaDraft = null;
+  }
+  if (MAPA.areaLayer) MAPA.map.removeLayer(MAPA.areaLayer);
+  MAPA.areaBounds = bounds;
+  MAPA.areaLayer = window.L.rectangle(bounds, {
+    color: '#22c55e', weight: 2, fillOpacity: 0.08,
+  }).addTo(MAPA.map);
+  MAPA.map.fitBounds(bounds, { padding: [24, 24] });
+  mapaSetStatus('Área fija');
+  toast('Área de estudio fijada. Puedes salir del encuadre y volver a generar.', 'success');
+}
+
+function mapaClearArea() {
+  if (MAPA.areaLayer && MAPA.map) MAPA.map.removeLayer(MAPA.areaLayer);
+  if (MAPA.areaDraft && MAPA.map) MAPA.map.removeLayer(MAPA.areaDraft);
+  MAPA.areaLayer = null;
+  MAPA.areaDraft = null;
+  MAPA.areaBounds = null;
+  MAPA.selectingArea = false;
+  mapaSetStatus(MAPA.result ? `${MAPA.result.n_sites} sitios` : '—');
+}
+
+function mapaAddParkPoint(latlng) {
+  MAPA.parkPoints.push([latlng.lat, latlng.lng]);
+  const marker = window.L.circleMarker(latlng, {
+    radius: 4, color: '#fff', weight: 1, fillColor: '#f59e0b', fillOpacity: 1,
+  }).addTo(MAPA.map);
+  MAPA.parkMarkers.push(marker);
+  mapaRenderParkLayer(false);
+}
+
+function mapaRenderParkLayer(closed=true) {
+  if (MAPA.parkLayer && MAPA.map) MAPA.map.removeLayer(MAPA.parkLayer);
+  if (MAPA.parkPoints.length < 2) {
+    mapaUpdateParkInfo();
+    return;
+  }
+  MAPA.parkLayer = closed && MAPA.parkPoints.length >= 3
+    ? window.L.polygon(MAPA.parkPoints, { color: '#f59e0b', weight: 2, fillOpacity: 0.14 }).addTo(MAPA.map)
+    : window.L.polyline(MAPA.parkPoints, { color: '#f59e0b', weight: 2, dashArray: '4 4' }).addTo(MAPA.map);
+  mapaUpdateParkInfo();
+}
+
+function mapaStartParkDraw() {
+  mapaInit();
+  MAPA.drawingPark = true;
+  toast('Haz clic para agregar vértices del parque; cierra la figura al terminar.', 'info');
+}
+
+function mapaFinishPark() {
+  MAPA.drawingPark = false;
+  if (MAPA.parkPoints.length < 3) {
+    toast('Necesitas al menos 3 puntos para cerrar la figura.', 'warning');
+    return;
+  }
+  mapaRenderParkLayer(true);
+  mapaRenderVariable(MAPA.var);
+}
+
+function mapaClearPark() {
+  MAPA.drawingPark = false;
+  if (MAPA.parkLayer && MAPA.map) MAPA.map.removeLayer(MAPA.parkLayer);
+  MAPA.parkMarkers.forEach(m => MAPA.map && MAPA.map.removeLayer(m));
+  MAPA.parkLayer = null;
+  MAPA.parkMarkers = [];
+  MAPA.parkPoints = [];
+  mapaUpdateParkInfo();
+  mapaRenderVariable(MAPA.var);
+}
+
+function mapaPolygonAreaKm2(points) {
+  if (points.length < 3) return 0;
+  const lat0 = points.reduce((s, p) => s + p[0], 0) / points.length;
+  const coords = points.map(([lat, lon]) => {
+    const x = lon * 111.32 * Math.cos(lat0 * Math.PI / 180);
+    const y = lat * 110.57;
+    return [x, y];
+  });
+  let area = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const [x1, y1] = coords[i];
+    const [x2, y2] = coords[(i + 1) % coords.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(area) / 2;
+}
+
+function mapaPointInPolygon(point, polygon) {
+  const [lat, lon] = point;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [lati, loni] = polygon[i];
+    const [latj, lonj] = polygon[j];
+    const cross = ((loni > lon) !== (lonj > lon)) &&
+      (lat < (latj - lati) * (lon - loni) / ((lonj - loni) || 1e-12) + lati);
+    if (cross) inside = !inside;
+  }
+  return inside;
+}
+
+function mapaUpdateParkInfo() {
+  const el = document.getElementById('mapa-park-info');
+  if (!el) return;
+  if (MAPA.parkPoints.length < 3) {
+    el.textContent = MAPA.parkPoints.length
+      ? `${MAPA.parkPoints.length} vértices definidos. Falta cerrar la figura.`
+      : 'Dibuja una figura sobre Leaflet para delimitar la zona del parque.';
+    return;
+  }
+  const area = mapaPolygonAreaKm2(MAPA.parkPoints);
+  el.innerHTML = `<b>Zona de parque:</b> ${area.toFixed(2)} km² · ${MAPA.parkPoints.length} vértices`;
+}
+
+function mapaRenderOptimalList() {
+  const el = document.getElementById('mapa-optimal-list');
+  if (!el) return;
+  let sites = (MAPA.result?.optimal_sites || []);
+  if (MAPA.parkPoints.length >= 3) {
+    sites = sites.filter(s => mapaPointInPolygon([s.lat, s.lon], MAPA.parkPoints));
+  }
+  if (!sites.length) {
+    el.textContent = MAPA.result ? 'Sin candidatos dentro del área actual.' : 'Genera la grilla para calcular candidatos.';
+    return;
+  }
+  el.innerHTML = sites.slice(0, 8).map(s => (
+    `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">` +
+    `<b>#${s.rank}</b> ${s.filename}<br>` +
+    `Score ${s.score.toFixed(1)} · Vel ${s.speed.toFixed(2)} m/s · ` +
+    `Ráfaga ${s.gust.toFixed(2)} m/s · Pd ${s.power.toFixed(0)} W/m²` +
+    `</div>`
+  )).join('');
+}
+
 function mapaExportGeoJSON() {
   if (!MAPA.result) { toast('Genera la grilla primero.', 'error'); return; }
   const fc = {
@@ -4753,10 +4990,37 @@ function mapaExportGeoJSON() {
       geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
       properties: {
         filename: s.filename, speed_ms: s.speed, power_density_wm2: s.power,
+        gust_ms: s.gust, resource_score: s.resource_score,
         aep_mwh: s.aep, cf_pct: s.cf, weibull_C: s.weibull_C, weibull_K: s.weibull_K,
       },
-    })),
+    })).concat((MAPA.result.optimal_sites || []).map(s => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+      properties: { kind: 'optimal_site', rank: s.rank, score: s.score, filename: s.filename },
+    }))),
   };
+  if (MAPA.areaBounds) {
+    const b = mapaBoundsPayload();
+    fc.features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[
+        [b.lon_min, b.lat_min], [b.lon_max, b.lat_min],
+        [b.lon_max, b.lat_max], [b.lon_min, b.lat_max],
+        [b.lon_min, b.lat_min],
+      ]] },
+      properties: { kind: 'fixed_area' },
+    });
+  }
+  if (MAPA.parkPoints.length >= 3) {
+    fc.features.push({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[
+        ...MAPA.parkPoints.map(([lat, lon]) => [lon, lat]),
+        [MAPA.parkPoints[0][1], MAPA.parkPoints[0][0]],
+      ]] },
+      properties: { kind: 'park_zone', area_km2: mapaPolygonAreaKm2(MAPA.parkPoints) },
+    });
+  }
   const blob = new Blob([JSON.stringify(fc, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -4774,10 +5038,20 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnBuild) btnBuild.addEventListener('click', mapaBuild);
   const btnExport = document.getElementById('btn-mapa-export');
   if (btnExport) btnExport.addEventListener('click', mapaExportGeoJSON);
+  document.getElementById('btn-mapa-mexico')?.addEventListener('click', () => mapaSetExtent('mexico'));
+  document.getElementById('btn-mapa-world')?.addEventListener('click', () => mapaSetExtent('world'));
+  document.getElementById('btn-mapa-site')?.addEventListener('click', mapaFocusSite);
+  document.getElementById('btn-mapa-select-area')?.addEventListener('click', mapaBeginAreaSelection);
+  document.getElementById('btn-mapa-clear-area')?.addEventListener('click', mapaClearArea);
+  document.getElementById('btn-mapa-draw-park')?.addEventListener('click', mapaStartParkDraw);
+  document.getElementById('btn-mapa-finish-park')?.addEventListener('click', mapaFinishPark);
+  document.getElementById('btn-mapa-clear-park')?.addEventListener('click', mapaClearPark);
   document.querySelectorAll('.nav-btn[data-module="mapa"]').forEach(b => {
     b.addEventListener('click', () => {
       requestAnimationFrame(() => {
         mapaInit();
+        const c = mapaCenterFromSession();
+        if (c && !MAPA.result) MAPA.map.setView([c.lat, c.lon], 7);
         if (MAPA.map) MAPA.map.invalidateSize();
         setTimeout(() => MAPA.map && MAPA.map.invalidateSize(), 200);
       });
