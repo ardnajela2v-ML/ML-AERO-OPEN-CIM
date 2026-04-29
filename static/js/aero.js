@@ -5611,29 +5611,13 @@ function loadForecastFromCache(key) {
     y_pred = y_pred_raw;
     labels = (full_years || []).slice((full_years||[]).length - train_len).map(y => y.toString());
   } else if (targetCache.raw_values && targetCache.raw_values.length > 0) {
-    // Demand / PML — show the REAL hourly data from the file as Observado
-    useRaw = true;
-    y_true = targetCache.raw_values;
+    // Demand / PML — datos reales completos del archivo
+    y_true = targetCache.raw_values.slice(); // todos los puntos
     labels = y_true.map((_, i) => i + 1);
-
-    // Scale the annual fitted values to hourly mean for a reference trend line
-    // (fitted has N_years points; we distribute them evenly across the raw data)
-    const annualFitted = y_pred_raw;
-    const n = y_true.length;
-    const nYears = annualFitted.length;
-    if (nYears > 0) {
-      const pointsPerYear = Math.floor(n / nYears);
-      y_pred = y_true.map((_, i) => {
-        const yearIdx = Math.min(Math.floor(i / pointsPerYear), nYears - 1);
-        return annualFitted[yearIdx];
-      });
-    } else {
-      y_pred = [];
-    }
+    y_pred = []; // sin línea predicha — la tendencia anual no es comparable hora a hora
 
     if (key === 'demand') {
       y_true = y_true.map(v => v / 1000);  // MWh → GWh
-      y_pred  = y_pred.map(v => v / 1000);
     }
   } else {
     // Fallback: use synthetic annual history

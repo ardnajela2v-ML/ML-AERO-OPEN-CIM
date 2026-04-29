@@ -1904,10 +1904,8 @@ def create_app():
             for m in fitted.values():
                 m.pop('_predict', None)
 
-            # Raw hourly values for Forecast Studio visualization (sampled for performance)
+            # Raw hourly values for Forecast Studio — sin muestreo, datos completos del archivo
             raw = values.tolist()
-            step = max(1, len(raw) // 500)  # sample to ~500 points
-            raw_sampled = raw[::step]
 
             return jsonify(numpy_to_python({
                 'preset': key,
@@ -1920,7 +1918,7 @@ def create_app():
                 'projection': projection,
                 'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                 'best_model': best,
-                'raw_values': raw_sampled,
+                'raw_values': raw,
                 'raw_n': len(raw),
             }))
         except Exception as e:
@@ -2022,9 +2020,8 @@ def create_app():
                     })
                 for m in fitted.values():
                     m.pop('_predict', None)
-                # raw hourly values for this side
+                # raw hourly values for this side — sin muestreo, datos completos del archivo
                 raw_s = cache[s]
-                step_s = max(1, len(raw_s) // 500)
                 result['sides'][s] = {
                     'history_t': [int(x) for x in t],
                     'history_annual': [float(x) for x in annual_hist],
@@ -2032,7 +2029,7 @@ def create_app():
                     'projection': projection,
                     'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                     'best_model': best,
-                    'raw_values': raw_s[::step_s],
+                    'raw_values': raw_s,
                     'raw_n': len(raw_s),
                 }
             return jsonify(numpy_to_python(result))
