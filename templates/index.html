@@ -193,7 +193,7 @@
   <div id="arena-wind-tab" class="tab-content active">
 
     <div class="card mb-3">
-      <div class="card-header"><span class="card-title">Preparar Features &amp; Configuración de Entrenamiento</span></div>
+      <div class="card-header"><span class="card-title">Configuración de Features</span></div>
       <div class="card-body">
         <div class="form-grid-4">
           <div>
@@ -213,6 +213,13 @@
           </div>
         </div>
         <div id="features-summary" class="features-summary mt-2 hidden"></div>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
+      <div class="card-body">
+        <div class="kpi-grid" id="wind-kpis"><span class="text-muted">Sin datos cargados.</span></div>
       </div>
     </div>
 
@@ -267,7 +274,23 @@
 
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Tabla comparativa de modelos</span>
+        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
+        <span class="cbadge b" id="wind-prediction-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="wind-prediction-chart"></canvas></div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Proyección Anual a 25 años</span>
+        <span class="cbadge g" id="wind-25y-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="wind-25y-chart"></canvas></div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Tabla Comparativa de Modelos</span>
         <span class="cbadge g" id="best-model-badge">—</span>
       </div>
       <div class="cb" style="overflow-x:auto">
@@ -330,7 +353,7 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-header"><span class="card-title">Estadísticos del año base</span></div>
+        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
         <div class="card-body">
           <div class="kpi-grid" id="dem-kpis"><span class="text-muted">Sin datos cargados.</span></div>
         </div>
@@ -338,14 +361,21 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Proyección anual a 25 años</span>
+        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
+        <span class="cbadge b" id="dem-prediction-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="dem-prediction-chart"></canvas></div>
+    </div>
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Proyección Anual a 25 años</span>
         <span class="cbadge g" id="dem-best-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="dem-projection-chart"></canvas></div>
     </div>
     <div class="grid-2 mt-3">
       <div class="card">
-        <div class="card-header"><span class="card-title">Perfil diurno y mensual del año base</span></div>
+        <div class="card-header"><span class="card-title">Perfil diurno del año base</span></div>
         <div class="card-body" style="height:260px"><canvas id="dem-profile-chart"></canvas></div>
       </div>
       <div class="card">
@@ -354,7 +384,7 @@
       </div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="dem-compare-tbl">
           <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
@@ -409,7 +439,7 @@
         </div>
       </div>
       <div class="card">
-        <div class="card-header"><span class="card-title">Resumen del año base</span></div>
+        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
         <div class="card-body">
           <div class="kpi-grid" id="pml-kpis"><span class="text-muted">Sin datos cargados.</span></div>
         </div>
@@ -417,7 +447,14 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Proyección anual del PML a 25 años</span>
+        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
+        <span class="cbadge b" id="pml-prediction-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="pml-prediction-chart"></canvas></div>
+    </div>
+    <div class="card mt-3">
+      <div class="ch">
+        <span class="ct">Proyección Anual a 25 años</span>
         <span class="cbadge g" id="pml-best-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="pml-projection-chart"></canvas></div>
@@ -433,7 +470,7 @@
       </div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="pml-compare-tbl">
           <thead><tr><th>Modelo</th><th>Lado</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Precio año final</th></tr></thead>
@@ -485,13 +522,20 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Proyección Tasa de Interés a 25 años</span>
-        <span class="cbadge g" id="interest-best-badge">—</span>
+        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
+        <span class="cbadge b" id="interest-best-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="interest-projection-chart"></canvas></div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="ch">
+        <span class="ct">Proyección Anual a 25 años</span>
+        <span class="cbadge g" id="interest-25y-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="interest-25y-chart"></canvas></div>
+    </div>
+    <div class="card mt-3">
+      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="interest-compare-tbl">
           <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>Tasa Final (%)</th></tr></thead>
@@ -544,13 +588,20 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Proyección Tipo de Cambio a 25 años</span>
-        <span class="cbadge g" id="fx-best-badge">—</span>
+        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
+        <span class="cbadge b" id="fx-best-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="fx-projection-chart"></canvas></div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla comparativa de modelos</span></div>
+      <div class="ch">
+        <span class="ct">Proyección Anual a 25 años</span>
+        <span class="cbadge g" id="fx-25y-badge">—</span>
+      </div>
+      <div class="cb" style="height:340px"><canvas id="fx-25y-chart"></canvas></div>
+    </div>
+    <div class="card mt-3">
+      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="fx-compare-tbl">
           <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>TC Final (MXN)</th></tr></thead>
