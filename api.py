@@ -2072,6 +2072,7 @@ def create_app():
                         'mape': fc._mape(values, yhat)
                     }
                     fitted['mean_reversion']['_predict'] = fitted['mean_reversion']['predict']
+                    fitted['mean_reversion'].pop('predict', None)
             
             projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
             best = fc.best_trend_model(fitted)

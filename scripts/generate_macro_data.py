@@ -13,8 +13,11 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       'datos carga y precios pml compra y venta ')
+# Agregar la ruta base al sys.path para poder importar config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import Config
+
+OUT_DIR = Config.MARKET_DATA_FOLDER
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ═══ TIIE 28d — Puntos de control históricos reales (anual avg) ═══════════
