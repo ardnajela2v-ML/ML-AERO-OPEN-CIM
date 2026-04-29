@@ -1761,6 +1761,240 @@ def create_app():
             'result':   t.get('result') if t['status'] == 'done' else None,
         }))
 
+    # ─── MARKET DATA HUB — LISTAR / CARGAR / SUBIR ─────────────────────────
+
+    MARKET_CATEGORIES = {
+        'demand':   {'label': 'Demanda Eléctrica',   'unit': 'MW',    'keywords': ['demanda', 'load', 'carga']},
+        'pml':      {'label': 'Precio Marginal Local','unit': '$/kWh', 'keywords': ['pml', 'precio', 'price']},
+        'interest': {'label': 'Tasa de Interés',     'unit': '%',     'keywords': ['tiie', 'interes', 'interest', 'rate']},
+        'fx':       {'label': 'Tipo de Cambio',      'unit': 'MXN',   'keywords': ['usdmxn', 'cambio', 'exchange', 'fx']},
+    }
+
+    def _detect_market_category(filename):
+        """Detecta la categoría de un archivo de mercado por nombre."""
+        fn = filename.lower()
+        for cat, info in MARKET_CATEGORIES.items():
+            for kw in info['keywords']:
+                if kw in fn:
+                    return cat
+        return 'other'
+
+    def _load_market_file(fpath, category):
+        """Carga un archivo de mercado y devuelve (values_dict, meta).
+        Para PML devuelve {'compra': [...], 'venta': [...]}.
+        Para otros devuelve {'values': [...]}.
+        """
+        fname = os.path.basename(fpath)
+        cat_info = MARKET_CATEGORIES.get(category, {})
+
+        # Intentar TSV con header (formato TIIE/USDMXN)
+        try:
+            df = pd.read_csv(fpath, sep='\t')
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df.set_index('date', inplace=True)
+                col_name = df.columns[0]
+                values = df[col_name].dropna().values.astype(float)
+                meta = {
+                    'format': 'tsv_dated',
+                    'filename': fname,
+                    'category': category,
+                    'unit': cat_info.get('unit', ''),
+                    'label': cat_info.get('label', fname),
+                    'n_rows': len(values),
+                    'date_range': [str(df.index.min()), str(df.index.max())],
+                    'column': col_name,
+                }
+                return {'values': values.tolist(), 'dates': [str(d) for d in df.index]}, meta
+        except Exception:
+            pass
+
+        # Intentar PML (dos columnas: compra, venta)
+        if category == 'pml':
+            try:
+                data = read_pml(fpath)
+                meta = {
+                    'format': 'pml_two_col',
+                    'filename': fname,
+                    'category': 'pml',
+                    'unit': '$/kWh',
+                    'label': 'PML (compra/venta)',
+                    'n_rows': len(data['compra']),
+                }
+                return {'compra': data['compra'].tolist(),
+                        'venta': data['venta'].tolist()}, meta
+            except Exception:
+                pass
+
+        # Fallback: una columna por línea
+        values = read_one_column(fpath)
+        meta = {
+            'format': 'single_column',
+            'filename': fname,
+            'category': category,
+            'unit': cat_info.get('unit', ''),
+            'label': cat_info.get('label', fname),
+            'n_rows': len(values),
+        }
+        return {'values': values.tolist()}, meta
+
+    @app.route('/api/market/list_files', methods=['GET'])
+    def market_list_files():
+        """Lista todos los archivos en MARKET_DATA_FOLDER, agrupados por categoría."""
+        folder = Config.MARKET_DATA_FOLDER
+        if not os.path.isdir(folder):
+            return jsonify({'files': [], 'folder': folder,
+                            'error': 'MARKET_DATA_FOLDER not found'})
+        files = []
+        for fname in sorted(os.listdir(folder)):
+            if fname.startswith('.') or fname.startswith('~'):
+                continue
+            ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+            if ext not in ('txt', 'csv', 'tsv', 'dat', 'xlsx'):
+                continue
+            fpath = os.path.join(folder, fname)
+            if not os.path.isfile(fpath):
+                continue
+            size_kb = round(os.path.getsize(fpath) / 1024, 1)
+            category = _detect_market_category(fname)
+            cat_info = MARKET_CATEGORIES.get(category, {})
+            files.append({
+                'filename':  fname,
+                'size_kb':   size_kb,
+                'category':  category,
+                'label':     cat_info.get('label', fname),
+                'unit':      cat_info.get('unit', ''),
+            })
+        # Agrupar
+        grouped = {cat: [] for cat in MARKET_CATEGORIES}
+        grouped['other'] = []
+        for f in files:
+            grouped.setdefault(f['category'], []).append(f)
+        return jsonify({'files': files, 'grouped': grouped,
+                        'folder': folder, 'count': len(files)})
+
+    @app.route('/api/market/load_file', methods=['POST'])
+    def market_load_file():
+        """Carga un archivo de mercado desde MARKET_DATA_FOLDER y lo almacena en sesión."""
+        body = request.get_json(silent=True) or {}
+        sid      = _resolve_sid_or_new(body)
+        filename = body.get('filename', '')
+        category = body.get('category', 'auto')
+
+        if not filename:
+            return jsonify({'error': 'filename required'}), 400
+
+        safe_name = os.path.basename(filename)
+        fpath = os.path.join(Config.MARKET_DATA_FOLDER, safe_name)
+        if not os.path.isfile(fpath):
+            return jsonify({'error': f'Archivo no encontrado: {safe_name}'}), 404
+
+        if category == 'auto':
+            category = _detect_market_category(safe_name)
+
+        try:
+            data, meta = _load_market_file(fpath, category)
+            stats = None
+            # Calcular estadísticos
+            if 'compra' in data and 'venta' in data:
+                stats = {
+                    'compra': base_year_stats(np.array(data['compra'])),
+                    'venta':  base_year_stats(np.array(data['venta'])),
+                }
+            elif 'values' in data:
+                stats = base_year_stats(np.array(data['values']))
+
+            # Guardar en sesión
+            sess = get_session(sid)
+            sess.setdefault('market', {})[category] = {
+                'data': data, 'meta': meta, 'filename': safe_name,
+            }
+
+            # Chart preview (primera columna de valores, hasta 2000 pts)
+            if 'values' in data:
+                vals = data['values']
+            elif 'venta' in data:
+                vals = data['venta']
+            else:
+                vals = []
+            step = max(1, len(vals) // 2000)
+            chart_vals = vals[::step] if isinstance(vals, list) else vals
+
+            return jsonify(numpy_to_python({
+                'session_id': sid,
+                'filename':   safe_name,
+                'category':   category,
+                'meta':       meta,
+                'stats':      stats,
+                'n_rows':     meta.get('n_rows', len(vals)),
+                'chart': {
+                    'labels': list(range(0, len(chart_vals))),
+                    'values': chart_vals,
+                    'label':  meta.get('label', safe_name),
+                },
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/market/upload', methods=['POST'])
+    def market_upload():
+        """Sube un archivo de mercado nuevo y lo almacena en sesión + carpeta."""
+        sid = request.form.get('session_id') or str(uuid.uuid4())
+        category = request.form.get('category', 'auto')
+
+        if 'file' not in request.files:
+            return _err('No file provided')
+
+        f = request.files['file']
+        if not f.filename or not allowed_file(f.filename):
+            return _err(f'Tipo de archivo no soportado: {f.filename}')
+
+        safe_name = secure_filename(f.filename) or 'market_upload.csv'
+        if category == 'auto':
+            category = _detect_market_category(safe_name)
+
+        # Guardar en MARKET_DATA_FOLDER
+        dest = os.path.join(Config.MARKET_DATA_FOLDER, safe_name)
+        f.save(dest)
+
+        try:
+            data, meta = _load_market_file(dest, category)
+            stats = None
+            if 'compra' in data and 'venta' in data:
+                stats = {
+                    'compra': base_year_stats(np.array(data['compra'])),
+                    'venta':  base_year_stats(np.array(data['venta'])),
+                }
+            elif 'values' in data:
+                stats = base_year_stats(np.array(data['values']))
+
+            sess = get_session(sid)
+            sess.setdefault('market', {})[category] = {
+                'data': data, 'meta': meta, 'filename': safe_name,
+            }
+
+            vals = data.get('values', data.get('venta', []))
+            step = max(1, len(vals) // 2000)
+            chart_vals = vals[::step] if isinstance(vals, list) else vals
+
+            return jsonify(numpy_to_python({
+                'session_id': sid,
+                'filename':   safe_name,
+                'category':   category,
+                'meta':       meta,
+                'stats':      stats,
+                'n_rows':     meta.get('n_rows', len(vals)),
+                'chart': {
+                    'labels': list(range(0, len(chart_vals))),
+                    'values': chart_vals,
+                    'label':  meta.get('label', safe_name),
+                },
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
     # ─── DEMANDA & PML — PRONÓSTICO A 25 AÑOS ────────────────────────────────
 
     DEMAND_PRESETS = {
