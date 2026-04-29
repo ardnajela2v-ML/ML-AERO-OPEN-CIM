@@ -4555,9 +4555,32 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   });
+  document.querySelectorAll('[data-model]').forEach(tag => {
+    const key = tag.dataset.model;
+    const color = MODEL_COLORS[key];
+    if (color) {
+      tag.style.setProperty('--tag-color', color);
+    }
+  });
 });
 
 // ═════════════════════════ DEMAND & PML ARENA ═════════════════════════════
+const MODEL_COLORS = {
+  'linear':         '#3b82f6', // blue
+  'polynomial':     '#8b5cf6', // purple
+  'exponential':    '#ec4899', // pink
+  'logarithmic':    '#0ea5e9', // light blue
+  'logistic':       '#14b8a6', // teal
+  'mean_reversion': '#f59e0b', // amber
+  'arima':          '#eab308', // yellow
+  'holt_winters':   '#f97316', // orange
+  'random_forest':  '#10b981', // emerald
+  'gradient_boost': '#06b6d4', // cyan
+  'mlp':            '#6366f1', // indigo
+  'ridge':          '#84cc16', // lime
+  'svr':            '#d946ef'  // fuchsia
+};
+
 const FC_PALETTE = [
   '#4DA3FF', '#9F7AEA', '#3DDC97', '#F4C95D',
   '#F6A156', '#E5707A', '#7FB3D5', '#9CCC65',
@@ -5089,16 +5112,16 @@ function renderInterestProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
+    const color = MODEL_COLORS[key] || FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
-    const lw = isBest ? 4 : 2;
+    const lw = isBest ? 4 : 3;
     const ldash = isBest ? [] : [5, 5];
     const alpha = isBest ? 1.0 : 0.6;
 
     datasets.push({
       label: `Proj: ${key}`,
       data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
-      borderColor: color, backgroundColor: 'transparent',
+      backgroundColor: 'transparent',
       borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
       borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
     });
@@ -5239,16 +5262,16 @@ function renderFxProjection(fc) {
   for (const [key, m] of Object.entries(fc.projection)) {
     if (m.error) continue;
     const isBest = (key === best);
-    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
+    const color = MODEL_COLORS[key] || FC_PALETTE[colorIdx % FC_PALETTE.length];
     if (!isBest) colorIdx++;
-    const lw = isBest ? 4 : 2;
+    const lw = isBest ? 4 : 3;
     const ldash = isBest ? [] : [5, 5];
     const alpha = isBest ? 1.0 : 0.6;
 
     datasets.push({
       label: `Proj: ${key}`,
       data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
-      borderColor: color, backgroundColor: 'transparent',
+      backgroundColor: 'transparent',
       borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
       borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
     });

@@ -534,9 +534,15 @@ html, body {
 .model-tag {
   padding: 3px 10px; border-radius: 20px;
   font-size: 0.75rem; font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
 }
-.model-tag--baseline { background: var(--accent2-dim); color: var(--accent2); border: 1px solid var(--accent2)40; }
-.model-tag--ml { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent)40; }
+.model-tag[style*="--tag-color"] {
+  border-color: color-mix(in srgb, var(--tag-color) 40%, transparent);
+  color: var(--tag-color);
+  background: color-mix(in srgb, var(--tag-color) 15%, transparent);
+}
 
 /* ─── PROGRESS BAR ─── */
 .progress-bar-container {
