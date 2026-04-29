@@ -2055,27 +2055,76 @@ def create_app():
                 
         return jsonify(out)
 
+    def _get_market_values(sess, category, preset_key=None):
+        """Obtiene valores de mercado: primero del Data Hub (market), luego de presets legacy."""
+        # 1) Intentar Data Hub (market session store)
+        market = sess.get('market', {}).get(category)
+        if market and market.get('data'):
+            data = market['data']
+            if 'values' in data:
+                return np.asarray(data['values'], dtype=float), market.get('meta', {})
+            if 'compra' in data:
+                return data, market.get('meta', {})
+        # 2) Fallback: preset cache
+        if category == 'demand' and preset_key:
+            cache = (sess.get('demand') or {}).get(preset_key)
+            if cache:
+                return np.asarray(cache['values'], dtype=float), cache.get('meta', {})
+        if category == 'pml' and preset_key:
+            cache = (sess.get('pml') or {}).get(preset_key)
+            if cache:
+                return cache, cache.get('meta', {})
+        return None, None
+
+    def _real_annual_from_hourly(values, agg='mean'):
+        """Convierte serie horaria a promedios anuales reales (8760 h/año).
+        Si hay >=2 años, devuelve (years_rel, annual_values, base_year).
+        Si solo hay 1 año o menos, devuelve None."""
+        values = np.asarray(values, dtype=float)
+        n = len(values)
+        if n < 8760:
+            return None
+        # Construir DataFrame con índice temporal asumido
+        df = pd.DataFrame({'v': values}, index=pd.date_range('2000-01-01', periods=n, freq='h'))
+        if agg == 'sum':
+            annual = df.resample('YE')['v'].sum().dropna()
+        else:
+            annual = df.resample('YE')['v'].mean().dropna()
+        if len(annual) < 2:
+            return None
+        years_rel = np.arange(len(annual))
+        return years_rel, annual.values, int(annual.index[-1].year)
+
     @app.route('/api/demand/load', methods=['POST'])
     def demand_load():
         """Carga el archivo de demanda y devuelve estadísticos del año base."""
         body = request.get_json(silent=True) or {}
         sid  = _require_sid(body)
         key  = body.get('preset', 'juchitan')
-        meta = DEMAND_PRESETS.get(key)
-        if not meta:
-            return jsonify({'error': f'Preset desconocido: {key}'}), 400
-        fpath = _market_path(meta['file'])
-        if not os.path.isfile(fpath):
-            return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
-        try:
+        sess = get_session(sid)
+
+        # Intentar desde Data Hub primero
+        values, meta = _get_market_values(sess, 'demand', key)
+        if values is None:
+            meta = DEMAND_PRESETS.get(key)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             values = read_one_column(fpath)
-            stats = base_year_stats(values)
-            sess = get_session(sid)
             sess.setdefault('demand', {})
             sess['demand'][key] = {'values': values.tolist(), 'meta': meta}
+
+        try:
+            if isinstance(values, np.ndarray):
+                vals = values
+            else:
+                vals = np.asarray(values, dtype=float)
+            stats = base_year_stats(vals)
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta, 'stats': stats,
-                'sample_first_24h': values[:24].tolist(),
+                'sample_first_24h': vals[:24].tolist(),
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2084,8 +2133,8 @@ def create_app():
     @app.route('/api/demand/forecast', methods=['POST'])
     def demand_forecast():
         """
-        Ajusta varios modelos de tendencia y proyecta demanda a 25 años.
-        Body: {session_id, preset, growth?, horizon?, history_years?}
+        Ajusta modelos de tendencia sobre datos REALES anuales y proyecta a 25 años.
+        Usa promedios anuales reales de la serie horaria histórica (no sintetiza).
         """
         body = request.get_json(silent=True) or {}
         sid = _require_sid(body)
@@ -2093,12 +2142,12 @@ def create_app():
         growth = float(body.get('growth', Config.DEMAND_GROWTH_DEFAULT))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
-        models  = body.get('models')  # subset opcional
+        models  = body.get('models')
 
         sess = get_session(sid)
-        cache = (sess.get('demand') or {}).get(key)
-        if not cache:
-            # cargar perezosamente
+        # Obtener valores — Data Hub primero, luego presets legacy
+        values, meta = _get_market_values(sess, 'demand', key)
+        if values is None:
             meta = DEMAND_PRESETS.get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
@@ -2107,17 +2156,28 @@ def create_app():
                 return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             values = read_one_column(fpath)
             sess.setdefault('demand', {})[key] = {'values': values.tolist(), 'meta': meta}
-            cache = sess['demand'][key]
 
         try:
-            values = np.asarray(cache['values'], dtype=float)
-            t, annual_hist = synthesize_annual_series(
-                values, n_years_history=hist_y, growth_seed=growth)
+            if not isinstance(values, np.ndarray):
+                values = np.asarray(values, dtype=float)
+
+            # Intentar construir historia anual REAL a partir de datos horarios
+            real_annual = _real_annual_from_hourly(values, agg='mean')
+            if real_annual is not None:
+                t, annual_hist, base_year = real_annual
+                use_real = True
+            else:
+                # Fallback: sintetizar si hay <2 años
+                t, annual_hist = synthesize_annual_series(
+                    values, n_years_history=hist_y, growth_seed=growth)
+                base_year = 2024
+                use_real = False
+
             fitted = fit_all_trend_models(t, annual_hist, models=models)
-            projection = project_25_years(values, fitted, horizon_years=horizon)
+            projection = project_25_years(values, fitted, horizon_years=horizon,
+                                           base_year_label=base_year)
             best = best_trend_model(fitted)
 
-            # tabla resumida lista para UI (sin closures internos)
             summary = []
             for k, m in fitted.items():
                 if 'error' in m:
@@ -2134,11 +2194,9 @@ def create_app():
                     'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
                 })
 
-            # eliminar predict callables (no JSON-serializables)
             for m in fitted.values():
                 m.pop('_predict', None)
 
-            # Raw hourly values for Forecast Studio — sin muestreo, datos completos del archivo
             raw = values.tolist()
 
             return jsonify(numpy_to_python({
@@ -2154,6 +2212,7 @@ def create_app():
                 'best_model': best,
                 'raw_values': raw,
                 'raw_n': len(raw),
+                'used_real_annual': use_real,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2168,8 +2227,9 @@ def create_app():
         models = body.get('models')
 
         sess = get_session(sid)
-        cache = (sess.get('demand') or {}).get(key)
-        if not cache:
+        # Data Hub primero, luego legacy
+        values, meta = _get_market_values(sess, 'demand', key)
+        if values is None:
             meta = DEMAND_PRESETS.get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
@@ -2178,10 +2238,10 @@ def create_app():
                 return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             values = read_one_column(fpath)
             sess.setdefault('demand', {})[key] = {'values': values.tolist(), 'meta': meta}
-            cache = sess['demand'][key]
 
         try:
-            values = np.asarray(cache['values'], dtype=float)
+            if not isinstance(values, np.ndarray):
+                values = np.asarray(values, dtype=float)
             t = np.arange(len(values))
             
             from core.forecasting import fit_all_hourly_models
@@ -2214,32 +2274,46 @@ def create_app():
 
     @app.route('/api/pml/load', methods=['POST'])
     def pml_load():
-        """Carga PML_IPO.txt y devuelve estadísticos compra/venta."""
+        """Carga PML y devuelve estadísticos compra/venta."""
         body = request.get_json(silent=True) or {}
         sid  = _require_sid(body)
         key  = body.get('preset', 'pml_ipo')
-        meta = PML_PRESETS.get(key)
-        if not meta:
-            return jsonify({'error': f'Preset desconocido: {key}'}), 400
-        fpath = _market_path(meta['file'])
-        if not os.path.isfile(fpath):
-            return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
-        try:
+        sess = get_session(sid)
+
+        # Intentar desde Data Hub primero
+        pml_data, meta = _get_market_values(sess, 'pml', key)
+        if pml_data is None:
+            meta = PML_PRESETS.get(key)
+            if not meta:
+                return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath):
+                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             data = read_pml(fpath)
-            stats_compra = base_year_stats(data['compra'])
-            stats_venta  = base_year_stats(data['venta'])
-            sess = get_session(sid)
             sess.setdefault('pml', {})
             sess['pml'][key] = {'compra': data['compra'].tolist(),
                                  'venta':  data['venta'].tolist(),
                                  'meta':   meta}
+            pml_data = sess['pml'][key]
+
+        try:
+            if isinstance(pml_data, dict) and 'compra' in pml_data:
+                compra = np.asarray(pml_data['compra'], dtype=float)
+                venta  = np.asarray(pml_data['venta'], dtype=float)
+            else:
+                # Single-column fallback — treat as venta
+                vals = np.asarray(pml_data if isinstance(pml_data, np.ndarray) else pml_data, dtype=float)
+                compra = venta = vals
+
+            stats_compra = base_year_stats(compra)
+            stats_venta  = base_year_stats(venta)
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta,
                 'stats_compra': stats_compra,
                 'stats_venta':  stats_venta,
                 'sample_first_24h': {
-                    'compra': data['compra'][:24].tolist(),
-                    'venta':  data['venta'][:24].tolist(),
+                    'compra': compra[:24].tolist(),
+                    'venta':  venta[:24].tolist(),
                 },
             }))
         except Exception as e:
@@ -2249,8 +2323,7 @@ def create_app():
     @app.route('/api/pml/forecast', methods=['POST'])
     def pml_forecast():
         """
-        Proyecta el PML a 25 años (compra y venta por separado).
-        Body: {session_id, preset, growth?, side?, horizon?, history_years?}
+        Proyecta PML a 25 años usando datos REALES anuales (no sintetizados).
         """
         body = request.get_json(silent=True) or {}
         sid     = _require_sid(body)
@@ -2258,12 +2331,12 @@ def create_app():
         growth  = float(body.get('growth', Config.PML_GROWTH_DEFAULT))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
-        side    = body.get('side', 'venta')   # 'compra' | 'venta' | 'both'
+        side    = body.get('side', 'venta')
         models  = body.get('models')
 
         sess = get_session(sid)
-        cache = (sess.get('pml') or {}).get(key)
-        if not cache:
+        pml_data, meta = _get_market_values(sess, 'pml', key)
+        if pml_data is None:
             meta = PML_PRESETS.get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
@@ -2276,7 +2349,14 @@ def create_app():
                 'venta':  data['venta'].tolist(),
                 'meta':   meta,
             }
-            cache = sess['pml'][key]
+            pml_data = sess['pml'][key]
+
+        # Normalize to dict with compra/venta
+        if isinstance(pml_data, dict) and 'compra' in pml_data:
+            cache = pml_data
+        else:
+            vals = pml_data if isinstance(pml_data, list) else pml_data.tolist()
+            cache = {'compra': vals, 'venta': vals}
 
         sides = ['compra', 'venta'] if side == 'both' else [side]
         result = {'preset': key, 'growth_seed': growth, 'horizon_years': horizon,
@@ -2285,11 +2365,22 @@ def create_app():
         try:
             for s in sides:
                 values = np.asarray(cache[s], dtype=float)
-                t, annual_hist = synthesize_annual_series(
-                    values, n_years_history=hist_y, growth_seed=growth,
-                    noise_pct=0.04)  # PML es más volátil
+
+                # Intentar historia anual REAL
+                real_annual = _real_annual_from_hourly(values, agg='mean')
+                if real_annual is not None:
+                    t, annual_hist, base_year = real_annual
+                    use_real = True
+                else:
+                    t, annual_hist = synthesize_annual_series(
+                        values, n_years_history=hist_y, growth_seed=growth,
+                        noise_pct=0.04)
+                    base_year = 2024
+                    use_real = False
+
                 fitted = fit_all_trend_models(t, annual_hist, models=models)
-                projection = project_25_years(values, fitted, horizon_years=horizon)
+                projection = project_25_years(values, fitted, horizon_years=horizon,
+                                               base_year_label=base_year)
                 best = best_trend_model(fitted)
                 summary = []
                 for k, m in fitted.items():
@@ -2307,7 +2398,6 @@ def create_app():
                     })
                 for m in fitted.values():
                     m.pop('_predict', None)
-                # raw hourly values for this side — sin muestreo, datos completos del archivo
                 raw_s = cache[s]
                 result['sides'][s] = {
                     'history_t': [int(x) for x in t],
@@ -2318,6 +2408,7 @@ def create_app():
                     'best_model': best,
                     'raw_values': raw_s,
                     'raw_n': len(raw_s),
+                    'used_real_annual': use_real,
                 }
             return jsonify(numpy_to_python(result))
         except Exception as e:
@@ -2333,21 +2424,29 @@ def create_app():
         models = body.get('models')
 
         sess = get_session(sid)
-        cache = (sess.get('pml') or {}).get(preset)
-        if not cache:
-            meta = PML_PRESETS.get(preset)
-            if not meta:
-                return jsonify({'error': f'Preset desconocido: {preset}'}), 400
-            fpath = _market_path(meta['file'])
-            if not os.path.isfile(fpath):
-                return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
-            data = read_pml(fpath)
-            sess.setdefault('pml', {})[preset] = {
-                'compra': data['compra'].tolist(),
-                'venta': data['venta'].tolist(),
-                'meta': meta,
-            }
-            cache = sess['pml'][preset]
+        # Data Hub primero, luego legacy
+        pml_data, meta = _get_market_values(sess, 'pml', preset)
+        if pml_data is not None and isinstance(pml_data, dict) and 'compra' in pml_data:
+            cache = pml_data
+        elif pml_data is not None:
+            vals = pml_data.tolist() if isinstance(pml_data, np.ndarray) else pml_data
+            cache = {'compra': vals, 'venta': vals}
+        else:
+            cache = (sess.get('pml') or {}).get(preset)
+            if not cache:
+                meta = PML_PRESETS.get(preset)
+                if not meta:
+                    return jsonify({'error': f'Preset desconocido: {preset}'}), 400
+                fpath = _market_path(meta['file'])
+                if not os.path.isfile(fpath):
+                    return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+                data = read_pml(fpath)
+                sess.setdefault('pml', {})[preset] = {
+                    'compra': data['compra'].tolist(),
+                    'venta': data['venta'].tolist(),
+                    'meta': meta,
+                }
+                cache = sess['pml'][preset]
 
         try:
             from core.forecasting import fit_all_hourly_models
@@ -2385,48 +2484,60 @@ def create_app():
 
     @app.route('/api/interest/forecast', methods=['POST'])
     def interest_forecast():
-        """Proyecta Tasa de Interés a 25 años usando históricos anuales."""
+        """Proyecta Tasa de Interés a 25 años usando históricos anuales REALES."""
         body = request.get_json(silent=True) or {}
+        sid     = body.get('session_id')
         key     = body.get('preset', 'tiie_28d')
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         models  = body.get('models')
 
-        meta = INTEREST_PRESETS.get(key)
-        if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
-        fpath = _market_path(meta['file'])
-        if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+        # Intentar Data Hub primero
+        raw_values = None
+        if sid:
+            sess = get_session(sid)
+            market = sess.get('market', {}).get('interest')
+            if market and market.get('data') and 'values' in market['data']:
+                raw_values = np.asarray(market['data']['values'], dtype=float)
+                dates = market['data'].get('dates')
 
-        try:
-            # Leer TSV diario (date, value)
+        if raw_values is not None and dates:
+            # Usar datos del Data Hub — ya tenemos valores y fechas
+            df = pd.DataFrame({'v': raw_values},
+                               index=pd.to_datetime(dates))
+            col_name = 'v'
+        else:
+            meta = INTEREST_PRESETS.get(key)
+            if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             df = pd.read_csv(fpath, sep='\t')
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
             col_name = df.columns[0]
-            
+
+        try:
             # Agregar anualmente (promedio)
             annual_df = df.resample('YE').mean().dropna()
             
-            # 1) Serie completa para la gráfica (histórico)
+            # Serie completa para la gráfica
             years_full = annual_df.index.year.values
             values_full = annual_df[col_name].values
             
-            # 2) Serie de entrenamiento (desde 2001) para evitar que
-            # la crisis distorsione la pendiente de los modelos
+            # Serie de entrenamiento (desde 2001)
             train_df = annual_df[annual_df.index.year >= 2001]
+            if len(train_df) < 2:
+                train_df = annual_df  # usar todo si no hay suficiente post-2001
             years_train = train_df.index.year.values
             values_train = train_df[col_name].values
             
-            # Años relativos t=0..N para entrenamiento
             t_train = years_train - years_train[0]
             
             import core.forecasting as fc
             
-            # Ajustar todos los modelos (Vasicek usa media histórica automáticamente)
             fitted = fc.fit_all_trend_models(t_train, values_train, models=models)
             
-            # Si mean_reversion está, re-ajustarlo con predict limpio para JSON
             if 'mean_reversion' in fitted and '_predict' not in fitted.get('mean_reversion', {}):
-                mr = fc.fit_mean_reversion(t_train, values_train)  # sin target_b = usa media histórica
+                mr = fc.fit_mean_reversion(t_train, values_train)
                 yhat = mr['fitted']
                 fitted['mean_reversion'] = {
                     'kind': mr['kind'],
@@ -2458,6 +2569,9 @@ def create_app():
             
             for m in fitted.values(): m.pop('_predict', None)
             
+            # Raw values for Forecast Studio
+            all_raw = df[col_name].dropna().values.tolist()
+            
             return jsonify(numpy_to_python({
                 'preset': key, 'horizon_years': horizon,
                 'history_years': [int(y) for y in years_full],
@@ -2465,6 +2579,9 @@ def create_app():
                 'fitted': fitted, 'projection': projection,
                 'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                 'best_model': best,
+                'raw_values': all_raw,
+                'raw_n': len(all_raw),
+                'used_real_annual': True,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2472,24 +2589,38 @@ def create_app():
 
     @app.route('/api/fx/forecast', methods=['POST'])
     def fx_forecast():
-        """Proyecta Tipo de Cambio a 25 años usando históricos anuales."""
+        """Proyecta Tipo de Cambio a 25 años usando históricos anuales REALES."""
         body = request.get_json(silent=True) or {}
+        sid     = body.get('session_id')
         key     = body.get('preset', 'usdmxn')
         depr    = float(body.get('depreciation', 2.5))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         models  = body.get('models')
 
-        meta = FX_PRESETS.get(key)
-        if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
-        fpath = _market_path(meta['file'])
-        if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
+        # Data Hub primero
+        raw_values = None
+        if sid:
+            sess = get_session(sid)
+            market = sess.get('market', {}).get('fx')
+            if market and market.get('data') and 'values' in market['data']:
+                raw_values = np.asarray(market['data']['values'], dtype=float)
+                dates = market['data'].get('dates')
 
-        try:
+        if raw_values is not None and dates:
+            df = pd.DataFrame({'v': raw_values},
+                               index=pd.to_datetime(dates))
+            col_name = 'v'
+        else:
+            meta = FX_PRESETS.get(key)
+            if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
+            fpath = _market_path(meta['file'])
+            if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             df = pd.read_csv(fpath, sep='\t')
             df['date'] = pd.to_datetime(df['date'])
             df.set_index('date', inplace=True)
             col_name = df.columns[0]
-            
+
+        try:
             annual_df = df.resample('YE').mean().dropna()
             years = annual_df.index.year.values
             values = annual_df[col_name].values
@@ -2516,6 +2647,9 @@ def create_app():
             
             for m in fitted.values(): m.pop('_predict', None)
             
+            # Raw values for Forecast Studio
+            all_raw = df[col_name].dropna().values.tolist()
+            
             return jsonify(numpy_to_python({
                 'preset': key, 'horizon_years': horizon, 'depreciation': depr,
                 'history_years': [int(y) for y in years],
@@ -2523,6 +2657,9 @@ def create_app():
                 'fitted': fitted, 'projection': projection,
                 'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                 'best_model': best,
+                'raw_values': all_raw,
+                'raw_n': len(all_raw),
+                'used_real_annual': True,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
