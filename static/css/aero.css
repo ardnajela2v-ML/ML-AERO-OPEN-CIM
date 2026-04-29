@@ -1230,3 +1230,86 @@ body.light .ing-f {
 body.light .ing-fab {
   background: linear-gradient(135deg, var(--acc) 0%, var(--acc2) 100%);
 }
+
+/* ── Hourly Chart Navigation Toolbar ─────────────────────────────────────── */
+.hourly-nav-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 10;
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.hourly-nav-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--line, #2A3346);
+  background: var(--surface, #1B2230);
+  color: var(--text, #F4F7FB);
+  cursor: pointer;
+  transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.hourly-nav-btn:hover:not(:disabled) {
+  border-color: var(--accent, #4DA3FF);
+  background: var(--accent-dim, rgba(77,163,255,.12));
+  color: var(--accent, #4DA3FF);
+}
+
+.hourly-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.hourly-nav-btn.active {
+  border-color: var(--acc3, #facc15);
+  background: rgba(250,204,21,.15);
+  color: var(--acc3, #facc15);
+  box-shadow: 0 0 8px rgba(250,204,21,.25);
+}
+
+.hourly-nav-btn--all {
+  border-color: var(--acc2, #8b5cf6);
+  color: var(--acc2, #8b5cf6);
+}
+
+.hourly-nav-btn--all:hover:not(:disabled) {
+  background: rgba(139,92,246,.15);
+  border-color: var(--acc2, #8b5cf6);
+  color: var(--acc2, #8b5cf6);
+}
+
+.hourly-nav-btn--zoom {
+  border-color: var(--acc3, #facc15);
+  color: var(--acc3, #facc15);
+}
+
+.hourly-nav-btn--zoom:hover:not(:disabled) {
+  background: rgba(250,204,21,.15);
+}
+
+.hourly-nav-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted, #A6B3C8);
+  padding: 0 4px;
+  min-width: 90px;
+  text-align: center;
+  letter-spacing: .3px;
+}
+
+body.light .hourly-nav-btn {
+  background: #fff;
+  border-color: #D6DEE9;
+  color: #3D4A5C;
+}
+
+body.light .hourly-nav-btn:hover:not(:disabled) {
+  background: rgba(77,163,255,.08);
+}

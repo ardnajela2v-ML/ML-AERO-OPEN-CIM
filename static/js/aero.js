@@ -5747,7 +5747,7 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
   if (!modelKeys.length) return false;
   const refModel = (bestModel && proj[bestModel]) ? proj[bestModel] : proj[modelKeys[0]];
 
-  // Determinar tamaño del ciclo (último año de datos)
+  // Determinar tamaño del ciclo
   const n = rawValues.length;
   let cycleLen;
   if (n >= 8760) cycleLen = 8760;
@@ -5767,12 +5767,12 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
   const startYear = (refModel.years && refModel.years[0]) ||
                     (baseYearLabel ? baseYearLabel + 1 : new Date().getFullYear() + 1);
 
-  // Etiquetas (compartidas)
+  // Etiquetas
   const labels = new Array(totalLen);
   for (let y = 0; y < horizon; y++) {
-    const yearLabel = startYear + y;
+    const yr = startYear + y;
     for (let h = 0; h < cycleLen; h++) {
-      labels[y * cycleLen + h] = `${yearLabel} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
+      labels[y * cycleLen + h] = `${yr} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
     }
   }
 
@@ -5790,7 +5790,7 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
 
   const datasets = [];
 
-  // Bandas IC del mejor modelo (al fondo)
+  // Banda IC del mejor modelo (al fondo)
   const best = bestModel && proj[bestModel] && !proj[bestModel].error ? proj[bestModel] : null;
   if (best && best.ci_high?.length && best.ci_low?.length) {
     datasets.push({
@@ -5805,11 +5805,11 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
     });
   }
 
-  // Una línea por modelo (mejor en verde y grueso, otros en paleta y dash)
+  // Una línea por modelo
   modelKeys.forEach((k, i) => {
     const isBest = (k === bestModel);
     datasets.push({
-      label: `${k}${isBest ? ' ★' : ''}`,
+      label: `${k}${isBest ? ' \u2605' : ''}`,
       data: buildHourlySeries(proj[k].annual),
       borderColor: isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length],
       backgroundColor: (isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length]) + '22',
@@ -5820,26 +5820,79 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
     });
   });
 
-  // Botón Reset Zoom (toolbar opcional sobre el canvas)
-  let resetBtn = ctxEl.parentElement?.querySelector('.zoom-reset-btn');
-  if (!resetBtn && ctxEl.parentElement) {
-    resetBtn = document.createElement('button');
-    resetBtn.type = 'button';
-    resetBtn.textContent = '↺ Reset Zoom';
-    resetBtn.className = 'zoom-reset-btn';
-    resetBtn.style.cssText = 'position:absolute;top:6px;right:6px;z-index:10;padding:4px 10px;font-size:11px;border-radius:6px;border:1px solid var(--line,#2A3346);background:var(--surface,#1B2230);color:inherit;cursor:pointer;display:none;';
-    ctxEl.parentElement.style.position = ctxEl.parentElement.style.position || 'relative';
-    ctxEl.parentElement.appendChild(resetBtn);
-  }
-  if (resetBtn) {
-    resetBtn.style.display = 'none';
-    resetBtn.onclick = () => {
-      const ch = WP.charts[canvasId];
-      if (ch && ch.resetZoom) ch.resetZoom();
-      resetBtn.style.display = 'none';
-    };
+  // ── Toolbar de navegación ──────────────────────────────────────────────────
+  const wrapper = ctxEl.parentElement;
+  if (wrapper) wrapper.style.position = wrapper.style.position || 'relative';
+
+  // Limpiar toolbar anterior si existe
+  const oldToolbar = wrapper?.querySelector('.hourly-nav-toolbar');
+  if (oldToolbar) oldToolbar.remove();
+
+  // Estado de ventana deslizante
+  const WIN_YEARS  = 5;
+  let winStart     = 0;
+  let winEnd       = WIN_YEARS * cycleLen - 1;
+  let isZoomed     = false;
+  let boxSelectOn  = false;
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'hourly-nav-toolbar';
+  toolbar.style.cssText = [
+    'position:absolute', 'top:6px', 'right:6px', 'z-index:10',
+    'display:flex', 'gap:5px', 'align-items:center',
+  ].join(';');
+
+  const btnPrev = document.createElement('button');
+  btnPrev.type = 'button'; btnPrev.textContent = '\u25C4'; btnPrev.title = 'Año anterior';
+  btnPrev.className = 'hourly-nav-btn';
+
+  const yrLabel = document.createElement('span');
+  yrLabel.className = 'hourly-nav-label';
+
+  const btnNext = document.createElement('button');
+  btnNext.type = 'button'; btnNext.textContent = '\u25BA'; btnNext.title = 'Año siguiente';
+  btnNext.className = 'hourly-nav-btn';
+
+  const btnAll = document.createElement('button');
+  btnAll.type = 'button'; btnAll.textContent = '\u22DE Ver todo';
+  btnAll.title = 'Mostrar todos los años (sin zoom)';
+  btnAll.className = 'hourly-nav-btn hourly-nav-btn--all';
+
+  const btnZoomSel = document.createElement('button');
+  btnZoomSel.type = 'button'; btnZoomSel.textContent = '\u25A3 Zoom sel.';
+  btnZoomSel.title = 'Haz drag sobre el gráfico para hacer zoom en esa área';
+  btnZoomSel.className = 'hourly-nav-btn hourly-nav-btn--zoom';
+
+  toolbar.append(btnPrev, yrLabel, btnNext, btnAll, btnZoomSel);
+  if (wrapper) wrapper.appendChild(toolbar);
+
+  // ── Helpers de ventana ─────────────────────────────────────────────────────
+  function updateLabel() {
+    if (isZoomed) { yrLabel.textContent = 'Zoom activo'; return; }
+    const y0 = startYear + Math.floor(winStart / cycleLen);
+    const y1 = startYear + Math.min(horizon - 1, Math.floor(winEnd / cycleLen));
+    yrLabel.textContent = `${y0} \u2013 ${y1}`;
   }
 
+  function applyWindow(chart) {
+    if (isZoomed) return;
+    chart.options.scales.x.min = winStart;
+    chart.options.scales.x.max = winEnd;
+    chart.update('none');
+    updateLabel();
+    btnPrev.disabled = (winStart <= 0);
+    btnNext.disabled = (winEnd >= totalLen - 1);
+  }
+
+  function slideYears(delta) {
+    if (isZoomed) return;
+    const step = cycleLen;
+    winStart = Math.max(0, Math.min(winStart + delta * step, totalLen - WIN_YEARS * cycleLen));
+    winEnd   = winStart + WIN_YEARS * cycleLen - 1;
+    applyWindow(WP.charts[canvasId]);
+  }
+
+  // ── Crear chart ────────────────────────────────────────────────────────────
   const ctx = ctxEl.getContext('2d');
   WP.charts[canvasId] = new Chart(ctx, {
     type: 'line', data: { labels, datasets },
@@ -5850,42 +5903,130 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
         legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
         decimation: { enabled: true, algorithm: 'lttb', samples: 3000, threshold: 3000 },
         tooltip: { callbacks: {
-          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
+          label: c => `${c.dataset.label}: ${fcFormatNumber(c.parsed.y, decimals)} ${unitLabel}`.trim()
         } },
         zoom: {
-          pan: { enabled: true, mode: 'x', modifierKey: null },
+          pan:  { enabled: false },        // pan libre DESACTIVADO
           zoom: {
-            wheel: { enabled: true, modifierKey: null },
-            pinch: { enabled: true },
-            drag: { enabled: false },
+            wheel:  { enabled: false },    // scroll DESACTIVADO (evita lentitud)
+            pinch:  { enabled: false },    // pinch DESACTIVADO
+            drag:   { enabled: false },    // box-select OFF por defecto
             mode: 'x',
-            onZoomComplete: () => { if (resetBtn) resetBtn.style.display = 'inline-block'; },
+            onZoomComplete: () => {
+              isZoomed = true;
+              updateLabel();
+              btnZoomSel.textContent = '\u2715 Salir zoom';
+              btnZoomSel.classList.add('active');
+              // desactivar drag para no re-zoomear encima
+              WP.charts[canvasId].options.plugins.zoom.zoom.drag.enabled = false;
+              WP.charts[canvasId].update('none');
+              boxSelectOn = false;
+            },
           },
         },
       },
       scales: {
         x: {
-          title: { display: true, text: `Hora futura (${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'horas' : 'días'} × ${horizon} años) — scroll para zoom · drag para pan` },
+          min: 0, max: WIN_YEARS * cycleLen - 1,
+          title: {
+            display: true,
+            text: `\u25C4 \u25BA Navega con los botones  \u00B7  ${WIN_YEARS} de ${horizon} años visibles  \u00B7  Zoom solo por selección`
+          },
           grid: { color: gridColor() },
           ticks: {
             maxTicksLimit: Math.min(horizon, 26), font: { size: 9 },
             callback: function(_val, idx) {
-              if (idx % cycleLen === 0) {
-                const yIdx = Math.floor(idx / cycleLen);
-                return startYear + yIdx;
-              }
+              if (idx % cycleLen === 0) return startYear + Math.floor(idx / cycleLen);
               return '';
             }
           }
         },
-        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() }, ticks: { font: { size: 9 } } }
+        y: {
+          title: { display: true, text: ylabel },
+          grid: { color: gridColor() }, ticks: { font: { size: 9 } }
+        }
       }
     }
   });
 
+  // ── Eventos de toolbar ─────────────────────────────────────────────────────
+  btnPrev.addEventListener('click', () => slideYears(-1));
+  btnNext.addEventListener('click', () => slideYears(+1));
+
+  btnAll.addEventListener('click', () => {
+    const chart = WP.charts[canvasId];
+    if (!chart) return;
+    isZoomed = false; boxSelectOn = false;
+    chart.options.plugins.zoom.zoom.drag.enabled = false;
+    chart.options.scales.x.min = 0;
+    chart.options.scales.x.max = totalLen - 1;
+    chart.update('none');
+    yrLabel.textContent = `Todo (${horizon} a\u00F1os)`;
+    btnZoomSel.textContent = '\u25A3 Zoom sel.';
+    btnZoomSel.classList.remove('active');
+    btnPrev.disabled = true;
+    btnNext.disabled = true;
+  });
+
+  btnZoomSel.addEventListener('click', () => {
+    const chart = WP.charts[canvasId];
+    if (!chart) return;
+    if (isZoomed) {
+      // Salir del zoom → volver a ventana de 5 años
+      isZoomed = false; boxSelectOn = false;
+      chart.options.plugins.zoom.zoom.drag.enabled = false;
+      chart.resetZoom();
+      btnZoomSel.textContent = '\u25A3 Zoom sel.';
+      btnZoomSel.classList.remove('active');
+      applyWindow(chart);
+    } else if (boxSelectOn) {
+      // Cancelar selección
+      boxSelectOn = false;
+      chart.options.plugins.zoom.zoom.drag.enabled = false;
+      chart.update('none');
+      btnZoomSel.textContent = '\u25A3 Zoom sel.';
+      btnZoomSel.classList.remove('active');
+    } else {
+      // Activar box-select
+      boxSelectOn = true;
+      chart.options.plugins.zoom.zoom.drag.enabled = true;
+      chart.update('none');
+      btnZoomSel.textContent = '\uD83D\uDD0D Arrastra para zoom\u2026';
+      btnZoomSel.classList.add('active');
+    }
+  });
+
+  // Scroll horizontal → desliza años (sin zoom)
+  ctxEl.addEventListener('wheel', (e) => {
+    if (isZoomed || boxSelectOn) return;
+    if (Math.abs(e.deltaX) < 5 && Math.abs(e.deltaY) < 5) return;
+    e.preventDefault();
+    const dir = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) > 0 ? 1 : -1;
+    slideYears(dir);
+  }, { passive: false });
+
+  // Touch swipe horizontal
+  let touchStartX = null;
+  ctxEl.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) touchStartX = e.touches[0].clientX;
+  }, { passive: true });
+  ctxEl.addEventListener('touchend', (e) => {
+    if (touchStartX === null) return;
+    const dx = (e.changedTouches[0]?.clientX ?? touchStartX) - touchStartX;
+    touchStartX = null;
+    if (Math.abs(dx) < 40) return;
+    slideYears(dx < 0 ? 1 : -1);
+  }, { passive: true });
+
+  // Estado inicial
+  updateLabel();
+  btnPrev.disabled = true;
+  btnNext.disabled = (horizon <= WIN_YEARS);
+
+  // Badge
   if (badgeId && best) {
     const lastVal = best.annual[best.annual.length - 1];
-    const txt = `Best: ${bestModel} · ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} · CAGR ${fcPct(best.cagr)} · Año final ${fcFormatNumber(scaler(lastVal), decimals)} ${unitLabel}`;
+    const txt = `Best: ${bestModel} \u00B7 ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} \u00B7 CAGR ${fcPct(best.cagr)} \u00B7 A\u00F1o final ${fcFormatNumber(scaler(lastVal), decimals)} ${unitLabel}`;
     const bd = document.getElementById(badgeId);
     if (bd) bd.textContent = txt;
   }
