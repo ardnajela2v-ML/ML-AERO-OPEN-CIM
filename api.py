@@ -1896,6 +1896,7 @@ def create_app():
                     center_lon=float(cen_lon) if cen_lon is not None else None,
                     radius_km=float(body['radius_km']) if body.get('radius_km') else None,
                     filter_filenames=body.get('filenames') or None,
+                    physical=bool(body.get('physical', False)),
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'

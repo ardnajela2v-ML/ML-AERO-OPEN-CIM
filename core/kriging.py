@@ -589,7 +589,10 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                       center_lat: Optional[float] = None,
                       center_lon: Optional[float] = None,
                       radius_km: Optional[float] = None,
-                      filter_filenames: Optional[List[str]] = None):
+                      filter_filenames: Optional[List[str]] = None,
+                      physical: bool = False,
+                      z_meas: float = 100.0,
+                      z0_ref: float = 0.03):
     """
     Reproduce el comportamiento original del script MATLAB/Tk:
     para cada sitio elige el último aerogenerador del catálogo (como el
@@ -713,10 +716,116 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         ]
         return g
 
-    return {
+    base = {
         'wind':            _grid(v_proms, 'Velocidad promedio del viento (m/s)'),
         'inversion':       _grid(invers,  'Inversión inicial (USD)'),
         'van':             _grid(vans,    'Valor Actual Neto (USD)'),
         'n_sites':         len(lats),
         'turbine_curves':  turbine_curves,
+        'physical':        False,
     }
+
+    if not physical:
+        return base
+
+    # ─── Kriging físicamente informado (Fase 3) ──────────────────────────────
+    # 1) Por sitio: lookup de altitud y z0 → bias-removal de v_mean a un campo
+    #    "neutralizado" (rugosidad de referencia z0_ref = 0.03 m).
+    # 2) Krigeamos el campo neutral.
+    # 3) Por píxel: muestreamos z0_local y elevación, y reaplicamos la
+    #    corrección logarítmica para obtener V_real.
+    try:
+        from .terrain import enrich_sites, sample_grid_elevation, sample_grid_z0
+    except Exception as e:  # pragma: no cover
+        log.warning('legacy_three_maps: terrain module unavailable (%s); fallback no-physical', e)
+        return base
+
+    site_records = [
+        {'filename': nm, 'lat': la, 'lon': lo}
+        for nm, la, lo in zip(names, lats, lons)
+    ]
+    enriched = enrich_sites(site_records)
+    z0_site = [
+        float(s['z0']) if s.get('z0') is not None else float(z0_ref)
+        for s in enriched
+    ]
+    elev_site = [
+        float(s['elevation_m']) if s.get('elevation_m') is not None else 0.0
+        for s in enriched
+    ]
+
+    def _alpha(z0_local: float) -> float:
+        z0_local = max(1e-4, float(z0_local))
+        denom = math.log(z_meas / z0_local)
+        if abs(denom) < 1e-9:
+            return 1.0
+        return math.log(z_meas / z0_ref) / denom
+
+    v_neutral = [v * _alpha(z0i) for v, z0i in zip(v_proms, z0_site)]
+
+    # Krigeamos el campo neutralizado.
+    g_neutral = kriging_grid(lons, lats, v_neutral, n=n_grid, model=model)
+    b = g_neutral['bounds']
+    z_neutral = g_neutral['z']
+    ny = len(z_neutral); nx = len(z_neutral[0]) if ny else 0
+    grid_lats = [b['lat_min'] + (b['lat_max'] - b['lat_min']) * j / (ny - 1)
+                 for j in range(ny)] if ny > 1 else [b['lat_min']]
+    grid_lons = [b['lon_min'] + (b['lon_max'] - b['lon_min']) * i / (nx - 1)
+                 for i in range(nx)] if nx > 1 else [b['lon_min']]
+
+    elev_grid = sample_grid_elevation(grid_lats, grid_lons)
+    z0_grid   = sample_grid_z0(grid_lats, grid_lons)
+
+    # Corrección por pixel: V_real = V_neutral / alpha_local
+    z_neutral = g_neutral['z']
+    ny = len(z_neutral); nx = len(z_neutral[0]) if ny else 0
+    v_real = [[0.0] * nx for _ in range(ny)]
+    for j in range(ny):
+        for i in range(nx):
+            z0_p = max(1e-4, float(z0_grid[j][i]) if j < len(z0_grid) and i < len(z0_grid[j]) else z0_ref)
+            alpha_p = math.log(z_meas / z0_ref) / math.log(z_meas / z0_p)
+            v_real[j][i] = float(z_neutral[j][i]) / alpha_p if alpha_p else float(z_neutral[j][i])
+
+    # Densidad del aire local (escalada por altitud).
+    rho0 = 1.225
+    air_density = [
+        [rho0 * math.exp(-max(0.0, float(elev_grid[j][i])) / 8400.0)
+         for i in range(nx)]
+        for j in range(ny)
+    ]
+
+    bounds = g_neutral.get('bounds')
+
+    def _wrap_grid(z, title, unit, vmin=None, vmax=None):
+        return {
+            'z': z,
+            'lats': grid_lats,
+            'lons': grid_lons,
+            'bounds': bounds,
+            'title': title,
+            'unit': unit,
+            'model': model,
+            'z_min': min(min(row) for row in z) if vmin is None else vmin,
+            'z_max': max(max(row) for row in z) if vmax is None else vmax,
+        }
+
+    base['wind_neutral'] = base['wind']
+    base['wind_neutral']['title'] = 'Viento neutralizado (campo geoestadístico)'
+    base['wind'] = _wrap_grid(v_real,
+                              'Viento real con corrección física (z₀ + altitud)',
+                              'm/s')
+    base['wind']['points'] = [
+        {'lat': la, 'lon': lo, 'value': float(v), 'name': nm,
+         'z0': float(z0i), 'elevation_m': float(ei)}
+        for la, lo, v, nm, z0i, ei
+        in zip(lats, lons, v_proms, names, z0_site, elev_site)
+    ]
+    base['roughness']   = _wrap_grid(z0_grid,    'Rugosidad superficial z₀',          'm')
+    base['elevation']   = _wrap_grid(elev_grid,  'Topografía (altitud DEM)',          'm')
+    base['air_density'] = _wrap_grid(air_density,'Densidad del aire local',           'kg/m³')
+
+    base['physical'] = True
+    base['z_meas']   = z_meas
+    base['z0_ref']   = z0_ref
+    base['n_corrected'] = sum(1 for s in enriched if s.get('z0') is not None)
+    return base

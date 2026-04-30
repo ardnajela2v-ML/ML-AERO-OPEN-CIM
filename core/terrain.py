@@ -360,3 +360,139 @@ def enrich_sites(sites: List[dict], landcover_zoom: int = 11,
             'z0': round(float(lc['z0']), 4) if lc.get('z0') is not None else None,
         })
     return out
+
+
+# ─── Grid sampling rápido (Fase 3) ────────────────────────────────────────────
+# Terrarium DEM tiles: la elevación se codifica en (R, G, B) como
+#     elev_m = R*256 + G + B/256 - 32768
+# Servidor sin rate-limit (S3) y caché local en memoria → muy rápido.
+_TERRARIUM_TEMPLATE = (
+    'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+)
+_DEM_TILE_CACHE: dict = {}
+_DEM_TILE_LOCK = threading.Lock()
+_DEM_TILE_MAX = 200
+
+
+def _fetch_dem_tile(z: int, x: int, y: int, timeout: int = 12):
+    if not _PIL_OK:
+        return None
+    key = (z, x, y)
+    with _DEM_TILE_LOCK:
+        if key in _DEM_TILE_CACHE:
+            return _DEM_TILE_CACHE[key]
+    url = _TERRARIUM_TEMPLATE.format(z=z, x=x, y=y)
+    try:
+        r = requests.get(url, timeout=timeout)
+        r.raise_for_status()
+        img = Image.open(BytesIO(r.content)).convert('RGB')
+    except Exception:
+        return None
+    with _DEM_TILE_LOCK:
+        _DEM_TILE_CACHE[key] = img
+        if len(_DEM_TILE_CACHE) > _DEM_TILE_MAX:
+            _DEM_TILE_CACHE.pop(next(iter(_DEM_TILE_CACHE)))
+    return img
+
+
+def _terrarium_pixel_elev(img, px: int, py: int) -> Optional[float]:
+    try:
+        r, g, b = img.getpixel((px, py))[:3]
+    except Exception:
+        return None
+    elev = r * 256 + g + b / 256.0 - 32768.0
+    # En agua, Terrarium devuelve exactamente -32768 (0,0,0); reemplazamos por 0.
+    if elev <= -10000.0:
+        return 0.0
+    return float(elev)
+
+
+def _zoom_for_resolution(bounds: Tuple[float, float, float, float],
+                         nx: int, ny: int) -> int:
+    """Elige un zoom Web-Mercator que dé al menos 1 píxel del tile por celda
+    del grid solicitado (clamp 6..14 para evitar tile-storm)."""
+    lat_min, lon_min, lat_max, lon_max = bounds
+    # Píxeles por grado a zoom z: 256 * 2^z / 360
+    deg_per_cell = max(
+        (lon_max - lon_min) / max(nx, 1),
+        (lat_max - lat_min) / max(ny, 1),
+    )
+    if deg_per_cell <= 0:
+        return 10
+    needed_pix_per_deg = 1.0 / deg_per_cell
+    z = max(0, int(math.ceil(math.log2(needed_pix_per_deg * 360.0 / 256.0))))
+    return max(6, min(z, 13))
+
+
+def _required_tiles(lats: List[float], lons: List[float], z: int):
+    """Conjunto de tiles (z,x,y) necesarios para muestrear todas las celdas."""
+    tiles = set()
+    for lat in lats:
+        for lon in lons:
+            tx, ty, _, _ = _latlon_to_tile_pixel(lat, lon, z)
+            tiles.add((z, tx, ty))
+    return tiles
+
+
+def _prefetch_tiles(tiles, fetcher, max_workers: int = 12):
+    """Descarga en paralelo todos los tiles requeridos (todos van a caché)."""
+    if not tiles:
+        return
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        list(pool.map(lambda t: fetcher(t[0], t[1], t[2]), tiles))
+
+
+def sample_grid_elevation(lats: List[float], lons: List[float]) -> List[List[float]]:
+    """Devuelve elevación (m) en una grilla rectangular definida por las
+    coordenadas en `lats` (y) y `lons` (x). Pre-descarga los tiles Terrarium
+    necesarios en paralelo y luego muestrea desde caché."""
+    if not lats or not lons:
+        return [[]]
+    bounds = (min(lats), min(lons), max(lats), max(lons))
+    # Para DEM no necesitamos resolución súper fina; cap a z=10 reduce
+    # drásticamente tiles a descargar sin perder señal a escala kriging.
+    z = min(_zoom_for_resolution(bounds, len(lons), len(lats)), 10)
+
+    tiles = _required_tiles(lats, lons, z)
+    _prefetch_tiles(tiles, _fetch_dem_tile)
+
+    out: List[List[float]] = [[0.0] * len(lons) for _ in lats]
+    for j, lat in enumerate(lats):
+        for i, lon in enumerate(lons):
+            tx, ty, px, py = _latlon_to_tile_pixel(lat, lon, z)
+            img = _fetch_dem_tile(z, tx, ty)
+            el = _terrarium_pixel_elev(img, px, py) if img is not None else None
+            # Clamp por debajo de 0 (Terrarium puede devolver -10 a -100 m
+            # en mar abierto donde el batímetro penetra al lecho marino).
+            out[j][i] = max(0.0, float(el)) if el is not None else 0.0
+    return out
+
+
+def sample_grid_z0(lats: List[float], lons: List[float]) -> List[List[float]]:
+    """Devuelve z₀ (m) por celda usando WorldCover. Pre-descarga los tiles
+    necesarios en paralelo. A z=10 cada tile cubre ~38×38 km, suficiente para
+    grillas de Kriging continentales y mucho más rápido que z=12."""
+    if not lats or not lons:
+        return [[]]
+    bounds = (min(lats), min(lons), max(lats), max(lons))
+    z = max(8, min(_zoom_for_resolution(bounds, len(lons), len(lats)), 11))
+
+    tiles = _required_tiles(lats, lons, z)
+    _prefetch_tiles(tiles, _fetch_landcover_tile)
+
+    out: List[List[float]] = [[0.05] * len(lons) for _ in lats]
+    for j, lat in enumerate(lats):
+        for i, lon in enumerate(lons):
+            tx, ty, px, py = _latlon_to_tile_pixel(lat, lon, z)
+            img = _fetch_landcover_tile(z, tx, ty)
+            if img is None:
+                continue
+            try:
+                rgb = img.getpixel((px, py))[:3]
+            except Exception:
+                continue
+            cls, dist = _nearest_landcover_class(rgb)
+            if dist > 60 or cls is None:
+                continue
+            out[j][i] = float(class_to_z0(cls) or 0.05)
+    return out
