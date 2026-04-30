@@ -2229,6 +2229,9 @@
           <button class="btn-secondary" id="btn-parque-wind-toggle"
                   onclick="parqueToggleWindLayer()"
                   style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">Ocultar capa</button>
+          <button class="btn-secondary" id="btn-parque-wake"
+                  onclick="parqueToggleWakes()"
+                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🌬 Ver estelas</button>
           <button class="btn-secondary" id="btn-parque-map-lock"
                   onclick="parqueToggleMapLock()"
                   style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🔓 Ver todo</button>
@@ -2270,10 +2273,21 @@
       <div class="card">
         <div class="card-header"><span class="card-title">Demanda &amp; n° turbinas</span></div>
         <div class="card-body" style="padding:.6rem">
-          <div class="form-row">
-            <label class="form-label">Demanda a cubrir (MWh/año)</label>
-            <input class="form-input" type="number" id="parque-demand" value="5000" step="500" min="100">
+          <div style="display:flex;gap:.35rem;align-items:flex-end;margin-bottom:.3rem">
+            <div style="flex:1">
+              <label class="form-label">Demanda a cubrir (MWh/año)</label>
+              <input class="form-input" type="number" id="parque-demand" value="5000" step="500" min="100">
+            </div>
+            <button class="btn-secondary" onclick="parqueLoadDemandFromSession()"
+                    style="white-space:nowrap;font-size:.73rem;padding:.3rem .5rem;flex-shrink:0"
+                    title="Calcular demanda anual desde columna de carga/demanda del archivo en Data Hub">
+              ↙ Sesión
+            </button>
           </div>
+          <div id="parque-demand-badge"
+               style="display:none;font-size:.69rem;color:var(--text-muted);
+                      background:var(--bg-secondary);border-radius:4px;padding:.2rem .4rem;
+                      margin-bottom:.3rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin:.4rem 0">
             <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
               <div style="font-size:1.5rem;font-weight:700;color:var(--accent)" id="parque-rec-n">—</div>
@@ -2328,6 +2342,10 @@
             <div>
               <label class="form-label">Altura medición (m)</label>
               <input class="form-input" type="number" id="parque-ws-h" value="50" step="5">
+            </div>
+            <div>
+              <label class="form-label" title="Dirección FROM donde viene el viento para visualizar estelas en mapa (0=N, 90=E, 270=O)">Dir. estela (°)</label>
+              <input class="form-input" type="number" id="parque-wake-dir" value="270" step="5" min="0" max="359">
             </div>
           </div>
           <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">

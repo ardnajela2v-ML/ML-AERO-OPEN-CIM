@@ -1744,6 +1744,65 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/farm/session_demand', methods=['POST'])
+    def farm_session_demand():
+        """
+        Detect and compute annual energy demand from the session's load/demand column.
+        Searches for columns containing: load, demand, demanda, consumo, carga.
+        Returns annual_mwh, mean_mw, max_mw, column name, n_records.
+        """
+        body = request.get_json(silent=True) or {}
+        sid  = body.get('session_id')
+        if not sid:
+            return _err('session_id required')
+        sess = sessions.get(sid, {})
+        if 'df' not in sess:
+            return _err('No hay datos en la sesión')
+        df = sess['df']
+
+        # Priority: exact column names common in Mexican energy datasets
+        priority_exact = [
+            'Demanda Eléctrica (MW)', 'Demanda Electrica (MW)', 'LOAD', 'Load',
+            'demand_mw', 'load_mw', 'Potencia Demandada (MW)', 'consumo_mw',
+            'DEMANDA', 'Demanda', 'demanda', 'Carga (MW)', 'carga_mw',
+        ]
+        demand_kws = ['load', 'demand', 'demanda', 'consumo', 'carga']
+
+        demand_col = None
+        for pc in priority_exact:
+            if pc in df.columns:
+                demand_col = pc; break
+        if demand_col is None:
+            for col in df.columns:
+                if any(kw in col.lower() for kw in demand_kws):
+                    demand_col = col; break
+
+        if demand_col is None:
+            return jsonify({'found': False, 'columns': list(df.columns)[:30]})
+
+        # Infer time step
+        dt_h = 1.0
+        if isinstance(df.index, pd.DatetimeIndex) and len(df) > 1:
+            try:
+                dt_h = float(df.index.to_series().diff().mode()[0].total_seconds() / 3600)
+            except Exception:
+                dt_h = 1.0
+
+        vals = pd.to_numeric(df[demand_col], errors='coerce').dropna()
+        if vals.empty:
+            return jsonify({'found': False, 'columns': list(df.columns)[:30]})
+
+        annual_mwh = round(float(vals.sum() * dt_h), 1)
+        return jsonify({
+            'found':      True,
+            'column':     demand_col,
+            'annual_mwh': annual_mwh,
+            'mean_mw':    round(float(vals.mean()), 3),
+            'max_mw':     round(float(vals.max()),  3),
+            'n_records':  int(len(vals)),
+            'dt_h':       round(dt_h, 4),
+        })
+
     # ─── EXPORT ───────────────────────────────────────────────────────────────
 
     @app.route('/api/export/csv', methods=['GET', 'POST'])

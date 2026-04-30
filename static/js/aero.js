@@ -5620,6 +5620,7 @@ const PARQUE = {
   map: null, baseLayer: null, windOverlay: null, polyLayer: null,
   turbineMarkers: [], result: null, optResult: null,
   layerKey: 'wind', windVisible: true, mapLocked: false,
+  wakeGroup: null, wakeVisible: false,
 };
 
 // ── Mapa Leaflet del parque ───────────────────────────────────────────────────
@@ -5787,6 +5788,118 @@ function parqueToggleMapLock() {
   } else {
     map.setMaxBounds(null);
     if (btn) btn.textContent = '🔒 Solo área';
+  }
+}
+
+// ── Wake cone visualization ───────────────────────────────────────────────────
+function parqueRenderWakeCones() {
+  const map = parqueInitMap();
+  if (!map || !PARQUE.optResult?.layout_latlon) return;
+
+  if (PARQUE.wakeGroup) { map.removeLayer(PARQUE.wakeGroup); PARQUE.wakeGroup = null; }
+
+  const windFrom = parseFloat(document.getElementById('parque-wake-dir')?.value ?? 270) || 270;
+  const layoutLatlon = PARQUE.optResult.layout_latlon;
+  const D   = PARQUE.optResult.D_m || 80;
+  const k   = parseFloat(document.getElementById('parque-kwake')?.value)  || 0.075;
+  const r0  = D / 2;
+
+  const dirTo    = (windFrom + 180) % 360;
+  const dirToRad = dirTo * Math.PI / 180;
+  const ux = Math.sin(dirToRad);   // East  (downwind)
+  const uy = Math.cos(dirToRad);   // North (downwind)
+  const px =  Math.cos(dirToRad);  // East  (right side ⊥ downwind)
+  const py = -Math.sin(dirToRad);  // North (right side ⊥ downwind)
+
+  const latRef  = layoutLatlon.reduce((s, p) => s + p[0], 0) / layoutLatlon.length;
+  const mPerLat = 111320;
+  const mPerLon = 111320 * Math.cos(latRef * Math.PI / 180);
+
+  function ll(lat, lon, dx, dy) { return [lat + dy / mPerLat, lon + dx / mPerLon]; }
+
+  const maxXD = 15, nSlices = 8;
+  const dStep = (maxXD * D) / nSlices;
+  const fills = [
+    'rgba(155,0,15,0.55)', 'rgba(205,28,0,0.46)', 'rgba(235,65,0,0.36)',
+    'rgba(255,115,0,0.27)', 'rgba(255,160,28,0.19)', 'rgba(255,205,55,0.13)',
+    'rgba(255,240,110,0.08)', 'rgba(255,255,190,0.04)',
+  ];
+
+  PARQUE.wakeGroup = L.layerGroup();
+  layoutLatlon.forEach(([lat, lon]) => {
+    for (let s = 0; s < nSlices; s++) {
+      const dN = s * dStep, dF = (s + 1) * dStep;
+      const rwN = r0 + k * dN, rwF = r0 + k * dF;
+      L.polygon([
+        ll(lat, lon, ux*dN - px*rwN, uy*dN - py*rwN),
+        ll(lat, lon, ux*dN + px*rwN, uy*dN + py*rwN),
+        ll(lat, lon, ux*dF + px*rwF, uy*dF + py*rwF),
+        ll(lat, lon, ux*dF - px*rwF, uy*dF - py*rwF),
+      ], { color: 'none', weight: 0, fillColor: fills[s], fillOpacity: 1, interactive: false })
+      .addTo(PARQUE.wakeGroup);
+    }
+    // Dashed outline of full cone
+    const outline = [];
+    const nOut = 14;
+    for (let s = 0; s <= nOut; s++) {
+      const d = s * (maxXD * D / nOut), rw = r0 + k * d;
+      outline.push(ll(lat, lon, ux*d + px*rw, uy*d + py*rw));
+    }
+    for (let s = nOut; s >= 0; s--) {
+      const d = s * (maxXD * D / nOut), rw = r0 + k * d;
+      outline.push(ll(lat, lon, ux*d - px*rw, uy*d - py*rw));
+    }
+    L.polygon(outline, {
+      color: 'rgba(255,230,80,0.55)', weight: 0.8, fill: false,
+      dashArray: '4,5', interactive: false,
+    }).addTo(PARQUE.wakeGroup);
+  });
+
+  PARQUE.wakeGroup.addTo(map);
+  if (PARQUE.polyLayer) PARQUE.polyLayer.bringToFront();
+  PARQUE.turbineMarkers.forEach(m => { try { m.bringToFront(); } catch (_) {} });
+
+  PARQUE.wakeVisible = true;
+  const btn = document.getElementById('btn-parque-wake');
+  if (btn) { btn.textContent = '🌬 Ocultar estelas'; btn.style.background = 'var(--accent)'; btn.style.color = '#fff'; }
+}
+
+function parqueToggleWakes() {
+  const btn = document.getElementById('btn-parque-wake');
+  if (!PARQUE.optResult?.layout_latlon) {
+    toast('Optimiza el parque primero para ver las estelas.', 'warning');
+    return;
+  }
+  if (PARQUE.wakeVisible) {
+    if (PARQUE.wakeGroup && PARQUE.map) PARQUE.map.removeLayer(PARQUE.wakeGroup);
+    PARQUE.wakeVisible = false;
+    if (btn) { btn.textContent = '🌬 Ver estelas'; btn.style.background = ''; btn.style.color = ''; }
+  } else {
+    parqueRenderWakeCones();
+  }
+}
+
+// ── Demanda desde sesión (Data Hub) ──────────────────────────────────────────
+async function parqueLoadDemandFromSession() {
+  if (!WP.sessionId) { toast('Carga un archivo en Data Hub primero.', 'warning'); return; }
+  const badge = document.getElementById('parque-demand-badge');
+  try {
+    const r = await api('/api/farm/session_demand', 'POST', { session_id: WP.sessionId });
+    if (r.found) {
+      document.getElementById('parque-demand').value = Math.round(r.annual_mwh);
+      if (badge) {
+        badge.textContent = `📊 Col: "${r.column}"  ·  μ: ${r.mean_mw.toFixed(2)} MW  ·  máx: ${r.max_mw.toFixed(2)} MW  ·  ${r.n_records} reg  ·  Δt=${r.dt_h}h`;
+        badge.style.display = '';
+      }
+      parqueUpdateRecommendation();
+      toast(`Demanda cargada: ${Math.round(r.annual_mwh).toLocaleString()} MWh/año  (${r.column})`, 'success');
+    } else {
+      if (badge) badge.style.display = 'none';
+      const cols = (r.columns || []).join(', ');
+      toast(`No se encontró columna de demanda. Columnas disponibles: ${cols || '—'}`, 'warning');
+    }
+  } catch (e) {
+    toast(`Error al leer demanda: ${e.message}`, 'error');
   }
 }
 
@@ -5990,6 +6103,10 @@ async function parqueOptimize() {
       `${r.turbine?.name||turbineKey} · ⌀${r.D_m}m`;
 
     if (sim) {
+      // Auto-update wake direction from dominant wind direction
+      const wdirEl = document.getElementById('parque-wake-dir');
+      if (wdirEl && sim.dominant_dir_deg != null) wdirEl.value = Math.round(sim.dominant_dir_deg ?? 270);
+
       document.getElementById('parque-kpis').style.display = '';
       document.getElementById('parque-kpi-aep').textContent = ((sim.aep_mwh  ?? 0) / 1000).toFixed(3);
       document.getElementById('parque-kpi-wl').textContent  = (sim.wake_loss_pct ?? 0).toFixed(2);
@@ -6095,10 +6212,13 @@ async function parqueRenderWakeChart(rotorD) {
 function parqueReset() {
   PARQUE.result = null; PARQUE.optResult = null;
   parqueClearTurbineMarkers();
+  if (PARQUE.wakeGroup  && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.wakeGroup);   PARQUE.wakeGroup   = null; }
   if (PARQUE.windOverlay && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
   if (PARQUE.polyLayer   && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.polyLayer);   PARQUE.polyLayer   = null; }
   if (PARQUE.map) PARQUE.map.setMaxBounds(null);
-  PARQUE.mapLocked = false; PARQUE.windVisible = true;
+  PARQUE.mapLocked = false; PARQUE.windVisible = true; PARQUE.wakeVisible = false;
+  const wakeBtn = document.getElementById('btn-parque-wake');
+  if (wakeBtn) { wakeBtn.textContent = '🌬 Ver estelas'; wakeBtn.style.background = ''; wakeBtn.style.color = ''; }
   const lockBtn = document.getElementById('btn-parque-map-lock');
   if (lockBtn) lockBtn.textContent = '🔓 Ver todo';
   const windBtn = document.getElementById('btn-parque-wind-toggle');
@@ -6118,13 +6238,13 @@ function parqueActivate() {
   parqueInitMap();
   parqueLoadTurbines();
   parquePopulateTopsisRanking();
-  // Re-render kriging overlay if already available
+  parqueLoadDemandFromSession();
   const layerKey = document.getElementById('parque-map-layer')?.value || 'wind';
   parqueRenderKrigingLayer(layerKey);
   parqueRenderPolygon();
-  // Re-plot turbines if results exist
   if (PARQUE.optResult?.layout_latlon) {
     parquePlotTurbinesOnMap(PARQUE.optResult.layout_latlon, PARQUE.result?.turbines || null);
+    if (PARQUE.wakeVisible) parqueRenderWakeCones();
   }
   setTimeout(() => PARQUE.map && PARQUE.map.invalidateSize(), 120);
 }
@@ -6138,6 +6258,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('parque-demand')?.addEventListener('input', parqueUpdateRecommendation);
   document.getElementById('parque-turbine')?.addEventListener('change', parqueUpdateRecommendation);
+  document.getElementById('parque-wake-dir')?.addEventListener('change', () => {
+    if (PARQUE.wakeVisible) parqueRenderWakeCones();
+  });
   document.querySelectorAll('.nav-btn[data-module="parque"]').forEach(b => {
     b.addEventListener('click', () => requestAnimationFrame(parqueActivate));
   });
