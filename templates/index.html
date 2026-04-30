@@ -1900,6 +1900,10 @@
         <span class="text-muted" id="krig3-selection-info" style="font-size:.78rem;margin-right:auto">
           Click: popup · Shift+click: incluir/excluir · <b>Ctrl+arrastrar: selección rectangular</b> · ★ parque principal.
         </span>
+        <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem;cursor:pointer" title="Aplica corrección log-altura por z₀ y altitud DEM píxel a píxel: produce además mapas de Topografía, Rugosidad, Densidad del aire y Viento neutralizado.">
+          <input type="checkbox" id="krig3-physical">
+          Corrección física (z₀ + altitud)
+        </label>
         <button class="btn-secondary" id="btn-krig3-select-all" type="button">Seleccionar todos</button>
         <button class="btn-secondary" id="btn-krig3-select-none" type="button">Limpiar</button>
         <button class="btn-primary" id="btn-krig3-run">▶ Generar 3 mapas Kriging</button>
@@ -1919,9 +1923,13 @@
     </div>
     <div class="card-body">
       <div class="krig3-tabs" role="tablist" style="display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap;align-items:center">
-        <button class="btn-secondary krig3-tab is-active" data-layer="wind"      type="button">① Velocidad (m/s)</button>
-        <button class="btn-secondary krig3-tab"           data-layer="inversion" type="button">② Inversión (USD)</button>
-        <button class="btn-secondary krig3-tab"           data-layer="van"       type="button">③ VAN (USD)</button>
+        <button class="btn-secondary krig3-tab is-active" data-layer="wind"         type="button">① Velocidad (m/s)</button>
+        <button class="btn-secondary krig3-tab"           data-layer="inversion"    type="button">② Inversión (USD)</button>
+        <button class="btn-secondary krig3-tab"           data-layer="van"          type="button">③ VAN (USD)</button>
+        <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="wind_neutral" type="button" style="display:none">④ Viento neutral</button>
+        <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="elevation"    type="button" style="display:none">⑤ Topografía (m)</button>
+        <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="roughness"    type="button" style="display:none">⑥ Rugosidad z₀ (m)</button>
+        <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="air_density"  type="button" style="display:none">⑦ Densidad aire (kg/m³)</button>
         <button class="btn-primary" id="btn-krig3-download" type="button" style="margin-left:auto" title="Guarda el mapa actual como PNG">⬇ Descargar imagen</button>
       </div>
 

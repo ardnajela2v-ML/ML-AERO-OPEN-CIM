@@ -3448,9 +3448,14 @@ const KRIG = {
 const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
-  wind:      { unit: 'm/s', title: 'Velocidad promedio del viento (m/s)' },
-  inversion: { unit: 'USD', title: 'Inversión inicial (USD)' },
-  van:       { unit: 'USD', title: 'Valor Actual Neto (USD)' },
+  wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
+  inversion:    { unit: 'USD',   title: 'Inversión inicial (USD)' },
+  van:          { unit: 'USD',   title: 'Valor Actual Neto (USD)' },
+  // ── Capas físicas (solo presentes cuando physical=true) ──
+  wind_neutral: { unit: 'm/s',   title: 'Viento neutralizado (campo geoestadístico)' },
+  elevation:    { unit: 'm',     title: 'Topografía — altitud DEM (m)' },
+  roughness:    { unit: 'm',     title: 'Rugosidad superficial z₀ (m)' },
+  air_density:  { unit: 'kg/m³', title: 'Densidad del aire local' },
 };
 
 // Rampa RdYlBu reversed (azul→rojo)
@@ -4352,6 +4357,7 @@ async function krig3Run() {
     return;
   }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
+  const physical = !!document.getElementById('krig3-physical')?.checked;
   const body = {
     year:          parseInt(document.getElementById('krig3-year').value),
     demand_mwh:    parseFloat(document.getElementById('krig3-demand').value),
@@ -4361,6 +4367,7 @@ async function krig3Run() {
     n_grid:        parseInt(document.getElementById('krig3-n').value),
     model:         document.getElementById('krig3-model').value,
     filenames:     Array.from(KRIG.selected),
+    physical:      physical,
   };
   if (principal) {
     body.center_file = principal.filename;
@@ -4392,6 +4399,15 @@ async function krig3Poll() {
       const d = r.result;
       KRIG.result = d;
       KRIG.curveIdx = 0;
+      // Mostrar u ocultar tabs físicos según el modo.
+      const physOn = !!d.physical;
+      document.querySelectorAll('.krig3-tab-phys').forEach(b => {
+        b.style.display = physOn ? '' : 'none';
+      });
+      // Si el modo cambió y la pestaña activa ya no aplica, vuelve a "wind".
+      if (!physOn && (KRIG.layerKey || '').match(/^(wind_neutral|elevation|roughness|air_density)$/)) {
+        KRIG.layerKey = 'wind';
+      }
       // Oculta los markers de selección mientras se muestra el resultado.
       Object.values(KRIG.siteMarkers).forEach(m => KRIG.map && KRIG.map.removeLayer(m));
       krig3SetLayer(KRIG.layerKey || 'wind');
@@ -4400,10 +4416,11 @@ async function krig3Poll() {
       // Auto-zoom alrededor del parque principal (100 km por defecto).
       krig3ZoomToPrincipal();
       const nCurves = (d.turbine_curves || []).length;
+      const tag = physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '';
       document.getElementById('krig3-status').textContent =
-        `${d.n_sites} sitios · 3 mapas · ${nCurves} curvas`;
+        `${d.n_sites} sitios · ${physOn ? 7 : 3} mapas · ${nCurves} curvas${tag}`;
       document.getElementById('krig3-progress-fill').style.width = '100%';
-      toast('Kriging listo', 'success');
+      toast(physOn ? 'Kriging físico listo' : 'Kriging listo', 'success');
     } else if (r.status === 'error') {
       toast(`Kriging falló: ${r.message}`, 'error');
       document.getElementById('krig3-status').textContent = 'Error';
