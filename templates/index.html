@@ -2193,51 +2193,146 @@
 <!-- ╔══════════════════ PARQUE EÓLICO ══════════════════╗ -->
 <section class="module" id="mod-parque">
   <div class="module-header">
-    <h1 class="module-title">Parque eólico — Layout & Estelas</h1>
-    <p class="module-desc">Simulación de un parque con interacción de estelas (Jensen NOJ + superposición Katic) sobre el sitio cargado en Data Hub. Calcula AEP por turbina, pérdida de estela, factor de capacidad y déficit axial.</p>
+    <h1 class="module-title">Parque eólico — Diseño optimizado</h1>
+    <p class="module-desc">
+      Layout optimizado con <b>Colocación Secuencial Voraz</b> (Feng &amp; Shen, 2015) sobre el área definida en Kriging Clásico.
+      El campo de viento interpolado por Kriging Ordinario orienta la ubicación de turbinas para maximizar AEP
+      considerando el déficit de estela NOJ (Jensen, 1983) con superposición de Katic et al. (1986).
+      La turbina recomendada se obtiene del ranking TOPSIS de la sección Kriging Clásico.
+    </p>
   </div>
 
-  <!-- Parámetros del parque -->
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">Parámetros del parque</span>
-      <span class="badge badge--info" id="parque-status">Sin simular</span>
-    </div>
-    <div class="card-body">
-      <div class="form-grid-4">
-        <div><label class="form-label">Filas</label>
-          <input class="form-input" type="number" id="parque-rows" value="2" min="1" max="10"></div>
-        <div><label class="form-label">Columnas</label>
-          <input class="form-input" type="number" id="parque-cols" value="4" min="1" max="12"></div>
-        <div><label class="form-label">Separación (m)</label>
-          <input class="form-input" type="number" id="parque-sep" value="400" step="50" min="100"></div>
-        <div><label class="form-label">k estela (NOJ)</label>
-          <input class="form-input" type="number" id="parque-kwake" value="0.05" step="0.01" min="0.01" max="0.20"></div>
-        <div><label class="form-label">Ct (thrust)</label>
-          <input class="form-input" type="number" id="parque-ct" value="0.8" step="0.05" min="0.1" max="1.0"></div>
-        <div><label class="form-label">Disponibilidad (0-1)</label>
-          <input class="form-input" type="number" id="parque-avail" value="0.97" step="0.01" min="0" max="1"></div>
-        <div><label class="form-label">Pérdidas eléctricas (0-1)</label>
-          <input class="form-input" type="number" id="parque-elec" value="0.03" step="0.01" min="0" max="1"></div>
-        <div><label class="form-label">Sectores dirección</label>
-          <select class="form-select" id="parque-sectors">
-            <option value="12">12</option>
-            <option value="16">16</option>
-            <option value="36" selected>36</option>
-          </select></div>
-        <div><label class="form-label">Turbina</label>
-          <select class="form-select" id="parque-turbine"></select></div>
-        <div><label class="form-label">Altura medición (m)</label>
-          <input class="form-input" type="number" id="parque-ws-h" value="50" step="5"></div>
+  <!-- 2 columnas: mapa grande + panel de control -->
+  <div style="display:grid;grid-template-columns:1fr 340px;gap:.8rem;align-items:start">
+
+    <!-- Mapa del parque -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Área del parque — campo kriging &amp; layout</span>
+        <div style="display:flex;gap:.4rem;align-items:center">
+          <select class="form-select" id="parque-map-layer" style="font-size:.73rem;padding:.2rem .4rem;width:auto">
+            <option value="wind">Viento (m/s)</option>
+            <option value="wind_directional">Viento direccional</option>
+            <option value="power_density">Densidad de potencia</option>
+            <option value="gust">Ráfagas</option>
+          </select>
+          <span class="badge badge--info" id="parque-map-status">Sin Kriging</span>
+        </div>
       </div>
-      <div class="flex-end mt-2" style="gap:.5rem;align-items:center">
-        <span class="text-muted" id="parque-info" style="font-size:.78rem;margin-right:auto">
-          Carga un sitio en Data Hub primero.
-        </span>
-        <button class="btn-secondary" id="btn-parque-reset" type="button">↺ Resetear layout</button>
-        <button class="btn-primary" id="btn-parque-run" type="button">▶ Simular parque</button>
+      <div class="card-body" style="padding:0;position:relative">
+        <div id="parque-map" style="height:440px;border-radius:0 0 8px 8px"></div>
+        <div id="parque-map-legend" style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:.7rem;padding:.3rem .5rem;border-radius:4px;pointer-events:none;display:none"></div>
+        <div id="parque-map-hint" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:.72rem;padding:.25rem .6rem;border-radius:12px;pointer-events:none;white-space:nowrap">
+          Dibuja el polígono del parque en la sección Kriging Clásico primero
+        </div>
       </div>
     </div>
+
+    <!-- Panel de control -->
+    <div style="display:flex;flex-direction:column;gap:.6rem">
+
+      <!-- Turbina (lista TOPSIS) -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Aerogenerador recomendado</span>
+          <span class="badge badge--success" id="parque-topsis-badge">Sin TOPSIS</span>
+        </div>
+        <div class="card-body" style="padding:.6rem">
+          <div id="parque-topsis-list"
+               style="max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;
+                      background:var(--bg-secondary);margin-bottom:.5rem">
+            <div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">
+              Ejecuta TOPSIS en Kriging Clásico para ver la lista ranqueada.
+            </div>
+          </div>
+          <label class="form-label">Turbina activa</label>
+          <select class="form-select" id="parque-turbine"></select>
+        </div>
+      </div>
+
+      <!-- Demanda y recomendación -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Demanda &amp; n° turbinas</span></div>
+        <div class="card-body" style="padding:.6rem">
+          <div class="form-row">
+            <label class="form-label">Demanda a cubrir (MWh/año)</label>
+            <input class="form-input" type="number" id="parque-demand" value="5000" step="500" min="100">
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin:.4rem 0">
+            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
+              <div style="font-size:1.5rem;font-weight:700;color:var(--accent)" id="parque-rec-n">—</div>
+              <div style="font-size:.68rem;color:var(--text-muted)">Turbinas recomendadas</div>
+            </div>
+            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
+              <div style="font-size:1.2rem;font-weight:600;color:var(--accent2,#f6a156)" id="parque-rec-aep">—</div>
+              <div style="font-size:.68rem;color:var(--text-muted)">AEP/turbina neta (MWh)</div>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="form-label">N° turbinas a colocar</label>
+            <input class="form-input" type="number" id="parque-n-turbines" value="0"
+                   min="0" max="50" placeholder="0 = automático">
+          </div>
+        </div>
+      </div>
+
+      <!-- Parámetros de optimización -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Parámetros</span></div>
+        <div class="card-body" style="padding:.6rem">
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label" title="IEA ≥ 3D; industria onshore 5–7D">Sep. mín. (×D)</label>
+              <input class="form-input" type="number" id="parque-min-sep-d" value="5" step="0.5" min="2" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">k estela (NOJ)</label>
+              <input class="form-input" type="number" id="parque-kwake" value="0.075" step="0.005" min="0.01" max="0.20">
+            </div>
+            <div>
+              <label class="form-label">Ct (thrust)</label>
+              <input class="form-input" type="number" id="parque-ct" value="0.8" step="0.05" min="0.1" max="1.0">
+            </div>
+            <div>
+              <label class="form-label">Disponibilidad (%)</label>
+              <input class="form-input" type="number" id="parque-avail" value="97" step="1" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Pérd. eléctricas (%)</label>
+              <input class="form-input" type="number" id="parque-elec" value="3" step="0.5" min="0" max="20">
+            </div>
+            <div>
+              <label class="form-label">Sectores</label>
+              <select class="form-select" id="parque-sectors">
+                <option value="12">12</option>
+                <option value="16">16</option>
+                <option value="36" selected>36</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Altura medición (m)</label>
+              <input class="form-input" type="number" id="parque-ws-h" value="50" step="5">
+            </div>
+          </div>
+          <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">
+            <span class="text-muted" id="parque-info" style="font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            <button class="btn-secondary" id="btn-parque-reset" type="button" style="white-space:nowrap">↺ Reset</button>
+            <button class="btn-primary"   id="btn-parque-optimize" type="button" style="white-space:nowrap">⚡ Optimizar</button>
+          </div>
+          <div id="parque-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-top:.5rem">
+            <div id="parque-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+          </div>
+          <p id="parque-progress-text" style="font-size:.72rem;color:var(--text-muted);margin:.25rem 0 0"></p>
+        </div>
+      </div>
+
+    </div><!-- /panel -->
+  </div><!-- /grid -->
+
+  <!-- badge estado post-simulación -->
+  <div style="display:flex;gap:.5rem;align-items:center;margin-top:.5rem">
+    <span class="badge badge--info" id="parque-status">Sin simular</span>
+    <span class="text-muted" style="font-size:.75rem" id="parque-layout-meta"></span>
   </div>
 
   <!-- KPIs del parque -->
@@ -2274,51 +2369,38 @@
     </div>
   </div>
 
-  <!-- Layout + AEP por turbina -->
+  <!-- Gráficas: AEP por turbina + Déficit NOJ -->
   <div class="grid-2 mt-2">
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Layout del parque</span>
-        <span class="text-muted" id="parque-layout-meta" style="font-size:.72rem">—</span>
+        <span class="card-title">AEP por turbina (con vs. sin estela)</span>
       </div>
       <div class="card-body">
-        <canvas id="parque-canvas" style="width:100%;height:340px"></canvas>
-        <div class="text-muted mt-1" style="font-size:.7rem">
-          Color = AEP relativa. Flecha verde = dirección dominante.
-        </div>
+        <div style="height:300px"><canvas id="parque-aep-chart"></canvas></div>
       </div>
     </div>
     <div class="card">
       <div class="card-header">
-        <span class="card-title">AEP por turbina (con estela)</span>
+        <span class="card-title">Déficit NOJ axial — perfil de estela centreline</span>
       </div>
       <div class="card-body">
-        <div style="height:340px"><canvas id="parque-aep-chart"></canvas></div>
+        <div style="height:300px"><canvas id="parque-wake-chart"></canvas></div>
       </div>
     </div>
   </div>
 
-  <!-- Tabla turbinas + Wake deficit -->
-  <div class="grid-2 mt-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Resultados por turbina</span></div>
-      <div class="card-body" style="overflow-x:auto;max-height:340px;overflow-y:auto">
-        <table class="tbl" id="parque-tbl">
-          <thead><tr>
-            <th>#</th><th>X (m)</th><th>Y (m)</th>
-            <th>AEP (MWh)</th><th>AEP s/estela</th><th>Pérdida %</th><th>CF %</th>
-          </tr></thead>
-          <tbody id="parque-tbl-body"></tbody>
-        </table>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Déficit NOJ axial (dirección dominante)</span>
-      </div>
-      <div class="card-body">
-        <div style="height:340px"><canvas id="parque-wake-chart"></canvas></div>
-      </div>
+  <!-- Tabla resultados por turbina -->
+  <div class="card mt-2">
+    <div class="card-header"><span class="card-title">Resultados por turbina</span></div>
+    <div class="card-body" style="overflow-x:auto;max-height:320px;overflow-y:auto">
+      <table class="tbl" id="parque-tbl">
+        <thead><tr>
+          <th>#</th><th>Lat</th><th>Lon</th><th>X (m)</th><th>Y (m)</th>
+          <th>v̄ kriging (m/s)</th><th>AEP (MWh)</th><th>AEP s/estela</th>
+          <th>Pérdida %</th><th>CF %</th>
+        </tr></thead>
+        <tbody id="parque-tbl-body"></tbody>
+      </table>
     </div>
   </div>
 </section>

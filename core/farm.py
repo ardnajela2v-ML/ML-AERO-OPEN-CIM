@@ -15,7 +15,7 @@ import math
 import warnings
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from core.energy import PowerCurve, air_density
 
@@ -293,4 +293,292 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'dt_h':           round(dt_h, 4),
         'rho_mean':       round(rho_mean, 4),
         'turbines':       per_turbine,
+    }
+
+
+# ── Coordinate utilities ──────────────────────────────────────────────────────
+
+def _latlon_to_xy(lats, lons, origin_lat: float, origin_lon: float):
+    """
+    Project lat/lon to local Cartesian metres (equirectangular approximation).
+    Accurate to <0.3 % for park areas up to ~50 km across.
+    """
+    cos_lat0 = math.cos(math.radians(origin_lat))
+    xs = [(lon - origin_lon) * 111_320.0 * cos_lat0 for lon in lons]
+    ys = [(lat - origin_lat) * 111_320.0             for lat in lats]
+    return xs, ys
+
+
+def _xy_to_latlon(xs_m, ys_m, origin_lat: float, origin_lon: float):
+    """Inverse of _latlon_to_xy."""
+    cos_lat0 = math.cos(math.radians(origin_lat))
+    lats = [origin_lat + y / 111_320.0                      for y in ys_m]
+    lons = [origin_lon + x / (111_320.0 * cos_lat0)         for x in xs_m]
+    return lats, lons
+
+
+def _point_in_polygon_xy(x: float, y: float, poly_xs, poly_ys) -> bool:
+    """Ray-casting point-in-polygon test for Cartesian coordinates."""
+    n = len(poly_xs)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = poly_xs[i], poly_ys[i]
+        xj, yj = poly_xs[j], poly_ys[j]
+        if ((yi > y) != (yj > y)) and (
+                x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _sample_wind_grid(grid: Dict[str, Any], lat: float, lon: float) -> Optional[float]:
+    """
+    Bilinear interpolation on a kriging grid {z: [[float]], bounds: dict}
+    at a single (lat, lon) point.
+    """
+    if not grid or 'z' not in grid or 'bounds' not in grid:
+        return None
+    b  = grid['bounds']
+    z  = grid['z']
+    ny = len(z)
+    nx = len(z[0]) if ny else 0
+    if nx < 2 or ny < 2:
+        return None
+    lat_r = b['lat_max'] - b['lat_min']
+    lon_r = b['lon_max'] - b['lon_min']
+    if lat_r <= 0 or lon_r <= 0:
+        return None
+    tj = (lat - b['lat_min']) / lat_r * (ny - 1)
+    ti = (lon - b['lon_min']) / lon_r * (nx - 1)
+    tj = max(0.0, min(ny - 1.0, tj))
+    ti = max(0.0, min(nx - 1.0, ti))
+    j0, i0 = int(tj), int(ti)
+    j1, i1 = min(j0 + 1, ny - 1), min(i0 + 1, nx - 1)
+    dj, di = tj - j0, ti - i0
+    v = (float(z[j0][i0]) * (1 - dj) * (1 - di) +
+         float(z[j0][i1]) * (1 - dj) * di +
+         float(z[j1][i0]) * dj       * (1 - di) +
+         float(z[j1][i1]) * dj       * di)
+    return v if math.isfinite(v) else None
+
+
+# ── Turbine-count recommendation ─────────────────────────────────────────────
+
+def recommend_n_turbines(
+        turbine: PowerCurve,
+        demand_mwh: float,
+        v_mean: float,
+        weibull_k: float = 2.0,
+        rho: float = 1.225,
+        availability: float = 0.97,
+        electrical_losses: float = 0.03,
+        avg_wake_loss: float = 0.08,
+        n_hours: int = 8760) -> dict:
+    """
+    Estimate the number of turbines required to satisfy an annual energy demand.
+
+    Uses a synthetic Weibull wind series at the site mean speed to integrate
+    the power curve and obtain a single-turbine net AEP, then divides the
+    demand by that AEP (ceiling).
+
+    Parameters
+    ----------
+    avg_wake_loss : float
+        Assumed farm-average wake loss fraction.
+        Barthelmie et al. (2010) report 5–15 % for large offshore farms;
+        onshore compact layouts typically 5–10 %.
+
+    References
+    ----------
+    - Barthelmie RJ et al. (2010). Modelling and measuring flow and wind
+      turbine wakes in large wind farms offshore. Wind Energy 12:431-444.
+    """
+    from scipy.stats import weibull_min
+
+    k = max(0.45, float(weibull_k))
+    c = float(v_mean) / math.gamma(1.0 + 1.0 / k)
+
+    probs = np.linspace(0.005, 0.995, int(n_hours))
+    ws    = weibull_min.ppf(probs, k, scale=c)
+    ws    = np.clip(ws, 0.0, None)
+
+    p_kw      = turbine.power_kw_density_corrected(ws, float(rho))
+    p_kw      = np.nan_to_num(p_kw, nan=0.0)
+    aep_gross = float(np.sum(p_kw)) / 1000.0          # kWh → MWh
+
+    survival  = float(availability) * (1.0 - float(electrical_losses))
+    aep_net   = aep_gross * survival * (1.0 - float(avg_wake_loss))
+
+    n_needed  = max(1, math.ceil(float(demand_mwh) / aep_net)) if aep_net > 0 else 1
+    rated_kw  = float(turbine.rated_power_kw)
+    cf        = aep_net / (rated_kw * n_hours / 1000.0) if rated_kw > 0 else 0.0
+
+    return {
+        'n_turbines':           n_needed,
+        'aep_single_gross_mwh': round(aep_gross, 1),
+        'aep_single_net_mwh':   round(aep_net,   1),
+        'cf_pct':               round(100.0 * cf, 2),
+        'coverage_pct':         round(100.0 * n_needed * aep_net / float(demand_mwh), 1)
+                                if demand_mwh > 0 else 0.0,
+        'avg_wake_loss_assumed': float(avg_wake_loss),
+    }
+
+
+# ── Greedy Sequential Layout Optimisation ────────────────────────────────────
+
+def optimize_layout_greedy(
+        polygon_latlon,
+        turbine: PowerCurve,
+        n_turbines: int,
+        wind_grid: Optional[Dict[str, Any]] = None,
+        fallback_wind_ms: float = 9.0,
+        min_spacing_d: float = 5.0,
+        grid_step_d: float = 1.5,
+        k_wake: float = 0.075,
+        ct: float = 0.8) -> dict:
+    """
+    Greedy Sequential Turbine Placement (GSP) within a park polygon.
+
+    Turbines are placed one by one; each step selects the candidate grid
+    position that maximises instantaneous power at the local kriging wind
+    speed, discounted by the Jensen NOJ wake deficit of already-placed
+    turbines (Katic superposition, single dominant direction per step).
+    Candidate positions closer than min_spacing_d × D to any placed turbine
+    are excluded before the next iteration.
+
+    Algorithm
+    ---------
+    1. Project polygon to a local Cartesian frame (equirectangular).
+    2. Generate a regular candidate grid spaced grid_step_d × D inside the
+       polygon.  Sample wind speed from the kriging grid at each candidate.
+    3. Greedy loop until n_turbines placed or no candidates remain:
+       a. Score every remaining candidate: P(v_eff), where v_eff accounts
+          for wake deficits from placed turbines (representative direction).
+       b. Select highest-scoring candidate; remove it and all neighbours
+          within min_spacing_d × D from the candidate set.
+
+    References
+    ----------
+    - Feng J, Shen WZ (2015). Solving the wind farm layout optimization
+      problem using random search algorithm. Renewable Energy 78:182-192.
+    - Jensen NO (1983). A Note on Wind Generator Interaction. Risø NL-I-2411.
+    - IEA Wind Task 31 (2014). Wakebench wind farm modelling guidelines.
+      (min spacing ≥ 3 D; industry practice 5–7 D onshore)
+    """
+    D         = float(turbine.rotor_diameter_m or 80.0)
+    min_sep_m = min_spacing_d * D
+    step_m    = grid_step_d   * D
+
+    # Normalise polygon vertices to [[lat, lon]]
+    poly: List[Tuple[float, float]] = []
+    for p in polygon_latlon:
+        if isinstance(p, dict):
+            poly.append((float(p['lat']), float(p['lon'])))
+        else:
+            poly.append((float(p[0]), float(p[1])))
+    if len(poly) < 3:
+        raise ValueError('El polígono del parque necesita al menos 3 vértices.')
+
+    lats_p = [p[0] for p in poly]
+    lons_p = [p[1] for p in poly]
+    lat0   = sum(lats_p) / len(lats_p)
+    lon0   = sum(lons_p) / len(lons_p)
+
+    poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+    xmin = min(poly_xs); xmax = max(poly_xs)
+    ymin = min(poly_ys); ymax = max(poly_ys)
+
+    # Build candidate grid
+    candidates: List[Dict[str, float]] = []
+    x = xmin + step_m * 0.5
+    while x <= xmax + step_m * 0.1:
+        y = ymin + step_m * 0.5
+        while y <= ymax + step_m * 0.1:
+            if _point_in_polygon_xy(x, y, poly_xs, poly_ys):
+                lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
+                v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
+                     if wind_grid else None)
+                if v is None or not math.isfinite(v) or v <= 0:
+                    v = fallback_wind_ms
+                candidates.append({
+                    'x': x, 'y': y,
+                    'lat': lats_c[0], 'lon': lons_c[0],
+                    'v': float(v),
+                })
+            y += step_m
+        x += step_m
+
+    if not candidates:
+        raise ValueError(
+            f'Sin candidatos dentro del polígono con D={D:.0f} m y paso de '
+            f'grilla {grid_step_d}×D={step_m:.0f} m.  Reduce la separación '
+            f'mínima o usa un aerogenerador de menor diámetro de rotor.')
+
+    placed: List[Dict[str, float]] = []
+    remaining = list(candidates)
+
+    while len(placed) < n_turbines and remaining:
+        placed_arr = (np.array([[p['x'], p['y']] for p in placed])
+                      if placed else None)
+        best_idx, best_score = -1, -math.inf
+
+        for idx, c in enumerate(remaining):
+            sq_sum = 0.0
+            if placed_arr is not None:
+                cand_pt = np.array([[c['x'], c['y']]])
+                dom_dir = 270.0  # representative westerly; full sim uses all sectors
+                pts_rot  = _rotate_to_wind_axis(placed_arr, dom_dir)
+                cand_rot = _rotate_to_wind_axis(cand_pt,   dom_dir)[0]
+                for pr in pts_rot:
+                    dx = float(cand_rot[0]) - float(pr[0])
+                    dy = float(cand_rot[1]) - float(pr[1])
+                    sq_sum += jensen_deficit(dx, dy, D, k=k_wake, ct=ct) ** 2
+            v_eff = max(0.0, c['v'] * (1.0 - math.sqrt(sq_sum)))
+            score = float(turbine.power_kw(v_eff))
+            if score > best_score:
+                best_score = score
+                best_idx   = idx
+
+        chosen = remaining[best_idx]
+        placed.append(chosen)
+        remaining = [
+            c for c in remaining
+            if math.hypot(c['x'] - chosen['x'], c['y'] - chosen['y']) >= min_sep_m
+        ]
+
+    if not placed:
+        raise ValueError(
+            'No fue posible colocar turbinas. '
+            'Verifica el área del polígono y la separación mínima.')
+
+    layout_latlon = [[p['lat'], p['lon']] for p in placed]
+    layout_xy_m   = [[p['x'],  p['y']]   for p in placed]
+
+    # Shoelace polygon area
+    n_p    = len(poly_xs)
+    area_m2 = abs(sum(
+        poly_xs[i] * poly_ys[(i + 1) % n_p] -
+        poly_xs[(i + 1) % n_p] * poly_ys[i]
+        for i in range(n_p)
+    )) / 2.0
+
+    n_placed   = len(placed)
+    installed_kw = n_placed * float(turbine.rated_power_kw)
+
+    return {
+        'n_placed':          n_placed,
+        'n_requested':       int(n_turbines),
+        'n_candidates':      len(candidates),
+        'layout_latlon':     layout_latlon,
+        'layout_xy_m':       layout_xy_m,
+        'wind_at_turbines':  [round(p['v'], 3) for p in placed],
+        'origin_lat':        lat0,
+        'origin_lon':        lon0,
+        'D_m':               D,
+        'min_sep_m':         round(min_sep_m, 1),
+        'area_km2':          round(area_m2 / 1e6, 4),
+        'installed_mw':      round(installed_kw / 1000.0, 3),
+        'density_mw_km2':    round(
+            installed_kw / 1000.0 / (area_m2 / 1e6) if area_m2 > 0 else 0.0, 3),
     }

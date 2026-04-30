@@ -5616,25 +5616,124 @@ function renderMonthHourHeatmap(data) {
 
 
 // ═══════════════════════ PARQUE EÓLICO ═══════════════════════════════════════
-const PARQUE = { result: null, layout: [] };
+const PARQUE = {
+  map: null, baseLayer: null, windOverlay: null, polyLayer: null,
+  turbineMarkers: [], result: null, optResult: null,
+  layerKey: 'wind',
+};
 
-function parqueBuildLayout() {
-  const rows = parseInt(document.getElementById('parque-rows').value) || 2;
-  const cols = parseInt(document.getElementById('parque-cols').value) || 4;
-  const sep  = parseFloat(document.getElementById('parque-sep').value) || 400;
-  const layout = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      layout.push([c * sep, r * sep]);
-    }
+// ── Mapa Leaflet del parque ───────────────────────────────────────────────────
+function parqueInitMap() {
+  const el = document.getElementById('parque-map');
+  if (!el || typeof L === 'undefined') return null;
+  if (PARQUE.map) {
+    setTimeout(() => PARQUE.map.invalidateSize(), 60);
+    return PARQUE.map;
   }
-  PARQUE.layout = layout;
-  return layout;
+  PARQUE.map = L.map(el, {
+    center: [23.5, -102], zoom: 5,
+    zoomControl: true, attributionControl: false,
+  });
+  const tileUrl = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES.dark) ||
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  PARQUE.baseLayer = L.tileLayer(tileUrl, { maxZoom: 18, subdomains: 'abc', crossOrigin: 'anonymous' })
+    .addTo(PARQUE.map);
+  setTimeout(() => PARQUE.map.invalidateSize(), 80);
+  return PARQUE.map;
 }
 
+function parqueRenderKrigingLayer(key) {
+  const map = parqueInitMap();
+  if (!map) return;
+  const krigResult = (typeof KRIG !== 'undefined') ? KRIG.result : null;
+  if (!krigResult) {
+    document.getElementById('parque-map-status').textContent = 'Sin Kriging';
+    document.getElementById('parque-map-hint').style.display = '';
+    return;
+  }
+  const grid = krigResult[key] || krigResult['wind'];
+  if (!grid || !grid.z || !grid.bounds) return;
+  if (PARQUE.windOverlay) { map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
+  const { z, bounds, z_min, z_max } = grid;
+  const ny = z.length, nx = z[0].length;
+  const canvas = document.createElement('canvas');
+  canvas.width = nx; canvas.height = ny;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(nx, ny);
+  const rng = z_max - z_min;
+  for (let j = 0; j < ny; j++) {
+    const row = z[ny - 1 - j];
+    for (let i = 0; i < nx; i++) {
+      const t = rng > 0 ? (row[i] - z_min) / rng : 0.5;
+      const [r_, g_, b_] = krigColor(t);
+      const idx = (j * nx + i) * 4;
+      img.data[idx] = r_; img.data[idx+1] = g_; img.data[idx+2] = b_; img.data[idx+3] = 175;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  PARQUE.windOverlay = L.imageOverlay(
+    canvas.toDataURL(),
+    [[bounds.lat_min, bounds.lon_min], [bounds.lat_max, bounds.lon_max]],
+    { opacity: 0.72 }
+  ).addTo(map);
+  const legendEl = document.getElementById('parque-map-legend');
+  legendEl.textContent = `${(z_min||0).toFixed(1)} – ${(z_max||0).toFixed(1)} ${grid.title?.includes('W/m') ? 'W/m²' : 'm/s'}`;
+  legendEl.style.display = '';
+  document.getElementById('parque-map-status').textContent = `Kriging: ${grid.title || key}`;
+  document.getElementById('parque-map-hint').style.display = 'none';
+}
+
+function parqueRenderPolygon() {
+  const map = parqueInitMap();
+  if (!map) return;
+  if (PARQUE.polyLayer) { map.removeLayer(PARQUE.polyLayer); PARQUE.polyLayer = null; }
+  const pts = (typeof KRIG !== 'undefined') ? KRIG.parkPoints : null;
+  if (!pts || pts.length < 3) return;
+  PARQUE.polyLayer = L.polygon(pts, {
+    color: '#f59e0b', weight: 2.5,
+    fillColor: '#f59e0b', fillOpacity: 0.08,
+  }).addTo(map);
+  map.fitBounds(PARQUE.polyLayer.getBounds(), { padding: [30, 30], maxZoom: 14 });
+}
+
+function parqueClearTurbineMarkers() {
+  if (!PARQUE.map) return;
+  PARQUE.turbineMarkers.forEach(m => PARQUE.map.removeLayer(m));
+  PARQUE.turbineMarkers = [];
+}
+
+function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
+  parqueClearTurbineMarkers();
+  const map = parqueInitMap();
+  if (!map || !layoutLatlon) return;
+  const aeps  = simTurbines ? simTurbines.map(t => t.aep_mwh) : null;
+  const maxA  = aeps ? Math.max(...aeps, 0.001) : 1;
+  const minA  = aeps ? Math.min(...aeps, maxA)  : 0;
+  layoutLatlon.forEach(([lat, lon], i) => {
+    const t = aeps ? (aeps[i] - minA) / (maxA - minA + 1e-6) : 0.5;
+    const [r_, g_, b_] = krigColor(t);
+    const clr = `rgb(${r_|0},${g_|0},${b_|0})`;
+    const sim = simTurbines ? simTurbines[i] : null;
+    const tip = sim
+      ? `<b>T${i+1}</b><br>AEP: ${sim.aep_mwh.toFixed(1)} MWh<br>Estela: ${sim.wake_loss_pct.toFixed(1)}%<br>CF: ${sim.cf_pct.toFixed(1)}%`
+      : `<b>T${i+1}</b><br>${lat.toFixed(5)}°, ${lon.toFixed(5)}°`;
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="width:24px;height:24px;border-radius:50%;background:${clr};border:2px solid #fff;
+               box-shadow:0 2px 8px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;
+               font-size:9px;font-weight:700;color:#0b1220">${i+1}</div>`,
+      iconSize: [24, 24], iconAnchor: [12, 12],
+    });
+    const m = L.marker([lat, lon], { icon }).bindPopup(tip);
+    m.addTo(map);
+    PARQUE.turbineMarkers.push(m);
+  });
+}
+
+// ── Turbinas desde TOPSIS ─────────────────────────────────────────────────────
 async function parqueLoadTurbines() {
   const sel = document.getElementById('parque-turbine');
-  if (!sel || sel.options.length) return;
+  if (!sel || sel.options.length > 0) return;
   try {
     const r = await api('/api/energy/turbines', 'GET');
     sel.innerHTML = '';
@@ -5644,11 +5743,11 @@ async function parqueLoadTurbines() {
       const opt = document.createElement('option');
       if (t.source === 'builtin') {
         opt.value = t.name;
-        opt.textContent = `${t.name} — ${(t.rated_power_kw / 1000).toFixed(1)} MW`;
+        opt.textContent = `${t.name} — ${(t.rated_power_kw/1000).toFixed(1)} MW`;
         og1.appendChild(opt);
       } else {
         opt.value = t.filename;
-        opt.textContent = `${t.name}  ⌀${t.rotor_diameter_m || '?'} m  ${t.rated_power_kw ? (t.rated_power_kw/1000).toFixed(1)+' MW' : ''}`;
+        opt.textContent = `${t.name}  ⌀${t.rotor_diameter_m||'?'} m  ${t.rated_power_kw ? (t.rated_power_kw/1000).toFixed(1)+' MW' : ''}`;
         og2.appendChild(opt);
       }
     });
@@ -5657,97 +5756,219 @@ async function parqueLoadTurbines() {
   } catch (e) { /* silent */ }
 }
 
-function parqueDrawLayout() {
-  const canvas = document.getElementById('parque-canvas');
-  if (!canvas) return;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width  = canvas.clientWidth * dpr;
-  canvas.height = canvas.clientHeight * dpr;
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const W = canvas.clientWidth, H = canvas.clientHeight;
-  ctx.clearRect(0, 0, W, H);
+function parquePopulateTopsisRanking() {
+  const listEl  = document.getElementById('parque-topsis-list');
+  const badgeEl = document.getElementById('parque-topsis-badge');
+  const sel     = document.getElementById('parque-turbine');
+  if (!listEl) return;
 
-  const turbines = (PARQUE.result && PARQUE.result.turbines) || [];
-  const layout = turbines.length ? turbines.map(t => [t.x_m, t.y_m]) : PARQUE.layout;
-  if (!layout.length) {
-    ctx.fillStyle = mut();
-    ctx.font = '12px Inter';
-    ctx.fillText('Pulsa "Simular parque" para ver el layout.', 20, H/2);
+  const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking)
+    ? (MCDA.lastRanking.ranking || [])
+    : [];
+
+  if (!ranking.length) {
+    listEl.innerHTML = '<div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">Ejecuta TOPSIS en Kriging Clásico para ver la lista ranqueada.</div>';
+    if (badgeEl) badgeEl.textContent = 'Sin TOPSIS';
     return;
   }
-  const xs = layout.map(t => t[0]), ys = layout.map(t => t[1]);
-  const pad = 60;
-  const minX = Math.min(...xs) - pad, maxX = Math.max(...xs) + pad;
-  const minY = Math.min(...ys) - pad, maxY = Math.max(...ys) + pad;
-  const sx = v => (v - minX) / (maxX - minX) * (W - 60) + 30;
-  const sy = v => H - (v - minY) / (maxY - minY) * (H - 60) - 30;
 
-  // Grid
-  ctx.strokeStyle = isLight() ? 'rgba(11,18,32,0.08)' : 'rgba(58,70,93,0.35)';
-  ctx.lineWidth = 0.5;
-  const gstep = 200;
-  for (let x = Math.ceil(minX / gstep) * gstep; x < maxX; x += gstep) {
-    ctx.beginPath(); ctx.moveTo(sx(x), 30); ctx.lineTo(sx(x), H - 30); ctx.stroke();
-  }
-  for (let y = Math.ceil(minY / gstep) * gstep; y < maxY; y += gstep) {
-    ctx.beginPath(); ctx.moveTo(30, sy(y)); ctx.lineTo(W - 30, sy(y)); ctx.stroke();
-  }
+  if (badgeEl) badgeEl.textContent = `${ranking.length} opciones`;
 
-  // Wind arrow (dirección dominante "FROM")
-  const dir = PARQUE.result && PARQUE.result.dominant_dir_deg;
-  if (dir != null) {
-    const theta = (270 - dir) * Math.PI / 180;
-    const cx = 50, cy = 50, len = 30;
-    const dx = Math.cos(theta) * len, dy = -Math.sin(theta) * len;
-    ctx.strokeStyle = '#3DDC97'; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy); ctx.stroke();
-    ctx.fillStyle = '#3DDC97';
-    ctx.beginPath();
-    ctx.moveTo(cx + dx, cy + dy);
-    ctx.lineTo(cx + dx - 6 * Math.cos(theta - Math.PI/6), cy + dy + 6 * Math.sin(theta - Math.PI/6));
-    ctx.lineTo(cx + dx - 6 * Math.cos(theta + Math.PI/6), cy + dy + 6 * Math.sin(theta + Math.PI/6));
-    ctx.closePath(); ctx.fill();
-    ctx.font = '10px Inter';
-    ctx.fillText(`Viento dom. ${dir.toFixed(0)}°`, cx + 35, cy + 4);
-  }
-
-  // Turbines
-  const aeps = turbines.map(t => t.aep_mwh);
-  const maxA = Math.max(...aeps, 0.001);
-  const minA = Math.min(...aeps, maxA);
-  layout.forEach((pt, i) => {
-    const cx = sx(pt[0]), cy = sy(pt[1]);
-    const t = turbines.length ? (aeps[i] - minA) / (maxA - minA + 1e-6) : 0.5;
-    const [r_, g_, b_] = krigColor(t);
-    ctx.beginPath(); ctx.arc(cx, cy, 13, 0, 2 * Math.PI);
-    ctx.fillStyle = `rgba(${r_|0},${g_|0},${b_|0},0.12)`; ctx.fill();
-    ctx.beginPath(); ctx.arc(cx, cy, 8, 0, 2 * Math.PI);
-    ctx.fillStyle = `rgb(${r_|0},${g_|0},${b_|0})`; ctx.fill();
-    ctx.strokeStyle = isLight() ? '#0B1220' : '#fff'; ctx.lineWidth = 1; ctx.stroke();
-    ctx.fillStyle = ink(); ctx.font = '9px Inter'; ctx.textAlign = 'center';
-    ctx.fillText(`T${i + 1}`, cx, cy - 12);
-    if (turbines.length) {
-      ctx.fillStyle = mut();
-      ctx.fillText(`${aeps[i].toFixed(1)}`, cx, cy + 18);
-    }
+  // Unique turbines sorted by score desc
+  const seen = new Set();
+  const items = [];
+  ranking.forEach(r => {
+    const key = r.turbina || r.label;
+    if (!seen.has(key)) { seen.add(key); items.push(r); }
   });
-  ctx.textAlign = 'left';
+
+  listEl.innerHTML = items.map((r, i) => {
+    const score = (r.topsis_score || 0).toFixed(4);
+    const cf    = r.factor_capacidad ? (r.factor_capacidad * 100).toFixed(1) + '% CF' : '';
+    const aep   = r.aep_mwh ? (r.aep_mwh).toFixed(0) + ' MWh' : '';
+    const bg    = i === 0 ? 'var(--accent)' : 'transparent';
+    const col   = i === 0 ? '#fff' : 'inherit';
+    return `<div class="parque-topsis-item" data-turbina="${r.turbina||''}" data-key="${r.turbina||r.label||''}"
+                 style="padding:.4rem .6rem;cursor:pointer;border-bottom:1px solid var(--border);
+                        background:${bg};color:${col};font-size:.76rem;display:flex;gap:.4rem;align-items:center"
+                 onclick="parqueSelectTurbina(this)">
+              <span style="font-weight:700;min-width:1.4rem">#${i+1}</span>
+              <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.turbina||''}">${r.turbina||r.label||'—'}</span>
+              <span style="color:${i===0?'rgba(255,255,255,.7)':'var(--text-muted)'};font-size:.7rem">${score}</span>
+            </div>`;
+  }).join('');
+
+  // Pre-select top-1 turbine
+  if (items.length) parqueSelectTurbina(null, items[0].turbina || items[0].label);
 }
 
-function parqueRenderAEPChart() {
-  const turbines = (PARQUE.result && PARQUE.result.turbines) || [];
-  if (!turbines.length) return;
+function parqueSelectTurbina(el, forceKey) {
+  const key = forceKey || (el && el.dataset.key) || '';
+  if (!key) return;
+  document.querySelectorAll('.parque-topsis-item').forEach(i => {
+    const isThis = i.dataset.key === key;
+    i.style.background = isThis ? 'var(--accent)' : 'transparent';
+    i.style.color      = isThis ? '#fff' : 'inherit';
+  });
+  const sel = document.getElementById('parque-turbine');
+  if (sel) {
+    for (const opt of sel.options) {
+      if (opt.value === key || opt.textContent.includes(key)) {
+        sel.value = opt.value; break;
+      }
+    }
+  }
+  parqueUpdateRecommendation();
+}
+
+// ── Recomendación n° turbinas ─────────────────────────────────────────────────
+async function parqueUpdateRecommendation() {
+  const turbineKey = document.getElementById('parque-turbine')?.value;
+  const demand     = parseFloat(document.getElementById('parque-demand')?.value) || 5000;
+  if (!turbineKey) return;
+
+  const turbineCfg = { builtin_model: turbineKey };
+  // Mean wind speed: use MCDA/kriging polygon mean if available
+  let vMean = 9.0, wK = 2.0;
+  if (typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length) {
+    const v_vals = MCDA.lastAnalysis.map(s => s.v_mean || 0).filter(v => v > 0);
+    if (v_vals.length) vMean = v_vals.reduce((a, b) => a + b, 0) / v_vals.length;
+    const k_vals = MCDA.lastAnalysis.map(s => s.weibull_K || 0).filter(k => k > 0);
+    if (k_vals.length) wK = k_vals.reduce((a, b) => a + b, 0) / k_vals.length;
+  }
+
+  try {
+    const r = await api('/api/farm/recommend', 'POST', {
+      turbine: turbineCfg, demand_mwh: demand,
+      v_mean: vMean, weibull_k: wK,
+      availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
+      electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
+    });
+    document.getElementById('parque-rec-n').textContent   = r.n_turbines;
+    document.getElementById('parque-rec-aep').textContent = r.aep_single_net_mwh?.toLocaleString() || '—';
+    const nInp = document.getElementById('parque-n-turbines');
+    if (nInp && (!nInp.value || parseInt(nInp.value) === 0)) nInp.value = r.n_turbines;
+  } catch (e) { /* silent */ }
+}
+
+// ── Optimización y simulación ─────────────────────────────────────────────────
+async function parqueOptimize() {
+  const polygon = (typeof KRIG !== 'undefined') ? KRIG.parkPoints : null;
+  if (!polygon || polygon.length < 3) {
+    toast('Dibuja y cierra el polígono del parque en la sección Kriging Clásico primero.', 'warning');
+    return;
+  }
+  const turbineKey = document.getElementById('parque-turbine')?.value;
+  if (!turbineKey) { toast('Selecciona una turbina.', 'warning'); return; }
+
+  // Wind grid from kriging result
+  const krigResult = (typeof KRIG !== 'undefined') ? KRIG.result : null;
+  const layerKey   = document.getElementById('parque-map-layer')?.value || 'wind';
+  const windGrid   = krigResult ? (krigResult[layerKey] || krigResult['wind'] || null) : null;
+
+  // Mean wind speed for fallback / recommendation
+  let vMean = 9.0, wK = 2.0;
+  if (typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length) {
+    const vv = MCDA.lastAnalysis.map(s => s.v_mean||0).filter(v=>v>0);
+    if (vv.length) vMean = vv.reduce((a,b)=>a+b)/vv.length;
+    const kk = MCDA.lastAnalysis.map(s => s.weibull_K||0).filter(k=>k>0);
+    if (kk.length) wK   = kk.reduce((a,b)=>a+b)/kk.length;
+  }
+
+  const nInput = parseInt(document.getElementById('parque-n-turbines')?.value) || 0;
+  const body = {
+    polygon:           polygon.map(([lat, lon]) => ({ lat, lon })),
+    turbine:           { builtin_model: turbineKey },
+    n_turbines:        nInput,
+    demand_mwh:        parseFloat(document.getElementById('parque-demand')?.value) || 5000,
+    wind_grid:         windGrid,
+    v_mean:            vMean,
+    weibull_k:         wK,
+    min_spacing_d:     parseFloat(document.getElementById('parque-min-sep-d')?.value) || 5,
+    k_wake:            parseFloat(document.getElementById('parque-kwake')?.value) || 0.075,
+    ct:                parseFloat(document.getElementById('parque-ct')?.value) || 0.8,
+    availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
+    electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
+    n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
+    ws_height_m:       parseFloat(document.getElementById('parque-ws-h')?.value) || 50,
+    session_id:        WP.sessionId,
+  };
+
+  const progWrap = document.getElementById('parque-progress-wrap');
+  const progFill = document.getElementById('parque-progress-fill');
+  const progText = document.getElementById('parque-progress-text');
+  const statusEl = document.getElementById('parque-status');
+
+  progWrap.style.display = ''; progFill.style.width = '20%';
+  progText.textContent   = 'Optimizando layout (GSP)…';
+  statusEl.textContent   = 'Optimizando…';
+
+  try {
+    progFill.style.width = '50%';
+    const r = await api('/api/farm/optimize', 'POST', body);
+    if (r.error) throw new Error(r.error);
+    progFill.style.width = '90%';
+
+    PARQUE.optResult = r;
+    PARQUE.result    = r.simulation || null;
+
+    // Actualizar mapa
+    parqueRenderKrigingLayer(layerKey);
+    parqueRenderPolygon();
+    parquePlotTurbinesOnMap(r.layout_latlon, r.simulation?.turbines || null);
+
+    // KPIs
+    const sim = r.simulation;
+    statusEl.textContent = sim
+      ? `${r.n_placed} turbinas · ${r.installed_mw} MW · ${sim.hours?.toLocaleString()||'—'} h`
+      : `${r.n_placed} turbinas colocadas (sin serie temporal)`;
+
+    document.getElementById('parque-layout-meta').textContent =
+      `Área: ${r.area_km2} km² · D: ${r.D_m}m · Sep. mín: ${r.min_sep_m}m · ${r.n_candidates} candidatos`;
+
+    document.getElementById('parque-info').textContent =
+      `${r.turbine?.name||turbineKey} · ⌀${r.D_m}m`;
+
+    if (sim) {
+      document.getElementById('parque-kpis').style.display = '';
+      document.getElementById('parque-kpi-aep').textContent = (sim.aep_mwh / 1000).toFixed(3);
+      document.getElementById('parque-kpi-wl').textContent  = sim.wake_loss_pct.toFixed(2);
+      document.getElementById('parque-kpi-cf').textContent  = sim.cf_pct.toFixed(2);
+      document.getElementById('parque-kpi-mw').textContent  = sim.installed_mw.toFixed(3);
+      document.getElementById('parque-kpi-flh').textContent = sim.flh.toFixed(0);
+      document.getElementById('parque-kpi-dir').textContent = (sim.dominant_dir_deg||0).toFixed(0) + '°';
+      parqueRenderAEPChart(sim.turbines, r.layout_latlon);
+      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, sim.turbines);
+    } else {
+      document.getElementById('parque-kpis').style.display = 'none';
+      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, null);
+    }
+    parqueRenderWakeChart(r.D_m);
+    progFill.style.width = '100%';
+    setTimeout(() => { progWrap.style.display = 'none'; }, 800);
+    toast(`Parque optimizado: ${r.n_placed} turbinas`, 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    statusEl.textContent = 'Error en optimización';
+    progWrap.style.display = 'none';
+    progText.textContent = '';
+  }
+}
+
+// ── Gráficas y tabla ──────────────────────────────────────────────────────────
+function parqueRenderAEPChart(turbines, layoutLatlon) {
+  if (!turbines || !turbines.length) return;
   destroyChart('parque-aep');
-  const ctx = document.getElementById('parque-aep-chart').getContext('2d');
-  const labels = turbines.map(t => `T${t.i + 1}`);
+  const ctx    = document.getElementById('parque-aep-chart')?.getContext('2d');
+  if (!ctx) return;
+  const labels = turbines.map((_, i) => `T${i+1}`);
   const aep    = turbines.map(t => t.aep_mwh);
   const noWake = turbines.map(t => t.aep_no_wake_mwh);
   WP.charts['parque-aep'] = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets: [
-      { label: 'AEP con estela', data: aep, backgroundColor: acc() },
-      { label: 'AEP sin estela', data: noWake, backgroundColor: 'rgba(150,150,150,0.4)' },
+      { label: 'AEP con estela', data: aep,    backgroundColor: acc() },
+      { label: 'AEP sin estela', data: noWake, backgroundColor: 'rgba(150,150,150,0.35)' },
     ]},
     options: {
       responsive: true, maintainAspectRatio: false,
@@ -5760,30 +5981,40 @@ function parqueRenderAEPChart() {
   });
 }
 
-function parqueRenderTable() {
+function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
   const tb = document.getElementById('parque-tbl-body');
-  const turbines = (PARQUE.result && PARQUE.result.turbines) || [];
-  tb.innerHTML = turbines.map(t => `
-    <tr>
-      <td>T${t.i + 1}</td><td>${t.x_m.toFixed(0)}</td><td>${t.y_m.toFixed(0)}</td>
-      <td>${t.aep_mwh.toFixed(1)}</td><td>${t.aep_no_wake_mwh.toFixed(1)}</td>
-      <td>${t.wake_loss_pct.toFixed(2)}</td><td>${t.cf_pct.toFixed(2)}</td>
-    </tr>`).join('');
+  if (!tb || !layoutLatlon) return;
+  tb.innerHTML = layoutLatlon.map(([lat, lon], i) => {
+    const v   = windAtTurbines ? (windAtTurbines[i] || 0).toFixed(2) : '—';
+    const sim = simTurbines ? simTurbines[i] : null;
+    const ox  = PARQUE.optResult?.origin_lat ? '' : '';
+    const xy  = PARQUE.optResult?.layout_xy_m ? PARQUE.optResult.layout_xy_m[i] : null;
+    return `<tr>
+      <td>T${i+1}</td>
+      <td>${lat.toFixed(5)}</td><td>${lon.toFixed(5)}</td>
+      <td>${xy ? xy[0].toFixed(0) : '—'}</td><td>${xy ? xy[1].toFixed(0) : '—'}</td>
+      <td>${v}</td>
+      <td>${sim ? sim.aep_mwh.toFixed(1) : '—'}</td>
+      <td>${sim ? sim.aep_no_wake_mwh.toFixed(1) : '—'}</td>
+      <td>${sim ? sim.wake_loss_pct.toFixed(2) : '—'}</td>
+      <td>${sim ? sim.cf_pct.toFixed(2) : '—'}</td>
+    </tr>`;
+  }).join('');
 }
 
-async function parqueRenderWakeChart() {
-  const rotor = (PARQUE.result && PARQUE.result.rotor_d_m) || 80;
-  const k = parseFloat(document.getElementById('parque-kwake').value) || 0.05;
-  const ct = parseFloat(document.getElementById('parque-ct').value) || 0.8;
+async function parqueRenderWakeChart(rotorD) {
+  const rotor = rotorD || (PARQUE.optResult && PARQUE.optResult.D_m) || 80;
+  const k  = parseFloat(document.getElementById('parque-kwake')?.value) || 0.075;
+  const ct = parseFloat(document.getElementById('parque-ct')?.value)    || 0.8;
   try {
-    const r = await api('/api/farm/wake_profile', 'POST',
-      { rotor_d_m: rotor, k_wake: k, ct });
+    const r = await api('/api/farm/wake_profile', 'POST', { rotor_d_m: rotor, k_wake: k, ct });
     destroyChart('parque-wake');
-    const ctx = document.getElementById('parque-wake-chart').getContext('2d');
+    const ctx = document.getElementById('parque-wake-chart')?.getContext('2d');
+    if (!ctx) return;
     WP.charts['parque-wake'] = new Chart(ctx, {
       type: 'line',
       data: { datasets: [{
-        label: `NOJ k=${k}, Ct=${ct}, ⌀=${rotor}m`,
+        label: `NOJ k=${k}, Ct=${ct}, ⌀=${rotor} m`,
         data: r.x_over_d.map((x, i) => ({ x, y: r.deficit_pct[i] })),
         borderColor: acc2(), borderWidth: 2, pointRadius: 0,
         fill: true, backgroundColor: 'rgba(244,109,67,0.08)', tension: 0.3,
@@ -5800,85 +6031,49 @@ async function parqueRenderWakeChart() {
   } catch (e) { /* silent */ }
 }
 
-async function parqueRun() {
-  if (!WP.sessionId) { toast('Sin sesión.', 'error'); return; }
-  const turbineSel = document.getElementById('parque-turbine');
-  const turbineKey = turbineSel.value;
-  const turbineCfg = turbineKey
-    ? { builtin_model: turbineKey }
-    : { builtin_model: 'V150_4.5' };
-
-  const layout = parqueBuildLayout();
-  const body = {
-    session_id: WP.sessionId,
-    layout,
-    turbine: turbineCfg,
-    k_wake:    parseFloat(document.getElementById('parque-kwake').value),
-    ct:        parseFloat(document.getElementById('parque-ct').value),
-    n_sectors: parseInt(document.getElementById('parque-sectors').value),
-    availability:      parseFloat(document.getElementById('parque-avail').value),
-    electrical_losses: parseFloat(document.getElementById('parque-elec').value),
-    ws_height_m:       parseFloat(document.getElementById('parque-ws-h').value),
-  };
-  document.getElementById('parque-status').textContent = 'Simulando…';
-  try {
-    const r = await api('/api/farm/simulate', 'POST', body);
-    if (r.error) throw new Error(r.error);
-    PARQUE.result = r;
-    document.getElementById('parque-status').textContent =
-      `${r.n_turbines} turbinas · ${r.installed_mw} MW · ${r.hours.toLocaleString()} h`;
-    document.getElementById('parque-info').textContent =
-      `Turbina: ${r.turbine?.name || '—'} · ⌀${r.rotor_d_m} m · ${r.rated_kw} kW`;
-
-    document.getElementById('parque-kpis').style.display = '';
-    document.getElementById('parque-kpi-aep').textContent = (r.aep_mwh / 1000).toFixed(2);
-    document.getElementById('parque-kpi-wl').textContent  = r.wake_loss_pct.toFixed(2);
-    document.getElementById('parque-kpi-cf').textContent  = r.cf_pct.toFixed(2);
-    document.getElementById('parque-kpi-mw').textContent  = r.installed_mw.toFixed(2);
-    document.getElementById('parque-kpi-flh').textContent = r.flh.toFixed(0);
-    document.getElementById('parque-kpi-dir').textContent = r.dominant_dir_deg.toFixed(0) + '°';
-
-    document.getElementById('parque-layout-meta').textContent =
-      `${r.n_turbines} turbinas · sep ≈ ${parseFloat(document.getElementById('parque-sep').value)} m`;
-
-    parqueDrawLayout();
-    parqueRenderAEPChart();
-    parqueRenderTable();
-    parqueRenderWakeChart();
-    toast('Parque simulado', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-    document.getElementById('parque-status').textContent = 'Error';
-  }
-}
-
+// ── Reset ─────────────────────────────────────────────────────────────────────
 function parqueReset() {
-  PARQUE.result = null;
-  parqueBuildLayout();
+  PARQUE.result = null; PARQUE.optResult = null;
+  parqueClearTurbineMarkers();
+  if (PARQUE.windOverlay && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
+  if (PARQUE.polyLayer   && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.polyLayer);   PARQUE.polyLayer   = null; }
   document.getElementById('parque-kpis').style.display = 'none';
   document.getElementById('parque-tbl-body').innerHTML = '';
   document.getElementById('parque-status').textContent = 'Sin simular';
+  document.getElementById('parque-layout-meta').textContent = '';
+  document.getElementById('parque-map-hint').style.display = '';
+  document.getElementById('parque-map-legend').style.display = 'none';
+  document.getElementById('parque-map-status').textContent = 'Sin Kriging';
   destroyChart('parque-aep'); destroyChart('parque-wake');
-  parqueDrawLayout();
+}
+
+// ── Activación del módulo ─────────────────────────────────────────────────────
+function parqueActivate() {
+  parqueInitMap();
+  parqueLoadTurbines();
+  parquePopulateTopsisRanking();
+  // Re-render kriging overlay if already available
+  const layerKey = document.getElementById('parque-map-layer')?.value || 'wind';
+  parqueRenderKrigingLayer(layerKey);
+  parqueRenderPolygon();
+  // Re-plot turbines if results exist
+  if (PARQUE.optResult?.layout_latlon) {
+    parquePlotTurbinesOnMap(PARQUE.optResult.layout_latlon, PARQUE.result?.turbines || null);
+  }
+  setTimeout(() => PARQUE.map && PARQUE.map.invalidateSize(), 120);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const btnRun = document.getElementById('btn-parque-run');
-  if (btnRun) btnRun.addEventListener('click', parqueRun);
-  const btnReset = document.getElementById('btn-parque-reset');
-  if (btnReset) btnReset.addEventListener('click', parqueReset);
-  ['parque-rows','parque-cols','parque-sep'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('input', () => { parqueBuildLayout(); parqueDrawLayout(); });
+  document.getElementById('btn-parque-optimize')?.addEventListener('click', parqueOptimize);
+  document.getElementById('btn-parque-reset')?.addEventListener('click', parqueReset);
+  document.getElementById('parque-map-layer')?.addEventListener('change', e => {
+    PARQUE.layerKey = e.target.value;
+    parqueRenderKrigingLayer(e.target.value);
   });
+  document.getElementById('parque-demand')?.addEventListener('input', parqueUpdateRecommendation);
+  document.getElementById('parque-turbine')?.addEventListener('change', parqueUpdateRecommendation);
   document.querySelectorAll('.nav-btn[data-module="parque"]').forEach(b => {
-    b.addEventListener('click', () => {
-      requestAnimationFrame(() => {
-        parqueLoadTurbines();
-        if (!PARQUE.layout.length) parqueBuildLayout();
-        parqueDrawLayout();
-      });
-    });
+    b.addEventListener('click', () => requestAnimationFrame(parqueActivate));
   });
 });
 

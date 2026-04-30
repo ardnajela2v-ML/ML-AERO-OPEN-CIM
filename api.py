@@ -10,6 +10,7 @@ import time
 import logging
 import threading
 import traceback
+import requests
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone
@@ -70,7 +71,8 @@ from core.kriging import (parse_coords_from_filename, read_wind_file,
                           legacy_three_maps, parallel_read_sites,
                           _compute_site_stats_cached, clear_site_stats_cache,
                           _haversine_km)
-from core.farm import simulate_wind_farm, jensen_deficit, dominant_direction
+from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
+                       recommend_n_turbines, optimize_layout_greedy)
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION)
@@ -1570,6 +1572,178 @@ def create_app():
             'rotor_d_m':    rotor_d,
         })
 
+    @app.route('/api/farm/recommend', methods=['POST'])
+    def farm_recommend():
+        """
+        Recommend turbine count for a given demand and mean wind speed.
+        Body:
+          turbine:            {builtin_model? OR full PowerCurve fields}
+          demand_mwh:         float — annual energy demand
+          v_mean:             float — mean wind speed at hub height (m/s)
+          weibull_k:          float — Weibull shape parameter (default 2.0)
+          rho:                float — air density kg/m³ (default 1.225)
+          availability:       float 0..1 (default 0.97)
+          electrical_losses:  float 0..1 (default 0.03)
+          avg_wake_loss:      float 0..1 (default 0.08)
+        """
+        body     = request.get_json(silent=True) or {}
+        t_cfg    = body.get('turbine', {})
+        rated_kw = float(t_cfg.get('rated_power_kw', 2000))
+        hub_h    = float(t_cfg.get('hub_height_m', 80))
+        err = _validate_ranges(rated_power_kw=rated_kw, hub_height_m=hub_h)
+        if err is not None:
+            return err
+        try:
+            builtin = t_cfg.get('builtin_model')
+            if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+                turbine = PowerCurve.from_builtin(builtin)
+            elif builtin and builtin.endswith('.csv'):
+                fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+                turbine = _cached_power_curve(fpath)
+            else:
+                turbine = PowerCurve(
+                    name=t_cfg.get('name', 'Custom'),
+                    rated_power_kw=rated_kw,
+                    cut_in=float(t_cfg.get('cut_in', 3.0)),
+                    rated_speed=float(t_cfg.get('rated_speed', 12.0)),
+                    cut_out=float(t_cfg.get('cut_out', 25.0)),
+                    hub_height_m=hub_h,
+                    rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
+                )
+            result = recommend_n_turbines(
+                turbine=turbine,
+                demand_mwh=float(body.get('demand_mwh', 5000)),
+                v_mean=float(body.get('v_mean', 9.0)),
+                weibull_k=float(body.get('weibull_k', 2.0)),
+                rho=float(body.get('rho', 1.225)),
+                availability=float(body.get('availability', 0.97)),
+                electrical_losses=float(body.get('electrical_losses', 0.03)),
+                avg_wake_loss=float(body.get('avg_wake_loss', 0.08)),
+            )
+            result['turbine'] = turbine.to_dict()
+            return jsonify(result)
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
+    @app.route('/api/farm/optimize', methods=['POST'])
+    def farm_optimize():
+        """
+        Greedy Sequential Placement within a park polygon + AEP simulation.
+        Body:
+          polygon:           [{lat, lon}, ...] — park boundary (≥ 3 vertices)
+          turbine:           {builtin_model? OR full PowerCurve fields}
+          n_turbines:        int — 0/omitted → auto from demand_mwh
+          demand_mwh:        float — annual energy demand for auto n_turbines
+          wind_grid:         {z, bounds} — kriging wind field (optional)
+          v_mean:            float — fallback mean wind speed (m/s)
+          weibull_k:         float — Weibull k for recommendation (default 2.0)
+          min_spacing_d:     float — min spacing in rotor diameters (default 5)
+          grid_step_d:       float — candidate grid step in D (default 1.5)
+          k_wake:            float — NOJ wake decay (default 0.075)
+          ct:                float — thrust coefficient (default 0.8)
+          availability:      float 0..1 (default 0.97)
+          electrical_losses: float 0..1 (default 0.03)
+          session_id:        str — for real wind-series AEP simulation
+          ws_height_m:       float — measurement height for extrapolation
+          n_sectors:         int  — direction sectors (default 36)
+        """
+        body    = request.get_json(silent=True) or {}
+        polygon = body.get('polygon') or []
+        if len(polygon) < 3:
+            return _err('El polígono del parque necesita al menos 3 vértices.')
+
+        t_cfg    = body.get('turbine', {})
+        rated_kw = float(t_cfg.get('rated_power_kw', 2000))
+        hub_h    = float(t_cfg.get('hub_height_m', 80))
+        err = _validate_ranges(rated_power_kw=rated_kw, hub_height_m=hub_h)
+        if err is not None:
+            return err
+        try:
+            builtin = t_cfg.get('builtin_model')
+            if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+                turbine = PowerCurve.from_builtin(builtin)
+            elif builtin and builtin.endswith('.csv'):
+                fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+                turbine = _cached_power_curve(fpath)
+            else:
+                turbine = PowerCurve(
+                    name=t_cfg.get('name', 'Custom'),
+                    rated_power_kw=rated_kw,
+                    cut_in=float(t_cfg.get('cut_in', 3.0)),
+                    rated_speed=float(t_cfg.get('rated_speed', 12.0)),
+                    cut_out=float(t_cfg.get('cut_out', 25.0)),
+                    hub_height_m=hub_h,
+                    rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
+                )
+
+            wind_grid  = body.get('wind_grid')  or None
+            v_mean     = float(body.get('v_mean',     9.0))
+            weibull_k  = float(body.get('weibull_k',  2.0))
+            avail      = float(body.get('availability',      0.97))
+            elec_loss  = float(body.get('electrical_losses', 0.03))
+
+            n_turbines = int(body.get('n_turbines', 0))
+            demand_mwh = float(body.get('demand_mwh', 5000))
+
+            if n_turbines <= 0:
+                rec        = recommend_n_turbines(
+                    turbine=turbine, demand_mwh=demand_mwh,
+                    v_mean=v_mean, weibull_k=weibull_k,
+                    availability=avail, electrical_losses=elec_loss,
+                )
+                n_turbines = rec['n_turbines']
+
+            opt = optimize_layout_greedy(
+                polygon_latlon=polygon,
+                turbine=turbine,
+                n_turbines=n_turbines,
+                wind_grid=wind_grid,
+                fallback_wind_ms=v_mean,
+                min_spacing_d=float(body.get('min_spacing_d', 5.0)),
+                grid_step_d=float(body.get('grid_step_d',   1.5)),
+                k_wake=float(body.get('k_wake', 0.075)),
+                ct=float(body.get('ct',    0.8)),
+            )
+
+            sim_result = None
+            sid = body.get('session_id')
+            if sid:
+                sess   = sessions.get(sid, {})
+                if 'df' in sess:
+                    df     = sess['df']
+                    ws_col = sess.get('target_col', 'wind_speed')
+                    wd_col = body.get('wd_col', 'wind_dir')
+                    ws_h   = float(body.get('ws_height_m', 50.0))
+                    if ws_col in df.columns:
+                        ws_raw = df[ws_col].fillna(df[ws_col].median()).values
+                        ws_hub = extrapolate_wind_hellmann(ws_raw, ws_h, turbine.hub_height_m)
+                        wd     = (df[wd_col].fillna(0).values
+                                  if wd_col in df.columns else np.zeros_like(ws_hub))
+                        temp_c = df['temperature'].values if 'temperature' in df.columns else None
+                        pres_p = df['pressure'].values    if 'pressure'    in df.columns else None
+                        sim_result = simulate_wind_farm(
+                            layout_xy=opt['layout_xy_m'],
+                            turbine=turbine,
+                            ws=ws_hub, wd=wd,
+                            k_wake=float(body.get('k_wake', 0.075)),
+                            ct=float(body.get('ct', 0.8)),
+                            n_sectors=int(body.get('n_sectors', 36)),
+                            availability=avail,
+                            electrical_losses=elec_loss,
+                            temperature_c=temp_c,
+                            pressure_pa=pres_p,
+                        )
+                        sim_result['turbine'] = turbine.to_dict()
+
+            result = {**opt, 'turbine': turbine.to_dict()}
+            if sim_result:
+                result['simulation'] = sim_result
+            return jsonify(numpy_to_python(result))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
     # ─── EXPORT ───────────────────────────────────────────────────────────────
 
     @app.route('/api/export/csv', methods=['GET', 'POST'])
@@ -1609,6 +1783,78 @@ def create_app():
 
     # ─── AI ASSISTANT ─────────────────────────────────────────────────────────
 
+    def _build_ai_context(sess):
+        meta = sess.get('meta', {})
+        qc = sess.get('qc_report', {})
+        estats = sess.get('energy_summary', {})
+        brief = {
+            'has_data': 'df' in sess,
+            'has_models': any(k.startswith('results_h') for k in sess),
+            'date_range': meta.get('date_range'),
+            'n_rows': meta.get('n_rows'),
+            'columns': (meta.get('columns') or [])[:20],
+            'qc_overall': qc.get('overall'),
+            'qc_missing_pct': qc.get('pct_missing'),
+            'energy_net_mwh': estats.get('energy_net_mwh'),
+            'capacity_factor_pct': estats.get('capacity_factor_pct'),
+        }
+        return json.dumps(brief, ensure_ascii=False)
+
+    def _openai_answer(q, sess):
+        api_key = (getattr(Config, 'OPENAI_API_KEY', '') or '').strip()
+        if not api_key:
+            return None
+
+        model = (getattr(Config, 'OPENAI_MODEL', '') or 'gpt-4.1-mini').strip()
+        timeout_sec = int(getattr(Config, 'OPENAI_TIMEOUT_SEC', 30) or 30)
+        context_json = _build_ai_context(sess)
+        payload = {
+            'model': model,
+            'input': [
+                {
+                    'role': 'system',
+                    'content': (
+                        'Eres un asistente tecnico de energia eolica en AERO by OPEN CIM. '
+                        'Responde en espanol, claro y breve. Si faltan datos, dilo.'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': (
+                        f'Contexto de sesion (JSON): {context_json}\n\n'
+                        f'Pregunta del usuario: {q}'
+                    ),
+                },
+            ],
+            'temperature': 0.3,
+        }
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json',
+        }
+        resp = requests.post(
+            'https://api.openai.com/v1/responses',
+            headers=headers,
+            json=payload,
+            timeout=timeout_sec,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f'OpenAI API error {resp.status_code}: {resp.text[:250]}')
+        data = resp.json()
+        answer = (data.get('output_text') or '').strip()
+        if answer:
+            return answer
+
+        # fallback parse if output_text is absent
+        output = data.get('output') or []
+        texts = []
+        for item in output:
+            for part in (item.get('content') or []):
+                txt = part.get('text')
+                if txt:
+                    texts.append(txt)
+        return '\n'.join(texts).strip() or None
+
     @app.route('/api/ai/chat', methods=['POST'])
     def ai_chat():
         body = request.get_json(silent=True) or {}
@@ -1620,11 +1866,17 @@ def create_app():
             return jsonify({'answer': 'Escribe una pregunta.'})
 
         try:
-            answer = _ai_answer(q, sess)
+            answer = _openai_answer(q, sess)
+            if not answer:
+                answer = _ai_answer(q, sess)
             return jsonify({'answer': answer})
         except Exception as e:
-            logger.exception('Error en %s', request.path)
-            return jsonify({'error': str(e)}), 500
+            logger.exception('Error en OpenAI (%s), usando fallback local.', request.path)
+            try:
+                return jsonify({'answer': _ai_answer(q, sess)})
+            except Exception:
+                logger.exception('Error en %s', request.path)
+                return jsonify({'error': str(e)}), 500
 
     def _ai_answer(q, sess):
         ql = q.lower()
