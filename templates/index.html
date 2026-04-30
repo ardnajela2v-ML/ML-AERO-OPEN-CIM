@@ -2084,20 +2084,20 @@
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Usa el área de estudio seleccionada en el mapa para evaluar las estaciones contenidas en esa zona
-        y ranquear los aerogeneradores del catálogo con TOPSIS ponderado. Criterios técnicos:
+        Usa el campo Kriging geoespacial para evaluar coordenadas interpoladas, no las coordenadas de las estaciones.
+        En parque dibujado ranquea aerogeneradores; en exploración global ranquea sitios candidatos y combinaciones sitio × aerogenerador. Criterios técnicos:
         Cp máx, horas cerca de v<sub>nominal</sub>, Factor de capacidad, AEP. Criterios económicos: VAN, ROI, LCOE (min), CAPEX (min).
       </p>
 
       <div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.75rem">
         <button class="btn-secondary mcda-subtab is-active" type="button" data-scope="area">
-          Área seleccionada
+          Parque dibujado
         </button>
         <button class="btn-secondary mcda-subtab" type="button" data-scope="exploratory">
           Sección exploratoria global
         </button>
         <span class="text-muted" id="mcda-area-info" style="font-size:.78rem;align-self:center">
-          Define un recuadro en el mapa Kriging para enfocar este análisis.
+          Dibuja y cierra la figura del parque para este análisis.
         </span>
       </div>
 
@@ -2125,10 +2125,10 @@
               <option value="best_per_site">Mejor turbina por sitio</option>
               <option value="best_per_turbine">Mejor sitio por turbina</option>
             </select></div>
-          <div class="form-row mcda-exploratory-only" style="display:none"><label class="form-label">Límite sitios (test)</label>
-            <input class="form-input" type="number" id="mcda-maxfiles" value="8" min="3" step="1"
-              title="Para la primera corrida usa pocos sitios, luego sube."></div>
-          <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Analizar aerogeneradores del área</button>
+          <div class="form-row mcda-exploratory-only" style="display:none"><label class="form-label">Sitios candidatos</label>
+            <input class="form-input" type="number" id="mcda-maxfiles" value="30" min="3" step="1"
+              title="Número de coordenadas interpoladas a evaluar."></div>
+          <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Analizar aerogeneradores del parque</button>
           <div class="progress-bar mt-2" id="mcda-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
             <div id="mcda-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
           </div>
@@ -2139,7 +2139,7 @@
         <div class="col-span-2">
           <h4 style="font-size:.85rem;margin-bottom:.5rem">Pesos de criterios (TOPSIS) — se renormalizan a 1</h4>
           <p class="text-muted" id="mcda-scope-help" style="font-size:.78rem;margin-bottom:.6rem">
-            Modo área: cada aerogenerador se evalúa por su desempeño promedio en las estaciones dentro del recuadro.
+            Modo parque: cada aerogenerador se evalúa sobre puntos interpolados dentro del polígono con viento real corregido físicamente.
           </p>
           <div id="mcda-weights" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem">
             <!-- populated by JS -->

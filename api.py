@@ -66,6 +66,7 @@ from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
 from core.site_catalog import get_site_info
 from core.kriging import (parse_coords_from_filename, read_wind_file,
                           site_wind_stats, kriging_grid, analyze_sites,
+                          analyze_spatial_topsis_sites,
                           legacy_three_maps, parallel_read_sites,
                           _compute_site_stats_cached, clear_site_stats_cache,
                           _haversine_km)
@@ -2020,6 +2021,86 @@ def create_app():
             return jsonify({'error': 'Provide alternatives, sites_analysis, or task_id'}), 400
 
         return jsonify(numpy_to_python(result))
+
+    @app.route('/api/multicriteria/spatial', methods=['POST'])
+    @limiter.limit('5 per minute')
+    def mcda_spatial():
+        """
+        TOPSIS over virtual kriging coordinates.
+
+        Stations are used only to build the geospatial field. The alternatives
+        are sampled inside the drawn park polygon (scope=park) or the selected
+        exploratory rectangle (scope=exploratory).
+        """
+        body = request.get_json(silent=True) or {}
+        scope = body.get('scope', 'park')
+        polygon = body.get('polygon') or None
+        bounds = body.get('area_bounds') or body.get('bounds') or None
+        if bounds:
+            lat_a = float(bounds['lat_min'])
+            lat_b = float(bounds['lat_max'])
+            lon_a = float(bounds['lon_min'])
+            lon_b = float(bounds['lon_max'])
+            bounds = {
+                'lat_min': min(lat_a, lat_b),
+                'lat_max': max(lat_a, lat_b),
+                'lon_min': min(lon_a, lon_b),
+                'lon_max': max(lon_a, lon_b),
+            }
+        weights = body.get('weights')
+        mode = body.get('mode') or ('area_turbines' if scope == 'park' else 'pairs')
+        year = int(body.get('year', 2018))
+        demand_mwh = float(body.get('demand_mwh', 1000))
+        tasa = float(body.get('tasa', 0.08))
+        price_usd_kwh = float(body.get('price_usd_kwh', 0.20))
+        price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
+        n_grid = int(body.get('n_grid', 80))
+        model = body.get('model', 'exponential')
+        max_points = int(body.get('max_points') or (48 if scope == 'park' else 60))
+        filter_files = body.get('filenames')
+
+        task_id = str(uuid.uuid4())
+        tasks[task_id] = {'status': 'running', 'progress': 0,
+                          'message': 'Construyendo análisis TOPSIS espacial…',
+                          'result': None}
+
+        def _run():
+            try:
+                spatial = analyze_spatial_topsis_sites(
+                    wind_folder=Config.DATA_FOLDER,
+                    turbines_folder=Config.TURBINES_FOLDER,
+                    year=year,
+                    scope=scope,
+                    polygon=polygon,
+                    bounds=bounds,
+                    demand_mwh=demand_mwh,
+                    tasa=tasa,
+                    price_usd_kwh=price_usd_kwh,
+                    price_mxn_per_usd=price_mxn_per_usd,
+                    n_grid=n_grid,
+                    model=model,
+                    max_points=max_points,
+                    filter_filenames=filter_files,
+                )
+                ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
+                ranking['mode'] = mode
+                tasks[task_id]['result'] = numpy_to_python({
+                    **spatial,
+                    'ranking': ranking,
+                })
+                tasks[task_id]['status'] = 'done'
+                tasks[task_id]['progress'] = 100
+                tasks[task_id]['message'] = (
+                    f"{spatial['n_virtual_sites']} sitios virtuales · "
+                    f"{len(ranking.get('ranking') or [])} alternativas TOPSIS"
+                )
+            except Exception as e:
+                tasks[task_id]['status'] = 'error'
+                tasks[task_id]['message'] = str(e)
+                logger.exception('Task TOPSIS espacial fallida')
+
+        _executor.submit(_run)
+        return jsonify({'task_id': task_id})
 
     @app.route('/api/kriging/status/<task_id>', methods=['GET'])
     def kriging_task_status(task_id):

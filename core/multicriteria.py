@@ -200,6 +200,8 @@ def rank_sites_turbines(sites_analysis: List[Dict],
             alt['site']  = s['name']
             alt['lat']   = s['lat']
             alt['lon']   = s['lon']
+            alt['source'] = s.get('source')
+            alt['scope']  = s.get('scope')
             alternatives.append(alt)
 
     if mode == 'area_turbines':
@@ -209,9 +211,18 @@ def rank_sites_turbines(sites_analysis: List[Dict],
         aggregated = []
         criteria = list(DEFAULT_WEIGHTS.keys())
         for t_name, alts in by_turb.items():
+            is_virtual = any(a.get('source') == 'kriging_virtual' for a in alts)
+            is_park = any(a.get('scope') == 'park' for a in alts)
+            site_label = (
+                f'Parque dibujado ({len(alts)} puntos)'
+                if is_virtual and is_park else
+                f'Área interpolada ({len(alts)} puntos)'
+                if is_virtual else
+                f'Área seleccionada ({len(alts)} sitios)'
+            )
             entry = {
                 'label': f'area::{t_name}',
-                'site': f'Área seleccionada ({len(alts)} sitios)',
+                'site': site_label,
                 'turbina': t_name,
                 'site_count': len(alts),
             }

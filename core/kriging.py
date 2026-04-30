@@ -592,6 +592,267 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
     return sites_out
 
 
+def _grid_sample_value(grid: dict, lat: float, lon: float):
+    """Bilinear sample from a kriging grid at one lat/lon."""
+    if not grid or not grid.get('bounds') or not grid.get('z'):
+        return None
+    b = grid['bounds']
+    if lat < b['lat_min'] or lat > b['lat_max'] or lon < b['lon_min'] or lon > b['lon_max']:
+        return None
+    z = grid['z']
+    ny = len(z)
+    nx = len(z[0]) if ny else 0
+    if ny < 2 or nx < 2:
+        return None
+    fx = (lon - b['lon_min']) / max(1e-12, b['lon_max'] - b['lon_min']) * (nx - 1)
+    fy = (lat - b['lat_min']) / max(1e-12, b['lat_max'] - b['lat_min']) * (ny - 1)
+    i0 = max(0, min(nx - 2, int(math.floor(fx))))
+    j0 = max(0, min(ny - 2, int(math.floor(fy))))
+    dx = fx - i0
+    dy = fy - j0
+    v00, v10 = float(z[j0][i0]), float(z[j0][i0 + 1])
+    v01, v11 = float(z[j0 + 1][i0]), float(z[j0 + 1][i0 + 1])
+    return v00 * (1 - dx) * (1 - dy) + v10 * dx * (1 - dy) + v01 * (1 - dx) * dy + v11 * dx * dy
+
+
+def _point_in_polygon(lat: float, lon: float, polygon: List[dict]) -> bool:
+    inside = False
+    n = len(polygon or [])
+    if n < 3:
+        return False
+    j = n - 1
+    for i in range(n):
+        lati, loni = float(polygon[i]['lat']), float(polygon[i]['lon'])
+        latj, lonj = float(polygon[j]['lat']), float(polygon[j]['lon'])
+        crosses = ((loni > lon) != (lonj > lon)) and (
+            lat < (latj - lati) * (lon - loni) / ((lonj - loni) or 1e-12) + lati
+        )
+        if crosses:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _bounds_from_polygon(polygon: List[dict]) -> dict:
+    lats = [float(p['lat']) for p in polygon]
+    lons = [float(p['lon']) for p in polygon]
+    return {
+        'lat_min': min(lats), 'lat_max': max(lats),
+        'lon_min': min(lons), 'lon_max': max(lons),
+    }
+
+
+def _virtual_weibull_series(mean_speed: float, k: float, n_hours: int = 8760):
+    """Deterministic annual wind-speed series from local Weibull parameters."""
+    k = max(0.45, float(k) if np.isfinite(k) else 2.0)
+    mean_speed = max(0.0, float(mean_speed) if np.isfinite(mean_speed) else 0.0)
+    gamma_mean = math.gamma(1.0 + 1.0 / k)
+    c = mean_speed / gamma_mean if gamma_mean > 0 else mean_speed
+    p = (np.arange(n_hours, dtype=float) + 0.5) / n_hours
+    return c * np.power(-np.log1p(-p), 1.0 / k)
+
+
+def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: int,
+                                 scope: str,
+                                 polygon: Optional[List[dict]] = None,
+                                 bounds: Optional[dict] = None,
+                                 demand_mwh=1000, tasa=0.08,
+                                 price_usd_kwh=0.20,
+                                 price_mxn_per_usd=20.0,
+                                 anios=ANIOS,
+                                 n_grid: int = 80,
+                                 model: str = 'exponential',
+                                 max_points: int = 72,
+                                 filter_filenames: Optional[List[str]] = None):
+    """
+    Build virtual analysis sites from the kriged geospatial field.
+
+    Stations are only inputs to interpolate wind/resource layers; returned sites
+    are coordinates sampled inside the park polygon or exploratory rectangle.
+    """
+    scope = 'park' if scope == 'park' else 'exploratory'
+    if scope == 'park':
+        if not polygon or len(polygon) < 3:
+            raise ValueError('El análisis de área seleccionada requiere el polígono cerrado del parque.')
+        grid_bounds = _bounds_from_polygon(polygon)
+    else:
+        if not bounds:
+            raise ValueError('La exploración global requiere un área rectangular seleccionada.')
+        grid_bounds = bounds
+
+    wind_files = sorted(
+        f for f in os.listdir(wind_folder)
+        if f.lower().endswith('.txt') and not f.startswith('.')
+    )
+    if filter_filenames:
+        keep = set(filter_filenames)
+        wind_files = [f for f in wind_files if f in keep]
+    paths = [os.path.join(wind_folder, f) for f in wind_files]
+    stats_rows = parallel_read_sites(paths, year=year, max_workers=6)
+    rows = [r for r in stats_rows if r and r.get('_lat') is not None and r.get('_lon') is not None]
+    if len(rows) < 3:
+        raise ValueError(f'Kriging necesita >= 3 estaciones válidas como entrada (hay {len(rows)}).')
+
+    lats = [float(r['_lat']) for r in rows]
+    lons = [float(r['_lon']) for r in rows]
+
+    def _grid_for(key: str):
+        return kriging_grid(lons, lats, [float(r.get(key) or 0.0) for r in rows],
+                            n=n_grid, model=model, bounds=grid_bounds)
+
+    wind_grid = _grid_for('v_mean')
+    gust_grid = _grid_for('gust_ms')
+    power_grid = _grid_for('power_density_wm2')
+    k_grid = _grid_for('weibull_K')
+    rho_grid = _grid_for('rho_mean')
+    elevation_grid = None
+    roughness_grid = None
+    physical = False
+
+    try:
+        from .terrain import enrich_sites, sample_grid_elevation, sample_grid_z0
+        site_records = [
+            {'filename': r.get('_name') or f'Station {i}', 'lat': lats[i], 'lon': lons[i]}
+            for i, r in enumerate(rows)
+        ]
+        enriched = enrich_sites(site_records)
+        z0_site = [float(s['z0']) if s.get('z0') is not None else Z0 for s in enriched]
+
+        def _alpha(z0_local: float) -> float:
+            z0_local = max(1e-4, float(z0_local))
+            return math.log(Z_REF / Z0) / math.log(Z_REF / z0_local)
+
+        neutral = [float(r.get('v_mean') or 0.0) * _alpha(z0) for r, z0 in zip(rows, z0_site)]
+        neutral_grid = kriging_grid(lons, lats, neutral, n=n_grid, model=model, bounds=grid_bounds)
+        b = neutral_grid['bounds']
+        z = neutral_grid['z']
+        ny = len(z)
+        nx = len(z[0]) if ny else 0
+        grid_lats = [b['lat_min'] + (b['lat_max'] - b['lat_min']) * j / (ny - 1)
+                     for j in range(ny)] if ny > 1 else [b['lat_min']]
+        grid_lons = [b['lon_min'] + (b['lon_max'] - b['lon_min']) * i / (nx - 1)
+                     for i in range(nx)] if nx > 1 else [b['lon_min']]
+        elevation = sample_grid_elevation(grid_lats, grid_lons)
+        roughness = sample_grid_z0(grid_lats, grid_lons)
+        v_real = [[0.0] * nx for _ in range(ny)]
+        rho_real = [[0.0] * nx for _ in range(ny)]
+        for j in range(ny):
+            for i in range(nx):
+                z0_p = max(1e-4, float(roughness[j][i]))
+                alpha_p = math.log(Z_REF / Z0) / math.log(Z_REF / z0_p)
+                v_real[j][i] = float(z[j][i]) / alpha_p if alpha_p else float(z[j][i])
+                rho_real[j][i] = 1.225 * math.exp(-max(0.0, float(elevation[j][i])) / 8400.0)
+        wind_grid = {
+            **neutral_grid,
+            'z': v_real,
+            'z_min': min(min(row) for row in v_real),
+            'z_max': max(max(row) for row in v_real),
+            'title': 'Viento real con corrección física',
+        }
+        rho_grid = {
+            **neutral_grid,
+            'z': rho_real,
+            'z_min': min(min(row) for row in rho_real),
+            'z_max': max(max(row) for row in rho_real),
+            'title': 'Densidad del aire local',
+        }
+        elevation_grid = {**neutral_grid, 'z': elevation}
+        roughness_grid = {**neutral_grid, 'z': roughness}
+        physical = True
+    except Exception as exc:
+        log.warning('analyze_spatial_topsis_sites: physical correction unavailable — %s', exc)
+
+    b = wind_grid['bounds']
+    ny = len(wind_grid['z'])
+    nx = len(wind_grid['z'][0]) if ny else 0
+    candidates = []
+    for j in range(ny):
+        lat = b['lat_min'] + (b['lat_max'] - b['lat_min']) * j / max(1, ny - 1)
+        for i in range(nx):
+            lon = b['lon_min'] + (b['lon_max'] - b['lon_min']) * i / max(1, nx - 1)
+            if scope == 'park' and not _point_in_polygon(lat, lon, polygon or []):
+                continue
+            wind = _grid_sample_value(wind_grid, lat, lon)
+            if wind is None or not np.isfinite(wind):
+                continue
+            gust = _grid_sample_value(gust_grid, lat, lon) or wind * 1.6
+            power = _grid_sample_value(power_grid, lat, lon) or 0.0
+            score = 0.55 * float(wind) + 0.003 * float(power) + 0.12 * float(gust)
+            candidates.append({'lat': lat, 'lon': lon, 'score': score})
+
+    if not candidates:
+        raise ValueError('No hay puntos interpolados dentro del área seleccionada.')
+    if scope == 'exploratory':
+        candidates.sort(key=lambda p: p['score'], reverse=True)
+        candidates = candidates[:max_points]
+    elif len(candidates) > max_points:
+        step = max(1, int(math.ceil(len(candidates) / max_points)))
+        candidates = candidates[::step][:max_points]
+
+    turb_files = sorted(
+        f for f in os.listdir(turbines_folder)
+        if f.lower().endswith('.csv') and not f.startswith('.')
+    )
+    if not turb_files:
+        raise ValueError(f'No turbine CSVs in {turbines_folder}')
+
+    turbines = []
+    for tf in turb_files:
+        try:
+            dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
+            turbines.append((tf, dat[:, 0].astype(float), dat[:, 1].astype(float), *parse_turbine_filename(tf)))
+        except Exception as exc:
+            log.warning('analyze_spatial_topsis_sites: skip turbine %s — %s', tf, exc)
+
+    sites_out = []
+    for idx, p in enumerate(candidates, start=1):
+        lat, lon = p['lat'], p['lon']
+        wind = max(0.0, float(_grid_sample_value(wind_grid, lat, lon) or 0.0))
+        k = max(0.45, float(_grid_sample_value(k_grid, lat, lon) or 2.0))
+        rho_mean = max(0.5, float(_grid_sample_value(rho_grid, lat, lon) or 1.225))
+        ws_hub = _virtual_weibull_series(wind, k)
+        rho = np.full_like(ws_hub, rho_mean, dtype=float)
+        turbines_out = []
+        for tf, x_c, y_c, name, rotor, p_nom_kw in turbines:
+            econ = turbine_site_economics(
+                ws_hub, rho, x_c, y_c, rotor, p_nom_kw,
+                demand_mwh=demand_mwh, tasa=tasa,
+                price_usd_kwh=price_usd_kwh,
+                price_mxn_per_usd=price_mxn_per_usd, anios=anios)
+            econ['turbina'] = name
+            econ['rotor_m'] = rotor
+            turbines_out.append(econ)
+        sites_out.append({
+            'name': f'Sitio virtual {idx:02d}',
+            'lat': float(lat),
+            'lon': float(lon),
+            'source': 'kriging_virtual',
+            'scope': scope,
+            'n_hours': int(len(ws_hub)),
+            'v_mean': wind,
+            'v_mean_raw': wind,
+            'v_max': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
+            'gust_ms': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
+            'power_density_wm2': float(_grid_sample_value(power_grid, lat, lon) or 0.0),
+            'weibull_C': float(wind / max(1e-9, math.gamma(1.0 + 1.0 / k))),
+            'weibull_K': k,
+            'rho_mean': rho_mean,
+            'elevation_m': float(_grid_sample_value(elevation_grid, lat, lon) or 0.0) if elevation_grid else None,
+            'roughness_z0': float(_grid_sample_value(roughness_grid, lat, lon) or Z0) if roughness_grid else None,
+            'resource_score': float(p['score']),
+            'turbines': turbines_out,
+        })
+
+    return {
+        'sites': sites_out,
+        'scope': scope,
+        'physical': physical,
+        'n_input_stations': len(rows),
+        'n_virtual_sites': len(sites_out),
+        'bounds': grid_bounds,
+    }
+
+
 # ── Legacy replica: 3 mapas Kriging como en ajuste_aerogeneradores.py ─────────
 
 def _haversine_km(lat1, lon1, lat2, lon2):

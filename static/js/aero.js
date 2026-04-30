@@ -3438,6 +3438,7 @@ const KRIG = {
   areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
   drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
   optimal: [],
+  mcdaMarkers: [],
   searchMarker: null,
   // Overlays físicos opcionales (Fase 1: visualización)
   hillshadeLayer: null,
@@ -3621,6 +3622,7 @@ function krig3FinishPark() {
   }
   krig3RenderParkLayer(true);
   krig3RenderOptimalList();
+  if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
 }
 function krig3ClearPark() {
   KRIG.drawingPark = false;
@@ -3629,6 +3631,8 @@ function krig3ClearPark() {
   KRIG.parkLayer = null; KRIG.parkMarkers = []; KRIG.parkPoints = [];
   krig3UpdateParkInfo();
   krig3RenderOptimalList();
+  if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
+  if (typeof mcdaClearSpatialMarkers === 'function') mcdaClearSpatialMarkers();
 }
 
 function krig3PolygonAreaKm2(points) {
@@ -5006,6 +5010,50 @@ function mcdaCurrentAreaBounds() {
   };
 }
 
+function mcdaParkPolygon() {
+  if (!Array.isArray(KRIG.parkPoints) || KRIG.parkPoints.length < 3) return null;
+  return KRIG.parkPoints.map(([lat, lon]) => ({ lat, lon }));
+}
+
+function mcdaClearSpatialMarkers() {
+  if (KRIG.map && Array.isArray(KRIG.mcdaMarkers)) {
+    KRIG.mcdaMarkers.forEach(m => KRIG.map.removeLayer(m));
+  }
+  KRIG.mcdaMarkers = [];
+}
+
+function mcdaRenderSpatialMarkers(result) {
+  mcdaClearSpatialMarkers();
+  if (!KRIG.map || !result || !Array.isArray(result.sites)) return;
+  const ranking = result.ranking?.ranking || [];
+  const bestBySite = new Map();
+  ranking.forEach(r => {
+    if (!bestBySite.has(r.site)) bestBySite.set(r.site, r);
+  });
+  const sites = result.sites
+    .slice()
+    .sort((a, b) => (b.resource_score || b.v_mean || 0) - (a.resource_score || a.v_mean || 0))
+    .slice(0, MCDA.scope === 'exploratory' ? 30 : 18);
+  sites.forEach((s, i) => {
+    const best = bestBySite.get(s.name);
+    const marker = L.circleMarker([s.lat, s.lon], {
+      radius: MCDA.scope === 'exploratory' ? 3 : 2.5,
+      color: i < 5 ? '#facc15' : '#38bdf8',
+      weight: i < 5 ? 1.5 : 1,
+      fillColor: i < 5 ? '#facc15' : '#38bdf8',
+      fillOpacity: 0.85,
+      interactive: true,
+    }).bindPopup(
+      `<b>${s.name}</b><br>` +
+      `${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>` +
+      `Viento real ${Number(s.v_mean || 0).toFixed(2)} m/s` +
+      (s.power_density_wm2 != null ? ` · ${Number(s.power_density_wm2).toFixed(0)} W/m²` : '') +
+      (best ? `<br><b>#${best.rank}</b> ${best.turbina} · TOPSIS ${Number(best.topsis_score || 0).toFixed(4)}` : '')
+    ).addTo(KRIG.map);
+    KRIG.mcdaMarkers.push(marker);
+  });
+}
+
 function mcdaUpdateScopeUi() {
   const areaMode = MCDA.scope === 'area';
   document.querySelectorAll('.mcda-subtab').forEach(btn => {
@@ -5016,18 +5064,25 @@ function mcdaUpdateScopeUi() {
   });
   const runBtn = document.getElementById('btn-mcda-run');
   if (runBtn) runBtn.textContent = areaMode
-    ? '▶ Analizar aerogeneradores del área'
+    ? '▶ Analizar aerogeneradores del parque'
     : '▶ Ejecutar análisis exploratorio';
   const help = document.getElementById('mcda-scope-help');
   if (help) help.textContent = areaMode
-    ? 'Modo área: cada aerogenerador se evalúa por su desempeño promedio en las estaciones dentro del recuadro.'
-    : 'Modo exploratorio: conserva el análisis global sitio × aerogenerador y sus vistas mejor por sitio/turbina.';
+    ? 'Modo parque: TOPSIS usa puntos interpolados dentro del polígono dibujado, con viento real corregido físicamente.'
+    : 'Modo exploratorio: TOPSIS usa puntos interpolados dentro del recuadro y marca sitios candidatos en el mapa.';
   const info = document.getElementById('mcda-area-info');
   if (info) {
-    const b = mcdaCurrentAreaBounds();
-    info.textContent = b
-      ? `Área activa: ${b.lat_min.toFixed(3)}–${b.lat_max.toFixed(3)}°, ${b.lon_min.toFixed(3)}–${b.lon_max.toFixed(3)}°`
-      : 'Define un recuadro en el mapa Kriging para enfocar este análisis.';
+    if (areaMode) {
+      const poly = mcdaParkPolygon();
+      info.textContent = poly
+        ? `Parque activo: ${poly.length} vértices · ${krig3PolygonAreaKm2(KRIG.parkPoints).toFixed(2)} km²`
+        : 'Dibuja y cierra la figura del parque para este análisis.';
+    } else {
+      const b = mcdaCurrentAreaBounds();
+      info.textContent = b
+        ? `Área exploratoria: ${b.lat_min.toFixed(3)}–${b.lat_max.toFixed(3)}°, ${b.lon_min.toFixed(3)}–${b.lon_max.toFixed(3)}°`
+        : 'Selecciona un recuadro en el mapa Kriging para la exploración global.';
+    }
   }
 }
 
@@ -5042,6 +5097,7 @@ function mcdaSetScope(scope) {
   }
   const status = document.getElementById('mcda-status');
   if (status) status.textContent = 'Sin análisis';
+  mcdaClearSpatialMarkers();
 }
 
 async function mcdaResetWeights() {
@@ -5053,29 +5109,48 @@ async function mcdaResetWeights() {
 }
 
 async function mcdaRunAnalysis() {
+  krig3InitMap();
+  if (!KRIG.sites.length) await krig3LoadSites();
   mcdaUpdateScopeUi();
   const areaMode = MCDA.scope === 'area';
   const areaBounds = mcdaCurrentAreaBounds();
-  if (areaMode && !areaBounds) {
-    toast('Primero selecciona un recuadro de área en el mapa Kriging.', 'warning');
+  const parkPolygon = mcdaParkPolygon();
+  if (areaMode && !parkPolygon) {
+    toast('Primero dibuja y cierra la figura del parque.', 'warning');
+    return;
+  }
+  if (!areaMode && !areaBounds) {
+    toast('Primero selecciona un recuadro para la exploración global.', 'warning');
+    return;
+  }
+  if (KRIG.selected.size < 3) {
+    toast('Selecciona al menos 3 estaciones de entrada para construir el Kriging.', 'warning');
     return;
   }
   const body = {
+    scope:         areaMode ? 'park' : 'exploratory',
     year:          parseInt(document.getElementById('mcda-year').value),
     demand_mwh:    parseFloat(document.getElementById('mcda-demand').value),
     tasa:          parseFloat(document.getElementById('mcda-tasa').value) / 100,
     price_usd_kwh: parseFloat(document.getElementById('mcda-price').value),
     price_mxn_per_usd: parseFloat(document.getElementById('mcda-fx').value),
-    max_files:     areaMode ? null : (parseInt(document.getElementById('mcda-maxfiles').value) || null),
+    n_grid:        parseInt(document.getElementById('krig3-n')?.value) || 80,
+    model:         document.getElementById('krig3-model')?.value || 'exponential',
+    filenames:     Array.from(KRIG.selected),
+    weights:       mcdaGetWeights(),
+    mode:          areaMode ? 'area_turbines' : document.getElementById('mcda-mode').value,
+    max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
   };
-  if (areaMode) body.area_bounds = areaBounds;
+  if (areaMode) body.polygon = parkPolygon;
+  else body.area_bounds = areaBounds;
   document.getElementById('mcda-status').textContent = 'Ejecutando…';
   document.getElementById('mcda-progress-wrap').style.display = '';
   document.getElementById('mcda-progress-text').textContent = areaMode
-    ? 'Analizando estaciones dentro del área seleccionada…'
-    : 'Iniciando análisis exploratorio…';
+    ? 'Interpolando viento real dentro del parque dibujado…'
+    : 'Buscando sitios candidatos interpolados dentro del área exploratoria…';
   try {
-    const r = await api('/api/kriging/analyze', 'POST', body);
+    mcdaClearSpatialMarkers();
+    const r = await api('/api/multicriteria/spatial', 'POST', body);
     MCDA.taskId = r.task_id;
     mcdaPollStatus();
   } catch (e) {
@@ -5092,15 +5167,18 @@ async function mcdaPollStatus() {
     document.getElementById('mcda-progress-text').textContent = r.message || '';
     document.getElementById('mcda-progress-fill').style.width = `${r.progress || 0}%`;
     if (r.status === 'done') {
-      MCDA.lastAnalysis = r.result;
-      const nSites = r.result.length;
-      const nTurbs = r.result.reduce((s, x) => s + (x.turbines||[]).length, 0);
+      MCDA.lastSpatial = r.result;
+      MCDA.lastAnalysis = r.result?.sites || [];
+      MCDA.lastRanking = r.result?.ranking || null;
+      const nSites = MCDA.lastAnalysis.length;
+      const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
-        ? `${nSites} sitios del área · ${nTurbs} evaluaciones`
-        : `${nSites} sitios · ${nTurbs} evaluaciones`;
+        ? `${nSites} puntos del parque · ${nTurbs} evaluaciones`
+        : `${nSites} sitios candidatos · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
-      toast('Análisis completado — generando ranking…', 'success');
-      await mcdaRankNow();
+      toast('TOPSIS espacial completado.', 'success');
+      mcdaRenderRanking(MCDA.lastRanking || { ranking: [] });
+      mcdaRenderSpatialMarkers(r.result);
     } else if (r.status === 'error') {
       toast(`Análisis falló: ${r.message}`, 'error');
       document.getElementById('mcda-status').textContent = 'Error';
