@@ -5113,8 +5113,12 @@ async function mcdaPollStatus() {
 }
 
 async function mcdaRankNow() {
-  if (!MCDA.lastAnalysis) {
-    toast('Ejecuta el análisis primero', 'warning');
+  if (!Array.isArray(MCDA.lastAnalysis)) {
+    toast('Espera a que termine el análisis antes de ranquear.', 'warning');
+    return;
+  }
+  if (!MCDA.lastAnalysis.length) {
+    toast('El análisis no encontró sitios dentro del área seleccionada.', 'warning');
     return;
   }
   const weights = mcdaGetWeights();
@@ -5129,13 +5133,16 @@ async function mcdaRankNow() {
     MCDA.lastRanking = r;
     mcdaRenderRanking(r);
   } catch (e) {
+    const status = document.getElementById('mcda-status');
+    if (status) status.textContent = 'Error ranking';
     toast(`Error ranking: ${e.message}`, 'error');
   }
 }
 
 function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
-  const top = r.ranking.slice(0, 100);
+  const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
+  const top = ranking.slice(0, 100);
   if (!top.length) {
     body.innerHTML = '<tr><td colspan="10" class="text-muted">Sin resultados.</td></tr>';
     return;

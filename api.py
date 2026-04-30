@@ -2001,8 +2001,12 @@ def create_app():
         mode = body.get('mode', 'pairs')
 
         if 'alternatives' in body:
+            if not isinstance(body['alternatives'], list):
+                return jsonify({'error': 'alternatives must be a list'}), 400
             result = topsis(body['alternatives'], weights=weights)
         elif 'sites_analysis' in body:
+            if not isinstance(body['sites_analysis'], list):
+                return jsonify({'error': 'sites_analysis must be a completed analysis list'}), 400
             result = rank_sites_turbines(body['sites_analysis'],
                                          weights=weights, mode=mode)
         elif 'task_id' in body:

@@ -517,6 +517,17 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
     if filter_filenames:
         keep = set(filter_filenames)
         wind_files = [f for f in wind_files if f in keep]
+    if bounds:
+        def _inside_bounds_from_name(fname: str) -> bool:
+            coords = parse_coords_from_filename(fname)
+            if coords is None:
+                return True
+            lat, lon = coords
+            return (
+                float(bounds['lat_min']) <= float(lat) <= float(bounds['lat_max'])
+                and float(bounds['lon_min']) <= float(lon) <= float(bounds['lon_max'])
+            )
+        wind_files = [f for f in wind_files if _inside_bounds_from_name(f)]
     if max_files:
         wind_files = wind_files[:max_files]
 
