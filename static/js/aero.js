@@ -3456,6 +3456,7 @@ const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
   wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
+  wind_directional: { unit: 'm/s', title: 'Viento corregido direccional (m/s)' },
   gust:         { unit: 'm/s',   title: 'Ráfagas / extremo anual P99.5 (m/s)' },
   power_density:{ unit: 'W/m²',  title: 'Densidad de potencia eólica (W/m²)' },
   inversion:    { unit: 'USD',   title: 'Inversión inicial (USD)' },
@@ -4731,7 +4732,7 @@ async function krig3Poll() {
         b.style.display = physOn ? '' : 'none';
       });
       // Si el modo cambió y la pestaña activa ya no aplica, vuelve a "wind".
-      if (!physOn && (KRIG.layerKey || '').match(/^(wind_neutral|elevation|roughness|air_density)$/)) {
+      if (!physOn && (KRIG.layerKey || '').match(/^(wind_directional|wind_neutral|elevation|roughness|air_density)$/)) {
         KRIG.layerKey = 'wind';
       }
       // Oculta los markers de selección mientras se muestra el resultado.

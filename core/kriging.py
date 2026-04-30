@@ -733,6 +733,45 @@ def _virtual_weibull_series(mean_speed: float, k: float, n_hours: int = 8760):
     return c * np.power(-np.log1p(-p), 1.0 / k)
 
 
+def _min_max_grid(z):
+    vals = [float(v) for row in z for v in row if np.isfinite(v)]
+    if not vals:
+        return 0.0, 0.0
+    return min(vals), max(vals)
+
+
+def _legacy_prefit_economics(mean_speed, k, rho_mean, power_interp, p_max_curve,
+                             rotor_m, p_nom_kw, demand_mwh, tasa,
+                             price_usd_kwh, price_mxn_per_usd, anios):
+    ws_hub = _virtual_weibull_series(mean_speed, k)
+    psit = np.maximum(power_interp(ws_hub), 0)
+    psit[ws_hub > MAX_W] = 0
+    pt = float(np.sum(psit))
+    demand_wh = demand_mwh * 1e6
+    n = math.ceil(demand_wh / pt) if pt > 0 else 0
+    pr_aero = p_nom_kw * 2000.0
+    pan = pt * n
+    caero = n * pr_aero
+    sep = 7 * rotor_m
+    area = sep ** 2 * n
+    roads_usd = area * 10.0
+    cm = 0.03 * caero
+    ccim = 1e6 * n
+    ccab = 15e5 * n
+    ctot = caero + ccim + ccab + roads_usd
+    inv = ctot
+    ekwh = pan / 1e3
+    vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
+    flux = vtas - cm
+    if tasa > 0:
+        van = (flux * ((1 - (1 + tasa) ** -anios) / tasa)) - inv
+    else:
+        van = 0.0
+    if not np.isfinite(rho_mean) or rho_mean <= 0 or p_max_curve <= 0:
+        return float(ctot), float(van)
+    return float(ctot), float(van)
+
+
 def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: int,
                                  scope: str,
                                  polygon: Optional[List[dict]] = None,
@@ -1067,6 +1106,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         })
 
     lats, lons, v_proms, gusts, power_densities, invers, vans, names = [], [], [], [], [], [], [], []
+    weibull_ks = []
     sector_freqs, sector_speeds, sector_powers, sector_energies = [], [], [], []
 
     for wf in wind_files:
@@ -1107,6 +1147,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         invers.append(float(ctot_last))
         vans.append(float(VAN_last))
         names.append(site['name'])
+        weibull_ks.append(float(stats['weibull_K']))
         sector_freqs.append(stats['sector_frequency_pct'])
         sector_speeds.append(stats['sector_mean_speed'])
         sector_powers.append(stats['sector_power_density_wm2'])
@@ -1227,8 +1268,17 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     ]
 
     bounds = g_neutral.get('bounds')
+    base_wind_z = base['wind']['z']
+    gust_ratio_grid = _grid([
+        float(g / v) if v and np.isfinite(v) and v > 1e-9 else 1.6
+        for g, v in zip(gusts, v_proms)
+    ], 'Relación ráfaga / viento medio')
+    k_grid = _grid(weibull_ks, 'Factor de forma Weibull k')
+    sector_freq_z = [base['sectorial']['frequency_pct'][i]['z'] for i in range(SECTOR_COUNT)]
+    sector_speed_z = [base['sectorial']['mean_speed'][i]['z'] for i in range(SECTOR_COUNT)]
 
     def _wrap_grid(z, title, unit, vmin=None, vmax=None):
+        z_min, z_max = _min_max_grid(z)
         return {
             'z': z,
             'lats': grid_lats,
@@ -1237,15 +1287,81 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
             'title': title,
             'unit': unit,
             'model': model,
-            'z_min': min(min(row) for row in z) if vmin is None else vmin,
-            'z_max': max(max(row) for row in z) if vmax is None else vmax,
+            'z_min': z_min if vmin is None else vmin,
+            'z_max': z_max if vmax is None else vmax,
         }
 
-    base['wind_neutral'] = base['wind']
-    base['wind_neutral']['title'] = 'Viento neutralizado (campo geoestadístico)'
+    wind_directional = [[0.0] * nx for _ in range(ny)]
+    gust_corrected = [[0.0] * nx for _ in range(ny)]
+    power_density_corrected = [[0.0] * nx for _ in range(ny)]
+    inversion_corrected = [[0.0] * nx for _ in range(ny)]
+    van_corrected = [[0.0] * nx for _ in range(ny)]
+    last_curve = turbine_curves[-1] if turbine_curves else None
+    power_interp = None
+    p_max_curve = 0.0
+    if last_curve:
+        x_last = np.asarray(last_curve['x_raw'], dtype=float)
+        y_last_kw = np.asarray(last_curve['y_raw_kw'], dtype=float)
+        p_nom_kw = float(last_curve['p_nom_kw'])
+        ps_last = fit_power_curve_gauss4(x_last, y_last_kw * 1000.0, p_nom_kw * 1000.0)
+        power_interp = interp1d(x_last, ps_last, kind='linear',
+                                bounds_error=False, fill_value=0.0)
+        p_max_curve = float(np.max(ps_last)) if len(ps_last) else 0.0
+    for j in range(ny):
+        for i in range(nx):
+            base_v = float(base_wind_z[j][i]) if j < len(base_wind_z) and i < len(base_wind_z[j]) else 0.0
+            physical_ratio = float(v_real[j][i]) / base_v if base_v > 1e-9 else 1.0
+            freqs = [max(0.0, float(sector_freq_z[s][j][i])) for s in range(SECTOR_COUNT)]
+            speeds = [max(0.0, float(sector_speed_z[s][j][i])) for s in range(SECTOR_COUNT)]
+            total_freq = sum(freqs)
+            if total_freq > 0:
+                v_dir_raw = float(np.cbrt(sum((freqs[s] / total_freq) * speeds[s] ** 3
+                                              for s in range(SECTOR_COUNT))))
+            else:
+                v_dir_raw = base_v
+            v_dir = max(0.0, v_dir_raw * physical_ratio)
+            wind_directional[j][i] = v_dir
+            gust_ratio = float(gust_ratio_grid['z'][j][i]) if j < len(gust_ratio_grid['z']) and i < len(gust_ratio_grid['z'][j]) else 1.6
+            gust_corrected[j][i] = max(v_dir, v_dir * max(1.0, gust_ratio))
+            rho_local = max(0.0, float(air_density[j][i]))
+            power_density_corrected[j][i] = 0.5 * rho_local * (v_dir ** 3)
+            if power_interp is not None and last_curve:
+                k_local = float(k_grid['z'][j][i]) if j < len(k_grid['z']) and i < len(k_grid['z'][j]) else 2.0
+                capex, van = _legacy_prefit_economics(
+                    v_dir, k_local, rho_local, power_interp, p_max_curve,
+                    float(last_curve['rotor_m']), float(last_curve['p_nom_kw']),
+                    demand_mwh, tasa, price_usd_kwh, price_mxn_per_usd, anios)
+                inversion_corrected[j][i] = capex
+                van_corrected[j][i] = van
+            else:
+                inversion_corrected[j][i] = float(base['inversion']['z'][j][i])
+                van_corrected[j][i] = float(base['van']['z'][j][i])
+
+    base['wind_neutral'] = _wrap_grid(z_neutral,
+                                      'Viento neutralizado (campo geoestadístico)',
+                                      'm/s')
     base['wind'] = _wrap_grid(v_real,
                               'Viento real con corrección física (z₀ + altitud)',
                               'm/s')
+    base['wind_directional'] = _wrap_grid(
+        wind_directional,
+        'Viento corregido direccional (frecuencia + sectores)',
+        'm/s')
+    base['gust'] = _wrap_grid(gust_corrected,
+                              'Ráfagas corregidas con viento físico-direccional',
+                              'm/s')
+    base['power_density'] = _wrap_grid(
+        power_density_corrected,
+        'Densidad de potencia con viento corregido',
+        'W/m²')
+    base['inversion'] = _wrap_grid(
+        inversion_corrected,
+        'Inversión inicial con viento corregido',
+        'USD')
+    base['van'] = _wrap_grid(
+        van_corrected,
+        'Valor Actual Neto con viento corregido',
+        'USD')
     base['wind']['points'] = [
         {'lat': la, 'lon': lo, 'value': float(v), 'name': nm,
          'z0': float(z0i), 'elevation_m': float(ei)}
