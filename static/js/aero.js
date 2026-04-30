@@ -4524,7 +4524,7 @@ function krig3RenderLayer(key) {
   KRIG.overlays.forEach(l => map.removeLayer(l));
   KRIG.overlays = [];
 
-  const { z, bounds, z_min, z_max, points } = grid;
+  const { z, bounds, z_min, z_max } = grid;
   const ny = z.length, nx = z[0].length;
   const canvas = document.createElement('canvas');
   canvas.width = nx; canvas.height = ny;
@@ -4548,20 +4548,6 @@ function krig3RenderLayer(key) {
     [[bounds.lat_min, bounds.lon_min], [bounds.lat_max, bounds.lon_max]],
     { opacity: 0.78 }).addTo(map);
   KRIG.overlays.push(overlay);
-
-  // Re-pinta los markers de los sitios usados con el color del valor (encima del overlay).
-  (points || []).forEach(p => {
-    const t = rng > 0 ? (p.value - z_min) / rng : 0.5;
-    const [r_, g_, b_] = krigColor(t);
-    const isPrincipal = p.name === KRIG.principal;
-    const color = `rgb(${r_|0},${g_|0},${b_|0})`;
-    const m = L.marker([p.lat, p.lon], {
-      icon: krig3ResultSiteIcon(p.name, color),
-      riseOnHover: true,
-      zIndexOffset: isPrincipal ? 600 : 100,
-    }).bindPopup(`<b>${p.name}</b>${isPrincipal ? ' ★' : ''}<br>${grid.title}<br><b>${p.value.toFixed(2)} ${meta.unit}</b>`).addTo(map);
-    KRIG.overlays.push(m);
-  });
 
   krig3RenderPoiOnResult();
 
@@ -4958,8 +4944,12 @@ const MCDA = {
   taskId: null,
   lastAnalysis: null,   // raw analyze_sites output
   lastRanking:  null,   // last TOPSIS result
+  lastSpatial:  null,
   defaults:     null,
   scope:        'area',
+  miniMap:      null,
+  miniBase:     null,
+  miniLayers:   [],
 };
 
 async function mcdaLoadDefaults() {
@@ -5020,6 +5010,107 @@ function mcdaClearSpatialMarkers() {
     KRIG.mcdaMarkers.forEach(m => KRIG.map.removeLayer(m));
   }
   KRIG.mcdaMarkers = [];
+}
+
+function mcdaInitMiniMap() {
+  const el = document.getElementById('mcda-mini-map');
+  if (!el || typeof L === 'undefined') return null;
+  if (MCDA.miniMap) {
+    setTimeout(() => MCDA.miniMap.invalidateSize(), 40);
+    return MCDA.miniMap;
+  }
+  MCDA.miniMap = L.map(el, {
+    center: [23.5, -102],
+    zoom: 5,
+    zoomControl: false,
+    attributionControl: false,
+    scrollWheelZoom: false,
+  });
+  const url = (typeof MAPA_TILES !== 'undefined' && (MAPA_TILES.voyager || MAPA_TILES.osm))
+    || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  MCDA.miniBase = L.tileLayer(url, {
+    maxZoom: 18,
+    subdomains: 'abc',
+    crossOrigin: 'anonymous',
+  }).addTo(MCDA.miniMap);
+  setTimeout(() => MCDA.miniMap.invalidateSize(), 80);
+  return MCDA.miniMap;
+}
+
+function mcdaClearMiniLayers() {
+  if (!MCDA.miniMap) return;
+  MCDA.miniLayers.forEach(l => MCDA.miniMap.removeLayer(l));
+  MCDA.miniLayers = [];
+}
+
+function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
+  const map = mcdaInitMiniMap();
+  if (!map) return;
+  mcdaClearMiniLayers();
+  const title = document.getElementById('mcda-mini-title');
+  const status = document.getElementById('mcda-mini-status');
+  const areaMode = MCDA.scope === 'area';
+  if (title) title.textContent = areaMode
+    ? 'Mapa TOPSIS — parque dibujado'
+    : 'Mapa TOPSIS — exploración global';
+
+  let focusLayer = null;
+  if (areaMode) {
+    const poly = mcdaParkPolygon();
+    if (poly) {
+      focusLayer = L.polygon(poly.map(p => [p.lat, p.lon]), {
+        color: '#f59e0b',
+        weight: 2,
+        fillColor: '#f59e0b',
+        fillOpacity: 0.12,
+      }).addTo(map);
+      MCDA.miniLayers.push(focusLayer);
+    }
+  } else {
+    const b = mcdaCurrentAreaBounds();
+    if (b) {
+      focusLayer = L.rectangle([[b.lat_min, b.lon_min], [b.lat_max, b.lon_max]], {
+        color: '#22c55e',
+        weight: 2,
+        fillColor: '#22c55e',
+        fillOpacity: 0.08,
+      }).addTo(map);
+      MCDA.miniLayers.push(focusLayer);
+    }
+  }
+
+  const sites = Array.isArray(result?.sites) ? result.sites : [];
+  const orderedSites = sites
+    .slice()
+    .sort((a, b) => (b.resource_score || b.v_mean || 0) - (a.resource_score || a.v_mean || 0))
+    .slice(0, areaMode ? 20 : 35);
+  orderedSites.forEach((s, i) => {
+    const marker = L.circleMarker([s.lat, s.lon], {
+      radius: i < 5 ? 4 : 3,
+      color: i < 5 ? '#facc15' : '#38bdf8',
+      weight: 1,
+      fillColor: i < 5 ? '#facc15' : '#38bdf8',
+      fillOpacity: 0.9,
+    }).bindTooltip(
+      `#${i + 1} ${s.name}<br>${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>${Number(s.v_mean || 0).toFixed(2)} m/s`,
+      { direction: 'top' }
+    ).addTo(map);
+    MCDA.miniLayers.push(marker);
+  });
+
+  if (status) {
+    status.textContent = orderedSites.length
+      ? `${orderedSites.length} puntos`
+      : (focusLayer ? 'Área enfocada' : 'Sin área');
+  }
+  if (orderedSites.length) {
+    const bounds = L.latLngBounds(orderedSites.map(s => [s.lat, s.lon]));
+    if (focusLayer && focusLayer.getBounds) bounds.extend(focusLayer.getBounds());
+    map.fitBounds(bounds, { padding: [18, 18], maxZoom: 14 });
+  } else if (focusLayer && focusLayer.getBounds) {
+    map.fitBounds(focusLayer.getBounds(), { padding: [18, 18], maxZoom: 14 });
+  }
+  setTimeout(() => map.invalidateSize(), 80);
 }
 
 function mcdaRenderSpatialMarkers(result) {
@@ -5084,12 +5175,14 @@ function mcdaUpdateScopeUi() {
         : 'Selecciona un recuadro en el mapa Kriging para la exploración global.';
     }
   }
+  mcdaRenderMiniMap();
 }
 
 function mcdaSetScope(scope) {
   MCDA.scope = scope === 'exploratory' ? 'exploratory' : 'area';
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
+  MCDA.lastSpatial = null;
   mcdaUpdateScopeUi();
   const body = document.getElementById('mcda-rank-body');
   if (body) {
@@ -5144,6 +5237,9 @@ async function mcdaRunAnalysis() {
   if (areaMode) body.polygon = parkPolygon;
   else body.area_bounds = areaBounds;
   document.getElementById('mcda-status').textContent = 'Ejecutando…';
+  MCDA.lastSpatial = null;
+  MCDA.lastAnalysis = null;
+  MCDA.lastRanking = null;
   document.getElementById('mcda-progress-wrap').style.display = '';
   document.getElementById('mcda-progress-text').textContent = areaMode
     ? 'Interpolando viento real dentro del parque dibujado…'
@@ -5179,6 +5275,7 @@ async function mcdaPollStatus() {
       toast('TOPSIS espacial completado.', 'success');
       mcdaRenderRanking(MCDA.lastRanking || { ranking: [] });
       mcdaRenderSpatialMarkers(r.result);
+      mcdaRenderMiniMap(r.result);
     } else if (r.status === 'error') {
       toast(`Análisis falló: ${r.message}`, 'error');
       document.getElementById('mcda-status').textContent = 'Error';
