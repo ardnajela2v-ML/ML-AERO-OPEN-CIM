@@ -202,6 +202,37 @@ def rank_sites_turbines(sites_analysis: List[Dict],
             alt['lon']   = s['lon']
             alternatives.append(alt)
 
+    if mode == 'area_turbines':
+        by_turb = {}
+        for a in alternatives:
+            by_turb.setdefault(a['turbina'], []).append(a)
+        aggregated = []
+        criteria = list(DEFAULT_WEIGHTS.keys())
+        for t_name, alts in by_turb.items():
+            entry = {
+                'label': f'area::{t_name}',
+                'site': f'Área seleccionada ({len(alts)} sitios)',
+                'turbina': t_name,
+                'site_count': len(alts),
+            }
+            for c in criteria:
+                vals = [
+                    float(a.get(c, 0.0))
+                    for a in alts
+                    if a.get(c) is not None and np.isfinite(float(a.get(c, 0.0)))
+                ]
+                entry[c] = float(np.mean(vals)) if vals else 0.0
+            entry['aep_total_mwh'] = float(sum(float(a.get('aep_mwh') or 0.0) for a in alts))
+            entry['best_site'] = max(
+                alts,
+                key=lambda a: (float(a.get('factor_capacidad') or 0.0),
+                               float(a.get('van_usd') or 0.0)),
+            ).get('site')
+            aggregated.append(entry)
+        result = topsis(aggregated, weights=weights)
+        result['mode'] = mode
+        return result
+
     if mode == 'pairs':
         return topsis(alternatives, weights=weights)
 

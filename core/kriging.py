@@ -302,6 +302,8 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
     rho = P / (R_ESP * T)
     meanrho = float(np.mean(rho))
     Vmax = float(np.max(ws))
+    gust_ms = float(np.nanpercentile(wsp, 99.5)) if wsp.size else Vmax
+    power_density_wm2 = float(np.nanmean(0.5 * rho * np.power(wsp, 3))) if wsp.size else 0.0
     try:
         sh, _, sc = wbl_dist.fit(ws, floc=0)
         C, K = float(sc), float(sh)
@@ -311,6 +313,8 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
         'v_mean':       float(np.mean(wsp)),
         'v_mean_raw':   float(np.mean(ws)),
         'v_max':        Vmax,
+        'gust_ms':      gust_ms,
+        'power_density_wm2': power_density_wm2,
         'weibull_C':    C,
         'weibull_K':    K,
         'rho_mean':     meanrho,
@@ -500,7 +504,8 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
 def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
                   demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
                   price_mxn_per_usd=20.0, anios=ANIOS, max_files=None,
-                  filter_filenames: Optional[List[str]] = None):
+                  filter_filenames: Optional[List[str]] = None,
+                  bounds: Optional[dict] = None):
     """
     Full analysis: read all wind files + turbine csvs, compute metrics,
     return sites list + turbine results matrix suitable for JSON.
@@ -528,6 +533,10 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
         except Exception as e:
             log.warning('analyze_sites: skip wind file %s — %s', wf, e)
             continue
+        if bounds:
+            if not (float(bounds['lat_min']) <= float(site['lat']) <= float(bounds['lat_max']) and
+                    float(bounds['lon_min']) <= float(site['lon']) <= float(bounds['lon_max'])):
+                continue
         if site['n'] < 24:
             continue
         stats = site_wind_stats(site)
@@ -561,6 +570,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
             'v_mean':      stats['v_mean'],
             'v_mean_raw':  stats['v_mean_raw'],
             'v_max':       stats['v_max'],
+            'gust_ms':     stats['gust_ms'],
+            'power_density_wm2': stats['power_density_wm2'],
             'weibull_C':   stats['weibull_C'],
             'weibull_K':   stats['weibull_K'],
             'rho_mean':    stats['rho_mean'],
@@ -592,7 +603,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                       filter_filenames: Optional[List[str]] = None,
                       physical: bool = False,
                       z_meas: float = 100.0,
-                      z0_ref: float = 0.03):
+                      z0_ref: float = 0.03,
+                      grid_bounds: Optional[dict] = None):
     """
     Reproduce el comportamiento original del script MATLAB/Tk:
     para cada sitio elige el último aerogenerador del catálogo (como el
@@ -665,7 +677,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
             'y_fit_kw':  y_fit_kw.tolist(),
         })
 
-    lats, lons, v_proms, invers, vans, names = [], [], [], [], [], []
+    lats, lons, v_proms, gusts, power_densities, invers, vans, names = [], [], [], [], [], [], [], []
 
     for wf in wind_files:
         path = os.path.join(wind_folder, wf)
@@ -700,6 +712,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
         lats.append(site['lat']); lons.append(site['lon'])
         v_proms.append(stats['v_mean'])
+        gusts.append(stats['gust_ms'])
+        power_densities.append(stats['power_density_wm2'])
         invers.append(float(ctot_last))
         vans.append(float(VAN_last))
         names.append(site['name'])
@@ -708,7 +722,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         raise ValueError(f'Kriging necesita >= 3 sitios válidos (hay {len(lats)})')
 
     def _grid(values, title):
-        g = kriging_grid(lons, lats, values, n=n_grid, model=model)
+        g = kriging_grid(lons, lats, values, n=n_grid, model=model,
+                         bounds=grid_bounds)
         g['title'] = title
         g['points'] = [
             {'lat': la, 'lon': lo, 'value': float(v), 'name': nm}
@@ -718,6 +733,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
     base = {
         'wind':            _grid(v_proms, 'Velocidad promedio del viento (m/s)'),
+        'gust':            _grid(gusts, 'Ráfagas / extremo anual P99.5 (m/s)'),
+        'power_density':   _grid(power_densities, 'Densidad de potencia eólica (W/m²)'),
         'inversion':       _grid(invers,  'Inversión inicial (USD)'),
         'van':             _grid(vans,    'Valor Actual Neto (USD)'),
         'n_sites':         len(lats),
@@ -764,7 +781,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     v_neutral = [v * _alpha(z0i) for v, z0i in zip(v_proms, z0_site)]
 
     # Krigeamos el campo neutralizado.
-    g_neutral = kriging_grid(lons, lats, v_neutral, n=n_grid, model=model)
+    g_neutral = kriging_grid(lons, lats, v_neutral, n=n_grid, model=model,
+                             bounds=grid_bounds)
     b = g_neutral['bounds']
     z_neutral = g_neutral['z']
     ny = len(z_neutral); nx = len(z_neutral[0]) if ny else 0

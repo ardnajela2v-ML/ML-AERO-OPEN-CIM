@@ -284,8 +284,8 @@ def create_app():
 
     def numpy_to_python(obj):
         if isinstance(obj, np.integer): return int(obj)
-        if isinstance(obj, np.floating): return None if np.isnan(obj) else float(obj)
-        if isinstance(obj, np.ndarray): return obj.tolist()
+        if isinstance(obj, np.floating): return None if not np.isfinite(obj) else float(obj)
+        if isinstance(obj, np.ndarray): return numpy_to_python(obj.tolist())
         if isinstance(obj, float):
             if obj != obj or obj == float('inf') or obj == float('-inf'):
                 return None
@@ -1795,6 +1795,8 @@ def create_app():
                 'v_mean':       round(stats['v_mean'],     3),
                 'v_mean_raw':   round(stats['v_mean_raw'], 3),
                 'v_max':        round(stats['v_max'],      2),
+                'gust_ms':      round(stats['gust_ms'],    2),
+                'power_density_wm2': round(stats['power_density_wm2'], 2),
                 'weibull_C':    round(stats['weibull_C'],  3),
                 'weibull_K':    round(stats['weibull_K'],  3),
                 'rho_mean':     round(stats['rho_mean'],   4),
@@ -1803,13 +1805,13 @@ def create_app():
                            else 'other'),
             })
 
-        return jsonify({
+        return jsonify(numpy_to_python({
             'folder':  folder,
             'year':    year,
             'sites':   sites,
             'count':   len(sites),
             'skipped': len(skipped),
-        })
+        }))
 
     @app.route('/api/kriging/grid', methods=['POST'])
     def kriging_compute_grid():
@@ -1881,6 +1883,18 @@ def create_app():
                     coords = parse_coords_from_filename(body['center_file'])
                     if coords:
                         cen_lat, cen_lon = coords
+                grid_bounds = body.get('grid_bounds') or None
+                if grid_bounds:
+                    lat_a = float(grid_bounds['lat_min'])
+                    lat_b = float(grid_bounds['lat_max'])
+                    lon_a = float(grid_bounds['lon_min'])
+                    lon_b = float(grid_bounds['lon_max'])
+                    grid_bounds = {
+                        'lat_min': min(lat_a, lat_b),
+                        'lat_max': max(lat_a, lat_b),
+                        'lon_min': min(lon_a, lon_b),
+                        'lon_max': max(lon_a, lon_b),
+                    }
                 result = legacy_three_maps(
                     wind_folder=Config.DATA_FOLDER,
                     turbines_folder=Config.TURBINES_FOLDER,
@@ -1897,11 +1911,16 @@ def create_app():
                     radius_km=float(body['radius_km']) if body.get('radius_km') else None,
                     filter_filenames=body.get('filenames') or None,
                     physical=bool(body.get('physical', False)),
+                    grid_bounds=grid_bounds,
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'
                 tasks[task_id]['progress'] = 100
-                tasks[task_id]['message'] = f'{result["n_sites"]} sitios · 3 mapas listos'
+                n_maps = sum(
+                    1 for v in result.values()
+                    if isinstance(v, dict) and 'z' in v
+                )
+                tasks[task_id]['message'] = f'{result["n_sites"]} sitios · {n_maps} mapas listos'
             except Exception as e:
                 tasks[task_id]['status'] = 'error'
                 tasks[task_id]['message'] = str(e)
@@ -1922,6 +1941,18 @@ def create_app():
         price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
         max_files = body.get('max_files')
         filter_files = body.get('filenames')
+        area_bounds = body.get('area_bounds') or body.get('grid_bounds') or None
+        if area_bounds:
+            lat_a = float(area_bounds['lat_min'])
+            lat_b = float(area_bounds['lat_max'])
+            lon_a = float(area_bounds['lon_min'])
+            lon_b = float(area_bounds['lon_max'])
+            area_bounds = {
+                'lat_min': min(lat_a, lat_b),
+                'lat_max': max(lat_a, lat_b),
+                'lon_min': min(lon_a, lon_b),
+                'lon_max': max(lon_a, lon_b),
+            }
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Iniciando análisis multi-sitio…', 'result': None}
@@ -1935,6 +1966,7 @@ def create_app():
                     price_usd_kwh=price_usd_kwh,
                     price_mxn_per_usd=price_mxn_per_usd,
                     max_files=max_files, filter_filenames=filter_files,
+                    bounds=area_bounds,
                 )
                 tasks[task_id]['result'] = numpy_to_python(results)
                 tasks[task_id]['status'] = 'done'

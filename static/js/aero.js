@@ -3443,12 +3443,20 @@ const KRIG = {
   hillshadeLayer: null,
   landcoverLayer: null,
   overlayOpacity: 0.6,
+  // Punto de interés (POI) — emplazamiento del parque marcado por el usuario
+  poi: null,                // {lat, lon}
+  poiMarker: null,          // marcador en modo selección
+  poiCircle: null,          // círculo de radio en modo selección
+  poiResultMarker: null,    // marcador con valor interpolado tras Kriging
+  placingPoi: false,
 };
 
 const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
   wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
+  gust:         { unit: 'm/s',   title: 'Ráfagas / extremo anual P99.5 (m/s)' },
+  power_density:{ unit: 'W/m²',  title: 'Densidad de potencia eólica (W/m²)' },
   inversion:    { unit: 'USD',   title: 'Inversión inicial (USD)' },
   van:          { unit: 'USD',   title: 'Valor Actual Neto (USD)' },
   // ── Capas físicas (solo presentes cuando physical=true) ──
@@ -3496,7 +3504,7 @@ function krig3SetBase(key) {
   const url = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES[key])
     || 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
   KRIG.baseLayer = L.tileLayer(url, {
-    maxZoom: 18, subdomains: 'abcd',
+    maxZoom: 18, subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
     crossOrigin: 'anonymous',  // habilita exportación a PNG (html2canvas)
     attribution: '© OpenStreetMap · © CARTO · ESRI',
   }).addTo(KRIG.map);
@@ -3571,6 +3579,7 @@ function krig3AreaMouseUp(e) {
   KRIG.map.fitBounds(bounds, { padding: [24, 24] });
   toast('Área de estudio fijada.', 'success');
   krig3RenderOptimalList();
+  if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
 }
 
 function krig3ClearArea() {
@@ -3579,6 +3588,7 @@ function krig3ClearArea() {
   KRIG.areaLayer = null; KRIG.areaDraft = null; KRIG.areaBounds = null;
   KRIG.selectingArea = false;
   krig3RenderOptimalList();
+  if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
 }
 
 // ─── Polígono del parque ──────────────────────────────────────────────────────
@@ -3749,7 +3759,266 @@ function krig3RenderOptimalList() {
 
 // ─── Dispatcher único de eventos del mapa Kriging ─────────────────────────────
 function krig3HandleMapClick(e) {
+  if (KRIG.placingPoi) {
+    krig3PlacePoi(e.latlng);
+    return;
+  }
   if (KRIG.drawingPark) krig3AddParkPoint(e.latlng);
+}
+
+// ═══════════════════════ POI — emplazamiento del parque ═══════════════════════
+// SVG inline de un aerogenerador (torre + 3 aspas) — usado en el divIcon.
+function krig3PoiIconHtml(highlight = false) {
+  const fill = highlight ? '#facc15' : '#0ea5e9';
+  return `
+  <div style="position:relative;width:34px;height:42px;transform:translate(-17px,-42px);
+              filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))">
+    <svg viewBox="0 0 34 42" width="34" height="42" xmlns="http://www.w3.org/2000/svg">
+      <!-- Aspas -->
+      <path d="M17 18 L16 4 L18 4 Z"   fill="${fill}"/>
+      <path d="M17 18 L30 22 L29 24 Z" fill="${fill}"/>
+      <path d="M17 18 L4 22  L5 24 Z"  fill="${fill}"/>
+      <!-- Hub -->
+      <circle cx="17" cy="18" r="2.4" fill="#fff" stroke="${fill}" stroke-width="1.2"/>
+      <!-- Torre -->
+      <polygon points="16,19 18,19 18.7,40 15.3,40" fill="#94a3b8" stroke="#0f172a" stroke-width=".5"/>
+      <!-- Base -->
+      <rect x="14.5" y="40" width="5" height="2" fill="#0f172a"/>
+    </svg>
+  </div>`;
+}
+
+function krig3HaversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) *
+            Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+async function krig3StartPoiPlacement() {
+  krig3InitMap();
+  if (KRIG.result) krig3ResetDesign();
+  if (!KRIG.sites.length) await krig3LoadSites();
+  KRIG.selectingArea = false;
+  KRIG.drawingPark = false;
+  KRIG.placingPoi = true;
+  // Cambiar cursor del mapa para feedback visual.
+  if (KRIG.map && KRIG.map._container) KRIG.map._container.style.cursor = 'crosshair';
+  toast('Haz clic sobre el mapa para marcar el lugar de emplazamiento del parque.', 'info');
+}
+
+async function krig3PlacePoi(latlng) {
+  krig3InitMap();
+  if (KRIG.result) krig3ResetDesign();
+  if (!KRIG.sites.length) await krig3LoadSites();
+  KRIG.selectingArea = false;
+  KRIG.drawingPark = false;
+  KRIG.placingPoi = false;
+  if (KRIG.map && KRIG.map._container) KRIG.map._container.style.cursor = '';
+  KRIG.poi = { lat: latlng.lat, lon: latlng.lng };
+
+  // Limpia marcador y círculo previos
+  if (KRIG.poiMarker) { KRIG.map.removeLayer(KRIG.poiMarker); KRIG.poiMarker = null; }
+  if (KRIG.poiCircle) { KRIG.map.removeLayer(KRIG.poiCircle); KRIG.poiCircle = null; }
+
+  const icon = L.divIcon({
+    className: 'krig3-poi-icon',
+    html: krig3PoiIconHtml(true),
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+  KRIG.poiMarker = L.marker([KRIG.poi.lat, KRIG.poi.lon], {
+    icon, zIndexOffset: 1000, interactive: true, draggable: false,
+  }).addTo(KRIG.map);
+  KRIG.poiMarker.bindTooltip('Emplazamiento del parque', { direction: 'top', offset: [0, -42] });
+
+  krig3FilterByRadius();
+}
+
+function krig3ClearPoi() {
+  KRIG.poi = null;
+  KRIG.placingPoi = false;
+  if (KRIG.map && KRIG.map._container) KRIG.map._container.style.cursor = '';
+  if (KRIG.poiMarker)        { KRIG.map.removeLayer(KRIG.poiMarker);        KRIG.poiMarker = null; }
+  if (KRIG.poiCircle)        { KRIG.map.removeLayer(KRIG.poiCircle);        KRIG.poiCircle = null; }
+  if (KRIG.poiResultMarker)  { KRIG.map.removeLayer(KRIG.poiResultMarker);  KRIG.poiResultMarker = null; }
+  const info = document.getElementById('krig3-poi-info');
+  if (info) info.textContent = '—';
+}
+
+function krig3FilterByRadius() {
+  if (!KRIG.poi) return;
+  krig3InitMap();
+  const radInput = document.getElementById('krig3-poi-radius');
+  const km = Math.max(1, parseFloat(radInput?.value) || 100);
+
+  // Dibuja / actualiza el círculo de radio
+  if (KRIG.poiCircle) KRIG.map.removeLayer(KRIG.poiCircle);
+  KRIG.poiCircle = L.circle([KRIG.poi.lat, KRIG.poi.lon], {
+    radius: km * 1000,
+    color: '#0ea5e9', weight: 2, dashArray: '6 4',
+    fillColor: '#0ea5e9', fillOpacity: 0.06, interactive: false,
+  }).addTo(KRIG.map);
+
+  // Reset selección y selecciona estaciones dentro del radio
+  KRIG.selected.clear();
+  KRIG.principal = null;
+  let inside = 0;
+  let nearest = null, nearestD = Infinity;
+  KRIG.sites.forEach(s => {
+    const d = krig3HaversineKm(KRIG.poi.lat, KRIG.poi.lon, s.lat, s.lon);
+    if (d <= km) {
+      KRIG.selected.add(s.filename);
+      inside++;
+      if (d < nearestD) { nearestD = d; nearest = s; }
+    }
+  });
+  // Marca como principal automáticamente la estación más cercana
+  if (nearest) KRIG.principal = nearest.filename;
+  krig3UpdateAllMarkers();
+
+  const info = document.getElementById('krig3-poi-info');
+  if (info) {
+    info.innerHTML = `${KRIG.poi.lat.toFixed(3)}°, ${KRIG.poi.lon.toFixed(3)}° · ` +
+      `<b>${inside}</b> estaciones dentro de ${km} km` +
+      (nearest ? ` · ★ ${nearest.display_name || nearest.filename} (${nearestD.toFixed(1)} km)` : '');
+  }
+  if (inside < 3) {
+    toast(`Solo ${inside} estaciones dentro de ${km} km. Aumenta el radio para Kriging (≥ 3 sitios).`,
+          inside === 0 ? 'error' : 'warning');
+  } else {
+    toast(`${inside} estaciones seleccionadas en un radio de ${km} km.`, 'success');
+  }
+}
+
+// ═══════════════════════ Bilineal sampling sobre el grid ══════════════════════
+function krig3SampleBilinear(grid, lat, lon) {
+  if (!grid || !grid.bounds) return null;
+  const b = grid.bounds;
+  if (lat < b.lat_min || lat > b.lat_max || lon < b.lon_min || lon > b.lon_max) return null;
+  const z = grid.z;
+  const ny = z.length, nx = z[0].length;
+  if (ny < 2 || nx < 2) return null;
+  const fx = (lon - b.lon_min) / (b.lon_max - b.lon_min) * (nx - 1);
+  const fy = (lat - b.lat_min) / (b.lat_max - b.lat_min) * (ny - 1);
+  const i0 = Math.max(0, Math.min(nx - 2, Math.floor(fx)));
+  const j0 = Math.max(0, Math.min(ny - 2, Math.floor(fy)));
+  const dx = fx - i0, dy = fy - j0;
+  const v00 = z[j0  ][i0  ], v10 = z[j0  ][i0+1];
+  const v01 = z[j0+1][i0  ], v11 = z[j0+1][i0+1];
+  return v00*(1-dx)*(1-dy) + v10*dx*(1-dy) + v01*(1-dx)*dy + v11*dx*dy;
+}
+
+// ═══════════════════════ Hover sobre mapa de resultado ════════════════════════
+function krig3HandleResultMouseMove(e) {
+  const tip = document.getElementById('krig3-hover-tip');
+  if (!tip) return;
+  if (!KRIG.result) { tip.style.display = 'none'; return; }
+  const grid = KRIG.result[KRIG.layerKey];
+  if (!grid) { tip.style.display = 'none'; return; }
+  const v = krig3SampleBilinear(grid, e.latlng.lat, e.latlng.lng);
+  if (v === null || !isFinite(v)) { tip.style.display = 'none'; return; }
+  const meta = KRIG_LAYERS[KRIG.layerKey] || { unit: '' };
+  // Formateo según magnitud
+  let valStr;
+  if (Math.abs(v) >= 1e6)      valStr = (v/1e6).toFixed(2) + ' M';
+  else if (Math.abs(v) >= 1e3) valStr = (v/1e3).toFixed(2) + ' k';
+  else if (Math.abs(v) >= 1)   valStr = v.toFixed(2);
+  else                         valStr = v.toFixed(4);
+  tip.innerHTML =
+    `${e.latlng.lat.toFixed(3)}°, ${e.latlng.lng.toFixed(3)}°<br>` +
+    `<b>${valStr} ${meta.unit}</b>`;
+  tip.style.display = 'block';
+  const oe = e.originalEvent;
+  if (oe) {
+    tip.style.left = (oe.clientX + 14) + 'px';
+    tip.style.top  = (oe.clientY + 14) + 'px';
+  }
+}
+
+function krig3HandleResultMouseOut() {
+  const tip = document.getElementById('krig3-hover-tip');
+  if (tip) tip.style.display = 'none';
+}
+
+// ═══════════════════════ POI marker sobre el resultado ════════════════════════
+function krig3RenderPoiOnResult() {
+  if (!KRIG.result || !KRIG.poi) return;
+  if (KRIG.poiResultMarker) {
+    KRIG.map.removeLayer(KRIG.poiResultMarker);
+    KRIG.poiResultMarker = null;
+  }
+  const grid = KRIG.result[KRIG.layerKey];
+  if (!grid) return;
+  const v = krig3SampleBilinear(grid, KRIG.poi.lat, KRIG.poi.lon);
+  const meta = KRIG_LAYERS[KRIG.layerKey] || { unit: '' };
+  const icon = L.divIcon({
+    className: 'krig3-poi-result',
+    html: krig3PoiIconHtml(true),
+    iconSize: [0, 0], iconAnchor: [0, 0],
+  });
+  KRIG.poiResultMarker = L.marker([KRIG.poi.lat, KRIG.poi.lon], {
+    icon, zIndexOffset: 1000, interactive: true,
+  }).addTo(KRIG.map);
+  let valHtml;
+  if (v === null || !isFinite(v)) {
+    valHtml = '<i>Sin valor en este punto</i>';
+  } else {
+    let s;
+    if (Math.abs(v) >= 1e6)      s = (v/1e6).toFixed(2) + ' M';
+    else if (Math.abs(v) >= 1e3) s = (v/1e3).toFixed(2) + ' k';
+    else if (Math.abs(v) >= 1)   s = v.toFixed(2);
+    else                         s = v.toFixed(4);
+    valHtml = `<b>${s} ${meta.unit}</b>`;
+  }
+  KRIG.poiResultMarker.bindTooltip(
+    `<div style="text-align:center"><b>Emplazamiento</b><br>${valHtml}</div>`,
+    { permanent: true, direction: 'top', offset: [0, -42], className: 'krig3-poi-tooltip' }
+  );
+}
+
+// ═══════════════════════ Reiniciar diseño ═════════════════════════════════════
+// Limpia los overlays del Kriging y devuelve la UI al modo edición / selección.
+// CONSERVA: estaciones seleccionadas, POI, polígono del parque, capa base.
+function krig3ResetDesign() {
+  // Quitar overlays de resultado
+  if (KRIG.map) KRIG.overlays.forEach(l => KRIG.map.removeLayer(l));
+  KRIG.overlays = [];
+  if (KRIG.poiResultMarker && KRIG.map) {
+    KRIG.map.removeLayer(KRIG.poiResultMarker);
+    KRIG.poiResultMarker = null;
+  }
+  KRIG.result = null;
+  KRIG.task_id = null;
+
+  // Restaurar markers de selección (los oculta krig3Poll cuando llega resultado)
+  Object.values(KRIG.siteMarkers).forEach(m => {
+    if (KRIG.map && !KRIG.map.hasLayer(m)) m.addTo(KRIG.map);
+  });
+  krig3UpdateAllMarkers();
+
+  // Reset visual de tabs físicos y panel
+  document.querySelectorAll('.krig3-tab-phys').forEach(b => b.style.display = 'none');
+  KRIG.layerKey = 'wind';
+  document.querySelectorAll('.krig3-tab').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.layer === 'wind');
+  });
+  const btnReset = document.getElementById('btn-krig3-reset');
+  if (btnReset) btnReset.style.display = 'none';
+  const tip = document.getElementById('krig3-hover-tip');
+  if (tip) tip.style.display = 'none';
+
+  document.getElementById('krig3-status').textContent = 'En espera';
+  document.getElementById('krig3-progress-wrap').style.display = 'none';
+  document.getElementById('krig3-progress-fill').style.width = '0%';
+  document.getElementById('krig3-progress-text').textContent = '';
+  document.getElementById('krig3-map-title').textContent = 'Mapa Kriging';
+  document.getElementById('krig3-legend').textContent = '—';
+
+  toast('Volviendo al modo de diseño. Las estaciones, el emplazamiento y el polígono se conservan.', 'info');
 }
 
 // ─── Buscador estilo Google Maps (Nominatim/OSM) ──────────────────────────────
@@ -4066,9 +4335,55 @@ function krig3MarkerStyle(filename) {
   return                  { radius: 5, color: '#94a3b8', weight: 1, fillColor: '#1e293b', fillOpacity: 0.55 };
 }
 
+function krig3SiteIconHtml(filename) {
+  const isPrincipal = filename === KRIG.principal;
+  const isSelected = KRIG.selected.has(filename);
+  const bg = isPrincipal ? '#facc15' : (isSelected ? '#3b82f6' : '#475569');
+  const stroke = isPrincipal ? '#78350f' : (isSelected ? '#dbeafe' : '#cbd5e1');
+  const glyph = isPrincipal
+    ? `<path d="M12 5l1.8 3.9 4.2.5-3.1 2.9.8 4.2L12 14.4 8.3 16.5l.8-4.2L6 9.4l4.2-.5L12 5z" fill="#78350f"/>`
+    : `<path d="M7 16h10M9 16V8.5A3 3 0 0 1 12 5.5h0a3 3 0 0 1 3 3V16M8.5 10h7M10 7.2h4" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linecap="round"/>`;
+  return `<div style="width:${isPrincipal ? 30 : 24}px;height:${isPrincipal ? 30 : 24}px;border-radius:999px;background:${bg};border:2px solid #fff;box-shadow:0 4px 12px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center">
+    <svg viewBox="0 0 24 24" width="${isPrincipal ? 21 : 17}" height="${isPrincipal ? 21 : 17}" aria-hidden="true">${glyph}</svg>
+  </div>`;
+}
+
+function krig3SiteIcon(filename) {
+  const isPrincipal = filename === KRIG.principal;
+  const size = isPrincipal ? 30 : 24;
+  return L.divIcon({
+    className: 'krig3-site-mini-icon',
+    html: krig3SiteIconHtml(filename),
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -size / 2],
+  });
+}
+
+function krig3ResultSiteIcon(filename, color) {
+  const isPrincipal = filename === KRIG.principal;
+  const size = isPrincipal ? 30 : 24;
+  const stroke = isPrincipal ? '#78350f' : '#f8fafc';
+  const glyph = isPrincipal
+    ? `<path d="M12 5l1.8 3.9 4.2.5-3.1 2.9.8 4.2L12 14.4 8.3 16.5l.8-4.2L6 9.4l4.2-.5L12 5z" fill="#78350f"/>`
+    : `<path d="M7 16h10M9 16V8.5A3 3 0 0 1 12 5.5h0a3 3 0 0 1 3 3V16M8.5 10h7M10 7.2h4" fill="none" stroke="${stroke}" stroke-width="1.6" stroke-linecap="round"/>`;
+  return L.divIcon({
+    className: 'krig3-site-result-icon',
+    html: `<div style="width:${size}px;height:${size}px;border-radius:999px;background:${color};border:2px solid ${isPrincipal ? '#facc15' : '#fff'};box-shadow:0 4px 12px rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center">
+      <svg viewBox="0 0 24 24" width="${isPrincipal ? 21 : 17}" height="${isPrincipal ? 21 : 17}" aria-hidden="true">${glyph}</svg>
+    </div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -size / 2],
+  });
+}
+
 function krig3UpdateMarker(filename) {
   const m = KRIG.siteMarkers[filename];
-  if (m) m.setStyle(krig3MarkerStyle(filename));
+  if (m) {
+    m.setIcon(krig3SiteIcon(filename));
+    if (m.setZIndexOffset) m.setZIndexOffset(filename === KRIG.principal ? 500 : 0);
+  }
 }
 
 function krig3UpdateAllMarkers() {
@@ -4097,7 +4412,8 @@ function krig3SitePopupHtml(s) {
       ${s.state ? `<div style="font-size:.72rem;color:#94a3b8;margin-bottom:.25rem">${s.state}${s.municipality ? ' · ' + s.municipality : ''}</div>` : ''}
       <div style="font-size:.75rem;color:#64748b;line-height:1.4">
         ${s.lat.toFixed(3)}°N  ${s.lon.toFixed(3)}°W<br>
-        v̄ ${(+s.v_mean).toFixed(2)} m/s · Weibull C=${(+s.weibull_C).toFixed(2)} K=${(+s.weibull_K).toFixed(2)}
+        v̄ ${(+s.v_mean).toFixed(2)} m/s · ráfaga ${(+s.gust_ms || +s.v_max || 0).toFixed(2)} m/s<br>
+        densidad ${(+s.power_density_wm2 || 0).toFixed(1)} W/m² · Weibull C=${(+s.weibull_C).toFixed(2)} K=${(+s.weibull_K).toFixed(2)}
         ${krig3TerrainBadge(s.filename)}
       </div>
       <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
@@ -4161,7 +4477,11 @@ async function krig3LoadSites(force=false) {
     Object.values(KRIG.siteMarkers).forEach(m => map.removeLayer(m));
     KRIG.siteMarkers = {};
     KRIG.sites.forEach(s => {
-      const m = L.circleMarker([s.lat, s.lon], krig3MarkerStyle(s.filename))
+      const m = L.marker([s.lat, s.lon], {
+          icon: krig3SiteIcon(s.filename),
+          riseOnHover: true,
+          zIndexOffset: KRIG.principal === s.filename ? 500 : 0,
+        })
         .bindPopup(krig3SitePopupHtml(s))
         .on('click', () => {
           // El click sólo abre el popup; los botones del popup hacen la acción.
@@ -4230,14 +4550,16 @@ function krig3RenderLayer(key) {
     const t = rng > 0 ? (p.value - z_min) / rng : 0.5;
     const [r_, g_, b_] = krigColor(t);
     const isPrincipal = p.name === KRIG.principal;
-    const m = L.circleMarker([p.lat, p.lon], {
-      radius: isPrincipal ? 9 : 6,
-      color: isPrincipal ? '#fff' : '#111',
-      weight: isPrincipal ? 2 : 1,
-      fillColor: `rgb(${r_|0},${g_|0},${b_|0})`, fillOpacity: 1,
+    const color = `rgb(${r_|0},${g_|0},${b_|0})`;
+    const m = L.marker([p.lat, p.lon], {
+      icon: krig3ResultSiteIcon(p.name, color),
+      riseOnHover: true,
+      zIndexOffset: isPrincipal ? 600 : 100,
     }).bindPopup(`<b>${p.name}</b>${isPrincipal ? ' ★' : ''}<br>${grid.title}<br><b>${p.value.toFixed(2)} ${meta.unit}</b>`).addTo(map);
     KRIG.overlays.push(m);
   });
+
+  krig3RenderPoiOnResult();
 
   document.getElementById('krig3-map-title').textContent = grid.title || meta.title;
   document.getElementById('krig3-legend').textContent = krig3FormatRange(grid, meta.unit);
@@ -4248,6 +4570,10 @@ function krig3RenderLayer(key) {
 // Si no hay parque principal, encuadra al extent del grid para que el overlay sea visible.
 function krig3ZoomToPrincipal() {
   if (!KRIG.map) return;
+  if (KRIG.areaBounds) {
+    KRIG.map.fitBounds(KRIG.areaBounds, { padding: [24, 24] });
+    return;
+  }
   if (KRIG.principal) {
     const s = KRIG.sites.find(x => x.filename === KRIG.principal);
     if (s) {
@@ -4374,6 +4700,16 @@ async function krig3Run() {
     body.center_lat  = principal.lat;
     body.center_lon  = principal.lon;
   }
+  if (KRIG.areaBounds) {
+    const sw = KRIG.areaBounds.getSouthWest();
+    const ne = KRIG.areaBounds.getNorthEast();
+    body.grid_bounds = {
+      lat_min: sw.lat,
+      lat_max: ne.lat,
+      lon_min: sw.lng,
+      lon_max: ne.lng,
+    };
+  }
   KRIG.result = null;
   document.getElementById('krig3-status').textContent = 'Ejecutando…';
   document.getElementById('krig3-progress-wrap').style.display = '';
@@ -4417,8 +4753,11 @@ async function krig3Poll() {
       krig3ZoomToPrincipal();
       const nCurves = (d.turbine_curves || []).length;
       const tag = physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '';
+      const nMaps = Object.keys(d).filter(k => d[k] && Array.isArray(d[k].z)).length;
       document.getElementById('krig3-status').textContent =
-        `${d.n_sites} sitios · ${physOn ? 7 : 3} mapas · ${nCurves} curvas${tag}`;
+        `${d.n_sites} sitios · ${nMaps} mapas · ${nCurves} curvas${tag}`;
+      const btnReset = document.getElementById('btn-krig3-reset');
+      if (btnReset) btnReset.style.display = '';
       document.getElementById('krig3-progress-fill').style.width = '100%';
       toast(physOn ? 'Kriging físico listo' : 'Kriging listo', 'success');
     } else if (r.status === 'error') {
@@ -4518,6 +4857,8 @@ document.addEventListener('DOMContentLoaded', () => {
         map.on('mousemove', krig3AreaMouseMove);
         map.on('mouseup',   krig3AreaMouseUp);
         map.on('click',     krig3HandleMapClick);
+        map.on('mousemove', krig3HandleResultMouseMove);
+        map.on('mouseout',  krig3HandleResultMouseOut);
         map._rectSelectBound = true;
       }
       return map;
@@ -4530,6 +4871,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-krig3-site')   ?.addEventListener('click', krig3FocusSite);
   document.getElementById('btn-krig3-select-area')?.addEventListener('click', krig3BeginAreaSelection);
   document.getElementById('btn-krig3-clear-area') ?.addEventListener('click', krig3ClearArea);
+  document.getElementById('btn-krig3-place-poi')  ?.addEventListener('click', krig3StartPoiPlacement);
+  document.getElementById('btn-krig3-clear-poi')  ?.addEventListener('click', krig3ClearPoi);
+  document.getElementById('btn-krig3-reset')      ?.addEventListener('click', krig3ResetDesign);
+  document.getElementById('krig3-poi-radius')     ?.addEventListener('input', krig3FilterByRadius);
+  document.getElementById('krig3-poi-radius')     ?.addEventListener('change', krig3FilterByRadius);
   document.getElementById('btn-krig3-draw-park')  ?.addEventListener('click', krig3StartParkDraw);
   document.getElementById('btn-krig3-finish-park')?.addEventListener('click', krig3FinishPark);
   document.getElementById('btn-krig3-clear-park') ?.addEventListener('click', krig3ClearPark);
@@ -4609,6 +4955,7 @@ const MCDA = {
   lastAnalysis: null,   // raw analyze_sites output
   lastRanking:  null,   // last TOPSIS result
   defaults:     null,
+  scope:        'area',
 };
 
 async function mcdaLoadDefaults() {
@@ -4647,6 +4994,56 @@ function mcdaGetWeights() {
   return out;
 }
 
+function mcdaCurrentAreaBounds() {
+  if (!KRIG.areaBounds) return null;
+  const sw = KRIG.areaBounds.getSouthWest();
+  const ne = KRIG.areaBounds.getNorthEast();
+  return {
+    lat_min: sw.lat,
+    lat_max: ne.lat,
+    lon_min: sw.lng,
+    lon_max: ne.lng,
+  };
+}
+
+function mcdaUpdateScopeUi() {
+  const areaMode = MCDA.scope === 'area';
+  document.querySelectorAll('.mcda-subtab').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.scope === MCDA.scope);
+  });
+  document.querySelectorAll('.mcda-exploratory-only').forEach(el => {
+    el.style.display = areaMode ? 'none' : '';
+  });
+  const runBtn = document.getElementById('btn-mcda-run');
+  if (runBtn) runBtn.textContent = areaMode
+    ? '▶ Analizar aerogeneradores del área'
+    : '▶ Ejecutar análisis exploratorio';
+  const help = document.getElementById('mcda-scope-help');
+  if (help) help.textContent = areaMode
+    ? 'Modo área: cada aerogenerador se evalúa por su desempeño promedio en las estaciones dentro del recuadro.'
+    : 'Modo exploratorio: conserva el análisis global sitio × aerogenerador y sus vistas mejor por sitio/turbina.';
+  const info = document.getElementById('mcda-area-info');
+  if (info) {
+    const b = mcdaCurrentAreaBounds();
+    info.textContent = b
+      ? `Área activa: ${b.lat_min.toFixed(3)}–${b.lat_max.toFixed(3)}°, ${b.lon_min.toFixed(3)}–${b.lon_max.toFixed(3)}°`
+      : 'Define un recuadro en el mapa Kriging para enfocar este análisis.';
+  }
+}
+
+function mcdaSetScope(scope) {
+  MCDA.scope = scope === 'exploratory' ? 'exploratory' : 'area';
+  MCDA.lastAnalysis = null;
+  MCDA.lastRanking = null;
+  mcdaUpdateScopeUi();
+  const body = document.getElementById('mcda-rank-body');
+  if (body) {
+    body.innerHTML = '<tr><td colspan="10" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>';
+  }
+  const status = document.getElementById('mcda-status');
+  if (status) status.textContent = 'Sin análisis';
+}
+
 async function mcdaResetWeights() {
   const d = await mcdaLoadDefaults();
   document.querySelectorAll('.mcda-w').forEach(el => {
@@ -4656,17 +5053,27 @@ async function mcdaResetWeights() {
 }
 
 async function mcdaRunAnalysis() {
+  mcdaUpdateScopeUi();
+  const areaMode = MCDA.scope === 'area';
+  const areaBounds = mcdaCurrentAreaBounds();
+  if (areaMode && !areaBounds) {
+    toast('Primero selecciona un recuadro de área en el mapa Kriging.', 'warning');
+    return;
+  }
   const body = {
     year:          parseInt(document.getElementById('mcda-year').value),
     demand_mwh:    parseFloat(document.getElementById('mcda-demand').value),
     tasa:          parseFloat(document.getElementById('mcda-tasa').value) / 100,
     price_usd_kwh: parseFloat(document.getElementById('mcda-price').value),
     price_mxn_per_usd: parseFloat(document.getElementById('mcda-fx').value),
-    max_files:     parseInt(document.getElementById('mcda-maxfiles').value) || null,
+    max_files:     areaMode ? null : (parseInt(document.getElementById('mcda-maxfiles').value) || null),
   };
+  if (areaMode) body.area_bounds = areaBounds;
   document.getElementById('mcda-status').textContent = 'Ejecutando…';
   document.getElementById('mcda-progress-wrap').style.display = '';
-  document.getElementById('mcda-progress-text').textContent = 'Iniciando…';
+  document.getElementById('mcda-progress-text').textContent = areaMode
+    ? 'Analizando estaciones dentro del área seleccionada…'
+    : 'Iniciando análisis exploratorio…';
   try {
     const r = await api('/api/kriging/analyze', 'POST', body);
     MCDA.taskId = r.task_id;
@@ -4688,7 +5095,9 @@ async function mcdaPollStatus() {
       MCDA.lastAnalysis = r.result;
       const nSites = r.result.length;
       const nTurbs = r.result.reduce((s, x) => s + (x.turbines||[]).length, 0);
-      document.getElementById('mcda-status').textContent = `${nSites} sitios · ${nTurbs} evaluaciones`;
+      document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
+        ? `${nSites} sitios del área · ${nTurbs} evaluaciones`
+        : `${nSites} sitios · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
       toast('Análisis completado — generando ranking…', 'success');
       await mcdaRankNow();
@@ -4709,7 +5118,9 @@ async function mcdaRankNow() {
     return;
   }
   const weights = mcdaGetWeights();
-  const mode = document.getElementById('mcda-mode').value;
+  const mode = MCDA.scope === 'area'
+    ? 'area_turbines'
+    : document.getElementById('mcda-mode').value;
   try {
     const r = await api('/api/multicriteria/rank', 'POST', {
       sites_analysis: MCDA.lastAnalysis,
@@ -4732,9 +5143,12 @@ function mcdaRenderRanking(r) {
   body.innerHTML = top.map(a => {
     const medal = a.rank === 1 ? '🥇' : a.rank === 2 ? '🥈' : a.rank === 3 ? '🥉' : a.rank;
     const highlight = a.rank === 1 ? 'style="background:var(--green-dim)"' : '';
+    const siteText = a.best_site
+      ? `${a.site || ''}<br><span class="text-muted" style="font-size:.72rem">Mejor sitio: ${a.best_site}</span>`
+      : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
     return `<tr ${highlight}>
       <td><strong>${medal}</strong></td>
-      <td title="${a.site||''}">${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}</td>
+      <td title="${a.site||''}">${siteText}</td>
       <td>${a.turbina||''}</td>
       <td><strong>${a.topsis_score.toFixed(4)}</strong></td>
       <td>${(a.factor_capacidad*100).toFixed(1)}%</td>
@@ -4755,6 +5169,10 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', mcdaRunAnalysis);
   if (bRe)  bRe.addEventListener('click', mcdaRankNow);
   if (bRst) bRst.addEventListener('click', mcdaResetWeights);
+  document.querySelectorAll('.mcda-subtab').forEach(btn => {
+    btn.addEventListener('click', () => mcdaSetScope(btn.dataset.scope));
+  });
+  mcdaUpdateScopeUi();
 });
 
 // ═══════════════════════ INGENIERÍA DRAWER (f buttons) ═══════════════════════
@@ -5257,7 +5675,7 @@ function mapaSetBase(key) {
   if (MAPA.baseLayer) MAPA.map.removeLayer(MAPA.baseLayer);
   const url = MAPA_TILES[key] || MAPA_TILES.dark;
   MAPA.baseLayer = window.L.tileLayer(url, {
-    maxZoom: 18, subdomains: 'abcd',
+    maxZoom: 18, subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
     attribution: '© OpenStreetMap · © CARTO · ESRI',
   }).addTo(MAPA.map);
 }
