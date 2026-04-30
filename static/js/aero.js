@@ -3721,13 +3721,25 @@ function krig3RenderOptimalList() {
       : 'Genera o carga sitios para calcular candidatos.';
     return;
   }
-  el.innerHTML = sites.slice(0, 8).map(s => (
-    `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">` +
-      `<b>#${s.rank}</b> ${s.filename}<br>` +
-      `Puntuación ${s.score.toFixed(1)} · Vel ${s.speed.toFixed(2)} m/s · ` +
-      `Ráfaga ${s.gust.toFixed(2)} m/s · Pd ${s.power.toFixed(0)} W/m²` +
-    `</div>`
-  )).join('');
+  el.innerHTML = sites.slice(0, 8).map(s => {
+    const t = (KRIG.terrain || {})[s.filename];
+    let terrainLine = '';
+    if (t) {
+      const bits = [];
+      if (t.elevation_m != null) bits.push(`<b>${t.elevation_m.toFixed(0)} m</b> snm`);
+      if (t.landcover_label) bits.push(t.landcover_label);
+      if (t.z0 != null) bits.push(`z₀ ${t.z0} m`);
+      if (bits.length) terrainLine = `<br><span style="color:var(--text-muted)">${bits.join(' · ')}</span>`;
+    }
+    return (
+      `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">` +
+        `<b>#${s.rank}</b> ${s.filename}<br>` +
+        `Puntuación ${s.score.toFixed(1)} · Vel ${s.speed.toFixed(2)} m/s · ` +
+        `Ráfaga ${s.gust.toFixed(2)} m/s · Pd ${s.power.toFixed(0)} W/m²` +
+        terrainLine +
+      `</div>`
+    );
+  }).join('');
 }
 
 // ─── Dispatcher único de eventos del mapa Kriging ─────────────────────────────
@@ -3860,6 +3872,74 @@ function krig3SearchClear() {
   if (inp) inp.value = '';
   const box = document.getElementById('krig3-search-suggest');
   if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+}
+
+// ─── Fase 2: enriquecimiento físico de sitios (altitud + z₀) ──────────────────
+// Mapa filename → {elevation_m, landcover_class, landcover_label, z0, landcover_purity}
+KRIG.terrain = {};
+KRIG.terrainLoaded = false;
+
+async function krig3LoadTerrain(force = false) {
+  if (KRIG.terrainLoaded && !force) {
+    toast('Datos de terreno ya cargados (cache).', 'info');
+    return;
+  }
+  if (!KRIG.sites.length) {
+    toast('Carga sitios primero.', 'warning');
+    return;
+  }
+  const btn = document.getElementById('btn-krig3-enrich');
+  const stat = document.getElementById('krig3-enrich-status');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Consultando DEM y cobertura…'; }
+  if (stat) stat.textContent = `Consultando ${KRIG.sites.length} sitios…`;
+  try {
+    const payload = { sites: KRIG.sites.map(s => ({
+      filename: s.filename, lat: s.lat, lon: s.lon,
+    })) };
+    const r = await api('/api/terrain/enrich', 'POST', payload);
+    const enriched = (r && r.sites) || [];
+    KRIG.terrain = {};
+    let nElev = 0, nLc = 0;
+    enriched.forEach(s => {
+      KRIG.terrain[s.filename] = {
+        elevation_m: s.elevation_m,
+        z0: s.z0,
+        landcover_class: s.landcover_class,
+        landcover_label: s.landcover_label,
+        landcover_purity: s.landcover_purity,
+      };
+      if (s.elevation_m != null) nElev++;
+      if (s.z0 != null) nLc++;
+    });
+    KRIG.terrainLoaded = true;
+    if (stat) stat.textContent = `${nElev}/${enriched.length} altitudes · ${nLc}/${enriched.length} con z₀`;
+    // Refrescar popups y panel óptimos.
+    Object.keys(KRIG.siteMarkers).forEach(fn => {
+      const m = KRIG.siteMarkers[fn];
+      const site = KRIG.sites.find(x => x.filename === fn);
+      if (m && site) m.setPopupContent(krig3SitePopupHtml(site));
+    });
+    krig3RenderOptimalList();
+    toast('Terreno cargado.', 'success');
+  } catch (e) {
+    if (stat) stat.textContent = `Error: ${e.message}`;
+    toast(`No se pudo cargar terreno: ${e.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🌐 Cargar terreno (DEM + cobertura)'; }
+  }
+}
+
+function krig3TerrainBadge(filename) {
+  const t = KRIG.terrain && KRIG.terrain[filename];
+  if (!t) return '';
+  const parts = [];
+  if (t.elevation_m != null) parts.push(`<b>${t.elevation_m.toFixed(0)} m</b> snm`);
+  if (t.landcover_label) {
+    const pur = (t.landcover_purity != null) ? ` · ${(t.landcover_purity*100).toFixed(0)}%` : '';
+    parts.push(`${t.landcover_label}${pur}`);
+  }
+  if (t.z0 != null) parts.push(`z₀ <b>${t.z0}</b> m`);
+  return parts.length ? `<br><span style="color:var(--text-muted);font-size:.72rem">${parts.join(' · ')}</span>` : '';
 }
 
 // ─── Overlays físicos: hillshade (ESRI) y cobertura del suelo (ESA WorldCover) ─
@@ -4013,6 +4093,7 @@ function krig3SitePopupHtml(s) {
       <div style="font-size:.75rem;color:#64748b;line-height:1.4">
         ${s.lat.toFixed(3)}°N  ${s.lon.toFixed(3)}°W<br>
         v̄ ${(+s.v_mean).toFixed(2)} m/s · Weibull C=${(+s.weibull_C).toFixed(2)} K=${(+s.weibull_K).toFixed(2)}
+        ${krig3TerrainBadge(s.filename)}
       </div>
       <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
         <button class="btn-secondary krig3-popup-toggle" data-fn="${s.filename}" style="font-size:.72rem;padding:.25rem .5rem">
@@ -4478,6 +4559,9 @@ document.addEventListener('DOMContentLoaded', () => {
     (e) => krig3ToggleLandcover(e.target.checked));
   document.getElementById('krig3-ovl-opacity')?.addEventListener('input',
     (e) => krig3SetOverlayOpacity((+e.target.value) / 100));
+
+  // ── Botón "Cargar terreno" (Fase 2: enriquecimiento de sitios) ──
+  document.getElementById('btn-krig3-enrich')?.addEventListener('click', () => krig3LoadTerrain(true));
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo

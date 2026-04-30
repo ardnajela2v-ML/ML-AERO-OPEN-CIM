@@ -1839,6 +1839,26 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
+    @app.route('/api/terrain/enrich', methods=['POST'])
+    def terrain_enrich():
+        """Enriquece una lista de sitios con altitud (DEM) y clase WorldCover → z₀.
+
+        Body: {"sites": [{"filename":...,"lat":...,"lon":...}, ...]}
+        Devuelve los mismos sitios con campos adicionales:
+            elevation_m, landcover_class, landcover_label, landcover_purity, z0
+        """
+        body = request.get_json(silent=True) or {}
+        sites = body.get('sites') or []
+        if not isinstance(sites, list) or not sites:
+            return jsonify({'error': 'sites required'}), 400
+        try:
+            from core.terrain import enrich_sites
+            enriched = enrich_sites(sites)
+            return jsonify({'sites': enriched, 'count': len(enriched)})
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
     @app.route('/api/kriging/legacy_maps', methods=['POST'])
     def kriging_legacy_maps():
         """
