@@ -3432,7 +3432,14 @@ const KRIG = {
   result: null,          // last full result {wind, inversion, van, turbine_curves}
   layerKey: 'wind',      // active layer
   curveIdx: 0,           // active turbine in the curve viewer
+  // ── México / encuadre / herramientas integradas desde Mapa & Kriging ──
+  mode: 'mexico',
+  areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
+  drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
+  optimal: [],
 };
+
+const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
   wind:      { unit: 'm/s', title: 'Velocidad promedio del viento (m/s)' },
@@ -3469,7 +3476,244 @@ function krig3InitMap() {
   L.tileLayer(url, { maxZoom: 18, subdomains: 'abcd',
     attribution: '© OpenStreetMap · © CARTO' }).addTo(map);
   KRIG.map = map;
+  krig3SetExtent('mexico');
   return map;
+}
+
+// ─── Encuadre México / mundo / sitio ──────────────────────────────────────────
+function krig3SetExtent(mode) {
+  if (!KRIG.map) return;
+  KRIG.mode = mode;
+  document.getElementById('btn-krig3-mexico')?.classList.toggle('is-active', mode === 'mexico');
+  document.getElementById('btn-krig3-world') ?.classList.toggle('is-active', mode === 'world');
+  if (mode === 'mexico') {
+    KRIG.map.setMaxBounds(KRIG_MEXICO_BOUNDS);
+    KRIG.map.fitBounds(KRIG_MEXICO_BOUNDS, { padding: [18, 18] });
+  } else {
+    KRIG.map.setMaxBounds(null);
+  }
+}
+
+function krig3FocusSite() {
+  krig3InitMap();
+  // Preferimos sitio principal del Kriging; si no, leemos metadata de Data Hub.
+  let target = null;
+  if (KRIG.principal) {
+    const s = KRIG.sites.find(x => x.filename === KRIG.principal);
+    if (s) target = { lat: s.lat, lon: s.lon };
+  }
+  if (!target && typeof mapaCenterFromSession === 'function') {
+    target = mapaCenterFromSession();
+  }
+  if (!target) {
+    toast('Carga un sitio en Data Hub o marca un parque principal.', 'warning');
+    return;
+  }
+  KRIG.map.setView([target.lat, target.lon], 9);
+}
+
+// ─── Selección de área de estudio (rectángulo fijo) ───────────────────────────
+function krig3BeginAreaSelection() {
+  krig3InitMap();
+  KRIG.selectingArea = true;
+  toast('Arrastra sobre el mapa para fijar el área de estudio.', 'info');
+}
+
+function krig3AreaMouseDown(e) {
+  if (!KRIG.selectingArea) return;
+  KRIG.areaStart = e.latlng;
+  KRIG.map.dragging.disable();
+  e.originalEvent.preventDefault();
+}
+function krig3AreaMouseMove(e) {
+  if (!KRIG.selectingArea || !KRIG.areaStart) return;
+  if (KRIG.areaDraft) KRIG.map.removeLayer(KRIG.areaDraft);
+  KRIG.areaDraft = L.rectangle([KRIG.areaStart, e.latlng], {
+    color: '#22c55e', weight: 2, fillOpacity: 0.12, dashArray: '6 4',
+  }).addTo(KRIG.map);
+}
+function krig3AreaMouseUp(e) {
+  if (!KRIG.selectingArea || !KRIG.areaStart) return;
+  const bounds = L.latLngBounds(KRIG.areaStart, e.latlng);
+  KRIG.selectingArea = false;
+  KRIG.areaStart = null;
+  KRIG.map.dragging.enable();
+  if (KRIG.areaDraft) { KRIG.map.removeLayer(KRIG.areaDraft); KRIG.areaDraft = null; }
+  if (KRIG.areaLayer) KRIG.map.removeLayer(KRIG.areaLayer);
+  KRIG.areaBounds = bounds;
+  KRIG.areaLayer = L.rectangle(bounds, {
+    color: '#22c55e', weight: 2, fillOpacity: 0.08,
+  }).addTo(KRIG.map);
+  KRIG.map.fitBounds(bounds, { padding: [24, 24] });
+  toast('Área de estudio fijada.', 'success');
+  krig3RenderOptimalList();
+}
+
+function krig3ClearArea() {
+  if (KRIG.areaLayer && KRIG.map) KRIG.map.removeLayer(KRIG.areaLayer);
+  if (KRIG.areaDraft && KRIG.map) KRIG.map.removeLayer(KRIG.areaDraft);
+  KRIG.areaLayer = null; KRIG.areaDraft = null; KRIG.areaBounds = null;
+  KRIG.selectingArea = false;
+  krig3RenderOptimalList();
+}
+
+// ─── Polígono del parque ──────────────────────────────────────────────────────
+function krig3StartParkDraw() {
+  krig3InitMap();
+  KRIG.drawingPark = true;
+  toast('Haz clic sobre el mapa para agregar vértices; cierra la figura al terminar.', 'info');
+}
+function krig3AddParkPoint(latlng) {
+  KRIG.parkPoints.push([latlng.lat, latlng.lng]);
+  const marker = L.circleMarker(latlng, {
+    radius: 4, color: '#fff', weight: 1, fillColor: '#f59e0b', fillOpacity: 1,
+  }).addTo(KRIG.map);
+  KRIG.parkMarkers.push(marker);
+  krig3RenderParkLayer(false);
+}
+function krig3RenderParkLayer(closed = true) {
+  if (KRIG.parkLayer && KRIG.map) KRIG.map.removeLayer(KRIG.parkLayer);
+  if (KRIG.parkPoints.length < 2) { krig3UpdateParkInfo(); return; }
+  KRIG.parkLayer = closed && KRIG.parkPoints.length >= 3
+    ? L.polygon(KRIG.parkPoints, { color: '#f59e0b', weight: 2, fillOpacity: 0.14 }).addTo(KRIG.map)
+    : L.polyline(KRIG.parkPoints, { color: '#f59e0b', weight: 2, dashArray: '4 4' }).addTo(KRIG.map);
+  krig3UpdateParkInfo();
+}
+function krig3FinishPark() {
+  KRIG.drawingPark = false;
+  if (KRIG.parkPoints.length < 3) {
+    toast('Necesitas al menos 3 puntos para cerrar la figura.', 'warning');
+    return;
+  }
+  krig3RenderParkLayer(true);
+  krig3RenderOptimalList();
+}
+function krig3ClearPark() {
+  KRIG.drawingPark = false;
+  if (KRIG.parkLayer && KRIG.map) KRIG.map.removeLayer(KRIG.parkLayer);
+  KRIG.parkMarkers.forEach(m => KRIG.map && KRIG.map.removeLayer(m));
+  KRIG.parkLayer = null; KRIG.parkMarkers = []; KRIG.parkPoints = [];
+  krig3UpdateParkInfo();
+  krig3RenderOptimalList();
+}
+
+function krig3PolygonAreaKm2(points) {
+  if (points.length < 3) return 0;
+  const lat0 = points.reduce((s, p) => s + p[0], 0) / points.length;
+  const coords = points.map(([lat, lon]) => [
+    lon * 111.32 * Math.cos(lat0 * Math.PI / 180),
+    lat * 110.57,
+  ]);
+  let area = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const [x1, y1] = coords[i];
+    const [x2, y2] = coords[(i + 1) % coords.length];
+    area += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(area) / 2;
+}
+function krig3PointInPolygon(point, polygon) {
+  const [lat, lon] = point;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [lati, loni] = polygon[i];
+    const [latj, lonj] = polygon[j];
+    const cross = ((loni > lon) !== (lonj > lon)) &&
+      (lat < (latj - lati) * (lon - loni) / ((lonj - loni) || 1e-12) + lati);
+    if (cross) inside = !inside;
+  }
+  return inside;
+}
+
+function krig3UpdateParkInfo() {
+  const el = document.getElementById('krig3-park-info');
+  if (!el) return;
+  if (KRIG.parkPoints.length < 3) {
+    el.textContent = KRIG.parkPoints.length
+      ? `${KRIG.parkPoints.length} vértices definidos. Falta cerrar la figura.`
+      : 'Dibuja una figura sobre Leaflet para delimitar la zona del parque.';
+    return;
+  }
+  const area = krig3PolygonAreaKm2(KRIG.parkPoints);
+  el.innerHTML = `<b>Zona de parque:</b> ${area.toFixed(2)} km² · ${KRIG.parkPoints.length} vértices`;
+}
+
+// ─── Ranking de sitios óptimos (mismo criterio que Mapa & Kriging) ────────────
+// Aproximación de Stirling para Γ(z), suficiente para Weibull k>0.4.
+function krig3GammaApprox(z) {
+  if (!(z > 0)) return 1;
+  return Math.sqrt(2 * Math.PI / z) * Math.pow(z / Math.E, z) * (1 + 1 / (12 * z));
+}
+function krig3PowerDensity(rho, C, k) {
+  if (!(C > 0 && k > 0 && rho > 0)) return 0;
+  return 0.5 * rho * Math.pow(C, 3) * krig3GammaApprox(1 + 3 / k);
+}
+
+function krig3ComputeOptimal() {
+  const sources = (KRIG.sites || []).filter(s => KRIG.selected.has(s.filename));
+  const pool = sources.length ? sources : (KRIG.sites || []);
+  if (!pool.length) { KRIG.optimal = []; return KRIG.optimal; }
+  const enriched = pool.map(s => {
+    const speed = Number(s.v_mean ?? 0);
+    const gust  = Number(s.v_max  ?? speed * 1.6);
+    const power = krig3PowerDensity(
+      Number(s.rho_mean ?? 1.225),
+      Number(s.weibull_C ?? speed * 1.128),
+      Number(s.weibull_K ?? 2.0),
+    );
+    return { filename: s.filename, lat: s.lat, lon: s.lon, speed, gust, power };
+  });
+  const scale = (vals) => {
+    const arr = vals.map(Number);
+    const lo = Math.min(...arr), hi = Math.max(...arr);
+    if (!isFinite(lo) || !isFinite(hi) || hi <= lo) return arr.map(_ => 50);
+    return arr.map(v => 100 * (v - lo) / (hi - lo));
+  };
+  const speedS = scale(enriched.map(e => e.speed));
+  const powerS = scale(enriched.map(e => e.power));
+  const gustS  = scale(enriched.map(e => e.gust));
+  enriched.forEach((e, i) => {
+    e.score = 0.45 * speedS[i] + 0.35 * powerS[i] + 0.20 * gustS[i];
+  });
+  enriched.sort((a, b) => b.score - a.score);
+  KRIG.optimal = enriched.slice(0, 12).map((e, i) => ({ rank: i + 1, ...e }));
+  return KRIG.optimal;
+}
+
+function krig3RenderOptimalList() {
+  krig3ComputeOptimal();
+  const el = document.getElementById('krig3-optimal-list');
+  const status = document.getElementById('krig3-optimal-status');
+  if (!el) return;
+  let sites = KRIG.optimal.slice();
+  if (KRIG.parkPoints.length >= 3) {
+    sites = sites.filter(s => krig3PointInPolygon([s.lat, s.lon], KRIG.parkPoints));
+  }
+  if (KRIG.areaBounds) {
+    sites = sites.filter(s => KRIG.areaBounds.contains(L.latLng(s.lat, s.lon)));
+  }
+  if (status) {
+    if (!KRIG.optimal.length) status.textContent = '—';
+    else status.textContent = `${sites.length}/${KRIG.optimal.length} candidatos`;
+  }
+  if (!sites.length) {
+    el.textContent = KRIG.optimal.length
+      ? 'Sin candidatos dentro del área/zona actual.'
+      : 'Genera o carga sitios para calcular candidatos.';
+    return;
+  }
+  el.innerHTML = sites.slice(0, 8).map(s => (
+    `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">` +
+      `<b>#${s.rank}</b> ${s.filename}<br>` +
+      `Puntuación ${s.score.toFixed(1)} · Vel ${s.speed.toFixed(2)} m/s · ` +
+      `Ráfaga ${s.gust.toFixed(2)} m/s · Pd ${s.power.toFixed(0)} W/m²` +
+    `</div>`
+  )).join('');
+}
+
+// ─── Dispatcher único de eventos del mapa Kriging ─────────────────────────────
+function krig3HandleMapClick(e) {
+  if (KRIG.drawingPark) krig3AddParkPoint(e.latlng);
 }
 
 // ── Distancia haversine (km) ──────────────────────────────────────────────────
@@ -3497,6 +3741,7 @@ function krig3UpdateMarker(filename) {
 function krig3UpdateAllMarkers() {
   Object.keys(KRIG.siteMarkers).forEach(krig3UpdateMarker);
   krig3UpdateSelectionInfo();
+  krig3RenderOptimalList();
 }
 
 function krig3UpdateSelectionInfo() {
@@ -3605,6 +3850,7 @@ async function krig3LoadSites(force=false) {
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 10 });
     }
     krig3UpdateSelectionInfo();
+    krig3RenderOptimalList();
   } catch (e) {
     toast(`No se pudieron cargar sitios: ${e.message}`, 'error');
   }
@@ -3881,6 +4127,7 @@ document.addEventListener('DOMContentLoaded', () => {
   (function initRectSelect() {
     let rectLayer = null, startLL = null, active = false;
     function onMouseDown(e) {
+      if (KRIG.selectingArea) return;  // ceder al modo "Seleccionar área"
       if (!e.originalEvent.ctrlKey && !e.originalEvent.metaKey) return;
       active = true; startLL = e.latlng;
       KRIG.map && KRIG.map.dragging.disable();
@@ -3920,11 +4167,26 @@ document.addEventListener('DOMContentLoaded', () => {
         map.on('mousedown', onMouseDown);
         map.on('mousemove', onMouseMove);
         map.on('mouseup', onMouseUp);
+        // Handlers integrados (Mapa & Kriging) — área fija + clic para parque
+        map.on('mousedown', krig3AreaMouseDown);
+        map.on('mousemove', krig3AreaMouseMove);
+        map.on('mouseup',   krig3AreaMouseUp);
+        map.on('click',     krig3HandleMapClick);
         map._rectSelectBound = true;
       }
       return map;
     };
   })();
+
+  // ── Botones encuadre / área / parque ──
+  document.getElementById('btn-krig3-mexico') ?.addEventListener('click', () => krig3SetExtent('mexico'));
+  document.getElementById('btn-krig3-world')  ?.addEventListener('click', () => krig3SetExtent('world'));
+  document.getElementById('btn-krig3-site')   ?.addEventListener('click', krig3FocusSite);
+  document.getElementById('btn-krig3-select-area')?.addEventListener('click', krig3BeginAreaSelection);
+  document.getElementById('btn-krig3-clear-area') ?.addEventListener('click', krig3ClearArea);
+  document.getElementById('btn-krig3-draw-park')  ?.addEventListener('click', krig3StartParkDraw);
+  document.getElementById('btn-krig3-finish-park')?.addEventListener('click', krig3FinishPark);
+  document.getElementById('btn-krig3-clear-park') ?.addEventListener('click', krig3ClearPark);
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo

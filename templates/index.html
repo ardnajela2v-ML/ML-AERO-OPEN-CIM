@@ -1922,7 +1922,47 @@
         <button class="btn-secondary krig3-tab"           data-layer="inversion" type="button">② Inversión (USD)</button>
         <button class="btn-secondary krig3-tab"           data-layer="van"       type="button">③ VAN (USD)</button>
       </div>
+
+      <!-- Encuadre / sitio -->
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem">
+        <button class="btn-secondary is-active" id="btn-krig3-mexico" type="button">México</button>
+        <button class="btn-secondary"           id="btn-krig3-world"  type="button">Ver resto</button>
+        <button class="btn-secondary"           id="btn-krig3-site"   type="button">Sitio</button>
+      </div>
+
+      <!-- Área de estudio -->
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem">
+        <button class="btn-secondary" id="btn-krig3-select-area" type="button">Seleccionar área</button>
+        <button class="btn-secondary" id="btn-krig3-clear-area"  type="button">Liberar área</button>
+      </div>
+
+      <!-- Polígono del parque -->
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.6rem">
+        <button class="btn-secondary" id="btn-krig3-draw-park"   type="button">Dibujar parque</button>
+        <button class="btn-secondary" id="btn-krig3-finish-park" type="button">Cerrar figura</button>
+        <button class="btn-secondary" id="btn-krig3-clear-park"  type="button">Limpiar figura</button>
+      </div>
+
       <div id="krig3-map" style="width:100%;height:560px;border-radius:8px;overflow:hidden"></div>
+    </div>
+  </div>
+
+  <!-- Sitios óptimos detectados sobre el mapa Kriging -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Sitios óptimos — emplazamiento</span>
+      <span class="badge badge--info" id="krig3-optimal-status">—</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.78rem;margin:0 0 .5rem 0">
+        Ranking calculado a partir de los sitios incluidos (Velocidad media, ráfaga/extremo y densidad de potencia Weibull). Si dibujas la zona del parque, el ranking se filtra a los puntos dentro del polígono.
+      </p>
+      <div id="krig3-optimal-list" style="font-size:.74rem;line-height:1.65">
+        Genera o carga sitios para calcular candidatos.
+      </div>
+      <div id="krig3-park-info" class="text-muted mt-2" style="font-size:.74rem;line-height:1.65;border-top:1px solid var(--border);padding-top:.4rem">
+        Dibuja una figura sobre Leaflet para delimitar la zona del parque.
+      </div>
     </div>
   </div>
 
