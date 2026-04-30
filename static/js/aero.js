@@ -3439,6 +3439,10 @@ const KRIG = {
   drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
   optimal: [],
   searchMarker: null,
+  // Overlays físicos opcionales (Fase 1: visualización)
+  hillshadeLayer: null,
+  landcoverLayer: null,
+  overlayOpacity: 0.6,
 };
 
 const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
@@ -3856,6 +3860,69 @@ function krig3SearchClear() {
   if (inp) inp.value = '';
   const box = document.getElementById('krig3-search-suggest');
   if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+}
+
+// ─── Overlays físicos: hillshade (ESRI) y cobertura del suelo (ESA WorldCover) ─
+// URLs de tiles públicos sin API key.
+const KRIG_HILLSHADE_URL =
+  'https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}';
+// El TileMatrix en este WMTS sigue el patrón "EPSG:3857:N" (no solo "N").
+const KRIG_LANDCOVER_URL =
+  'https://services.terrascope.be/wmts/v2?layer=WORLDCOVER_2021_MAP'
+  + '&style=default&tilematrixset=EPSG%3A3857'
+  + '&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fpng'
+  + '&TileMatrix=EPSG%3A3857%3A{z}&TileCol={x}&TileRow={y}';
+
+function krig3ToggleHillshade(on) {
+  krig3InitMap();
+  if (on) {
+    if (KRIG.hillshadeLayer) return;
+    KRIG.hillshadeLayer = L.tileLayer(KRIG_HILLSHADE_URL, {
+      maxZoom: 18, opacity: KRIG.overlayOpacity,
+      attribution: '© ESRI World Hillshade',
+      crossOrigin: 'anonymous',
+    }).addTo(KRIG.map);
+    if (KRIG.hillshadeLayer.bringToFront) KRIG.hillshadeLayer.bringToFront();
+  } else if (KRIG.hillshadeLayer) {
+    KRIG.map.removeLayer(KRIG.hillshadeLayer);
+    KRIG.hillshadeLayer = null;
+  }
+  krig3SyncOverlayUI();
+}
+
+function krig3ToggleLandcover(on) {
+  krig3InitMap();
+  if (on) {
+    if (KRIG.landcoverLayer) return;
+    KRIG.landcoverLayer = L.tileLayer(KRIG_LANDCOVER_URL, {
+      maxZoom: 13, minZoom: 1, opacity: KRIG.overlayOpacity,
+      attribution: '© ESA WorldCover 2021 · Terrascope',
+      crossOrigin: 'anonymous',
+    }).addTo(KRIG.map);
+    if (KRIG.landcoverLayer.bringToFront) KRIG.landcoverLayer.bringToFront();
+  } else if (KRIG.landcoverLayer) {
+    KRIG.map.removeLayer(KRIG.landcoverLayer);
+    KRIG.landcoverLayer = null;
+  }
+  krig3SyncOverlayUI();
+}
+
+function krig3SetOverlayOpacity(v) {
+  KRIG.overlayOpacity = Math.max(0.05, Math.min(1, +v));
+  if (KRIG.hillshadeLayer) KRIG.hillshadeLayer.setOpacity(KRIG.overlayOpacity);
+  if (KRIG.landcoverLayer) KRIG.landcoverLayer.setOpacity(KRIG.overlayOpacity);
+}
+
+function krig3SyncOverlayUI() {
+  // La leyenda de WorldCover sólo se muestra si está activo el overlay correspondiente.
+  const legendBox = document.getElementById('krig3-landcover-legend');
+  if (legendBox) legendBox.style.display = KRIG.landcoverLayer ? 'block' : 'none';
+  // Mantener overlays Kriging por encima de los terrenos
+  if (Array.isArray(KRIG.overlays)) {
+    KRIG.overlays.forEach(layer => {
+      if (layer && typeof layer.bringToFront === 'function') layer.bringToFront();
+    });
+  }
 }
 
 // ─── Descargar el mapa como imagen PNG (html2canvas) ──────────────────────────
@@ -4403,6 +4470,14 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-krig3-search')?.addEventListener('click', krig3SearchSubmit);
   document.getElementById('btn-krig3-search-clear')?.addEventListener('click', krig3SearchClear);
   document.getElementById('btn-krig3-download')?.addEventListener('click', krig3DownloadMap);
+
+  // ── Overlays físicos (hillshade + cobertura) ──
+  document.getElementById('krig3-ovl-hillshade')?.addEventListener('change',
+    (e) => krig3ToggleHillshade(e.target.checked));
+  document.getElementById('krig3-ovl-landcover')?.addEventListener('change',
+    (e) => krig3ToggleLandcover(e.target.checked));
+  document.getElementById('krig3-ovl-opacity')?.addEventListener('input',
+    (e) => krig3SetOverlayOpacity((+e.target.value) / 100));
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo

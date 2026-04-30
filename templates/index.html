@@ -1940,6 +1940,33 @@
         </select>
       </div>
 
+      <!-- Capas físicas (terreno + cobertura) -->
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;margin-bottom:.4rem;font-size:.78rem">
+        <label style="display:inline-flex;gap:.3rem;align-items:center;cursor:pointer">
+          <input type="checkbox" id="krig3-ovl-hillshade"> Sombreado topográfico
+        </label>
+        <label style="display:inline-flex;gap:.3rem;align-items:center;cursor:pointer">
+          <input type="checkbox" id="krig3-ovl-landcover"> Cobertura / rugosidad
+        </label>
+        <span class="text-muted" style="font-size:.72rem">Opacidad</span>
+        <input type="range" min="10" max="100" value="60" id="krig3-ovl-opacity" style="flex:1;max-width:140px">
+        <span class="badge badge--info" id="krig3-ovl-legend" style="display:none">Leyenda</span>
+      </div>
+      <div id="krig3-landcover-legend"
+           style="display:none;font-size:.7rem;line-height:1.45;background:var(--bg-elev);
+                  border:1px solid var(--border);border-radius:6px;padding:.4rem .55rem;margin-bottom:.4rem">
+        <b>ESA WorldCover 2021 — clase / z₀</b><br>
+        <span style="display:inline-block;width:10px;height:10px;background:#006400;border-radius:2px;margin-right:.25rem"></span>Bosque · 0.80 m
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#FFBB22;border-radius:2px;margin-right:.25rem"></span>Matorral · 0.10
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#FFFF4C;border-radius:2px;margin-right:.25rem"></span>Pastizal · 0.03
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#F096FF;border-radius:2px;margin-right:.25rem"></span>Cultivo · 0.10
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#FA0000;border-radius:2px;margin-right:.25rem"></span>Urbano · 1.00
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#B4B4B4;border-radius:2px;margin-right:.25rem"></span>Suelo desnudo · 0.005
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#0064C8;border-radius:2px;margin-right:.25rem"></span>Agua · 0.0002
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#0096A0;border-radius:2px;margin-right:.25rem"></span>Humedal · 0.05
+        &nbsp; <span style="display:inline-block;width:10px;height:10px;background:#00CF75;border-radius:2px;margin-right:.25rem"></span>Manglar · 0.50
+      </div>
+
       <!-- Buscador de lugar/dirección (geocoding Nominatim/OSM) -->
       <div style="position:relative;margin-bottom:.4rem">
         <div style="display:flex;gap:.4rem;align-items:center">
