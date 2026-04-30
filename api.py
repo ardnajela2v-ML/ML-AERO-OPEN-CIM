@@ -1942,6 +1942,7 @@ def create_app():
         price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
         max_files = body.get('max_files')
         filter_files = body.get('filenames')
+        turbine_files = body.get('turbine_filenames') or body.get('turbines') or None
         area_bounds = body.get('area_bounds') or body.get('grid_bounds') or None
         if area_bounds:
             lat_a = float(area_bounds['lat_min'])
@@ -1968,6 +1969,7 @@ def create_app():
                     price_mxn_per_usd=price_mxn_per_usd,
                     max_files=max_files, filter_filenames=filter_files,
                     bounds=area_bounds,
+                    turbine_filenames=turbine_files,
                 )
                 tasks[task_id]['result'] = numpy_to_python(results)
                 tasks[task_id]['status'] = 'done'
@@ -2058,6 +2060,7 @@ def create_app():
         model = body.get('model', 'exponential')
         max_points = int(body.get('max_points') or (48 if scope == 'park' else 60))
         filter_files = body.get('filenames')
+        turbine_files = body.get('turbine_filenames') or body.get('turbines') or None
 
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
@@ -2081,6 +2084,7 @@ def create_app():
                     model=model,
                     max_points=max_points,
                     filter_filenames=filter_files,
+                    turbine_filenames=turbine_files,
                 )
                 ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
                 ranking['mode'] = mode

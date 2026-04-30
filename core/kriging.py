@@ -572,7 +572,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
                   demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
                   price_mxn_per_usd=20.0, anios=ANIOS, max_files=None,
                   filter_filenames: Optional[List[str]] = None,
-                  bounds: Optional[dict] = None):
+                  bounds: Optional[dict] = None,
+                  turbine_filenames: Optional[List[str]] = None):
     """
     Full analysis: read all wind files + turbine csvs, compute metrics,
     return sites list + turbine results matrix suitable for JSON.
@@ -602,6 +603,11 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
         f for f in os.listdir(turbines_folder)
         if f.lower().endswith('.csv') and not f.startswith('.')
     )
+    if turbine_filenames:
+        keep_turbines = set(turbine_filenames)
+        turb_files = [f for f in turb_files if f in keep_turbines]
+    if not turb_files:
+        raise ValueError('Selecciona al menos una turbina válida para el análisis.')
 
     sites_out = []
     for wf in wind_files:
@@ -783,7 +789,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                                  n_grid: int = 80,
                                  model: str = 'exponential',
                                  max_points: int = 72,
-                                 filter_filenames: Optional[List[str]] = None):
+                                 filter_filenames: Optional[List[str]] = None,
+                                 turbine_filenames: Optional[List[str]] = None):
     """
     Build virtual analysis sites from the kriged geospatial field.
 
@@ -928,8 +935,11 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         f for f in os.listdir(turbines_folder)
         if f.lower().endswith('.csv') and not f.startswith('.')
     )
+    if turbine_filenames:
+        keep_turbines = set(turbine_filenames)
+        turb_files = [f for f in turb_files if f in keep_turbines]
     if not turb_files:
-        raise ValueError(f'No turbine CSVs in {turbines_folder}')
+        raise ValueError('Selecciona al menos una turbina válida para el análisis TOPSIS.')
 
     turbines = []
     for tf in turb_files:

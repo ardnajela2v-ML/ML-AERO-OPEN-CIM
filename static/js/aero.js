@@ -4951,6 +4951,7 @@ const MCDA = {
   miniMap:      null,
   miniBase:     null,
   miniLayers:   [],
+  turbines:     [],
 };
 
 async function mcdaLoadDefaults() {
@@ -4987,6 +4988,51 @@ function mcdaGetWeights() {
     out[el.dataset.crit] = parseFloat(el.value);
   });
   return out;
+}
+
+function mcdaUpdateTurbineCount() {
+  const total = document.querySelectorAll('.mcda-turbine-check').length;
+  const selected = document.querySelectorAll('.mcda-turbine-check:checked').length;
+  const el = document.getElementById('mcda-turbine-count');
+  if (el) el.textContent = total ? `${selected}/${total} seleccionadas` : 'Sin catálogo';
+}
+
+function mcdaSelectedTurbines() {
+  return Array.from(document.querySelectorAll('.mcda-turbine-check:checked'))
+    .map(el => el.value);
+}
+
+async function mcdaLoadTurbines() {
+  const list = document.getElementById('mcda-turbine-list');
+  if (!list) return;
+  try {
+    const r = await api('/api/energy/turbines', 'GET');
+    MCDA.turbines = (r.turbines || []).filter(t => t.source === 'file');
+    if (!MCDA.turbines.length) {
+      list.innerHTML = '<span class="text-muted">No hay turbinas CSV disponibles.</span>';
+      mcdaUpdateTurbineCount();
+      return;
+    }
+    list.innerHTML = MCDA.turbines.map(t => {
+      const mw = t.rated_power_kw ? `${(t.rated_power_kw / 1000).toFixed(1)} MW` : 'Potencia —';
+      const rotor = t.rotor_diameter_m ? `Ø ${t.rotor_diameter_m} m` : 'Rotor —';
+      return `
+        <label style="display:flex;align-items:flex-start;gap:.45rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
+          <input type="checkbox" class="mcda-turbine-check" value="${t.filename}" checked style="margin-top:.15rem">
+          <span>
+            <strong>${t.name || t.filename}</strong><br>
+            <span class="text-muted">${mw} · ${rotor} · ${t.filename}</span>
+          </span>
+        </label>`;
+    }).join('');
+    document.querySelectorAll('.mcda-turbine-check').forEach(el => {
+      el.addEventListener('change', mcdaUpdateTurbineCount);
+    });
+    mcdaUpdateTurbineCount();
+  } catch (e) {
+    list.innerHTML = `<span class="text-muted">No se pudo cargar el catálogo: ${e.message}</span>`;
+    mcdaUpdateTurbineCount();
+  }
 }
 
 function mcdaCurrentAreaBounds() {
@@ -5224,6 +5270,11 @@ async function mcdaRunAnalysis() {
     toast('Selecciona al menos 3 estaciones de entrada para construir el Kriging.', 'warning');
     return;
   }
+  const turbineFilenames = mcdaSelectedTurbines();
+  if (!turbineFilenames.length) {
+    toast('Selecciona al menos una turbina de interés para TOPSIS.', 'warning');
+    return;
+  }
   const body = {
     scope:         areaMode ? 'park' : 'exploratory',
     year:          parseInt(document.getElementById('mcda-year').value),
@@ -5237,6 +5288,7 @@ async function mcdaRunAnalysis() {
     weights:       mcdaGetWeights(),
     mode:          areaMode ? 'area_turbines' : document.getElementById('mcda-mode').value,
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
+    turbine_filenames: turbineFilenames,
   };
   if (areaMode) body.polygon = parkPolygon;
   else body.area_bounds = areaBounds;
@@ -5355,9 +5407,18 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', mcdaRunAnalysis);
   if (bRe)  bRe.addEventListener('click', mcdaRankNow);
   if (bRst) bRst.addEventListener('click', mcdaResetWeights);
+  document.getElementById('btn-mcda-turbines-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = true; });
+    mcdaUpdateTurbineCount();
+  });
+  document.getElementById('btn-mcda-turbines-none')?.addEventListener('click', () => {
+    document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = false; });
+    mcdaUpdateTurbineCount();
+  });
   document.querySelectorAll('.mcda-subtab').forEach(btn => {
     btn.addEventListener('click', () => mcdaSetScope(btn.dataset.scope));
   });
+  mcdaLoadTurbines();
   mcdaUpdateScopeUi();
 });
 
