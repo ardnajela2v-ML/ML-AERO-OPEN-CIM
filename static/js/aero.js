@@ -3488,6 +3488,7 @@ function krig3SetBase(key) {
     || 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
   KRIG.baseLayer = L.tileLayer(url, {
     maxZoom: 18, subdomains: 'abcd',
+    crossOrigin: 'anonymous',  // habilita exportación a PNG (html2canvas)
     attribution: '© OpenStreetMap · © CARTO · ESRI',
   }).addTo(KRIG.map);
   // La capa base debe quedar al fondo para no tapar overlays/markers.
@@ -3855,6 +3856,45 @@ function krig3SearchClear() {
   if (inp) inp.value = '';
   const box = document.getElementById('krig3-search-suggest');
   if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+}
+
+// ─── Descargar el mapa como imagen PNG (html2canvas) ──────────────────────────
+async function krig3DownloadMap() {
+  if (typeof html2canvas === 'undefined') {
+    toast('No se cargó html2canvas. Verifica tu conexión.', 'error');
+    return;
+  }
+  const node = document.getElementById('krig3-map');
+  if (!node) return;
+  const btn = document.getElementById('btn-krig3-download');
+  const prevTxt = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
+  // Forzar repintado completo de tiles antes de capturar.
+  if (KRIG.map) KRIG.map.invalidateSize();
+  await new Promise(r => setTimeout(r, 250));
+  try {
+    const canvas = await html2canvas(node, {
+      useCORS: true,
+      allowTaint: false,
+      backgroundColor: null,
+      logging: false,
+      scale: window.devicePixelRatio || 1,
+    });
+    // Disparar descarga.
+    const layer = (KRIG.layerKey || 'mapa').toLowerCase();
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
+    const fname = `kriging_${layer}_${ts}.png`;
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    toast(`Imagen descargada: ${fname}`, 'success');
+  } catch (e) {
+    console.error('krig3DownloadMap', e);
+    toast(`No se pudo exportar la imagen: ${e.message}. Prueba con otra capa base.`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = prevTxt || '⬇ Descargar imagen'; }
+  }
 }
 
 // ── Distancia haversine (km) ──────────────────────────────────────────────────
@@ -4362,6 +4402,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('btn-krig3-search')?.addEventListener('click', krig3SearchSubmit);
   document.getElementById('btn-krig3-search-clear')?.addEventListener('click', krig3SearchClear);
+  document.getElementById('btn-krig3-download')?.addEventListener('click', krig3DownloadMap);
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo

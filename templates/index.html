@@ -14,6 +14,7 @@
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
 
@@ -1917,10 +1918,11 @@
       <span class="badge badge--info" id="krig3-legend">—</span>
     </div>
     <div class="card-body">
-      <div class="krig3-tabs" role="tablist" style="display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap">
+      <div class="krig3-tabs" role="tablist" style="display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap;align-items:center">
         <button class="btn-secondary krig3-tab is-active" data-layer="wind"      type="button">① Velocidad (m/s)</button>
         <button class="btn-secondary krig3-tab"           data-layer="inversion" type="button">② Inversión (USD)</button>
         <button class="btn-secondary krig3-tab"           data-layer="van"       type="button">③ VAN (USD)</button>
+        <button class="btn-primary" id="btn-krig3-download" type="button" style="margin-left:auto" title="Guarda el mapa actual como PNG">⬇ Descargar imagen</button>
       </div>
 
       <!-- Encuadre / sitio / capa base -->
