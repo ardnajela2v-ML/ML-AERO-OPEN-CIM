@@ -3434,6 +3434,7 @@ const KRIG = {
   curveIdx: 0,           // active turbine in the curve viewer
   // ── México / encuadre / herramientas integradas desde Mapa & Kriging ──
   mode: 'mexico',
+  baseLayer: null,
   areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
   drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
   optimal: [],
@@ -3467,17 +3468,29 @@ function krigColor(t) {
 
 function krig3InitMap() {
   if (KRIG.map) return KRIG.map;
-  const isLight = document.body.classList.contains('light');
-  const url = isLight
-    ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
   // México centrado: lat ~23.5, lon ~-102, zoom 5 muestra todo el país
   const map = L.map('krig3-map', { center: [23.5, -102], zoom: 5, scrollWheelZoom: true });
-  L.tileLayer(url, { maxZoom: 18, subdomains: 'abcd',
-    attribution: '© OpenStreetMap · © CARTO' }).addTo(map);
   KRIG.map = map;
+  const isLight = document.body.classList.contains('light');
+  const initialBase = (document.getElementById('krig3-baselayer')?.value)
+    || (isLight ? 'voyager' : 'dark');
+  krig3SetBase(initialBase);
   krig3SetExtent('mexico');
   return map;
+}
+
+// ── Cambia la capa base (incluye satélite ESRI) ─────────────────────────────
+function krig3SetBase(key) {
+  if (!KRIG.map) return;
+  if (KRIG.baseLayer) KRIG.map.removeLayer(KRIG.baseLayer);
+  const url = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES[key])
+    || 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+  KRIG.baseLayer = L.tileLayer(url, {
+    maxZoom: 18, subdomains: 'abcd',
+    attribution: '© OpenStreetMap · © CARTO · ESRI',
+  }).addTo(KRIG.map);
+  // La capa base debe quedar al fondo para no tapar overlays/markers.
+  if (KRIG.baseLayer.bringToBack) KRIG.baseLayer.bringToBack();
 }
 
 // ─── Encuadre México / mundo / sitio ──────────────────────────────────────────
@@ -4187,6 +4200,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-krig3-draw-park')  ?.addEventListener('click', krig3StartParkDraw);
   document.getElementById('btn-krig3-finish-park')?.addEventListener('click', krig3FinishPark);
   document.getElementById('btn-krig3-clear-park') ?.addEventListener('click', krig3ClearPark);
+  document.getElementById('krig3-baselayer')?.addEventListener('change', (e) => {
+    krig3InitMap();
+    krig3SetBase(e.target.value);
+  });
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo

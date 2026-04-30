@@ -1923,11 +1923,19 @@
         <button class="btn-secondary krig3-tab"           data-layer="van"       type="button">③ VAN (USD)</button>
       </div>
 
-      <!-- Encuadre / sitio -->
-      <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem">
+      <!-- Encuadre / sitio / capa base -->
+      <div style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-bottom:.4rem">
         <button class="btn-secondary is-active" id="btn-krig3-mexico" type="button">México</button>
         <button class="btn-secondary"           id="btn-krig3-world"  type="button">Ver resto</button>
         <button class="btn-secondary"           id="btn-krig3-site"   type="button">Sitio</button>
+        <label class="text-muted" style="font-size:.74rem;margin-left:.6rem">Capa</label>
+        <select class="form-select" id="krig3-baselayer" style="max-width:170px;height:30px;padding:.15rem .4rem">
+          <option value="dark" selected>Carto Dark</option>
+          <option value="voyager">Carto Voyager</option>
+          <option value="osm">OpenStreetMap</option>
+          <option value="topo">OpenTopoMap</option>
+          <option value="sat">Satélite ESRI</option>
+        </select>
       </div>
 
       <!-- Área de estudio -->
