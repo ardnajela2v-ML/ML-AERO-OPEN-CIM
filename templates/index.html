@@ -1938,6 +1938,21 @@
         </select>
       </div>
 
+      <!-- Buscador de lugar/dirección (geocoding Nominatim/OSM) -->
+      <div style="position:relative;margin-bottom:.4rem">
+        <div style="display:flex;gap:.4rem;align-items:center">
+          <input class="form-input" id="krig3-search-input" type="text" autocomplete="off"
+                 placeholder="Buscar lugar, dirección o coordenadas…"
+                 style="flex:1;min-width:240px;height:32px">
+          <button class="btn-secondary" id="btn-krig3-search" type="button">Ir</button>
+          <button class="btn-secondary" id="btn-krig3-search-clear" type="button" title="Borrar marcador">✕</button>
+        </div>
+        <div id="krig3-search-suggest"
+             style="position:absolute;top:36px;left:0;right:0;z-index:1000;background:var(--bg-elev);
+                    border:1px solid var(--border);border-radius:6px;max-height:240px;overflow:auto;
+                    display:none;font-size:.78rem"></div>
+      </div>
+
       <!-- Área de estudio -->
       <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-bottom:.4rem">
         <button class="btn-secondary" id="btn-krig3-select-area" type="button">Seleccionar área</button>

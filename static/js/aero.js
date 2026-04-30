@@ -3438,6 +3438,7 @@ const KRIG = {
   areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
   drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
   optimal: [],
+  searchMarker: null,
 };
 
 const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
@@ -3727,6 +3728,133 @@ function krig3RenderOptimalList() {
 // ─── Dispatcher único de eventos del mapa Kriging ─────────────────────────────
 function krig3HandleMapClick(e) {
   if (KRIG.drawingPark) krig3AddParkPoint(e.latlng);
+}
+
+// ─── Buscador estilo Google Maps (Nominatim/OSM) ──────────────────────────────
+let _krig3SearchTimer = null;
+let _krig3SearchSeq = 0;
+
+// Permite que el usuario teclee "16.5, -95.0" y caiga directo al punto.
+function krig3ParseLatLon(q) {
+  const m = q.trim().match(/^(-?\d+(?:[.,]\d+)?)[\s,;]+(-?\d+(?:[.,]\d+)?)$/);
+  if (!m) return null;
+  const lat = parseFloat(m[1].replace(',', '.'));
+  const lon = parseFloat(m[2].replace(',', '.'));
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon, label: `Coordenadas ${lat.toFixed(4)}, ${lon.toFixed(4)}` };
+}
+
+async function krig3SearchSuggest(query) {
+  const box = document.getElementById('krig3-search-suggest');
+  if (!box) return;
+  const q = (query || '').trim();
+  if (q.length < 3) { box.style.display = 'none'; box.innerHTML = ''; return; }
+
+  // Atajo: si parece "lat,lon" lo mostramos como única sugerencia.
+  const ll = krig3ParseLatLon(q);
+  if (ll) {
+    box.innerHTML =
+      `<div class="krig3-sg" data-lat="${ll.lat}" data-lon="${ll.lon}" data-label="${ll.label}"
+            style="padding:.5rem .6rem;cursor:pointer;border-bottom:1px solid var(--border)">
+         <b>📍 ${ll.label}</b>
+       </div>`;
+    box.style.display = 'block';
+    krig3BindSuggestions();
+    return;
+  }
+
+  const seq = ++_krig3SearchSeq;
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&addressdetails=1&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url, { headers: { 'Accept-Language': 'es,en' } });
+    if (seq !== _krig3SearchSeq) return;  // resultado obsoleto
+    const data = await r.json();
+    if (!Array.isArray(data) || !data.length) {
+      box.innerHTML = `<div style="padding:.5rem .6rem;color:var(--text-muted)">Sin resultados.</div>`;
+      box.style.display = 'block';
+      return;
+    }
+    box.innerHTML = data.map(d => {
+      const label = d.display_name.replace(/"/g, '&quot;');
+      return `<div class="krig3-sg" data-lat="${d.lat}" data-lon="${d.lon}" data-label="${label}"
+                  style="padding:.5rem .6rem;cursor:pointer;border-bottom:1px solid var(--border)">
+                <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${d.display_name}</div>
+              </div>`;
+    }).join('');
+    box.style.display = 'block';
+    krig3BindSuggestions();
+  } catch (e) {
+    box.innerHTML = `<div style="padding:.5rem .6rem;color:var(--orange)">Error de búsqueda.</div>`;
+    box.style.display = 'block';
+  }
+}
+
+function krig3BindSuggestions() {
+  document.querySelectorAll('#krig3-search-suggest .krig3-sg').forEach(el => {
+    el.addEventListener('click', () => {
+      const lat = parseFloat(el.getAttribute('data-lat'));
+      const lon = parseFloat(el.getAttribute('data-lon'));
+      const label = el.getAttribute('data-label') || '';
+      krig3FlyToSearchResult(lat, lon, label);
+    });
+    el.addEventListener('mouseenter', () => el.style.background = 'var(--bg-hover)');
+    el.addEventListener('mouseleave', () => el.style.background = '');
+  });
+}
+
+function krig3FlyToSearchResult(lat, lon, label) {
+  if (!isFinite(lat) || !isFinite(lon)) return;
+  krig3InitMap();
+  // Si está fijado el modo México y caemos fuera, abrimos a "ver resto".
+  if (KRIG.mode === 'mexico') {
+    const inside = lat >= KRIG_MEXICO_BOUNDS[0][0] && lat <= KRIG_MEXICO_BOUNDS[1][0] &&
+                   lon >= KRIG_MEXICO_BOUNDS[0][1] && lon <= KRIG_MEXICO_BOUNDS[1][1];
+    if (!inside) krig3SetExtent('world');
+  }
+  // Limpiar marcador anterior
+  if (KRIG.searchMarker) { KRIG.map.removeLayer(KRIG.searchMarker); KRIG.searchMarker = null; }
+  KRIG.searchMarker = L.marker([lat, lon], { title: label })
+    .addTo(KRIG.map)
+    .bindPopup(`<b>${label}</b><br>${lat.toFixed(4)}, ${lon.toFixed(4)}`)
+    .openPopup();
+  KRIG.map.setView([lat, lon], 12, { animate: true });
+  // Cerrar el panel de sugerencias
+  const box = document.getElementById('krig3-search-suggest');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+  const inp = document.getElementById('krig3-search-input');
+  if (inp) inp.value = label;
+}
+
+async function krig3SearchSubmit() {
+  const inp = document.getElementById('krig3-search-input');
+  if (!inp) return;
+  const q = inp.value.trim();
+  if (!q) return;
+  const ll = krig3ParseLatLon(q);
+  if (ll) { krig3FlyToSearchResult(ll.lat, ll.lon, ll.label); return; }
+  // Cae directo al primer resultado de Nominatim.
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
+    const r = await fetch(url, { headers: { 'Accept-Language': 'es,en' } });
+    const data = await r.json();
+    if (!Array.isArray(data) || !data.length) {
+      toast('No se encontró ese lugar.', 'warning');
+      return;
+    }
+    const d = data[0];
+    krig3FlyToSearchResult(parseFloat(d.lat), parseFloat(d.lon), d.display_name);
+  } catch (e) {
+    toast('Error de búsqueda: ' + e.message, 'error');
+  }
+}
+
+function krig3SearchClear() {
+  if (KRIG.searchMarker && KRIG.map) { KRIG.map.removeLayer(KRIG.searchMarker); KRIG.searchMarker = null; }
+  const inp = document.getElementById('krig3-search-input');
+  if (inp) inp.value = '';
+  const box = document.getElementById('krig3-search-suggest');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
 }
 
 // ── Distancia haversine (km) ──────────────────────────────────────────────────
@@ -4204,6 +4332,36 @@ document.addEventListener('DOMContentLoaded', () => {
     krig3InitMap();
     krig3SetBase(e.target.value);
   });
+
+  // ── Buscador estilo Google Maps (Nominatim) ──
+  const searchInp = document.getElementById('krig3-search-input');
+  if (searchInp) {
+    searchInp.addEventListener('input', (e) => {
+      clearTimeout(_krig3SearchTimer);
+      const v = e.target.value;
+      _krig3SearchTimer = setTimeout(() => krig3SearchSuggest(v), 320);
+    });
+    searchInp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); krig3SearchSubmit(); }
+      else if (e.key === 'Escape') {
+        const box = document.getElementById('krig3-search-suggest');
+        if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+      }
+    });
+    searchInp.addEventListener('blur', () => {
+      // Pequeño delay para permitir click en sugerencia antes de ocultar.
+      setTimeout(() => {
+        const box = document.getElementById('krig3-search-suggest');
+        if (box) box.style.display = 'none';
+      }, 200);
+    });
+    searchInp.addEventListener('focus', () => {
+      const box = document.getElementById('krig3-search-suggest');
+      if (box && box.innerHTML.trim()) box.style.display = 'block';
+    });
+  }
+  document.getElementById('btn-krig3-search')?.addEventListener('click', krig3SearchSubmit);
+  document.getElementById('btn-krig3-search-clear')?.addEventListener('click', krig3SearchClear);
 
   // Al entrar a la pestaña: inicializar mapa + cargar sitios + restaurar selección.
   // OJO: bindNavigation() se registra después de un await initSession(), por lo
