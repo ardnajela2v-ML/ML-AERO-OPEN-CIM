@@ -11,6 +11,7 @@ Technical (maximize, unless noted):
   horas_cerca_nominal   — hours where v ∈ [0.9·vNom, 1.1·vNom]
   factor_capacidad      — CF = AEP / (Pnom·8760) [–]
   aep_mwh               — annual energy production [MWh]
+  directional_concentration — dominant-sector energy concentration [–]
 
 Economic (maximize unless indicated):
   van_usd               — Net Present Value (Valor Actual Neto) [USD]
@@ -26,15 +27,17 @@ import numpy as np
 
 
 DEFAULT_WEIGHTS = {
-    # technical (sum 0.45)
+    # technical (sum 0.43)
     'cp_max':               0.08,
     'horas_cerca_nominal':  0.07,
     'factor_capacidad':     0.15,
-    'aep_mwh':              0.15,
-    # economic (sum 0.55)
-    'van_usd':              0.20,
+    'aep_mwh':              0.13,
+    # directional (sum 0.05)
+    'directional_concentration': 0.05,
+    # economic (sum 0.52)
+    'van_usd':              0.18,
     'roi':                  0.10,
-    'lcoe_usd_kwh':         0.15,
+    'lcoe_usd_kwh':         0.14,
     'capex_usd':            0.10,
 }
 
@@ -44,6 +47,7 @@ CRITERION_DIRECTION = {
     'horas_cerca_nominal': +1,
     'factor_capacidad':    +1,
     'aep_mwh':             +1,
+    'directional_concentration': +1,
     'van_usd':             +1,
     'roi':                 +1,
     'lcoe_usd_kwh':        -1,
@@ -55,6 +59,7 @@ CRITERION_LABELS = {
     'horas_cerca_nominal': 'Horas ≈ v_nom',
     'factor_capacidad':    'Factor de capacidad',
     'aep_mwh':             'AEP (MWh)',
+    'directional_concentration': 'Consistencia direccional',
     'van_usd':             'VAN (USD)',
     'roi':                 'ROI',
     'lcoe_usd_kwh':        'LCOE (USD/kWh)',
@@ -202,6 +207,9 @@ def rank_sites_turbines(sites_analysis: List[Dict],
             alt['lon']   = s['lon']
             alt['source'] = s.get('source')
             alt['scope']  = s.get('scope')
+            alt['dominant_direction_deg'] = s.get('dominant_direction_deg')
+            alt['dominant_frequency_pct'] = s.get('dominant_frequency_pct')
+            alt['directional_concentration'] = s.get('directional_concentration')
             alternatives.append(alt)
 
     if mode == 'area_turbines':

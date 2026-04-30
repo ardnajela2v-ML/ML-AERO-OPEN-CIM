@@ -228,7 +228,7 @@ def read_wind_file(path: str, year: Optional[int] = None):
     Lee un archivo Windnavigator (MERRA-2/ERA5) con pandas — 20-50x más rápido
     que la versión regex sobre el contenido completo.
 
-    Devuelve dict con claves: name, lat, lon, ws, t2m, p0m, n, year.
+    Devuelve dict con claves: name, lat, lon, ws, wd, t2m, p0m, n, year.
     Mantiene la misma interfaz que la versión anterior.
     """
     fname = os.path.basename(path)
@@ -244,12 +244,12 @@ def read_wind_file(path: str, year: Optional[int] = None):
             skiprows=skip,
             sep=r'\s+',          # columnas separadas por espacios/tabs
             header=None,
-            usecols=[0, 1, 4, 5],  # datetime, WS, T2M, P0M
-            names=['dt', 'ws', 't2m', 'p0m'],
+            usecols=[0, 1, 2, 4, 5],  # datetime, WS, WD, T2M, P0M
+            names=['dt', 'ws', 'wd', 't2m', 'p0m'],
             na_values=['-', 'nan', 'NaN', ''],
             on_bad_lines='skip',
             engine='c',
-            dtype={'ws': 'float32', 't2m': 'float32', 'p0m': 'float32'},
+            dtype={'ws': 'float32', 'wd': 'float32', 't2m': 'float32', 'p0m': 'float32'},
         )
     except Exception:
         # Fallback: sin usecols (el archivo puede tener menos columnas)
@@ -259,6 +259,7 @@ def read_wind_file(path: str, year: Optional[int] = None):
         )
         df.columns = list(range(df.shape[1]))
         df = df.rename(columns={0: 'dt', 1: 'ws'})
+        df['wd'] = df.get(2, pd.Series(np.nan, index=df.index)).astype('float32')
         df['t2m'] = df.get(4, pd.Series(15.0, index=df.index)).astype('float32')
         df['p0m'] = df.get(5, pd.Series(101.3, index=df.index)).astype('float32')
 
@@ -274,6 +275,7 @@ def read_wind_file(path: str, year: Optional[int] = None):
         'lat':  lat,
         'lon':  lon,
         'ws':   df['ws'].to_numpy(dtype=float),
+        'wd':   df['wd'].to_numpy(dtype=float),
         't2m':  df['t2m'].to_numpy(dtype=float),
         'p0m':  df['p0m'].to_numpy(dtype=float),
         'n':    len(df),
@@ -282,6 +284,68 @@ def read_wind_file(path: str, year: Optional[int] = None):
 
 
 # ── Per-site statistics (Weibull, density, extrapolated wind) ─────────────────
+
+SECTOR_COUNT = 16
+SECTOR_DEG = 360.0 / SECTOR_COUNT
+SECTOR_LABELS = [f'{int(i * SECTOR_DEG)}°' for i in range(SECTOR_COUNT)]
+
+
+def _sectorial_stats(ws_hub, wd, rho, n_sectors: int = SECTOR_COUNT):
+    """Directional wind statistics by sector for kriging and TOPSIS metadata."""
+    wd = np.asarray(wd, dtype=float)
+    ws_hub = np.asarray(ws_hub, dtype=float)
+    rho = np.asarray(rho, dtype=float)
+    if wd.shape != ws_hub.shape:
+        wd = np.full_like(ws_hub, np.nan, dtype=float)
+    valid = np.isfinite(wd) & np.isfinite(ws_hub)
+    if not np.any(valid):
+        return {
+            'n_sectors': n_sectors,
+            'sector_labels': [f'{int(i * 360.0 / n_sectors)}°' for i in range(n_sectors)],
+            'sector_frequency_pct': [0.0] * n_sectors,
+            'sector_mean_speed': [0.0] * n_sectors,
+            'sector_power_density_wm2': [0.0] * n_sectors,
+            'sector_energy_pct': [0.0] * n_sectors,
+            'dominant_sector_idx': None,
+            'dominant_direction_deg': None,
+            'dominant_frequency_pct': 0.0,
+            'directional_concentration': 0.0,
+        }
+
+    wd_v = wd[valid] % 360.0
+    ws_v = ws_hub[valid]
+    rho_v = rho[valid] if rho.shape == ws_hub.shape else np.full_like(ws_v, float(np.nanmean(rho)))
+    sector_deg = 360.0 / n_sectors
+    half_sector = sector_deg / 2.0
+    idx = ((wd_v + half_sector) % 360.0 / sector_deg).astype(int) % n_sectors
+    freq = np.zeros(n_sectors, dtype=float)
+    mean_speed = np.zeros(n_sectors, dtype=float)
+    power_density = np.zeros(n_sectors, dtype=float)
+    energy = np.zeros(n_sectors, dtype=float)
+    p_inst = 0.5 * rho_v * np.power(ws_v, 3)
+    total_energy = float(np.nansum(p_inst))
+    for i in range(n_sectors):
+        mask = idx == i
+        freq[i] = float(np.sum(mask))
+        if np.any(mask):
+            mean_speed[i] = float(np.nanmean(ws_v[mask]))
+            power_density[i] = float(np.nanmean(p_inst[mask]))
+            energy[i] = float(np.nansum(p_inst[mask]))
+    freq_pct = freq / max(1.0, float(len(ws_v))) * 100.0
+    energy_pct = energy / total_energy * 100.0 if total_energy > 0 else np.zeros(n_sectors)
+    dom_idx = int(np.nanargmax(energy_pct if total_energy > 0 else freq_pct))
+    return {
+        'n_sectors': n_sectors,
+        'sector_labels': [f'{int(i * sector_deg)}°' for i in range(n_sectors)],
+        'sector_frequency_pct': [float(v) for v in freq_pct],
+        'sector_mean_speed': [float(v) for v in mean_speed],
+        'sector_power_density_wm2': [float(v) for v in power_density],
+        'sector_energy_pct': [float(v) for v in energy_pct],
+        'dominant_sector_idx': dom_idx,
+        'dominant_direction_deg': float(dom_idx * sector_deg),
+        'dominant_frequency_pct': float(freq_pct[dom_idx]),
+        'directional_concentration': float((energy_pct[dom_idx] if total_energy > 0 else freq_pct[dom_idx]) / 100.0),
+    }
 
 def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
                     z0: Optional[float] = None):
@@ -293,7 +357,7 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
     """
     z_tgt = float(hub_height_m) if hub_height_m is not None else Z_TGT
     z0_eff = float(z0) if z0 is not None else Z0
-    ws = site['ws']; t2m = site['t2m']; p0m = site['p0m']
+    ws = site['ws']; wd = site.get('wd'); t2m = site['t2m']; p0m = site['p0m']
     if ws.size == 0:
         return None
     wsp = ws * (math.log(z_tgt / z0_eff) / math.log(Z_REF / z0_eff))
@@ -309,6 +373,7 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
         C, K = float(sc), float(sh)
     except Exception:
         C, K = 6.0, 2.0
+    sectorial = _sectorial_stats(wsp, wd, rho) if wd is not None else _sectorial_stats(wsp, [], rho)
     return {
         'v_mean':       float(np.mean(wsp)),
         'v_mean_raw':   float(np.mean(ws)),
@@ -319,7 +384,9 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
         'weibull_K':    K,
         'rho_mean':     meanrho,
         'ws_hub':       wsp,
+        'wd':           wd,
         'rho':          rho,
+        **sectorial,
     }
 
 
@@ -586,6 +653,20 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
             'weibull_C':   stats['weibull_C'],
             'weibull_K':   stats['weibull_K'],
             'rho_mean':    stats['rho_mean'],
+            'dominant_direction_deg': stats['dominant_direction_deg'],
+            'dominant_frequency_pct': stats['dominant_frequency_pct'],
+            'directional_concentration': stats['directional_concentration'],
+            'sectorial': {
+                'n_sectors': stats['n_sectors'],
+                'labels': stats['sector_labels'],
+                'frequency_pct': stats['sector_frequency_pct'],
+                'mean_speed': stats['sector_mean_speed'],
+                'power_density_wm2': stats['sector_power_density_wm2'],
+                'energy_pct': stats['sector_energy_pct'],
+                'dominant_direction_deg': stats['dominant_direction_deg'],
+                'dominant_frequency_pct': stats['dominant_frequency_pct'],
+                'directional_concentration': stats['directional_concentration'],
+            },
             'turbines':    turbines_out,
         })
 
@@ -705,6 +786,21 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     power_grid = _grid_for('power_density_wm2')
     k_grid = _grid_for('weibull_K')
     rho_grid = _grid_for('rho_mean')
+    sector_freq_grids = [
+        kriging_grid(lons, lats, [float((r.get('sector_frequency_pct') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
+                     n=n_grid, model=model, bounds=grid_bounds)
+        for i in range(SECTOR_COUNT)
+    ]
+    sector_speed_grids = [
+        kriging_grid(lons, lats, [float((r.get('sector_mean_speed') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
+                     n=n_grid, model=model, bounds=grid_bounds)
+        for i in range(SECTOR_COUNT)
+    ]
+    sector_energy_grids = [
+        kriging_grid(lons, lats, [float((r.get('sector_energy_pct') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
+                     n=n_grid, model=model, bounds=grid_bounds)
+        for i in range(SECTOR_COUNT)
+    ]
     elevation_grid = None
     roughness_grid = None
     physical = False
@@ -810,6 +906,17 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         wind = max(0.0, float(_grid_sample_value(wind_grid, lat, lon) or 0.0))
         k = max(0.45, float(_grid_sample_value(k_grid, lat, lon) or 2.0))
         rho_mean = max(0.5, float(_grid_sample_value(rho_grid, lat, lon) or 1.225))
+        sector_frequency = [max(0.0, float(_grid_sample_value(g, lat, lon) or 0.0)) for g in sector_freq_grids]
+        sector_speed = [max(0.0, float(_grid_sample_value(g, lat, lon) or 0.0)) for g in sector_speed_grids]
+        sector_energy = [max(0.0, float(_grid_sample_value(g, lat, lon) or 0.0)) for g in sector_energy_grids]
+        total_freq = sum(sector_frequency)
+        total_energy = sum(sector_energy)
+        if total_freq > 0:
+            sector_frequency = [v / total_freq * 100.0 for v in sector_frequency]
+        if total_energy > 0:
+            sector_energy = [v / total_energy * 100.0 for v in sector_energy]
+        dom_idx = int(np.argmax(sector_energy if total_energy > 0 else sector_frequency))
+        directional_concentration = float((sector_energy[dom_idx] if total_energy > 0 else sector_frequency[dom_idx]) / 100.0)
         ws_hub = _virtual_weibull_series(wind, k)
         rho = np.full_like(ws_hub, rho_mean, dtype=float)
         turbines_out = []
@@ -837,6 +944,16 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
             'weibull_C': float(wind / max(1e-9, math.gamma(1.0 + 1.0 / k))),
             'weibull_K': k,
             'rho_mean': rho_mean,
+            'dominant_direction_deg': float(dom_idx * SECTOR_DEG),
+            'dominant_frequency_pct': float(sector_frequency[dom_idx]),
+            'directional_concentration': directional_concentration,
+            'sectorial': {
+                'n_sectors': SECTOR_COUNT,
+                'labels': SECTOR_LABELS,
+                'frequency_pct': sector_frequency,
+                'mean_speed': sector_speed,
+                'energy_pct': sector_energy,
+            },
             'elevation_m': float(_grid_sample_value(elevation_grid, lat, lon) or 0.0) if elevation_grid else None,
             'roughness_z0': float(_grid_sample_value(roughness_grid, lat, lon) or Z0) if roughness_grid else None,
             'resource_score': float(p['score']),
@@ -950,6 +1067,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         })
 
     lats, lons, v_proms, gusts, power_densities, invers, vans, names = [], [], [], [], [], [], [], []
+    sector_freqs, sector_speeds, sector_powers, sector_energies = [], [], [], []
 
     for wf in wind_files:
         path = os.path.join(wind_folder, wf)
@@ -989,6 +1107,10 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         invers.append(float(ctot_last))
         vans.append(float(VAN_last))
         names.append(site['name'])
+        sector_freqs.append(stats['sector_frequency_pct'])
+        sector_speeds.append(stats['sector_mean_speed'])
+        sector_powers.append(stats['sector_power_density_wm2'])
+        sector_energies.append(stats['sector_energy_pct'])
 
     if len(lats) < 3:
         raise ValueError(f'Kriging necesita >= 3 sitios válidos (hay {len(lats)})')
@@ -1009,6 +1131,26 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         'power_density':   _grid(power_densities, 'Densidad de potencia eólica (W/m²)'),
         'inversion':       _grid(invers,  'Inversión inicial (USD)'),
         'van':             _grid(vans,    'Valor Actual Neto (USD)'),
+        'sectorial': {
+            'n_sectors': SECTOR_COUNT,
+            'labels': SECTOR_LABELS,
+            'frequency_pct': [
+                _grid([row[i] for row in sector_freqs], f'Frecuencia sector {SECTOR_LABELS[i]} (%)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'mean_speed': [
+                _grid([row[i] for row in sector_speeds], f'Velocidad media sector {SECTOR_LABELS[i]} (m/s)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'power_density': [
+                _grid([row[i] for row in sector_powers], f'Densidad potencia sector {SECTOR_LABELS[i]} (W/m²)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'energy_pct': [
+                _grid([row[i] for row in sector_energies], f'Participación energética sector {SECTOR_LABELS[i]} (%)')
+                for i in range(SECTOR_COUNT)
+            ],
+        },
         'n_sites':         len(lats),
         'turbine_curves':  turbine_curves,
         'physical':        False,

@@ -5092,7 +5092,9 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
       fillColor: i < 5 ? '#facc15' : '#38bdf8',
       fillOpacity: 0.9,
     }).bindTooltip(
-      `#${i + 1} ${s.name}<br>${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>${Number(s.v_mean || 0).toFixed(2)} m/s`,
+      `#${i + 1} ${s.name}<br>${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>` +
+      `${Number(s.v_mean || 0).toFixed(2)} m/s` +
+      (s.dominant_direction_deg != null ? ` · Dir ${Number(s.dominant_direction_deg).toFixed(0)}°` : ''),
       { direction: 'top' }
     ).addTo(map);
     MCDA.miniLayers.push(marker);
@@ -5139,6 +5141,7 @@ function mcdaRenderSpatialMarkers(result) {
       `${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>` +
       `Viento real ${Number(s.v_mean || 0).toFixed(2)} m/s` +
       (s.power_density_wm2 != null ? ` · ${Number(s.power_density_wm2).toFixed(0)} W/m²` : '') +
+      (s.dominant_direction_deg != null ? `<br>Sector dominante ${Number(s.dominant_direction_deg).toFixed(0)}° · concentración ${(Number(s.directional_concentration || 0) * 100).toFixed(1)}%` : '') +
       (best ? `<br><b>#${best.rank}</b> ${best.turbina} · TOPSIS ${Number(best.topsis_score || 0).toFixed(4)}` : '')
     ).addTo(KRIG.map);
     KRIG.mcdaMarkers.push(marker);
