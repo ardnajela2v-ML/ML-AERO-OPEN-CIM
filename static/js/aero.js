@@ -5619,7 +5619,7 @@ function renderMonthHourHeatmap(data) {
 const PARQUE = {
   map: null, baseLayer: null, windOverlay: null, polyLayer: null,
   turbineMarkers: [], result: null, optResult: null,
-  layerKey: 'wind',
+  layerKey: 'wind', windVisible: true, mapLocked: false,
 };
 
 // ── Mapa Leaflet del parque ───────────────────────────────────────────────────
@@ -5693,7 +5693,14 @@ function parqueRenderPolygon() {
     color: '#f59e0b', weight: 2.5,
     fillColor: '#f59e0b', fillOpacity: 0.08,
   }).addTo(map);
-  map.fitBounds(PARQUE.polyLayer.getBounds(), { padding: [30, 30], maxZoom: 14 });
+  const bounds = PARQUE.polyLayer.getBounds();
+  map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
+  // Bloquear mapa al área del parque por defecto
+  map.setMaxBounds(bounds.pad(0.5));
+  PARQUE.mapLocked = true;
+  const lockBtn = document.getElementById('btn-parque-map-lock');
+  if (lockBtn) lockBtn.textContent = '🔓 Ver todo';
+  document.getElementById('parque-map-hint').style.display = 'none';
 }
 
 function parqueClearTurbineMarkers() {
@@ -5728,6 +5735,59 @@ function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
     m.addTo(map);
     PARQUE.turbineMarkers.push(m);
   });
+}
+
+// ── Controles de mapa ────────────────────────────────────────────────────────
+function parqueSetBaseLayer(key) {
+  const map = PARQUE.map;
+  if (!map) return;
+  if (PARQUE.baseLayer) map.removeLayer(PARQUE.baseLayer);
+  const urls = {
+    dark:      MAPA_TILES.dark,
+    voyager:   MAPA_TILES.voyager,
+    osm:       MAPA_TILES.osm,
+    satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  };
+  const subs = (key === 'osm') ? 'abc' : (key === 'satellite' ? '' : 'abcd');
+  PARQUE.baseLayer = L.tileLayer(urls[key] || urls.dark, {
+    maxZoom: 18, subdomains: subs, crossOrigin: 'anonymous',
+  }).addTo(map);
+  if (PARQUE.windOverlay) PARQUE.windOverlay.bringToFront();
+  if (PARQUE.polyLayer)   PARQUE.polyLayer.bringToFront();
+  PARQUE.turbineMarkers.forEach(m => { try { m.bringToFront(); } catch (_) {} });
+}
+
+function parqueToggleWindLayer() {
+  const map = PARQUE.map;
+  const btn = document.getElementById('btn-parque-wind-toggle');
+  if (!map || !PARQUE.windOverlay) return;
+  if (PARQUE.windVisible) {
+    map.removeLayer(PARQUE.windOverlay);
+    if (btn) btn.textContent = 'Mostrar capa';
+    PARQUE.windVisible = false;
+  } else {
+    PARQUE.windOverlay.addTo(map);
+    if (PARQUE.polyLayer)   PARQUE.polyLayer.bringToFront();
+    PARQUE.turbineMarkers.forEach(m => { try { m.bringToFront(); } catch (_) {} });
+    if (btn) btn.textContent = 'Ocultar capa';
+    PARQUE.windVisible = true;
+  }
+}
+
+function parqueToggleMapLock() {
+  const map = PARQUE.map;
+  const btn = document.getElementById('btn-parque-map-lock');
+  if (!map) return;
+  PARQUE.mapLocked = !PARQUE.mapLocked;
+  if (PARQUE.mapLocked && PARQUE.polyLayer) {
+    const bounds = PARQUE.polyLayer.getBounds();
+    map.setMaxBounds(bounds.pad(0.5));
+    map.fitBounds(bounds, { padding: [30, 30] });
+    if (btn) btn.textContent = '🔓 Ver todo';
+  } else {
+    map.setMaxBounds(null);
+    if (btn) btn.textContent = '🔒 Solo área';
+  }
 }
 
 // ── Turbinas desde TOPSIS ─────────────────────────────────────────────────────
@@ -5931,12 +5991,12 @@ async function parqueOptimize() {
 
     if (sim) {
       document.getElementById('parque-kpis').style.display = '';
-      document.getElementById('parque-kpi-aep').textContent = (sim.aep_mwh / 1000).toFixed(3);
-      document.getElementById('parque-kpi-wl').textContent  = sim.wake_loss_pct.toFixed(2);
-      document.getElementById('parque-kpi-cf').textContent  = sim.cf_pct.toFixed(2);
-      document.getElementById('parque-kpi-mw').textContent  = sim.installed_mw.toFixed(3);
-      document.getElementById('parque-kpi-flh').textContent = sim.flh.toFixed(0);
-      document.getElementById('parque-kpi-dir').textContent = (sim.dominant_dir_deg||0).toFixed(0) + '°';
+      document.getElementById('parque-kpi-aep').textContent = ((sim.aep_mwh  ?? 0) / 1000).toFixed(3);
+      document.getElementById('parque-kpi-wl').textContent  = (sim.wake_loss_pct ?? 0).toFixed(2);
+      document.getElementById('parque-kpi-cf').textContent  = (sim.cf_pct   ?? 0).toFixed(2);
+      document.getElementById('parque-kpi-mw').textContent  = (sim.installed_mw ?? r.installed_mw ?? 0).toFixed(3);
+      document.getElementById('parque-kpi-flh').textContent = (sim.flh      ?? 0).toFixed(0);
+      document.getElementById('parque-kpi-dir').textContent = (sim.dominant_dir_deg ?? 0).toFixed(0) + '°';
       parqueRenderAEPChart(sim.turbines, r.layout_latlon);
       parqueRenderTable(r.layout_latlon, r.wind_at_turbines, sim.turbines);
     } else {
@@ -5962,8 +6022,8 @@ function parqueRenderAEPChart(turbines, layoutLatlon) {
   const ctx    = document.getElementById('parque-aep-chart')?.getContext('2d');
   if (!ctx) return;
   const labels = turbines.map((_, i) => `T${i+1}`);
-  const aep    = turbines.map(t => t.aep_mwh);
-  const noWake = turbines.map(t => t.aep_no_wake_mwh);
+  const aep    = turbines.map(t => t.aep_mwh        ?? 0);
+  const noWake = turbines.map(t => t.aep_no_wake_mwh ?? 0);
   WP.charts['parque-aep'] = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets: [
@@ -5991,13 +6051,13 @@ function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
     const xy  = PARQUE.optResult?.layout_xy_m ? PARQUE.optResult.layout_xy_m[i] : null;
     return `<tr>
       <td>T${i+1}</td>
-      <td>${lat.toFixed(5)}</td><td>${lon.toFixed(5)}</td>
-      <td>${xy ? xy[0].toFixed(0) : '—'}</td><td>${xy ? xy[1].toFixed(0) : '—'}</td>
+      <td>${(lat ?? 0).toFixed(5)}</td><td>${(lon ?? 0).toFixed(5)}</td>
+      <td>${xy ? (xy[0] ?? 0).toFixed(0) : '—'}</td><td>${xy ? (xy[1] ?? 0).toFixed(0) : '—'}</td>
       <td>${v}</td>
-      <td>${sim ? sim.aep_mwh.toFixed(1) : '—'}</td>
-      <td>${sim ? sim.aep_no_wake_mwh.toFixed(1) : '—'}</td>
-      <td>${sim ? sim.wake_loss_pct.toFixed(2) : '—'}</td>
-      <td>${sim ? sim.cf_pct.toFixed(2) : '—'}</td>
+      <td>${sim ? (sim.aep_mwh        ?? 0).toFixed(1) : '—'}</td>
+      <td>${sim ? (sim.aep_no_wake_mwh ?? 0).toFixed(1) : '—'}</td>
+      <td>${sim ? (sim.wake_loss_pct   ?? 0).toFixed(2) : '—'}</td>
+      <td>${sim ? (sim.cf_pct          ?? 0).toFixed(2) : '—'}</td>
     </tr>`;
   }).join('');
 }
@@ -6037,6 +6097,12 @@ function parqueReset() {
   parqueClearTurbineMarkers();
   if (PARQUE.windOverlay && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
   if (PARQUE.polyLayer   && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.polyLayer);   PARQUE.polyLayer   = null; }
+  if (PARQUE.map) PARQUE.map.setMaxBounds(null);
+  PARQUE.mapLocked = false; PARQUE.windVisible = true;
+  const lockBtn = document.getElementById('btn-parque-map-lock');
+  if (lockBtn) lockBtn.textContent = '🔓 Ver todo';
+  const windBtn = document.getElementById('btn-parque-wind-toggle');
+  if (windBtn) windBtn.textContent = 'Ocultar capa';
   document.getElementById('parque-kpis').style.display = 'none';
   document.getElementById('parque-tbl-body').innerHTML = '';
   document.getElementById('parque-status').textContent = 'Sin simular';

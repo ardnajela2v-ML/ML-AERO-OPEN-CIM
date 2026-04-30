@@ -2207,15 +2207,31 @@
 
     <!-- Mapa del parque -->
     <div class="card">
-      <div class="card-header">
+      <div class="card-header" style="flex-wrap:wrap;gap:.3rem">
         <span class="card-title">Área del parque — campo kriging &amp; layout</span>
-        <div style="display:flex;gap:.4rem;align-items:center">
-          <select class="form-select" id="parque-map-layer" style="font-size:.73rem;padding:.2rem .4rem;width:auto">
-            <option value="wind">Viento (m/s)</option>
-            <option value="wind_directional">Viento direccional</option>
-            <option value="power_density">Densidad de potencia</option>
-            <option value="gust">Ráfagas</option>
+        <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">
+          <select class="form-select" id="parque-base-layer"
+                  style="font-size:.71rem;padding:.15rem .35rem;width:auto"
+                  onchange="parqueSetBaseLayer(this.value)" title="Tipo de mapa base">
+            <option value="dark">🌑 Oscuro</option>
+            <option value="voyager">🌍 Claro</option>
+            <option value="osm">🗺 OSM</option>
+            <option value="satellite">🛰 Satélite</option>
           </select>
+          <select class="form-select" id="parque-map-layer"
+                  style="font-size:.71rem;padding:.15rem .35rem;width:auto"
+                  title="Capa de campo kriging">
+            <option value="wind">💨 Viento (m/s)</option>
+            <option value="wind_directional">🧭 Viento dir.</option>
+            <option value="power_density">⚡ Densidad pot.</option>
+            <option value="gust">💨 Ráfagas</option>
+          </select>
+          <button class="btn-secondary" id="btn-parque-wind-toggle"
+                  onclick="parqueToggleWindLayer()"
+                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">Ocultar capa</button>
+          <button class="btn-secondary" id="btn-parque-map-lock"
+                  onclick="parqueToggleMapLock()"
+                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🔓 Ver todo</button>
           <span class="badge badge--info" id="parque-map-status">Sin Kriging</span>
         </div>
       </div>
