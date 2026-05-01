@@ -1708,6 +1708,11 @@ def create_app():
 
             sim_result = None
             sid = body.get('session_id')
+            ws_hub = None
+            wd = None
+            temp_c = None
+            pres_p = None
+
             if sid:
                 sess   = sessions.get(sid, {})
                 if 'df' in sess:
@@ -1722,23 +1727,27 @@ def create_app():
                                   if wd_col in df.columns else np.zeros_like(ws_hub))
                         temp_c = df['temperature'].values if 'temperature' in df.columns else None
                         pres_p = df['pressure'].values    if 'pressure'    in df.columns else None
-                        sim_result = simulate_wind_farm(
-                            layout_xy=opt['layout_xy_m'],
-                            turbine=turbine,
-                            ws=ws_hub, wd=wd,
-                            k_wake=float(body.get('k_wake', 0.075)),
-                            ct=float(body.get('ct', 0.8)),
-                            n_sectors=int(body.get('n_sectors', 36)),
-                            availability=avail,
-                            electrical_losses=elec_loss,
-                            temperature_c=temp_c,
-                            pressure_pa=pres_p,
-                        )
-                        sim_result['turbine'] = turbine.to_dict()
 
-            result = {**opt, 'turbine': turbine.to_dict()}
-            if sim_result:
-                result['simulation'] = sim_result
+            if ws_hub is None:
+                from core.kriging import _virtual_weibull_series
+                ws_hub = _virtual_weibull_series(v_mean, weibull_k, n_hours=8760)
+                wd = np.full_like(ws_hub, 270.0)
+
+            sim_result = simulate_wind_farm(
+                layout_xy=opt['layout_xy_m'],
+                turbine=turbine,
+                ws=ws_hub, wd=wd,
+                k_wake=float(body.get('k_wake', 0.075)),
+                ct=float(body.get('ct', 0.8)),
+                n_sectors=int(body.get('n_sectors', 36)),
+                availability=avail,
+                electrical_losses=elec_loss,
+                temperature_c=temp_c,
+                pressure_pa=pres_p,
+            )
+            sim_result['turbine'] = turbine.to_dict()
+
+            result = {**opt, 'turbine': turbine.to_dict(), 'simulation': sim_result}
             return jsonify(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
