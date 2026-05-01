@@ -229,7 +229,18 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
 
     # No-wake baseline: total energy if every turbine saw free-stream wind.
     if local_wind_multipliers is not None:
-        local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float)
+        local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float).reshape(-1)
+        if local_wind_multipliers.shape[0] != n:
+            local_wind_multipliers = None
+        else:
+            local_wind_multipliers = np.nan_to_num(
+                local_wind_multipliers,
+                nan=1.0,
+                posinf=1.0,
+                neginf=1.0,
+            )
+            local_wind_multipliers = np.clip(local_wind_multipliers, 0.0, None)
+    if local_wind_multipliers is not None:
         # Multiply (B, 1) by (1, N) to get (B, N) effective free-stream
         ws_centres_n = ws_centres[:, None] * local_wind_multipliers[None, :]
         p_free_per_bin = turbine.power_kw_density_corrected(ws_centres_n, rho_mean)  # (B, N)

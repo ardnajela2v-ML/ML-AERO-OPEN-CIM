@@ -6146,13 +6146,14 @@ async function parqueOptimize() {
 
 // ── Gráficas y tabla ──────────────────────────────────────────────────────────
 function parqueRenderAEPChart(turbines, layoutLatlon) {
-  if (!turbines || !turbines.length) return;
+  const rows = Array.isArray(turbines) ? turbines : [];
+  if (!rows.length) { destroyChart('parque-aep'); return; }
   destroyChart('parque-aep');
   const ctx    = document.getElementById('parque-aep-chart')?.getContext('2d');
   if (!ctx) return;
-  const labels = turbines.map((_, i) => `T${i+1}`);
-  const aep    = turbines.map(t => t.aep_mwh        ?? 0);
-  const noWake = turbines.map(t => t.aep_no_wake_mwh ?? 0);
+  const labels = rows.map((_, i) => `T${i+1}`);
+  const aep    = rows.map(t => Number(t.aep_mwh) || 0);
+  const noWake = rows.map(t => Number(t.aep_no_wake_mwh) || 0);
   WP.charts['parque-aep'] = new Chart(ctx, {
     type: 'bar',
     data: { labels, datasets: [
@@ -6173,20 +6174,23 @@ function parqueRenderAEPChart(turbines, layoutLatlon) {
 function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
   const tb = document.getElementById('parque-tbl-body');
   if (!tb || !layoutLatlon) return;
+  const simRows = Array.isArray(simTurbines) ? simTurbines : [];
+  const simByIndex = new Map(simRows.map((t, idx) => [Number.isFinite(Number(t?.i)) ? Number(t.i) : idx, t]));
+  const fmt = (value, digits) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : '—';
   tb.innerHTML = layoutLatlon.map(([lat, lon], i) => {
-    const v   = windAtTurbines ? (windAtTurbines[i] || 0).toFixed(2) : '—';
-    const sim = simTurbines ? simTurbines[i] : null;
+    const v   = windAtTurbines ? fmt(windAtTurbines[i], 2) : '—';
+    const sim = simByIndex.get(i) || null;
     const ox  = PARQUE.optResult?.origin_lat ? '' : '';
     const xy  = PARQUE.optResult?.layout_xy_m ? PARQUE.optResult.layout_xy_m[i] : null;
     return `<tr>
       <td>T${i+1}</td>
-      <td>${(lat ?? 0).toFixed(5)}</td><td>${(lon ?? 0).toFixed(5)}</td>
-      <td>${xy ? (xy[0] ?? 0).toFixed(0) : '—'}</td><td>${xy ? (xy[1] ?? 0).toFixed(0) : '—'}</td>
+      <td>${fmt(lat, 5)}</td><td>${fmt(lon, 5)}</td>
+      <td>${xy ? fmt(xy[0], 0) : '—'}</td><td>${xy ? fmt(xy[1], 0) : '—'}</td>
       <td>${v}</td>
-      <td>${sim ? (sim.aep_mwh        ?? 0).toFixed(1) : '—'}</td>
-      <td>${sim ? (sim.aep_no_wake_mwh ?? 0).toFixed(1) : '—'}</td>
-      <td>${sim ? (sim.wake_loss_pct   ?? 0).toFixed(2) : '—'}</td>
-      <td>${sim ? (sim.cf_pct          ?? 0).toFixed(2) : '—'}</td>
+      <td>${sim ? fmt(sim.aep_mwh, 1) : '—'}</td>
+      <td>${sim ? fmt(sim.aep_no_wake_mwh, 1) : '—'}</td>
+      <td>${sim ? fmt(sim.wake_loss_pct, 2) : '—'}</td>
+      <td>${sim ? fmt(sim.cf_pct, 2) : '—'}</td>
     </tr>`;
   }).join('');
 }

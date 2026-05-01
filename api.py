@@ -1738,7 +1738,14 @@ def create_app():
                 mean_ws = float(np.mean(ws_hub))
                 local_multipliers = None
                 if 'wind_at_turbines' in opt and opt['wind_at_turbines'] and mean_ws > 0:
-                    local_multipliers = np.array(opt['wind_at_turbines']) / mean_ws
+                    wind_at = np.asarray(opt['wind_at_turbines'], dtype=float)
+                    if wind_at.shape[0] == len(opt['layout_xy_m']):
+                        local_multipliers = np.nan_to_num(
+                            wind_at / mean_ws,
+                            nan=1.0,
+                            posinf=1.0,
+                            neginf=1.0,
+                        )
                 
                 sim_result = simulate_wind_farm(
                     layout_xy=opt['layout_xy_m'],
