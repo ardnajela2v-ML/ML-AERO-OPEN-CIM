@@ -227,6 +227,21 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
 
     sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
 
+    if freq.sum() == 0 or (len(ws_centres) == 1 and ws_centres[0] == 0.0):
+        warnings.warn(
+            'simulate_wind_farm: serie de viento sin datos válidos '
+            '(todos NaN o vacía). Devuelve AEP=0.',
+            stacklevel=2,
+        )
+        return {'error': 'wind_series_invalid',
+                'n_turbines': n, 'installed_mw': round(n * float(turbine.rated_power_kw) / 1000, 3),
+                'aep_mwh': 0, 'aep_no_wake_mwh': 0, 'wake_loss_pct': 0,
+                'cf_pct': 0, 'flh': 0, 'dominant_dir_deg': 0,
+                'hours': round(total_hours, 1), 'dt_h': round(dt_h, 4), 'rho_mean': round(rho_mean, 4),
+                'turbines': [{'i': i, 'x_m': float(layout_xy[i][0]), 'y_m': float(layout_xy[i][1]),
+                               'aep_mwh': 0, 'aep_no_wake_mwh': 0, 'wake_loss_pct': 0, 'cf_pct': 0}
+                              for i in range(n)]}
+
     # No-wake baseline: total energy if every turbine saw free-stream wind.
     if local_wind_multipliers is not None:
         local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float).reshape(-1)

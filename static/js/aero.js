@@ -6371,6 +6371,9 @@ async function parqueOptimize() {
       `${r.turbine?.name||turbineKey} · ⌀${r.D_m}m`;
 
     if (sim) {
+      if (sim.error === 'wind_series_invalid') {
+        toast('⚠ Serie de viento con todos-NaN — se usó síntesis Weibull para AEP. Recarga datos en Data Hub.', 'warn', 7000);
+      }
       // Auto-update wake direction from dominant wind direction
       const wdirEl = document.getElementById('parque-wake-dir');
       if (wdirEl && sim.dominant_dir_deg != null) wdirEl.value = Math.round(sim.dominant_dir_deg ?? 270);

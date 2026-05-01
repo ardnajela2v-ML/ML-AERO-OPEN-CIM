@@ -1755,7 +1755,13 @@ def create_app():
                         temp_c = df['temperature'].values if 'temperature' in df.columns else None
                         pres_p = df['pressure'].values    if 'pressure'    in df.columns else None
 
-            if ws_hub is None:
+            if ws_hub is None or not np.any(np.isfinite(ws_hub)):
+                if ws_hub is not None:
+                    logger.warning(
+                        'farm_optimize: ws_hub todos-NaN para sesión %s '
+                        '(columna «%s»). Usando síntesis Weibull v_mean=%.2f m/s.',
+                        sid, ws_col if sid else '—', v_mean_hub
+                    )
                 from core.kriging import _virtual_weibull_series
                 reference_wind_mean = v_mean
                 ws_hub = _virtual_weibull_series(v_mean_hub, weibull_k, n_hours=8760)
