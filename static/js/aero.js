@@ -5623,6 +5623,11 @@ const PARQUE = {
   wakeGroup: null, wakeVisible: false,
 };
 
+function parqueFmt(value, digits = 1, fallback = '—') {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : fallback;
+}
+
 // ── Mapa Leaflet del parque ───────────────────────────────────────────────────
 function parqueInitMap() {
   const el = document.getElementById('parque-map');
@@ -5681,7 +5686,7 @@ function parqueRenderKrigingLayer(key) {
     { opacity: 0.72 }
   ).addTo(map);
   const legendEl = document.getElementById('parque-map-legend');
-  legendEl.textContent = `${(z_min||0).toFixed(1)} – ${(z_max||0).toFixed(1)} ${grid.title?.includes('W/m') ? 'W/m²' : 'm/s'}`;
+  legendEl.textContent = `${parqueFmt(z_min, 1, '0.0')} – ${parqueFmt(z_max, 1, '0.0')} ${grid.title?.includes('W/m') ? 'W/m²' : 'm/s'}`;
   legendEl.style.display = '';
   document.getElementById('parque-map-status').textContent = `Kriging: ${grid.title || key}`;
   document.getElementById('parque-map-hint').style.display = 'none';
@@ -5720,17 +5725,20 @@ function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
   parqueClearTurbineMarkers();
   const map = parqueInitMap();
   if (!map || !layoutLatlon) return;
-  const aeps  = simTurbines ? simTurbines.map(t => t.aep_mwh) : null;
-  const maxA  = aeps ? Math.max(...aeps, 0.001) : 1;
-  const minA  = aeps ? Math.min(...aeps, maxA)  : 0;
+  const simRows = Array.isArray(simTurbines) ? simTurbines : [];
+  const simByIndex = new Map(simRows.map((t, idx) => [Number.isFinite(Number(t?.i)) ? Number(t.i) : idx, t]));
+  const aeps  = simRows.map(t => Number(t?.aep_mwh)).filter(Number.isFinite);
+  const maxA  = aeps.length ? Math.max(...aeps, 0.001) : 1;
+  const minA  = aeps.length ? Math.min(...aeps, maxA)  : 0;
   layoutLatlon.forEach(([lat, lon], i) => {
-    const t = aeps ? (aeps[i] - minA) / (maxA - minA + 1e-6) : 0.5;
+    const sim = simByIndex.get(i) || null;
+    const aep = Number(sim?.aep_mwh);
+    const t = Number.isFinite(aep) ? (aep - minA) / (maxA - minA + 1e-6) : 0.5;
     const [r_, g_, b_] = krigColor(t);
     const clr = `rgb(${r_|0},${g_|0},${b_|0})`;
-    const sim = simTurbines ? simTurbines[i] : null;
     const tip = sim
-      ? `<b>T${i+1}</b><br>AEP: ${sim.aep_mwh.toFixed(1)} MWh<br>Estela: ${sim.wake_loss_pct.toFixed(1)}%<br>CF: ${sim.cf_pct.toFixed(1)}%`
-      : `<b>T${i+1}</b><br>${lat.toFixed(5)}°, ${lon.toFixed(5)}°`;
+      ? `<b>T${i+1}</b><br>AEP: ${parqueFmt(sim.aep_mwh, 1)} MWh<br>Estela: ${parqueFmt(sim.wake_loss_pct, 1)}%<br>CF: ${parqueFmt(sim.cf_pct, 1)}%`
+      : `<b>T${i+1}</b><br>${parqueFmt(lat, 5)}°, ${parqueFmt(lon, 5)}°`;
     const icon = L.divIcon({
       className: '',
       html: `<div style="width:24px;height:24px;border-radius:50%;background:${clr};border:2px solid #fff;
@@ -5894,7 +5902,7 @@ async function parqueLoadDemandFromSession() {
     if (r.found) {
       document.getElementById('parque-demand').value = Math.round(r.annual_mwh);
       if (badge) {
-        badge.textContent = `📊 Col: "${r.column}"  ·  μ: ${r.mean_mw.toFixed(2)} MW  ·  máx: ${r.max_mw.toFixed(2)} MW  ·  ${r.n_records} reg  ·  Δt=${r.dt_h}h`;
+        badge.textContent = `📊 Col: "${r.column}"  ·  μ: ${parqueFmt(r.mean_mw, 2)} MW  ·  máx: ${parqueFmt(r.max_mw, 2)} MW  ·  ${r.n_records} reg  ·  Δt=${r.dt_h}h`;
         badge.style.display = '';
       }
       parqueUpdateRecommendation();
@@ -5922,11 +5930,11 @@ async function parqueLoadTurbines() {
       const opt = document.createElement('option');
       if (t.source === 'builtin') {
         opt.value = t.name;
-        opt.textContent = `${t.name} — ${(t.rated_power_kw/1000).toFixed(1)} MW`;
+        opt.textContent = `${t.name} — ${parqueFmt(Number(t.rated_power_kw) / 1000, 1)} MW`;
         og1.appendChild(opt);
       } else {
         opt.value = t.filename;
-        opt.textContent = `${t.name}  ⌀${t.rotor_diameter_m||'?'} m  ${t.rated_power_kw ? (t.rated_power_kw/1000).toFixed(1)+' MW' : ''}`;
+        opt.textContent = `${t.name}  ⌀${t.rotor_diameter_m||'?'} m  ${t.rated_power_kw ? parqueFmt(Number(t.rated_power_kw) / 1000, 1)+' MW' : ''}`;
         og2.appendChild(opt);
       }
     });
@@ -5962,9 +5970,9 @@ function parquePopulateTopsisRanking() {
   });
 
   listEl.innerHTML = items.map((r, i) => {
-    const score = (r.topsis_score || 0).toFixed(4);
-    const cf    = r.factor_capacidad ? (r.factor_capacidad * 100).toFixed(1) + '% CF' : '';
-    const aep   = r.aep_mwh ? (r.aep_mwh).toFixed(0) + ' MWh' : '';
+    const score = parqueFmt(r.topsis_score, 4, '0.0000');
+    const cf    = r.factor_capacidad ? parqueFmt(Number(r.factor_capacidad) * 100, 1) + '% CF' : '';
+    const aep   = r.aep_mwh ? parqueFmt(r.aep_mwh, 0) + ' MWh' : '';
     const bg    = i === 0 ? 'var(--accent)' : 'transparent';
     const col   = i === 0 ? '#fff' : 'inherit';
     return `<div class="parque-topsis-item" data-turbina="${r.turbina||''}" data-key="${r.turbina||r.label||''}"
@@ -6120,12 +6128,12 @@ async function parqueOptimize() {
       if (wdirEl && sim.dominant_dir_deg != null) wdirEl.value = Math.round(sim.dominant_dir_deg ?? 270);
 
       document.getElementById('parque-kpis').style.display = '';
-      document.getElementById('parque-kpi-aep').textContent = ((sim.aep_mwh  ?? 0) / 1000).toFixed(3);
-      document.getElementById('parque-kpi-wl').textContent  = (sim.wake_loss_pct ?? 0).toFixed(2);
-      document.getElementById('parque-kpi-cf').textContent  = (sim.cf_pct   ?? 0).toFixed(2);
-      document.getElementById('parque-kpi-mw').textContent  = (sim.installed_mw ?? r.installed_mw ?? 0).toFixed(3);
-      document.getElementById('parque-kpi-flh').textContent = (sim.flh      ?? 0).toFixed(0);
-      document.getElementById('parque-kpi-dir').textContent = (sim.dominant_dir_deg ?? 0).toFixed(0) + '°';
+      document.getElementById('parque-kpi-aep').textContent = parqueFmt(Number(sim.aep_mwh) / 1000, 3, '0.000');
+      document.getElementById('parque-kpi-wl').textContent  = parqueFmt(sim.wake_loss_pct, 2, '0.00');
+      document.getElementById('parque-kpi-cf').textContent  = parqueFmt(sim.cf_pct, 2, '0.00');
+      document.getElementById('parque-kpi-mw').textContent  = parqueFmt(sim.installed_mw ?? r.installed_mw, 3, '0.000');
+      document.getElementById('parque-kpi-flh').textContent = parqueFmt(sim.flh, 0, '0');
+      document.getElementById('parque-kpi-dir').textContent = parqueFmt(sim.dominant_dir_deg, 0, '0') + '°';
       parqueRenderAEPChart(sim.turbines, r.layout_latlon);
       parqueRenderTable(r.layout_latlon, r.wind_at_turbines, sim.turbines);
     } else {
