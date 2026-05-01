@@ -2834,6 +2834,31 @@
     </div>
   </div>
 
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title">Despacho horario real 8760 h/año</span>
+      <span class="badge badge--info" id="te-dispatch-badge">—</span>
+    </div>
+    <div class="card-body">
+      <div id="te-dispatch-kpis" class="te-kpi-grid" style="margin-bottom:.75rem">
+        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver despacho horario.</p>
+      </div>
+      <div class="chart-box" style="height:280px"><canvas id="chart-te-dispatch"></canvas></div>
+      <div style="overflow-x:auto;max-height:260px;margin-top:.75rem">
+        <table class="data-table" id="te-dispatch-table">
+          <thead>
+            <tr>
+              <th>Año</th><th>Horas</th><th>Carga (MWh)</th><th>Viento disp. (MWh)</th>
+              <th>Servida (MWh)</th><th>Excedente (MWh)</th><th>Déficit (MWh)</th>
+              <th>Cobertura</th><th>Curtailment</th><th>CF</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div class="grid-2 mt-2">
     <div class="card">
       <div class="card-header"><span class="card-title">Curva Cp vs Velocidad del viento</span><span class="badge badge--info" id="badge-cp-max">—</span></div>

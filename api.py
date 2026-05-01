@@ -382,6 +382,152 @@ def create_app():
         wd = np.full_like(ws_hub, 270.0)
         return ws_hub, wd
 
+    def _infer_dt_h(index):
+        if isinstance(index, pd.DatetimeIndex) and len(index) > 1:
+            try:
+                return float(index.to_series().diff().dropna().mode()[0].total_seconds() / 3600)
+            except Exception:
+                return 1.0
+        return 1.0
+
+    def _find_demand_column(df):
+        priority_exact = [
+            'Demanda Eléctrica (MW)', 'Demanda Electrica (MW)', 'LOAD', 'Load',
+            'demand_mw', 'load_mw', 'Potencia Demandada (MW)', 'consumo_mw',
+            'DEMANDA', 'Demanda', 'demanda', 'Carga (MW)', 'carga_mw',
+            'demand_kw', 'load_kw', 'Carga (kW)', 'carga_kw',
+        ]
+        demand_kws = ['load', 'demand', 'demanda', 'consumo', 'carga']
+        for col in priority_exact:
+            if col in df.columns:
+                return col
+        for col in df.columns:
+            if any(kw in str(col).lower() for kw in demand_kws):
+                return col
+        return None
+
+    def _load_kw_for_dispatch(df, n_hours, dt_h, demand_mwh=0.0):
+        demand_col = _find_demand_column(df)
+        if demand_col is not None:
+            vals = pd.to_numeric(df[demand_col], errors='coerce').to_numpy(dtype=float)
+            finite = np.isfinite(vals)
+            positive = finite & (vals >= 0)
+            if positive.any() and len(vals) == int(n_hours):
+                fill_val = float(np.nanmedian(vals[positive]))
+                load = np.where(finite, vals, fill_val)
+                col_l = str(demand_col).lower()
+                if 'kw' in col_l and 'kwh' not in col_l:
+                    load_kw = load
+                    units = 'kW'
+                elif 'kwh' in col_l:
+                    load_kw = load / max(float(dt_h), 1e-9)
+                    units = 'kWh/step'
+                else:
+                    load_kw = load * 1000.0
+                    units = 'MW'
+                return np.clip(load_kw, 0.0, None), {
+                    'source': 'session_column',
+                    'column': demand_col,
+                    'units_assumed': units,
+                    'n_records': int(len(load_kw)),
+                }
+
+        annual_kwh = max(float(demand_mwh), 0.0) * 1000.0
+        if annual_kwh <= 0:
+            annual_kwh = 0.0
+        peak_kw = annual_kwh / 4380.0 if annual_kwh > 0 else 0.0
+        load_kw = build_load_profile(annual_kwh, peak_kw, 'industrial', int(n_hours)) if annual_kwh > 0 else np.zeros(int(n_hours))
+        return load_kw, {
+            'source': 'synthetic_profile',
+            'profile': 'industrial',
+            'annual_mwh_target': round(float(demand_mwh), 3),
+            'n_records': int(n_hours),
+        }
+
+    def _techno_hourly_dispatch(wind_kw, load_kw, index, dt_h, n_turbines, turbine, source_info):
+        n = min(len(wind_kw), len(load_kw))
+        wind_kw = np.asarray(wind_kw[:n], dtype=float)
+        load_kw = np.asarray(load_kw[:n], dtype=float)
+        used_kw = np.minimum(wind_kw, load_kw)
+        curtailed_kw = np.maximum(wind_kw - load_kw, 0.0)
+        deficit_kw = np.maximum(load_kw - wind_kw, 0.0)
+        total_load_kwh = float(load_kw.sum() * dt_h)
+        wind_kwh = float(wind_kw.sum() * dt_h)
+        served_kwh = float(used_kw.sum() * dt_h)
+        curtailed_kwh = float(curtailed_kw.sum() * dt_h)
+        deficit_kwh = float(deficit_kw.sum() * dt_h)
+        installed_kw = float(turbine.rated_power_kw) * int(n_turbines)
+        if isinstance(index, pd.DatetimeIndex) and len(index) >= n:
+            idx = index[:n]
+            labels_src = [str(t) for t in idx]
+        else:
+            idx = None
+            labels_src = [str(i) for i in range(n)]
+        step = max(1, n // 720)
+        traces = {
+            'labels': labels_src[::step],
+            'load_kw': [round(float(v), 3) for v in load_kw[::step]],
+            'wind_kw': [round(float(v), 3) for v in wind_kw[::step]],
+            'served_kw': [round(float(v), 3) for v in used_kw[::step]],
+            'curtailed_kw': [round(float(v), 3) for v in curtailed_kw[::step]],
+            'deficit_kw': [round(float(v), 3) for v in deficit_kw[::step]],
+            'step': int(step),
+        }
+        annual = []
+        if idx is not None:
+            years = sorted(set(idx.year))
+            for year in years:
+                mask = np.asarray(idx.year == year)
+                h = float(mask.sum() * dt_h)
+                l_kwh = float(load_kw[mask].sum() * dt_h)
+                w_kwh = float(wind_kw[mask].sum() * dt_h)
+                s_kwh = float(used_kw[mask].sum() * dt_h)
+                c_kwh = float(curtailed_kw[mask].sum() * dt_h)
+                d_kwh = float(deficit_kw[mask].sum() * dt_h)
+                annual.append({
+                    'year': int(year),
+                    'hours': round(h, 1),
+                    'load_mwh': round(l_kwh / 1000.0, 2),
+                    'wind_mwh': round(w_kwh / 1000.0, 2),
+                    'served_mwh': round(s_kwh / 1000.0, 2),
+                    'curtailed_mwh': round(c_kwh / 1000.0, 2),
+                    'deficit_mwh': round(d_kwh / 1000.0, 2),
+                    'coverage_pct': round(100.0 * s_kwh / l_kwh, 2) if l_kwh > 0 else 100.0,
+                    'curtailment_pct': round(100.0 * c_kwh / w_kwh, 2) if w_kwh > 0 else 0.0,
+                    'cf_pct': round(100.0 * w_kwh / (installed_kw * h), 2) if installed_kw > 0 and h > 0 else 0.0,
+                })
+        if not annual:
+            h = float(n * dt_h)
+            annual.append({
+                'year': 'serie',
+                'hours': round(h, 1),
+                'load_mwh': round(total_load_kwh / 1000.0, 2),
+                'wind_mwh': round(wind_kwh / 1000.0, 2),
+                'served_mwh': round(served_kwh / 1000.0, 2),
+                'curtailed_mwh': round(curtailed_kwh / 1000.0, 2),
+                'deficit_mwh': round(deficit_kwh / 1000.0, 2),
+                'coverage_pct': round(100.0 * served_kwh / total_load_kwh, 2) if total_load_kwh > 0 else 100.0,
+                'curtailment_pct': round(100.0 * curtailed_kwh / wind_kwh, 2) if wind_kwh > 0 else 0.0,
+                'cf_pct': round(100.0 * wind_kwh / (installed_kw * h), 2) if installed_kw > 0 and h > 0 else 0.0,
+            })
+        return {
+            'method': 'hourly_merit_order_wind_to_load',
+            'n_records': int(n),
+            'dt_h': round(float(dt_h), 4),
+            'years_detected': len(annual),
+            'load_source': source_info,
+            'total_load_mwh': round(total_load_kwh / 1000.0, 2),
+            'wind_available_mwh': round(wind_kwh / 1000.0, 2),
+            'served_by_wind_mwh': round(served_kwh / 1000.0, 2),
+            'curtailed_mwh': round(curtailed_kwh / 1000.0, 2),
+            'deficit_mwh': round(deficit_kwh / 1000.0, 2),
+            'coverage_pct': round(100.0 * served_kwh / total_load_kwh, 2) if total_load_kwh > 0 else 100.0,
+            'curtailment_pct': round(100.0 * curtailed_kwh / wind_kwh, 2) if wind_kwh > 0 else 0.0,
+            'capacity_factor_pct': round(100.0 * wind_kwh / (installed_kw * n * dt_h), 2) if installed_kw > 0 and n > 0 else 0.0,
+            'annual': annual,
+            'traces': traces,
+        }
+
     # ─── MAIN PAGE ────────────────────────────────────────────────────────────
 
     @app.route('/health')
@@ -1298,17 +1444,31 @@ def create_app():
             ws_col      = sess.get('target_col', 'wind_speed')
             ws_height_m = float(body.get('ws_height_m', 50.0))
             df          = sess['df']
-            ws_raw      = df[ws_col].fillna(df[ws_col].median()).values if ws_col in df.columns else np.array([])
             requested_n_turbines = int(body.get('n_turbines') or 1)
             annual_energy_override_mwh = body.get('annual_energy_mwh')
             annual_wind_mean_ms = body.get('annual_wind_mean_ms')
+            dt_h = _infer_dt_h(df.index)
+            wind_info = {'source': 'session'}
+            dispatch_index = df.index
 
             if annual_wind_mean_ms is not None and np.isfinite(float(annual_wind_mean_ms)) and float(annual_wind_mean_ms) > 0:
-                from core.kriging import _virtual_weibull_series
-                ws_hub = _virtual_weibull_series(float(annual_wind_mean_ms), 2.0, n_hours=8760)
+                ws_hub, _ = _farm_weibull_fallback(float(annual_wind_mean_ms), 2.0, n_hours=8760)
+                dt_h = 1.0
+                dispatch_index = None
+                wind_info = {
+                    'source': 'forecast_weibull',
+                    'annual_wind_mean_ms': float(annual_wind_mean_ms),
+                    'n_records': int(len(ws_hub)),
+                }
             else:
-                # extrapolate to hub height
-                ws_hub = extrapolate_wind_hellmann(ws_raw, ws_height_m, turbine.hub_height_m)
+                ws_hub, _, _, _, _, wind_info = _farm_wind_from_session(
+                    df, ws_col, body.get('wd_col', 'wind_dir'), ws_height_m, turbine.hub_height_m
+                )
+                if ws_hub is None:
+                    return _err(
+                        'La serie horaria de viento no tiene datos válidos para el análisis tecno-económico '
+                        f'({wind_info.get("reason", "invalid_session_wind")}).'
+                    )
 
             # air density — pressure ya viene en Pa (data.py normaliza)
             rho = air_density()
@@ -1325,7 +1485,6 @@ def create_app():
             else:
                 # annual energy per turbine
                 p_kw  = turbine.power_kw_density_corrected(ws_hub, rho)
-                dt_h  = 1.0  # assume hourly data
                 hours_in_data = len(ws_hub) * dt_h
                 years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
                 annual_kwh_per_turbine = float((p_kw * dt_h).sum() / years_in_data)
@@ -1355,10 +1514,25 @@ def create_app():
 
             # Cp analysis
             cp = tea.cp_analysis(turbine, ws_hub, rho=rho)
+            p_kw_dispatch = turbine.power_kw_density_corrected(ws_hub, rho) * n_turbines
+            hours_in_data = len(ws_hub) * dt_h
+            years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
+            dispatch_annual_kwh = float((p_kw_dispatch * dt_h).sum() / years_in_data) if years_in_data > 0 else 0.0
+            target_annual_kwh = annual_kwh_per_turbine * n_turbines
+            if dispatch_annual_kwh > 0 and target_annual_kwh > 0:
+                p_kw_dispatch = p_kw_dispatch * (target_annual_kwh / dispatch_annual_kwh)
+            load_kw, load_info = _load_kw_for_dispatch(
+                df, len(ws_hub), dt_h, demand_mwh=float(fin_cfg.get('demand_mwh', 0))
+            )
+            hourly_dispatch = _techno_hourly_dispatch(
+                p_kw_dispatch, load_kw, dispatch_index, dt_h, n_turbines, turbine, load_info
+            )
 
             return jsonify(numpy_to_python({
                 'analysis': analysis,
                 'cp': cp,
+                'hourly_dispatch': hourly_dispatch,
+                'wind_source': wind_info,
                 'turbine': turbine.to_dict(),
                 'n_turbines_needed': n_turbines_req,
                 'n_turbines_used':   n_turbines,

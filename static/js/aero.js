@@ -2594,14 +2594,18 @@ function renderTechnoScenarioResult() {
     document.getElementById('te-viable-badge').style.display = 'none';
     document.getElementById('te-kpi-grid').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>';
     document.querySelector('#te-cashflow-table tbody').innerHTML = '';
+    document.getElementById('te-dispatch-kpis').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver despacho horario.</p>';
+    document.getElementById('te-dispatch-badge').textContent = '—';
+    document.querySelector('#te-dispatch-table tbody').innerHTML = '';
     document.getElementById('badge-cp-max').textContent = '—';
-    ['chart-capex', 'chart-cashflow', 'chart-cp'].forEach(destroyChart);
+    ['chart-capex', 'chart-cashflow', 'chart-cp', 'chart-te-dispatch'].forEach(destroyChart);
     return;
   }
   WP.technoResult = r;
   renderTechnoKPIs(r);
   renderCapexChart(r.analysis?.capex);
   renderCashflowChart(r.analysis?.cashflow_table);
+  renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
   renderCpChart(r.cp);
   renderCashflowTable(r.analysis?.cashflow_table);
 }
@@ -2782,6 +2786,78 @@ function renderCpChart(cp) {
       plugins: { legend: { display: true, labels: { font: { size: 10 } } } },
       scales: { x: { grid: { color: gridColor() }, title: { display: true, text: 'm/s' } },
                 y: { grid: { color: gridColor() }, min: 0, max: 0.65, title: { display: true, text: 'Cp' } } } }
+  });
+}
+
+function renderTechnoDispatch(d, windSource = null) {
+  const kpiEl = document.getElementById('te-dispatch-kpis');
+  const badge = document.getElementById('te-dispatch-badge');
+  const tbody = document.querySelector('#te-dispatch-table tbody');
+  if (!d) {
+    if (kpiEl) kpiEl.innerHTML = '<p class="text-muted" style="font-size:.8rem">Sin despacho horario disponible.</p>';
+    if (badge) badge.textContent = '—';
+    if (tbody) tbody.innerHTML = '';
+    destroyChart('chart-te-dispatch');
+    return;
+  }
+  const fmt = (v, dec = 0) => Number.isFinite(Number(v)) ? Number(v).toLocaleString('es-MX', { maximumFractionDigits: dec }) : '—';
+  const loadSrc = d.load_source?.source === 'session_column'
+    ? `Carga real: ${d.load_source.column}`
+    : 'Carga sintética escalada';
+  if (badge) badge.textContent = `${d.n_records || 0} datos · Δt=${d.dt_h || 1} h`;
+  const items = [
+    ['Carga total', fmt(d.total_load_mwh, 1) + ' MWh', loadSrc],
+    ['Viento disponible', fmt(d.wind_available_mwh, 1) + ' MWh', windSource?.source || 'serie'],
+    ['Energía servida', fmt(d.served_by_wind_mwh, 1) + ' MWh', 'wind → carga'],
+    ['Déficit/importación', fmt(d.deficit_mwh, 1) + ' MWh', 'demanda no cubierta'],
+    ['Excedente/curtailment', fmt(d.curtailed_mwh, 1) + ' MWh', `${fmt(d.curtailment_pct, 2)}%`],
+    ['Cobertura horaria', fmt(d.coverage_pct, 2) + '%', `${d.years_detected || 1} año(s)`],
+  ];
+  if (kpiEl) {
+    kpiEl.innerHTML = items.map(([l, v, u]) => `<div class="te-kpi-item">
+      <div class="kpi-label">${l}</div>
+      <div class="kpi-value">${v}<span style="font-size:.68rem;color:var(--text-muted);margin-left:4px">${u}</span></div>
+    </div>`).join('');
+  }
+  if (tbody) {
+    tbody.innerHTML = (d.annual || []).map(r => `<tr>
+      <td>${r.year}</td>
+      <td>${fmt(r.hours, 1)}</td>
+      <td>${fmt(r.load_mwh, 2)}</td>
+      <td>${fmt(r.wind_mwh, 2)}</td>
+      <td>${fmt(r.served_mwh, 2)}</td>
+      <td>${fmt(r.curtailed_mwh, 2)}</td>
+      <td>${fmt(r.deficit_mwh, 2)}</td>
+      <td>${fmt(r.coverage_pct, 2)}%</td>
+      <td>${fmt(r.curtailment_pct, 2)}%</td>
+      <td>${fmt(r.cf_pct, 2)}%</td>
+    </tr>`).join('');
+  }
+  const tr = d.traces || {};
+  destroyChart('chart-te-dispatch');
+  const ctx = document.getElementById('chart-te-dispatch')?.getContext('2d');
+  if (!ctx || !tr.load_kw?.length) return;
+  WP.charts['chart-te-dispatch'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: tr.labels || tr.load_kw.map((_, i) => i),
+      datasets: [
+        { label: 'Carga', data: tr.load_kw, borderColor: ink(), backgroundColor: ink() + '10', fill: false, pointRadius: 0, borderWidth: 1.4 },
+        { label: 'Viento disponible', data: tr.wind_kw, borderColor: acc(), backgroundColor: acc() + '22', fill: true, pointRadius: 0, borderWidth: 1.2 },
+        { label: 'Servida', data: tr.served_kw, borderColor: acc3(), backgroundColor: acc3() + '16', fill: true, pointRadius: 0, borderWidth: 1 },
+        { label: 'Déficit', data: tr.deficit_kw, borderColor: '#ef4444', backgroundColor: '#ef444422', fill: true, pointRadius: 0, borderWidth: 1 },
+        { label: 'Excedente', data: tr.curtailed_kw, borderColor: gold(), backgroundColor: gold() + '20', fill: true, pointRadius: 0, borderWidth: 1 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
+      scales: {
+        x: { display: false },
+        y: { title: { display: true, text: 'kW' }, grid: { color: gridColor() } },
+      },
+    },
   });
 }
 
