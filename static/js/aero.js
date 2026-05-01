@@ -5646,13 +5646,16 @@ function parqueInitMap() {
 function parqueRenderKrigingLayer(key) {
   const map = parqueInitMap();
   if (!map) return;
-  const krigResult = (typeof KRIG !== 'undefined') ? KRIG.result : null;
+  let krigResult = null;
+  if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
+  else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
+  
   if (!krigResult) {
     document.getElementById('parque-map-status').textContent = 'Sin Kriging';
     document.getElementById('parque-map-hint').style.display = '';
     return;
   }
-  const grid = krigResult[key] || krigResult['wind'];
+  const grid = krigResult[key] || krigResult['wind'] || krigResult['speed'];
   if (!grid || !grid.z || !grid.bounds) return;
   if (PARQUE.windOverlay) { map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
   const { z, bounds, z_min, z_max } = grid;
@@ -5688,7 +5691,10 @@ function parqueRenderPolygon() {
   const map = parqueInitMap();
   if (!map) return;
   if (PARQUE.polyLayer) { map.removeLayer(PARQUE.polyLayer); PARQUE.polyLayer = null; }
-  const pts = (typeof KRIG !== 'undefined') ? KRIG.parkPoints : null;
+  let pts = null;
+  if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) pts = MAPA.parkPoints;
+  else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) pts = KRIG.parkPoints;
+  
   if (!pts || pts.length < 3) return;
   PARQUE.polyLayer = L.polygon(pts, {
     color: '#f59e0b', weight: 2.5,
@@ -5896,7 +5902,7 @@ async function parqueLoadDemandFromSession() {
     } else {
       if (badge) badge.style.display = 'none';
       const cols = (r.columns || []).join(', ');
-      toast(`No se encontró columna de demanda. Columnas disponibles: ${cols || '—'}`, 'warning');
+      console.warn(`No se encontró columna de demanda. Columnas disponibles: ${cols || '—'}`);
     }
   } catch (e) {
     toast(`Error al leer demanda: ${e.message}`, 'error');
@@ -6026,18 +6032,24 @@ async function parqueUpdateRecommendation() {
 
 // ── Optimización y simulación ─────────────────────────────────────────────────
 async function parqueOptimize() {
-  const polygon = (typeof KRIG !== 'undefined') ? KRIG.parkPoints : null;
+  let polygon = null;
+  if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) polygon = MAPA.parkPoints;
+  else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) polygon = KRIG.parkPoints;
+
   if (!polygon || polygon.length < 3) {
-    toast('Dibuja y cierra el polígono del parque en la sección Kriging Clásico primero.', 'warning');
+    toast('Dibuja y cierra el polígono del parque en la sección Mapa o Kriging Clásico primero.', 'warning');
     return;
   }
   const turbineKey = document.getElementById('parque-turbine')?.value;
   if (!turbineKey) { toast('Selecciona una turbina.', 'warning'); return; }
 
   // Wind grid from kriging result
-  const krigResult = (typeof KRIG !== 'undefined') ? KRIG.result : null;
+  let krigResult = null;
+  if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
+  else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
+  
   const layerKey   = document.getElementById('parque-map-layer')?.value || 'wind';
-  const windGrid   = krigResult ? (krigResult[layerKey] || krigResult['wind'] || null) : null;
+  const windGrid   = krigResult ? (krigResult[layerKey] || krigResult['wind'] || krigResult['speed'] || null) : null;
 
   // Mean wind speed for fallback / recommendation
   let vMean = 9.0, wK = 2.0;
