@@ -297,6 +297,91 @@ def create_app():
         if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
         return obj
 
+    def _farm_wind_from_session(df, ws_col, wd_col, measurement_h, hub_height_m):
+        info = {
+            'source': 'session',
+            'ws_col': ws_col,
+            'wd_col': wd_col,
+            'n_rows': int(len(df)),
+        }
+        if ws_col not in df.columns:
+            info.update({'valid': False, 'reason': 'missing_ws_col'})
+            return None, None, None, None, None, info
+
+        ws_num = pd.to_numeric(df[ws_col], errors='coerce').to_numpy(dtype=float)
+        finite_raw = np.isfinite(ws_num)
+        positive_raw = finite_raw & (ws_num > 0)
+        info.update({
+            'raw_finite_count': int(finite_raw.sum()),
+            'raw_positive_count': int(positive_raw.sum()),
+            'raw_valid_pct': round(100.0 * float(finite_raw.sum()) / max(len(ws_num), 1), 2),
+        })
+        if not finite_raw.any():
+            info.update({'valid': False, 'reason': 'no_finite_ws_raw'})
+            return None, None, None, None, None, info
+        if not positive_raw.any():
+            info.update({'valid': False, 'reason': 'no_positive_ws_raw'})
+            return None, None, None, None, None, info
+
+        fill_ws = float(np.nanmedian(ws_num[finite_raw]))
+        ws_raw = np.where(finite_raw, ws_num, fill_ws)
+        reference_wind_mean = float(np.mean(ws_raw))
+        ws_hub = np.asarray(
+            extrapolate_wind_hellmann(ws_raw, measurement_h, hub_height_m),
+            dtype=float,
+        )
+        finite_hub = np.isfinite(ws_hub)
+        positive_hub = finite_hub & (ws_hub > 0)
+        info.update({
+            'raw_mean_ms': round(reference_wind_mean, 4),
+            'hub_finite_count': int(finite_hub.sum()),
+            'hub_positive_count': int(positive_hub.sum()),
+            'hub_mean_ms': round(float(np.mean(ws_hub[finite_hub])), 4) if finite_hub.any() else None,
+        })
+        if not finite_hub.any():
+            info.update({'valid': False, 'reason': 'no_finite_ws_hub'})
+            return None, None, None, None, reference_wind_mean, info
+        if not positive_hub.any():
+            info.update({'valid': False, 'reason': 'no_positive_ws_hub'})
+            return None, None, None, None, reference_wind_mean, info
+
+        if wd_col in df.columns:
+            wd_num = pd.to_numeric(df[wd_col], errors='coerce').to_numpy(dtype=float)
+            wd = np.where(np.isfinite(wd_num), wd_num, 0.0)
+        else:
+            wd = np.zeros_like(ws_hub)
+            info['wd_fallback'] = 'constant_0'
+
+        temp_c = None
+        pres_p = None
+        if 'temperature' in df.columns and 'pressure' in df.columns:
+            temp_num = pd.to_numeric(df['temperature'], errors='coerce').to_numpy(dtype=float)
+            pres_num = pd.to_numeric(df['pressure'], errors='coerce').to_numpy(dtype=float)
+            finite_temp = np.isfinite(temp_num)
+            finite_pres = np.isfinite(pres_num)
+            if finite_temp.any() and finite_pres.any():
+                temp_c = np.where(finite_temp, temp_num, float(np.nanmedian(temp_num[finite_temp])))
+                pres_p = np.where(finite_pres, pres_num, float(np.nanmedian(pres_num[finite_pres])))
+
+        info['valid'] = True
+        return ws_hub, wd, temp_c, pres_p, reference_wind_mean, info
+
+    def _farm_weibull_fallback(v_mean_hub, weibull_k, n_hours=8760):
+        from core.kriging import _virtual_weibull_series
+        try:
+            mean_in = float(v_mean_hub)
+        except Exception:
+            mean_in = 9.0
+        try:
+            k_in = float(weibull_k)
+        except Exception:
+            k_in = 2.0
+        mean = mean_in if np.isfinite(mean_in) and mean_in > 0 else 9.0
+        k = k_in if np.isfinite(k_in) and k_in > 0 else 2.0
+        ws_hub = _virtual_weibull_series(mean, k, n_hours=int(n_hours))
+        wd = np.full_like(ws_hub, 270.0)
+        return ws_hub, wd
+
     # ─── MAIN PAGE ────────────────────────────────────────────────────────────
 
     @app.route('/health')
@@ -1340,21 +1425,33 @@ def create_app():
             df = sess['df']
             ws_col = sess.get('target_col', 'wind_speed')
             wd_col = body.get('wd_col', 'wind_dir')
-            if ws_col not in df.columns:
-                return _err(f'Columna de viento "{ws_col}" no presente.')
             ws_h    = float(body.get('ws_height_m', 50.0))
-            ws_raw  = df[ws_col].fillna(df[ws_col].median()).values
-            ws_hub  = extrapolate_wind_hellmann(ws_raw, ws_h, turbine.hub_height_m)
-
-            if wd_col in df.columns:
-                wd = df[wd_col].fillna(0).values
-            else:
-                # Sin dirección: una sola dirección dominante (sector único)
-                wd = np.zeros_like(ws_hub)
-
-            # Pasa T/P del df cuando estén disponibles para densidad real
-            temperature_c = df['temperature'].values if 'temperature' in df.columns else None
-            pressure_pa   = df['pressure'].values    if 'pressure'    in df.columns else None
+            ws_hub, wd, temperature_c, pressure_pa, _, wind_info = _farm_wind_from_session(
+                df, ws_col, wd_col, ws_h, turbine.hub_height_m
+            )
+            if ws_hub is None:
+                v_mean = float(body.get('v_mean', 9.0))
+                weibull_k = float(body.get('weibull_k', 2.0))
+                v_mean_hub = float(extrapolate_wind_hellmann(
+                    np.asarray([v_mean], dtype=float), ws_h, turbine.hub_height_m
+                )[0])
+                fallback_reason = wind_info.get('reason', 'invalid_session_wind')
+                logger.warning(
+                    'farm_simulate: viento inválido para sesión %s '
+                    '(columna «%s», razón=%s). Usando síntesis Weibull v_mean=%.2f m/s.',
+                    sid, ws_col, fallback_reason, v_mean_hub
+                )
+                ws_hub, wd = _farm_weibull_fallback(v_mean_hub, weibull_k, n_hours=8760)
+                temperature_c = None
+                pressure_pa = None
+                wind_info = {
+                    **wind_info,
+                    'source': 'weibull_fallback',
+                    'fallback_reason': fallback_reason,
+                    'fallback_mean_hub_ms': round(float(v_mean_hub), 4),
+                    'fallback_weibull_k': float(weibull_k),
+                    'valid': True,
+                }
 
             result = simulate_wind_farm(
                 layout_xy=layout,
@@ -1369,6 +1466,8 @@ def create_app():
                 pressure_pa=pressure_pa,
             )
             result['turbine'] = turbine.to_dict()
+            result['wind_source'] = wind_info.get('source')
+            result['wind_diagnostics'] = wind_info
             return jsonify(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -1739,6 +1838,8 @@ def create_app():
             temp_c = None
             pres_p = None
             reference_wind_mean = None
+            wind_info = {'source': 'weibull_fallback', 'reason': 'no_session'}
+            ws_col = None
 
             if sid:
                 sess   = sessions.get(sid, {})
@@ -1746,35 +1847,45 @@ def create_app():
                     df     = sess['df']
                     ws_col = sess.get('target_col', 'wind_speed')
                     wd_col = body.get('wd_col', 'wind_dir')
-                    if ws_col in df.columns:
-                        ws_raw = df[ws_col].fillna(df[ws_col].median()).values
-                        reference_wind_mean = float(np.nanmean(ws_raw))
-                        ws_hub = extrapolate_wind_hellmann(ws_raw, measurement_h, turbine.hub_height_m)
-                        wd     = (df[wd_col].fillna(0).values
-                                  if wd_col in df.columns else np.zeros_like(ws_hub))
-                        temp_c = df['temperature'].values if 'temperature' in df.columns else None
-                        pres_p = df['pressure'].values    if 'pressure'    in df.columns else None
-
-            if ws_hub is None or not np.any(np.isfinite(ws_hub)):
-                if ws_hub is not None:
-                    logger.warning(
-                        'farm_optimize: ws_hub todos-NaN para sesión %s '
-                        '(columna «%s»). Usando síntesis Weibull v_mean=%.2f m/s.',
-                        sid, ws_col if sid else '—', v_mean_hub
+                    ws_hub, wd, temp_c, pres_p, reference_wind_mean, wind_info = _farm_wind_from_session(
+                        df, ws_col, wd_col, measurement_h, turbine.hub_height_m
                     )
-                from core.kriging import _virtual_weibull_series
+                else:
+                    wind_info = {'source': 'weibull_fallback', 'valid': False, 'reason': 'session_without_df'}
+
+            ws_hub_arr = np.asarray(ws_hub, dtype=float) if ws_hub is not None else np.array([], dtype=float)
+            hub_finite = np.isfinite(ws_hub_arr)
+            hub_positive = hub_finite & (ws_hub_arr > 0)
+            if ws_hub is None or not hub_finite.any() or not hub_positive.any():
+                fallback_reason = wind_info.get('reason', 'invalid_session_wind')
+                logger.warning(
+                    'farm_optimize: viento inválido para sesión %s '
+                    '(columna «%s», razón=%s). Usando síntesis Weibull v_mean=%.2f m/s.',
+                    sid or '—', ws_col or '—', fallback_reason, v_mean_hub
+                )
                 reference_wind_mean = v_mean
-                ws_hub = _virtual_weibull_series(v_mean_hub, weibull_k, n_hours=8760)
-                wd = np.full_like(ws_hub, 270.0)
+                ws_hub, wd = _farm_weibull_fallback(v_mean_hub, weibull_k, n_hours=8760)
+                temp_c = None
+                pres_p = None
+                wind_info = {
+                    **wind_info,
+                    'source': 'weibull_fallback',
+                    'fallback_reason': fallback_reason,
+                    'fallback_mean_hub_ms': round(float(v_mean_hub), 4),
+                    'fallback_weibull_k': float(weibull_k),
+                    'valid': True,
+                }
 
             sim_result = None
             if ws_hub is not None and len(ws_hub) > 0:
-                mean_ws = float(np.mean(ws_hub))
+                mean_ws = float(np.nanmean(ws_hub))
                 local_multipliers = None
                 multiplier_ref = reference_wind_mean if reference_wind_mean and reference_wind_mean > 0 else mean_ws
-                if 'wind_at_turbines' in opt and opt['wind_at_turbines'] and multiplier_ref > 0:
+                if wind_grid and 'wind_at_turbines' in opt and opt['wind_at_turbines'] and multiplier_ref > 0:
                     wind_at = np.asarray(opt['wind_at_turbines'], dtype=float)
                     if wind_at.shape[0] == len(opt['layout_xy_m']):
+                        wind_at_valid = np.isfinite(wind_at) & (wind_at > 0)
+                        wind_at = np.where(wind_at_valid, wind_at, multiplier_ref)
                         local_multipliers = np.nan_to_num(
                             wind_at / multiplier_ref,
                             nan=1.0,
@@ -1797,6 +1908,8 @@ def create_app():
                 )
             if sim_result:
                 sim_result['turbine'] = turbine.to_dict()
+                sim_result['wind_source'] = wind_info.get('source')
+                sim_result['wind_diagnostics'] = wind_info
 
             result = {**opt, 'turbine': turbine.to_dict()}
             if sim_result:
