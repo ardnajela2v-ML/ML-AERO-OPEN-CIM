@@ -2741,7 +2741,30 @@
 <section class="module" id="mod-techno">
   <div class="module-header">
     <h1 class="module-title">Análisis Tecno-Económico</h1>
-    <p class="module-desc">VAN · LCOE · VAE · Desglose CAPEX · Curva Cp. Metodología de doctorado.</p>
+    <p class="module-desc">Escenarios independientes: viento real · predicción ML 25 años · predicción corregida con Kriging/Parque.</p>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn active" data-te-scenario="real">Sin predicción</button>
+    <button class="tab-btn" data-te-scenario="ml">Con predicción ML</button>
+    <button class="tab-btn" data-te-scenario="corrected">Viento corregido + predicción</button>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Fuente de datos del escenario</span><span class="badge badge--info" id="te-scenario-badge">Base</span></div>
+      <div class="card-body" id="te-scenario-status">
+        <p class="text-muted" style="font-size:.8rem">Viento real de la estación meteorológica cargado en Data Hub.</p>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Referencia del layout del parque</span><span class="badge badge--info" id="te-layout-badge">Parque</span></div>
+      <div class="card-body">
+        <div id="te-layout-preview" style="height:190px;border:1px solid var(--border);border-radius:12px;background:radial-gradient(circle at 35% 20%,rgba(29,158,117,.18),transparent 32%),linear-gradient(135deg,rgba(15,110,86,.12),rgba(8,18,32,.22));overflow:hidden;position:relative;display:flex;align-items:center;justify-content:center">
+          <span class="text-muted" style="font-size:.78rem">Optimiza Parque para ver el layout de referencia.</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="grid-2 mt-2">

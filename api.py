@@ -1214,9 +1214,16 @@ def create_app():
             ws_height_m = float(body.get('ws_height_m', 50.0))
             df          = sess['df']
             ws_raw      = df[ws_col].fillna(df[ws_col].median()).values if ws_col in df.columns else np.array([])
+            requested_n_turbines = int(body.get('n_turbines') or 1)
+            annual_energy_override_mwh = body.get('annual_energy_mwh')
+            annual_wind_mean_ms = body.get('annual_wind_mean_ms')
 
-            # extrapolate to hub height
-            ws_hub = extrapolate_wind_hellmann(ws_raw, ws_height_m, turbine.hub_height_m)
+            if annual_wind_mean_ms is not None and np.isfinite(float(annual_wind_mean_ms)) and float(annual_wind_mean_ms) > 0:
+                from core.kriging import _virtual_weibull_series
+                ws_hub = _virtual_weibull_series(float(annual_wind_mean_ms), 2.0, n_hours=8760)
+            else:
+                # extrapolate to hub height
+                ws_hub = extrapolate_wind_hellmann(ws_raw, ws_height_m, turbine.hub_height_m)
 
             # air density — pressure ya viene en Pa (data.py normaliza)
             rho = air_density()
@@ -1228,12 +1235,15 @@ def create_app():
                 except Exception:
                     pass
 
-            # annual energy per turbine
-            p_kw  = turbine.power_kw_density_corrected(ws_hub, rho)
-            dt_h  = 1.0  # assume hourly data
-            hours_in_data = len(ws_hub) * dt_h
-            years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
-            annual_kwh_per_turbine = float((p_kw * dt_h).sum() / years_in_data)
+            if annual_energy_override_mwh is not None and np.isfinite(float(annual_energy_override_mwh)) and float(annual_energy_override_mwh) > 0:
+                annual_kwh_per_turbine = float(annual_energy_override_mwh) * 1000 / max(requested_n_turbines, 1)
+            else:
+                # annual energy per turbine
+                p_kw  = turbine.power_kw_density_corrected(ws_hub, rho)
+                dt_h  = 1.0  # assume hourly data
+                hours_in_data = len(ws_hub) * dt_h
+                years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
+                annual_kwh_per_turbine = float((p_kw * dt_h).sum() / years_in_data)
 
             # sizing + financial
             demand_mwh    = float(fin_cfg.get('demand_mwh', 0))

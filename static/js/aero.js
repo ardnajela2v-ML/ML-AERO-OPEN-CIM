@@ -16,6 +16,12 @@ const WP = {
   compareResult:null,
   forecastResult:null,
   arenaCache: {},
+  technoActiveScenario: 'real',
+  technoScenarios: {
+    real: { inputs: null, result: null },
+    ml: { inputs: null, result: null },
+    corrected: { inputs: null, result: null },
+  },
 };
 
 // ─── CHART.JS DEFAULTS ───────────────────────────────────────────────────────
@@ -2482,6 +2488,9 @@ function renderMonthlyWS(c) {
 // ─── TECNO-ECONÓMICO MODULE ───────────────────────────────────────────────────
 function bindTechno() {
   document.getElementById('btn-calc-techno').addEventListener('click', calcTechnoEconomic);
+  document.querySelectorAll('[data-te-scenario]').forEach(btn => {
+    btn.addEventListener('click', () => technoSwitchScenario(btn.dataset.teScenario));
+  });
   // populate turbine select from API
   loadTurbineList().then(() => {
     const sel = document.getElementById('turbine-real-group');
@@ -2491,36 +2500,173 @@ function bindTechno() {
       document.getElementById('te-turbine').appendChild(clone);
     });
   });
+  technoRefreshScenarioView();
+}
+
+function technoCurrentScenario() {
+  return WP.technoScenarios[WP.technoActiveScenario] || WP.technoScenarios.real;
+}
+
+function technoCollectInputs() {
+  return {
+    turbine: document.getElementById('te-turbine')?.value || 'SG_8.0_167',
+    nTurbines: parseInt(document.getElementById('te-nturbines')?.value) || 10,
+    demand: parseFloat(document.getElementById('te-demand')?.value) || 0,
+    price: parseFloat(document.getElementById('te-price')?.value) || 0.07,
+    rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
+    years: parseInt(document.getElementById('te-years')?.value) || 20,
+    costKw: parseFloat(document.getElementById('te-costkw')?.value) || 2000,
+    fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
+  };
+}
+
+function technoApplyInputs(inputs) {
+  if (!inputs) return;
+  const set = (id, value) => { const el = document.getElementById(id); if (el && value != null) el.value = value; };
+  set('te-turbine', inputs.turbine);
+  set('te-nturbines', inputs.nTurbines);
+  set('te-demand', inputs.demand);
+  set('te-price', inputs.price);
+  set('te-rate', inputs.rate);
+  set('te-years', inputs.years);
+  set('te-costkw', inputs.costKw);
+  set('te-fx', inputs.fx);
+}
+
+function technoBestAnnualValue(key) {
+  const cfg = getForecastFutureConfig(key);
+  const proj = cfg?.projection || {};
+  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel : Object.keys(proj).find(k => proj[k]?.annual?.length);
+  const arr = model ? proj[model]?.annual : null;
+  if (!arr?.length) return null;
+  const vals = arr.map(Number).filter(Number.isFinite);
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function technoScenarioDefaults(key) {
+  const base = technoCollectInputs();
+  if (key === 'ml' || key === 'corrected') base.years = 25;
+  const demand = technoBestAnnualValue('demand');
+  const pml = technoBestAnnualValue('pml');
+  const rate = technoBestAnnualValue('interest');
+  const fx = technoBestAnnualValue('fx');
+  if (demand != null) base.demand = Math.round(demand);
+  if (pml != null) base.price = Number(pml).toFixed(4);
+  if (rate != null) base.rate = Number(rate).toFixed(2);
+  if (fx != null) base.fx = Number(fx).toFixed(2);
+  if (key === 'corrected' && PARQUE.result?.turbine?.name) base.turbine = PARQUE.result.turbine.name;
+  if (key === 'corrected' && PARQUE.result?.turbines?.length) base.nTurbines = PARQUE.result.turbines.length;
+  return base;
+}
+
+function technoSwitchScenario(key) {
+  WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
+  WP.technoActiveScenario = key || 'real';
+  document.querySelectorAll('[data-te-scenario]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.teScenario === WP.technoActiveScenario);
+  });
+  const scenario = technoCurrentScenario();
+  technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
+  technoRefreshScenarioView();
+}
+
+function technoRefreshScenarioView() {
+  const key = WP.technoActiveScenario;
+  const badge = document.getElementById('te-scenario-badge');
+  const status = document.getElementById('te-scenario-status');
+  const meta = {
+    real: ['Base', 'Viento real de la estación meteorológica cargado en Data Hub. Demanda/PML/FX pueden capturarse o venir del archivo cargado.'],
+    ml: ['ML 25 años', 'Usa proyecciones futuras de Forecast Studio para viento, demanda, PML, tasa de interés y tipo de cambio cuando estén disponibles.'],
+    corrected: ['ML + Kriging', 'Usa la predicción ML y prioriza el AEP/layout corregido de Parque/Kriging cuando existe una optimización vigente.'],
+  };
+  if (badge) badge.textContent = meta[key]?.[0] || 'Escenario';
+  if (status) status.innerHTML = `<p class="text-muted" style="font-size:.8rem">${meta[key]?.[1] || ''}</p>`;
+  renderTechnoLayoutPreview();
+  renderTechnoScenarioResult();
+}
+
+function renderTechnoScenarioResult() {
+  const r = technoCurrentScenario().result;
+  if (!r) {
+    document.getElementById('te-viable-badge').style.display = 'none';
+    document.getElementById('te-kpi-grid').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>';
+    document.querySelector('#te-cashflow-table tbody').innerHTML = '';
+    document.getElementById('badge-cp-max').textContent = '—';
+    ['chart-capex', 'chart-cashflow', 'chart-cp'].forEach(destroyChart);
+    return;
+  }
+  WP.technoResult = r;
+  renderTechnoKPIs(r);
+  renderCapexChart(r.analysis?.capex);
+  renderCashflowChart(r.analysis?.cashflow_table);
+  renderCpChart(r.cp);
+  renderCashflowTable(r.analysis?.cashflow_table);
+}
+
+function renderTechnoLayoutPreview() {
+  const el = document.getElementById('te-layout-preview');
+  if (!el) return;
+  const pts = PARQUE.optResult?.layout_xy_m || [];
+  if (!pts.length) {
+    el.innerHTML = '<span class="text-muted" style="font-size:.78rem">Optimiza Parque para ver el layout de referencia.</span>';
+    return;
+  }
+  const xs = pts.map(p => Number(p[0])).filter(Number.isFinite);
+  const ys = pts.map(p => Number(p[1])).filter(Number.isFinite);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const rangeX = maxX - minX || 1, rangeY = maxY - minY || 1;
+  const nodes = pts.map((p, i) => {
+    const x = 8 + ((Number(p[0]) - minX) / rangeX) * 84;
+    const y = 10 + (1 - ((Number(p[1]) - minY) / rangeY)) * 80;
+    return `<div title="T${i+1}" style="position:absolute;left:${x}%;top:${y}%;transform:translate(-50%,-50%);filter:drop-shadow(0 8px 10px rgba(0,0,0,.35));">
+      <div style="width:30px;height:30px;border-radius:50%;background:linear-gradient(145deg,#f8fbff,#6fb7ff 55%,#0f5fa8);border:1px solid rgba(255,255,255,.85);display:flex;align-items:center;justify-content:center">
+        <svg width="24" height="24" viewBox="0 0 48 48" aria-hidden="true">
+          <line x1="24" y1="24" x2="24" y2="44" stroke="#0b1220" stroke-width="3" stroke-linecap="round"/>
+          <circle cx="24" cy="24" r="3.8" fill="#0b1220"/>
+          <path d="M24 22 C20 11 22 5 24 2 C28 8 29 15 26 22 Z" fill="#e0f2fe" stroke="#0b1220" stroke-width="1"/>
+          <path d="M26 25 C37 22 43 24 46 27 C39 30 32 31 25 27 Z" fill="#dbeafe" stroke="#0b1220" stroke-width="1"/>
+          <path d="M22 25 C15 34 9 36 5 36 C7 29 12 24 21 23 Z" fill="#bfdbfe" stroke="#0b1220" stroke-width="1"/>
+        </svg>
+      </div>
+      <div style="position:absolute;left:50%;top:18px;width:2px;height:18px;background:linear-gradient(#dbeafe,#64748b);transform:translateX(-50%)"></div>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div style="position:absolute;inset:0;background:linear-gradient(45deg,rgba(255,255,255,.03) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.03) 50%,rgba(255,255,255,.03) 75%,transparent 75%);background-size:34px 34px"></div>${nodes}
+    <span style="position:absolute;left:10px;bottom:8px;font-size:.68rem;color:var(--text-muted)">${pts.length} aerogeneradores · layout referencial</span>`;
 }
 
 async function calcTechnoEconomic() {
   if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
+  const scenarioKey = WP.technoActiveScenario;
   setStatus('Calculando análisis tecno-económico…');
   try {
-    const turbineKey = document.getElementById('te-turbine').value;
-    const nTurbines  = parseInt(document.getElementById('te-nturbines').value) || 10;
+    const inputs = technoCollectInputs();
+    const windMean = scenarioKey === 'ml' || scenarioKey === 'corrected' ? technoBestAnnualValue('wind') : null;
+    const parkAep = scenarioKey === 'corrected' ? PARQUE.result?.aep_mwh : null;
     const body = {
       session_id:    WP.sessionId,
-      n_turbines:    nTurbines,
+      scenario:      scenarioKey,
+      n_turbines:    inputs.nTurbines,
       ws_height_m:   parseFloat(document.getElementById('ws-height')?.value || 50),
-      turbine: { builtin_model: turbineKey },
+      annual_wind_mean_ms: windMean,
+      annual_energy_mwh: Number.isFinite(Number(parkAep)) ? Number(parkAep) : null,
+      turbine: { builtin_model: inputs.turbine },
       financial: {
-        demand_mwh:           parseFloat(document.getElementById('te-demand').value) || 0,
-        energy_price_usd_kwh: parseFloat(document.getElementById('te-price').value),
-        discount_rate_pct:    parseFloat(document.getElementById('te-rate').value),
-        project_years:        parseInt(document.getElementById('te-years').value),
-        cost_per_kw:          parseFloat(document.getElementById('te-costkw').value),
-        usd_to_mxn:           parseFloat(document.getElementById('te-fx').value) || 1,
+        demand_mwh:           inputs.demand,
+        energy_price_usd_kwh: inputs.price,
+        discount_rate_pct:    inputs.rate,
+        project_years:        inputs.years,
+        cost_per_kw:          inputs.costKw,
+        usd_to_mxn:           inputs.fx,
       }
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
+    WP.technoScenarios[scenarioKey].inputs = inputs;
+    WP.technoScenarios[scenarioKey].result = r;
     WP.technoResult = r;
-    renderTechnoKPIs(r);
-    renderCapexChart(r.analysis?.capex);
-    renderCashflowChart(r.analysis?.cashflow_table);
-    renderCpChart(r.cp);
-    renderCashflowTable(r.analysis?.cashflow_table);
-    if (r.n_turbines_needed > 0 && r.n_turbines_needed !== nTurbines) {
+    renderTechnoScenarioResult();
+    if (r.n_turbines_needed > 0 && r.n_turbines_needed !== inputs.nTurbines) {
       toast(`Demanda requiere ${r.n_turbines_needed} aerogeneradores`, 'info');
     }
     toast('Análisis completado', 'success');
