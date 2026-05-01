@@ -1119,49 +1119,50 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     weibull_ks = []
     sector_freqs, sector_speeds, sector_powers, sector_energies = [], [], [], []
 
-    for wf in wind_files:
-        path = os.path.join(wind_folder, wf)
+    paths = [os.path.join(wind_folder, wf) for wf in wind_files]
+    stats_rows = parallel_read_sites(paths, year=year, max_workers=6)
+
+    last_tf = turb_files[-1] if turb_files else None
+    last_x_c, last_y_c, last_name, last_rotor, last_p_nom_kw = None, None, None, None, None
+    if last_tf:
         try:
-            site = read_wind_file(path, year=year)
+            dat_last = pd.read_csv(os.path.join(turbines_folder, last_tf), header=None).values
+            last_x_c = dat_last[:, 0].astype(float)
+            last_y_c = dat_last[:, 1].astype(float)
+            last_name, last_rotor, last_p_nom_kw = parse_turbine_filename(last_tf)
         except Exception as e:
-            log.warning('legacy_three_maps: skip wind file %s — %s', wf, e)
-            continue
-        if site['n'] < 24:
-            continue
-        stats = site_wind_stats(site)
-        if stats is None:
+            log.warning('legacy_three_maps: error con la última turbina %s — %s', last_tf, e)
+            last_tf = None
+
+    for r in stats_rows:
+        if r is None or r.get('_lat') is None or r.get('_lon') is None:
             continue
 
         ctot_last, VAN_last = 0.0, 0.0
-        for tf in turb_files:
+        if last_tf is not None and last_x_c is not None:
             try:
-                dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
-                x_c = dat[:, 0].astype(float)
-                y_c = dat[:, 1].astype(float)
+                econ = turbine_site_economics(
+                    r['ws_hub'], r['rho'], last_x_c, last_y_c, last_rotor, last_p_nom_kw,
+                    demand_mwh=demand_mwh, tasa=tasa,
+                    price_usd_kwh=price_usd_kwh,
+                    price_mxn_per_usd=price_mxn_per_usd, anios=anios)
+                ctot_last = econ['capex_usd']
+                VAN_last  = econ['van_usd']
             except Exception as e:
-                log.warning('legacy_three_maps: skip turbine econ %s — %s', tf, e)
-                continue
-            name, rotor, p_nom_kw = parse_turbine_filename(tf)
-            econ = turbine_site_economics(
-                stats['ws_hub'], stats['rho'], x_c, y_c, rotor, p_nom_kw,
-                demand_mwh=demand_mwh, tasa=tasa,
-                price_usd_kwh=price_usd_kwh,
-                price_mxn_per_usd=price_mxn_per_usd, anios=anios)
-            ctot_last = econ['capex_usd']
-            VAN_last  = econ['van_usd']
+                log.warning('legacy_three_maps: turbine_site_economics error — %s', e)
 
-        lats.append(site['lat']); lons.append(site['lon'])
-        v_proms.append(stats['v_mean'])
-        gusts.append(stats['gust_ms'])
-        power_densities.append(stats['power_density_wm2'])
+        lats.append(r['_lat']); lons.append(r['_lon'])
+        v_proms.append(r['v_mean'])
+        gusts.append(r['gust_ms'])
+        power_densities.append(r['power_density_wm2'])
         invers.append(float(ctot_last))
         vans.append(float(VAN_last))
-        names.append(site['name'])
-        weibull_ks.append(float(stats['weibull_K']))
-        sector_freqs.append(stats['sector_frequency_pct'])
-        sector_speeds.append(stats['sector_mean_speed'])
-        sector_powers.append(stats['sector_power_density_wm2'])
-        sector_energies.append(stats['sector_energy_pct'])
+        names.append(r['_name'])
+        weibull_ks.append(float(r['weibull_K']))
+        sector_freqs.append(r['sector_frequency_pct'])
+        sector_speeds.append(r['sector_mean_speed'])
+        sector_powers.append(r['sector_power_density_wm2'])
+        sector_energies.append(r['sector_energy_pct'])
 
     if len(lats) < 3:
         raise ValueError(f'Kriging necesita >= 3 sitios válidos (hay {len(lats)})')
