@@ -1610,10 +1610,19 @@ def create_app():
                     hub_height_m=hub_h,
                     rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
                 )
+            target_hub_h = body.get('hub_height_m', t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None)
+            if target_hub_h is not None:
+                turbine.hub_height_m = float(target_hub_h)
+            v_mean_rec = float(body.get('v_mean', 9.0))
+            if body.get('measurement_height_m') is not None:
+                measurement_h = float(body.get('measurement_height_m'))
+                v_mean_rec = float(extrapolate_wind_hellmann(
+                    np.asarray([v_mean_rec], dtype=float), measurement_h, turbine.hub_height_m
+                )[0])
             result = recommend_n_turbines(
                 turbine=turbine,
                 demand_mwh=float(body.get('demand_mwh', 5000)),
-                v_mean=float(body.get('v_mean', 9.0)),
+                v_mean=v_mean_rec,
                 weibull_k=float(body.get('weibull_k', 2.0)),
                 rho=float(body.get('rho', 1.225)),
                 availability=float(body.get('availability', 0.97)),
@@ -1676,12 +1685,19 @@ def create_app():
                     hub_height_m=hub_h,
                     rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
                 )
+            target_hub_h = body.get('hub_height_m', t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None)
+            if target_hub_h is not None:
+                turbine.hub_height_m = float(target_hub_h)
 
             wind_grid  = body.get('wind_grid')  or None
             v_mean     = float(body.get('v_mean',     9.0))
             weibull_k  = float(body.get('weibull_k',  2.0))
             avail      = float(body.get('availability',      0.97))
             elec_loss  = float(body.get('electrical_losses', 0.03))
+            measurement_h = float(body.get('measurement_height_m', body.get('ws_height_m', 50.0)))
+            v_mean_hub = float(extrapolate_wind_hellmann(
+                np.asarray([v_mean], dtype=float), measurement_h, turbine.hub_height_m
+            )[0])
 
             n_turbines = int(body.get('n_turbines', 0))
             demand_mwh = float(body.get('demand_mwh', 5000))
@@ -1689,7 +1705,7 @@ def create_app():
             if n_turbines <= 0:
                 rec        = recommend_n_turbines(
                     turbine=turbine, demand_mwh=demand_mwh,
-                    v_mean=v_mean, weibull_k=weibull_k,
+                    v_mean=v_mean_hub, weibull_k=weibull_k,
                     availability=avail, electrical_losses=elec_loss,
                 )
                 n_turbines = rec['n_turbines']
@@ -1699,7 +1715,7 @@ def create_app():
                 turbine=turbine,
                 n_turbines=n_turbines,
                 wind_grid=wind_grid,
-                fallback_wind_ms=v_mean,
+                fallback_wind_ms=v_mean_hub,
                 min_spacing_d=float(body.get('min_spacing_d', 5.0)),
                 grid_step_d=float(body.get('grid_step_d',   1.5)),
                 k_wake=float(body.get('k_wake', 0.075)),
@@ -1712,6 +1728,7 @@ def create_app():
             wd = None
             temp_c = None
             pres_p = None
+            reference_wind_mean = None
 
             if sid:
                 sess   = sessions.get(sid, {})
@@ -1719,10 +1736,10 @@ def create_app():
                     df     = sess['df']
                     ws_col = sess.get('target_col', 'wind_speed')
                     wd_col = body.get('wd_col', 'wind_dir')
-                    ws_h   = float(body.get('ws_height_m', 50.0))
                     if ws_col in df.columns:
                         ws_raw = df[ws_col].fillna(df[ws_col].median()).values
-                        ws_hub = extrapolate_wind_hellmann(ws_raw, ws_h, turbine.hub_height_m)
+                        reference_wind_mean = float(np.nanmean(ws_raw))
+                        ws_hub = extrapolate_wind_hellmann(ws_raw, measurement_h, turbine.hub_height_m)
                         wd     = (df[wd_col].fillna(0).values
                                   if wd_col in df.columns else np.zeros_like(ws_hub))
                         temp_c = df['temperature'].values if 'temperature' in df.columns else None
@@ -1730,18 +1747,20 @@ def create_app():
 
             if ws_hub is None:
                 from core.kriging import _virtual_weibull_series
-                ws_hub = _virtual_weibull_series(v_mean, weibull_k, n_hours=8760)
+                reference_wind_mean = v_mean
+                ws_hub = _virtual_weibull_series(v_mean_hub, weibull_k, n_hours=8760)
                 wd = np.full_like(ws_hub, 270.0)
 
             sim_result = None
             if ws_hub is not None and len(ws_hub) > 0:
                 mean_ws = float(np.mean(ws_hub))
                 local_multipliers = None
-                if 'wind_at_turbines' in opt and opt['wind_at_turbines'] and mean_ws > 0:
+                multiplier_ref = reference_wind_mean if reference_wind_mean and reference_wind_mean > 0 else mean_ws
+                if 'wind_at_turbines' in opt and opt['wind_at_turbines'] and multiplier_ref > 0:
                     wind_at = np.asarray(opt['wind_at_turbines'], dtype=float)
                     if wind_at.shape[0] == len(opt['layout_xy_m']):
                         local_multipliers = np.nan_to_num(
-                            wind_at / mean_ws,
+                            wind_at / multiplier_ref,
                             nan=1.0,
                             posinf=1.0,
                             neginf=1.0,

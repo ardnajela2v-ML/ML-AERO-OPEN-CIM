@@ -5928,6 +5928,7 @@ async function parqueLoadTurbines() {
     const og2 = document.createElement('optgroup'); og2.label = 'Catálogo (CSV)';
     (r.turbines || []).forEach(t => {
       const opt = document.createElement('option');
+      opt.dataset.hub = t.hub_height_m || '';
       if (t.source === 'builtin') {
         opt.value = t.name;
         opt.textContent = `${t.name} — ${parqueFmt(Number(t.rated_power_kw) / 1000, 1)} MW`;
@@ -5940,7 +5941,19 @@ async function parqueLoadTurbines() {
     });
     if (og1.children.length) sel.appendChild(og1);
     if (og2.children.length) sel.appendChild(og2);
+    parqueSyncHubHeightFromTurbine(true);
   } catch (e) { /* silent */ }
+}
+
+function parqueSyncHubHeightFromTurbine(force = false) {
+  const sel = document.getElementById('parque-turbine');
+  const inp = document.getElementById('parque-ws-h');
+  const hub = Number(sel?.selectedOptions?.[0]?.dataset?.hub);
+  if (!inp || !Number.isFinite(hub) || hub <= 0) return;
+  if (force || !inp.value || inp.dataset.autoHub === '1') {
+    inp.value = parqueFmt(hub, 0, String(Math.round(hub)));
+    inp.dataset.autoHub = '1';
+  }
 }
 
 function parquePopulateTopsisRanking() {
@@ -6005,6 +6018,7 @@ function parqueSelectTurbina(el, forceKey) {
       }
     }
   }
+  parqueSyncHubHeightFromTurbine(true);
   parqueUpdateRecommendation();
 }
 
@@ -6014,7 +6028,8 @@ async function parqueUpdateRecommendation() {
   const demand     = parseFloat(document.getElementById('parque-demand')?.value) || 5000;
   if (!turbineKey) return;
 
-  const turbineCfg = { builtin_model: turbineKey };
+  const hubHeight = parseFloat(document.getElementById('parque-ws-h')?.value) || 110;
+  const turbineCfg = { builtin_model: turbineKey, hub_height_m: hubHeight };
   // Mean wind speed: use MCDA/kriging polygon mean if available
   let vMean = 9.0, wK = 2.0;
   if (typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length) {
@@ -6028,6 +6043,8 @@ async function parqueUpdateRecommendation() {
     const r = await api('/api/farm/recommend', 'POST', {
       turbine: turbineCfg, demand_mwh: demand,
       v_mean: vMean, weibull_k: wK,
+      hub_height_m: hubHeight,
+      measurement_height_m: 50,
       availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
       electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     });
@@ -6069,9 +6086,10 @@ async function parqueOptimize() {
   }
 
   const nInput = parseInt(document.getElementById('parque-n-turbines')?.value) || 0;
+  const hubHeight = parseFloat(document.getElementById('parque-ws-h')?.value) || 110;
   const body = {
     polygon:           polygon.map(([lat, lon]) => ({ lat, lon })),
-    turbine:           { builtin_model: turbineKey },
+    turbine:           { builtin_model: turbineKey, hub_height_m: hubHeight },
     n_turbines:        nInput,
     demand_mwh:        parseFloat(document.getElementById('parque-demand')?.value) || 5000,
     wind_grid:         windGrid,
@@ -6083,7 +6101,8 @@ async function parqueOptimize() {
     availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
     electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
-    ws_height_m:       parseFloat(document.getElementById('parque-ws-h')?.value) || 50,
+    hub_height_m:      hubHeight,
+    measurement_height_m: 50,
     session_id:        WP.sessionId,
   };
 
@@ -6281,7 +6300,14 @@ document.addEventListener('DOMContentLoaded', () => {
     parqueRenderKrigingLayer(e.target.value);
   });
   document.getElementById('parque-demand')?.addEventListener('input', parqueUpdateRecommendation);
-  document.getElementById('parque-turbine')?.addEventListener('change', parqueUpdateRecommendation);
+  document.getElementById('parque-turbine')?.addEventListener('change', () => {
+    parqueSyncHubHeightFromTurbine(true);
+    parqueUpdateRecommendation();
+  });
+  document.getElementById('parque-ws-h')?.addEventListener('input', e => {
+    e.target.dataset.autoHub = '0';
+    parqueUpdateRecommendation();
+  });
   document.getElementById('parque-wake-dir')?.addEventListener('change', () => {
     if (PARQUE.wakeVisible) parqueRenderWakeCones();
   });
