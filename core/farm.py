@@ -70,7 +70,7 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     return max(0.0, min(1.0, deficit))
 
 
-def effective_wind_per_turbine(layout_xy: np.ndarray, v_free: float,
+def effective_wind_per_turbine(layout_xy: np.ndarray, v_free,
                                wind_dir_deg: float, rotor_d_m: float,
                                k: float = 0.075, ct: float = 0.8) -> np.ndarray:
     """
@@ -78,13 +78,17 @@ def effective_wind_per_turbine(layout_xy: np.ndarray, v_free: float,
     accounting for upstream wake superposition (Katic — sum-of-squares).
 
     layout_xy: (N, 2) array of turbine positions in metres.
-    v_free:    free-stream wind speed (m/s) at hub height.
+    v_free:    free-stream wind speed (m/s) at hub height. Can be scalar or (N,) array.
     wind_dir_deg: direction wind comes from (met convention).
     """
     rotated = _rotate_to_wind_axis(layout_xy, wind_dir_deg)
     n = len(rotated)
-    v_eff = np.full(n, v_free, dtype=float)
-    if v_free <= 0 or n <= 1:
+    v_free_arr = np.asarray(v_free, dtype=float)
+    if v_free_arr.ndim == 0:
+        v_free_arr = np.full(n, v_free_arr, dtype=float)
+        
+    v_eff = np.array(v_free_arr, copy=True)
+    if np.all(v_free_arr <= 0) or n <= 1:
         return v_eff
 
     # For each target turbine i, sum squared deficits from all upwind turbines j.
@@ -98,7 +102,7 @@ def effective_wind_per_turbine(layout_xy: np.ndarray, v_free: float,
             dy = yi - rotated[j, 1]
             d_eff = jensen_deficit(dx, dy, rotor_d_m, k=k, ct=ct)
             sq_sum += d_eff ** 2
-        v_eff[i] = v_free * (1.0 - math.sqrt(sq_sum))
+        v_eff[i] = v_free_arr[i] * (1.0 - math.sqrt(sq_sum))
     return v_eff
 
 
@@ -158,7 +162,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        electrical_losses: float = 0.0,
                        temperature_c=None,
                        pressure_pa=None,
-                       humidity_pct=0.0) -> dict:
+                       humidity_pct=0.0,
+                       local_wind_multipliers: Optional[np.ndarray] = None) -> dict:
     """
     Compute farm AEP per turbine with wake effects.
 
@@ -223,9 +228,19 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
 
     # No-wake baseline: total energy if every turbine saw free-stream wind.
-    p_free_per_bin = turbine.power_kw_density_corrected(ws_centres, rho_mean)  # kW/turbina por bin
-    e_free_per_turbine_kwh = float(np.sum(freq.sum(axis=0) * p_free_per_bin)) * total_hours
-    e_free_total_kwh = e_free_per_turbine_kwh * n
+    if local_wind_multipliers is not None:
+        local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float)
+        # Multiply (B, 1) by (1, N) to get (B, N) effective free-stream
+        ws_centres_n = ws_centres[:, None] * local_wind_multipliers[None, :]
+        p_free_per_bin = turbine.power_kw_density_corrected(ws_centres_n, rho_mean)  # (B, N)
+        freq_sum = freq.sum(axis=0)  # (B,)
+        e_free_per_turbine_kwh = np.sum(freq_sum[:, None] * p_free_per_bin, axis=0) * total_hours
+    else:
+        p_free_per_bin = turbine.power_kw_density_corrected(ws_centres, rho_mean)  # (B,)
+        e_free_per_turbine_kwh = float(np.sum(freq.sum(axis=0) * p_free_per_bin)) * total_hours
+        e_free_per_turbine_kwh = np.full(n, e_free_per_turbine_kwh)
+        
+    e_free_total_kwh = float(np.sum(e_free_per_turbine_kwh))
 
     # Wake-aware energy: for each (sector, ws_bin) compute effective ws per turbine
     # then power via curve, weight by joint frequency × hours.
@@ -240,8 +255,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
             p_join = freq[s, b]
             if p_join <= 0 or v_free <= 0:
                 continue
+            v_free_arr = v_free * local_wind_multipliers if local_wind_multipliers is not None else v_free
             v_eff = effective_wind_per_turbine(
-                layout, v_free, wind_dir, rotor_d, k=k_wake, ct=ct)
+                layout, v_free_arr, wind_dir, rotor_d, k=k_wake, ct=ct)
             p_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # con corrección de densidad
             e_per_turbine_kwh += p_kw * p_join * total_hours
 
@@ -269,9 +285,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
             'x_m': float(x),
             'y_m': float(y),
             'aep_mwh': round(e_i / 1000.0, 3),
-            'aep_no_wake_mwh': round(e_no_wake_per_turbine / 1000.0, 3),
+            'aep_no_wake_mwh': round(e_no_wake_per_turbine[i] / 1000.0, 3),
             'wake_loss_pct': round(
-                100.0 * (1 - e_i / e_no_wake_per_turbine) if e_no_wake_per_turbine > 0 else 0.0,
+                100.0 * (1 - e_i / e_no_wake_per_turbine[i]) if e_no_wake_per_turbine[i] > 0 else 0.0,
                 2),
             'cf_pct': round(
                 100.0 * e_i / (rated_kw * total_hours) if rated_kw > 0 else 0.0,

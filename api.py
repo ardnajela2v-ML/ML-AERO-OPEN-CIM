@@ -1733,21 +1733,32 @@ def create_app():
                 ws_hub = _virtual_weibull_series(v_mean, weibull_k, n_hours=8760)
                 wd = np.full_like(ws_hub, 270.0)
 
-            sim_result = simulate_wind_farm(
-                layout_xy=opt['layout_xy_m'],
-                turbine=turbine,
-                ws=ws_hub, wd=wd,
-                k_wake=float(body.get('k_wake', 0.075)),
-                ct=float(body.get('ct', 0.8)),
-                n_sectors=int(body.get('n_sectors', 36)),
-                availability=avail,
-                electrical_losses=elec_loss,
-                temperature_c=temp_c,
-                pressure_pa=pres_p,
-            )
-            sim_result['turbine'] = turbine.to_dict()
+            sim_result = None
+            if ws_hub is not None and len(ws_hub) > 0:
+                mean_ws = float(np.mean(ws_hub))
+                local_multipliers = None
+                if 'wind_at_turbines' in opt and opt['wind_at_turbines'] and mean_ws > 0:
+                    local_multipliers = np.array(opt['wind_at_turbines']) / mean_ws
+                
+                sim_result = simulate_wind_farm(
+                    layout_xy=opt['layout_xy_m'],
+                    turbine=turbine,
+                    ws=ws_hub, wd=wd,
+                    k_wake=float(body.get('k_wake', 0.075)),
+                    ct=float(body.get('ct', 0.8)),
+                    n_sectors=int(body.get('n_sectors', 36)),
+                    availability=avail,
+                    electrical_losses=elec_loss,
+                    temperature_c=temp_c,
+                    pressure_pa=pres_p,
+                    local_wind_multipliers=local_multipliers,
+                )
+            if sim_result:
+                sim_result['turbine'] = turbine.to_dict()
 
-            result = {**opt, 'turbine': turbine.to_dict(), 'simulation': sim_result}
+            result = {**opt, 'turbine': turbine.to_dict()}
+            if sim_result:
+                result['simulation'] = sim_result
             return jsonify(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
