@@ -2849,6 +2849,35 @@
       </div>
     </div>
   </div>
+
+  <!-- Comparativo de escenarios -->
+  <div class="card mt-2" id="te-compare-card">
+    <div class="card-header">
+      <span class="card-title">Comparativo de escenarios</span>
+      <button class="btn-secondary" id="btn-te-compare" style="margin-left:auto;font-size:.75rem;padding:.25rem .75rem">Actualizar comparativo</button>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table class="data-table" id="te-compare-table">
+        <thead>
+          <tr>
+            <th>Indicador</th>
+            <th style="text-align:center">Sin predicción<br><small class="text-muted">Viento real</small></th>
+            <th style="text-align:center">Con predicción ML<br><small class="text-muted">Forecast 25 años</small></th>
+            <th style="text-align:center">Corregido + predicción<br><small class="text-muted">Kriging / Parque</small></th>
+            <th style="text-align:center">Mejor escenario</th>
+          </tr>
+        </thead>
+        <tbody id="te-compare-tbody">
+          <tr><td colspan="5" class="text-muted" style="text-align:center;padding:1.5rem">Calcula al menos un escenario y presiona «Actualizar comparativo».</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body" style="padding-top:0">
+      <div id="te-compare-chart-wrap" style="height:220px;position:relative">
+        <canvas id="chart-te-compare"></canvas>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- ╔══════════════════ EXPORTAR ══════════════════╗ -->

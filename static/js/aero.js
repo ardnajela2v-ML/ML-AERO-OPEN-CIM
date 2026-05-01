@@ -2501,6 +2501,8 @@ function bindTechno() {
     });
   });
   technoRefreshScenarioView();
+  const cmpBtn = document.getElementById('btn-te-compare');
+  if (cmpBtn) cmpBtn.addEventListener('click', renderTechnoCompare);
 }
 
 function technoCurrentScenario() {
@@ -3125,6 +3127,87 @@ function renderCashflowTable(table) {
       <td>$${r.cumulative.toLocaleString('es-MX')}</td>
     </tr>`;
   }).join('');
+}
+
+function renderTechnoCompare() {
+  const tbody = document.getElementById('te-compare-tbody');
+  if (!tbody) return;
+  const keys = ['real', 'ml', 'corrected'];
+  const labels = { real: 'Sin predicción', ml: 'ML 25 años', corrected: 'Corregido + ML' };
+  const results = keys.map(k => WP.technoScenarios[k]?.result || null);
+  if (results.every(r => !r)) {
+    tbody.innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:1.5rem">Calcula al menos un escenario y presiona «Actualizar comparativo».</td></tr>';
+    return;
+  }
+
+  const fmtM = v => v != null ? '$' + Math.abs(v).toLocaleString('es-MX', { maximumFractionDigits: 0 }) : '—';
+  const fmtN = (v, dec = 2) => v != null ? Number(v).toFixed(dec) : '—';
+  const sign = v => v == null ? '—' : (v >= 0 ? '+' : '-');
+
+  const metrics = [
+    { label: 'VAN / NPV (USD)', get: a => a?.npv_usd, fmt: v => (v >= 0 ? '+' : '-') + fmtM(v), best: 'max', highlight: true },
+    { label: 'LCOE (USD/kWh)', get: a => a?.lcoe_usd_kwh, fmt: v => fmtN(v, 4), best: 'min' },
+    { label: 'VAE (USD/año)', get: a => a?.vae_usd, fmt: v => sign(v) + fmtM(v), best: 'max' },
+    { label: 'Payback (años)', get: a => a?.payback_years, fmt: v => v ? fmtN(v, 1) + ' años' : '> proyecto', best: 'min' },
+    { label: 'Factor capacidad (%)', get: a => a?.capacity_factor_pct, fmt: v => fmtN(v, 2) + '%', best: 'max' },
+    { label: 'Energía anual (MWh)', get: a => a?.annual_energy_mwh, fmt: v => fmtN(v, 0), best: 'max' },
+    { label: 'Ingresos anuales (USD)', get: a => a?.annual_revenue_usd, fmt: fmtM, best: 'max' },
+    { label: 'CAPEX total (USD)', get: a => a?.capex?.total_capex_usd, fmt: fmtM, best: 'min' },
+    { label: 'Potencia instalada (MW)', get: a => a?.capex?.installed_mw, fmt: v => fmtN(v, 2) + ' MW', best: null },
+    { label: 'Turbinas usadas', get: a => a?.capex?.n_turbines, fmt: v => v ?? '—', best: null },
+  ];
+
+  const rows = metrics.map(m => {
+    const vals = results.map(r => r?.analysis ? m.get(r.analysis) : null);
+    const finite = vals.filter(v => v != null && Number.isFinite(v));
+    let bestVal = null;
+    if (m.best === 'max' && finite.length) bestVal = Math.max(...finite);
+    if (m.best === 'min' && finite.length) bestVal = Math.min(...finite);
+    const bestIdx = bestVal != null ? vals.findIndex(v => v === bestVal) : -1;
+    const bestLabel = bestIdx >= 0 ? labels[keys[bestIdx]] : '—';
+    const cells = vals.map((v, i) => {
+      const isBest = m.best && i === bestIdx;
+      const style = isBest ? ' style="color:var(--accent);font-weight:700;text-align:center"' : ' style="text-align:center"';
+      return `<td${style}>${v != null ? m.fmt(v) : '<span class="text-muted">—</span>'}</td>`;
+    }).join('');
+    const hl = m.highlight ? ' style="font-weight:700"' : '';
+    return `<tr><td${hl}>${m.label}</td>${cells}<td style="text-align:center;color:var(--accent)">${bestLabel}</td></tr>`;
+  }).join('');
+
+  // Viabilidad row
+  const viabilityRow = keys.map((k, i) => {
+    const r = results[i];
+    if (!r) return '<td style="text-align:center">—</td>';
+    const ok = r.analysis?.is_viable;
+    return `<td style="text-align:center"><span class="badge ${ok ? 'badge--success' : 'badge--error'}">${ok ? '✓ Viable' : '✗ No viable'}</span></td>`;
+  }).join('');
+  tbody.innerHTML = `<tr><td><strong>Viabilidad</strong></td>${viabilityRow}<td style="text-align:center">—</td></tr>${rows}`;
+
+  // Gráfica de barras VAN + LCOE por escenario
+  destroyChart('chart-te-compare');
+  const ctx = document.getElementById('chart-te-compare')?.getContext('2d');
+  if (!ctx) return;
+  const npvVals = keys.map((k, i) => { const a = results[i]?.analysis; return a?.npv_usd != null ? Math.round(a.npv_usd / 1e6 * 100) / 100 : null; });
+  const lcoeVals = keys.map((k, i) => { const a = results[i]?.analysis; return a?.lcoe_usd_kwh != null ? Number(a.lcoe_usd_kwh) : null; });
+  WP.charts['chart-te-compare'] = new Chart(ctx, {
+    data: {
+      labels: keys.map(k => labels[k]),
+      datasets: [
+        { type: 'bar', label: 'VAN (M USD)', data: npvVals, backgroundColor: npvVals.map(v => v == null ? '#5558' : v >= 0 ? acc() + 'bb' : '#ef4444bb'), borderRadius: 6, yAxisID: 'y1' },
+        { type: 'line', label: 'LCOE (USD/kWh)', data: lcoeVals, borderColor: acc2(), backgroundColor: 'transparent', pointRadius: 6, pointStyle: 'circle', borderWidth: 2.5, yAxisID: 'y2' },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
+      scales: {
+        x: { grid: { color: gridColor() } },
+        y1: { type: 'linear', position: 'left', title: { display: true, text: 'VAN (M USD)' }, grid: { color: gridColor() } },
+        y2: { type: 'linear', position: 'right', title: { display: true, text: 'LCOE USD/kWh' }, grid: { display: false } },
+      }
+    }
+  });
 }
 
 // ─── RECURSO AVANZADO (Windographer-style) ────────────────────────────────────
