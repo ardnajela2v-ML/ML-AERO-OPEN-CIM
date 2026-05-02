@@ -9731,6 +9731,8 @@ function bindGlobeBackButton() {
 function restoreGlobeStage() {
   const stage = document.getElementById('globe-stage');
   if (!stage) return;
+  // Reset completo de la simulación previa antes de mostrar el globo
+  resetSimulationState();
   GLOBE.collapsed = false;
   stage.classList.remove('is-hidden');
   void stage.offsetWidth;        // reflow para que la transición se vea
@@ -9741,6 +9743,71 @@ function restoreGlobeStage() {
   if (GLOBE.mode === 'leaflet' && GLOBE.leafletMap) {
     setTimeout(() => GLOBE.leafletMap.invalidateSize(), 360);
   }
+}
+
+// Limpia los datos cargados, KPIs renderizados, charts y estado del Globe
+// para que volver al Globe equivalga a un reinicio completo del análisis.
+function resetSimulationState() {
+  // 1) Estado del Globe (POI, estación maestra, panel)
+  clearGlobePoi();
+  GLOBE.master = null;
+  document.getElementById('globe-search-input') && (document.getElementById('globe-search-input').value = '');
+
+  // 2) Estado en memoria del análisis
+  if (typeof WP !== 'undefined') {
+    WP.windStats = null;
+    WP.advancedResult = null;
+    WP.meta = null;
+  }
+
+  // 3) Charts: destruir todos los charts del análisis para evitar overlay viejo
+  if (typeof WP !== 'undefined' && WP.charts) {
+    Object.keys(WP.charts).forEach(id => {
+      if (id.startsWith('chart-') || id.startsWith('dem-') ||
+          id.startsWith('pml-') || id.startsWith('fx-') || id.startsWith('int-')) {
+        try { WP.charts[id]?.destroy?.(); } catch (e) {}
+        WP.charts[id] = null;
+      }
+    });
+  }
+
+  // 4) Veredicto y header del Resumen
+  const vBox  = document.getElementById('resumen-verdict');
+  const vVal  = document.getElementById('resumen-verdict-value');
+  const vSub  = document.getElementById('resumen-verdict-sub');
+  const vCta  = document.getElementById('btn-go-to-arena');
+  const title = document.getElementById('resumen-site-title');
+  const sub   = document.getElementById('resumen-site-sub');
+  vBox?.classList.remove('is-good', 'is-marginal', 'is-poor');
+  if (vVal) vVal.textContent = '—';
+  if (vSub) vSub.textContent = 'Calcula el análisis para ver la evaluación del recurso';
+  vCta?.setAttribute('disabled', '');
+  if (title) title.textContent = '— sin datos —';
+  if (sub)   sub.textContent   = 'Selecciona una estación en el Globe para iniciar el análisis automático.';
+
+  // 5) Reset visual de KPIs principales
+  ['kv-mean','kv-max','kv-weibull','kv-pd','kv-ext','kv-near-mean','kv-temp','kv-pres','kv-nobs'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.textContent = '—';
+  });
+  ['ks-mean','ks-max','ks-ext','ks-near-mean','ks-nobs'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.textContent = '';
+  });
+  const ovStatus = document.getElementById('overview-status');
+  if (ovStatus) ovStatus.textContent = 'Sin datos';
+  const wStatus  = document.getElementById('wind-status');
+  if (wStatus)  wStatus.textContent = 'Sin datos';
+  const advRow = document.getElementById('adv-kpi-row');
+  if (advRow) advRow.style.display = 'none';
+  const advHubRow = document.getElementById('adv-hub-row');
+  if (advHubRow) advHubRow.style.display = 'none';
+
+  // 6) Reset pipeline overlay
+  resetPipelineSteps?.();
+
+  // 7) Sub-tab por defecto = Recurso
+  switchResumenTab?.('recurso');
+
+  setStatus?.('Globe reiniciado — selecciona una estación para nuevo análisis.');
 }
 
 // ──────────────────────────── MODO 2D LEAFLET ────────────────────────────────
