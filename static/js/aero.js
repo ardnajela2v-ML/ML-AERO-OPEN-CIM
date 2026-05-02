@@ -9874,13 +9874,33 @@ function bindResumenUnified() {
     const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
     arenaBtn?.click();
   });
-  // Mover el panel de Datos de Mercado al inicio de Model Arena (Data Hub queda oculto).
+  // Inyectar el panel de Datos de Mercado como una NUEVA tab "Datos" en Model Arena.
+  // Así las tabs Viento/Demanda/PML/Tasa/FX siguen intactas y visibles.
   const market = document.getElementById('market-data-panel');
   const arena  = document.getElementById('mod-models');
-  if (market && arena && arena.firstElementChild?.classList.contains('module-header')) {
-    arena.insertBefore(market, arena.firstElementChild.nextSibling);
-  } else if (market && arena) {
-    arena.insertBefore(market, arena.firstChild);
+  const tabsBar = arena?.querySelector('.tabs');
+  if (market && arena && tabsBar && !document.getElementById('arena-data-tab')) {
+    // Botón al inicio de la barra de tabs
+    const dataBtn = document.createElement('button');
+    dataBtn.className = 'tab-btn';
+    dataBtn.dataset.tab = 'arena-data';
+    dataBtn.type = 'button';
+    dataBtn.textContent = '📦 Datos';
+    tabsBar.insertBefore(dataBtn, tabsBar.firstChild);
+    // Tab-content que envuelve el panel original
+    const dataTab = document.createElement('div');
+    dataTab.id = 'arena-data-tab';
+    dataTab.className = 'tab-content';
+    market.parentNode?.removeChild(market);
+    dataTab.appendChild(market);
+    arena.insertBefore(dataTab, tabsBar.nextSibling);
+    // Engancha al patrón de tabs ya bindado en bindModelArena
+    dataBtn.addEventListener('click', () => {
+      arena.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      arena.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      dataBtn.classList.add('active');
+      dataTab.classList.add('active');
+    });
   }
 }
 
