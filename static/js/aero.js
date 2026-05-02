@@ -8912,13 +8912,13 @@ function _renderMarketResult(category, r) {
 
   // Chart preview
   if (r.chart && r.chart.values) {
-    const ctx = document.getElementById('market-preview-chart');
+    const ctx = document.getElementById(`market-${category}-preview-chart`);
     if (ctx) {
-      if (WP.charts['market-preview']) WP.charts['market-preview'].destroy();
+      if (WP.charts[`market-${category}-preview`]) WP.charts[`market-${category}-preview`].destroy();
       const step = Math.max(1, Math.floor(r.chart.values.length / 1500));
       const vals = r.chart.values.filter((_, i) => i % step === 0);
       const labels = vals.map((_, i) => i * step);
-      WP.charts['market-preview'] = new Chart(ctx, {
+      WP.charts[`market-${category}-preview`] = new Chart(ctx, {
         type: 'line',
         data: {
           labels: labels,
@@ -8944,7 +8944,7 @@ function _renderMarketResult(category, r) {
   }
 
   // Stats grid
-  const statsGrid = document.getElementById('market-stats-grid');
+  const statsGrid = document.getElementById(`market-${category}-stats-grid`);
   if (statsGrid && r.stats) {
     const s = r.stats.compra ? r.stats.compra : r.stats;  // Use compra for PML, or the stats directly
     const items = [
@@ -10178,23 +10178,45 @@ function bindResumenUnified() {
   });
   // Mover cada selector de archivo del panel de mercado a su sub-tab
   // correspondiente dentro de Model Arena, así no necesitamos una tab
-  // "Datos" extra ni el panel agregado.
+  // "Datos" extra ni el panel agregado. Además creamos preview + stats
+  // por sub-tab para que el resultado de cargar el archivo se vea.
   const movements = [
-    ['#market-demand-select',   'arena-demand-tab'],
-    ['#market-pml-select',      'arena-pml-tab'],
-    ['#market-interest-select', 'arena-interest-tab'],
-    ['#market-fx-select',       'arena-fx-tab'],
+    ['#market-demand-select',   'arena-demand-tab',   'demand'],
+    ['#market-pml-select',      'arena-pml-tab',      'pml'],
+    ['#market-interest-select', 'arena-interest-tab', 'interest'],
+    ['#market-fx-select',       'arena-fx-tab',       'fx'],
   ];
-  movements.forEach(([sel, tabId]) => {
+  movements.forEach(([sel, tabId, cat]) => {
     const select = document.querySelector(sel);
     const tab = document.getElementById(tabId);
     if (!select || !tab) return;
-    // Sube hasta el wrapper .market-data-row
     const row = select.closest('.market-data-row');
     if (!row || row.dataset.movedToArena === '1') return;
     row.dataset.movedToArena = '1';
-    // Insertar al inicio del sub-tab como cabecera de carga
     tab.insertBefore(row, tab.firstChild);
+
+    // Insertar tarjeta de Vista Previa + Estadísticos para esta categoría
+    if (!document.getElementById(`market-${cat}-preview-card`)) {
+      const card = document.createElement('div');
+      card.id = `market-${cat}-preview-card`;
+      card.className = 'grid-2 mt-2';
+      card.innerHTML = `
+        <div class="card">
+          <div class="card-header"><span class="card-title">Vista Previa — ${cat.toUpperCase()}</span></div>
+          <div class="card-body" style="height:200px;">
+            <canvas id="market-${cat}-preview-chart"></canvas>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><span class="card-title">Estadísticos del histórico observado</span></div>
+          <div class="card-body">
+            <div id="market-${cat}-stats-grid" class="meta-grid"></div>
+          </div>
+        </div>
+      `;
+      // Insertar justo después del row de carga
+      row.insertAdjacentElement('afterend', card);
+    }
   });
   // Si quedó arena-data-tab residual de un bind previo, lo retiramos.
   document.getElementById('arena-data-tab')?.remove();
