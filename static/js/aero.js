@@ -118,6 +118,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadPresetFiles();   // populate preset file dropdown
   await loadMarketFiles();   // populate market data selectors
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
+  bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
   setStatus('Plataforma iniciada — selecciona un parque eólico o carga tu archivo.');
 });
 
@@ -139,10 +140,16 @@ function bindNavigation() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const mod = btn.dataset.module;
+      if (!mod) return;  // botones sin data-module (ej. Volver al Globe) tienen su handler dedicado
+      // Si el globo está visible, colapsarlo al cambiar de módulo via el topbar.
+      if (typeof GLOBE !== 'undefined' && GLOBE && !GLOBE.collapsed && GLOBE.appOn) {
+        collapseGlobeStage();
+      }
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
       btn.classList.add('active');
-      document.getElementById(`mod-${mod}`).classList.add('active');
+      const target = document.getElementById(`mod-${mod}`);
+      if (target) target.classList.add('active');
     });
   });
 }
@@ -8836,4 +8843,872 @@ function _renderMarketResult(category, r) {
 
   // Store in WP for later use by Model Arena / Forecast Studio
   WP.arenaCache[`market_${category}`] = r;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  GLOBE STAGE — pantalla inicial: globo terráqueo + búsqueda + estaciones
+// ════════════════════════════════════════════════════════════════════════════
+const GLOBE = {
+  worldLand: null,
+  graticule: null,
+  loaderProj: null,  loaderPath: null,
+  mainProj:   null,  mainPath:   null,
+  W: 0, H: 0,
+  rotate: [99, -23, 0],   // arranca centrado en México (lon ~ -99)
+  isDragging: false, dragStart: null, rotateStart: null,
+  autoSpin: true,
+  loaderAngle: 0,
+  loaderRAF: null, mainRAF: null,
+  loaderReady: false, mainReady: false,
+  poi: null,
+  poiHaloPhase: 0,
+  sites: [],
+  visibleSites: [],
+  master: null,
+  collapsed: false,
+  collapsedOnce: false,
+  zoomScale: 1,           // 1 = base, hasta 4
+  appOn: false,
+  flyAF: null,
+  // Modo 3D ↔ 2D Leaflet
+  mode: 'globe',          // 'globe' | 'leaflet'
+  leafletMap: null,
+  leafletTile: null,
+  leafletPoi: null,
+  leafletCircle: null,
+  leafletStations: [],
+};
+
+const GLOBE_TILE_URLS = {
+  dark:    { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+             attr: '© OpenStreetMap · © CARTO', subdomains: 'abcd' },
+  voyager: { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+             attr: '© OpenStreetMap · © CARTO', subdomains: 'abcd' },
+  osm:     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+             attr: '© OpenStreetMap', subdomains: 'abc' },
+  topo:    { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+             attr: '© OpenTopoMap (CC-BY-SA) · © OSM', subdomains: 'abc' },
+  sat:     { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+             attr: 'Tiles © Esri', subdomains: '' },
+};
+
+const GLOBE_RADIUS_DEFAULT_KM = 200;
+
+async function bindGlobeStage() {
+  if (typeof d3 === 'undefined' || typeof topojson === 'undefined') {
+    console.warn('[globe] d3 / topojson no disponibles, salteando globo.');
+    document.getElementById('globe-stage')?.classList.add('is-collapsed');
+    return;
+  }
+  initGlobeLoader();
+  initGlobeMain();
+  fetchWorldAtlas();
+  bindGlobeSearchUI();
+  bindGlobeRadiusUI();
+  bindGlobeUploadModalUI();
+  bindGlobeBackButton();
+  bindGlobeModeSwitch();
+
+  // Auto-advance loader → app after 2.4s
+  setTimeout(() => switchToGlobeApp(), 2400);
+  // Click loader to advance early
+  document.getElementById('globe-loader')?.addEventListener('click', () => switchToGlobeApp());
+
+  // Pre-cargar catálogo de sitios para que el globo los pueda mostrar
+  globePreloadSites();
+}
+
+function fetchWorldAtlas() {
+  fetch('https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json')
+    .then(r => r.json())
+    .then(world => {
+      GLOBE.worldLand = topojson.feature(world, world.objects.land);
+      GLOBE.graticule = d3.geoGraticule()();
+      GLOBE.loaderReady = true;
+      GLOBE.mainReady = true;
+    })
+    .catch(e => console.warn('[globe] no se pudo cargar world-atlas:', e));
+}
+
+async function globePreloadSites() {
+  try {
+    const yearSel = document.getElementById('krig3-year');
+    const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
+    const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
+    GLOBE.sites = r.sites || [];
+  } catch (e) { /* silent — sin red, el globo igual rueda */ }
+}
+
+// ──────────────────────────── LOADER (200×200) ───────────────────────────────
+function initGlobeLoader() {
+  const cv = document.getElementById('globe-loader-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  GLOBE.loaderProj = d3.geoOrthographic()
+    .scale(96)
+    .translate([110, 110])
+    .clipAngle(90);
+  GLOBE.loaderPath = d3.geoPath(GLOBE.loaderProj, ctx);
+
+  function draw() {
+    ctx.clearRect(0, 0, 220, 220);
+
+    // Halo exterior leve (brillo costeño)
+    const halo = ctx.createRadialGradient(110, 110, 80, 110, 110, 120);
+    halo.addColorStop(0, 'rgba(77,163,255,0.35)');
+    halo.addColorStop(1, 'rgba(77,163,255,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(110, 110, 120, 0, 2*Math.PI); ctx.fill();
+
+    // Océano
+    ctx.beginPath();
+    GLOBE.loaderPath({ type: 'Sphere' });
+    ctx.fillStyle = '#0F1A2E';
+    ctx.fill();
+
+    if (GLOBE.loaderReady) {
+      // Graticule
+      ctx.beginPath();
+      GLOBE.loaderPath(GLOBE.graticule);
+      ctx.strokeStyle = 'rgba(77,163,255,0.18)';
+      ctx.lineWidth = 0.4; ctx.stroke();
+
+      // Land
+      ctx.beginPath();
+      GLOBE.loaderPath(GLOBE.worldLand);
+      ctx.fillStyle = '#1B2A40';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(77,163,255,0.55)';
+      ctx.lineWidth = 0.5; ctx.stroke();
+    }
+
+    // Outline
+    ctx.beginPath();
+    GLOBE.loaderPath({ type: 'Sphere' });
+    ctx.strokeStyle = 'rgba(77,163,255,0.7)';
+    ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  function tick() {
+    GLOBE.loaderAngle += 0.28;
+    GLOBE.loaderProj.rotate([GLOBE.loaderAngle, -20, 0]);
+    draw();
+    GLOBE.loaderRAF = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// ──────────────────────────── MAIN GLOBE (full) ──────────────────────────────
+function initGlobeMain() {
+  const cv = document.getElementById('globe-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  GLOBE.mainProj = d3.geoOrthographic()
+    .clipAngle(90)
+    .precision(0.4);
+  GLOBE.mainPath = d3.geoPath(GLOBE.mainProj, ctx);
+
+  function resize() {
+    GLOBE.W = window.innerWidth;
+    GLOBE.H = window.innerHeight;
+    cv.width = GLOBE.W;
+    cv.height = GLOBE.H;
+    const r = Math.min(GLOBE.W, GLOBE.H) * 0.42 * GLOBE.zoomScale;
+    GLOBE.mainProj.scale(r).translate([GLOBE.W/2, GLOBE.H/2]);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  // Drag a rotar
+  cv.addEventListener('mousedown', e => {
+    GLOBE.isDragging = true;
+    GLOBE.dragStart = [e.clientX, e.clientY];
+    GLOBE.rotateStart = [...GLOBE.rotate];
+    GLOBE.autoSpin = false;
+  });
+  window.addEventListener('mousemove', e => {
+    if (!GLOBE.isDragging) return;
+    const dx = e.clientX - GLOBE.dragStart[0];
+    const dy = e.clientY - GLOBE.dragStart[1];
+    const k = 0.32 / Math.max(0.7, GLOBE.zoomScale);
+    GLOBE.rotate[0] = GLOBE.rotateStart[0] + dx * k;
+    GLOBE.rotate[1] = Math.max(-80, Math.min(80, GLOBE.rotateStart[1] - dy * k));
+  });
+  window.addEventListener('mouseup', () => { GLOBE.isDragging = false; });
+
+  // Touch
+  cv.addEventListener('touchstart', e => {
+    if (!e.touches[0]) return;
+    GLOBE.isDragging = true;
+    GLOBE.dragStart = [e.touches[0].clientX, e.touches[0].clientY];
+    GLOBE.rotateStart = [...GLOBE.rotate];
+    GLOBE.autoSpin = false;
+  }, { passive: true });
+  window.addEventListener('touchmove', e => {
+    if (!GLOBE.isDragging || !e.touches[0]) return;
+    const dx = e.touches[0].clientX - GLOBE.dragStart[0];
+    const dy = e.touches[0].clientY - GLOBE.dragStart[1];
+    GLOBE.rotate[0] = GLOBE.rotateStart[0] + dx * 0.3;
+    GLOBE.rotate[1] = Math.max(-80, Math.min(80, GLOBE.rotateStart[1] - dy * 0.3));
+  }, { passive: true });
+  window.addEventListener('touchend', () => { GLOBE.isDragging = false; });
+
+  // Wheel: zoom de escala
+  cv.addEventListener('wheel', e => {
+    if (!GLOBE.appOn) return;
+    e.preventDefault();
+    const k = e.deltaY > 0 ? 0.92 : 1.08;
+    GLOBE.zoomScale = Math.max(0.7, Math.min(5, GLOBE.zoomScale * k));
+    const r = Math.min(GLOBE.W, GLOBE.H) * 0.42 * GLOBE.zoomScale;
+    GLOBE.mainProj.scale(r);
+  }, { passive: false });
+
+  // Click: marcar POI o seleccionar estación
+  cv.addEventListener('click', (e) => {
+    if (!GLOBE.appOn) return;
+    if (Math.abs(e.clientX - (GLOBE.dragStart?.[0] ?? e.clientX)) > 4) return; // ignore drag-end
+    const rect = cv.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+    // ¿Click sobre alguna estación visible?
+    if (GLOBE.visibleSites.length) {
+      for (const s of GLOBE.visibleSites) {
+        if (!isPointVisible(s.lat, s.lon)) continue;
+        const c = GLOBE.mainProj([s.lon, s.lat]);
+        if (!c) continue;
+        const dx = mx - c[0], dy = my - c[1];
+        if (Math.sqrt(dx*dx + dy*dy) <= 11) {
+          handleGlobeStationPick(s.filename);
+          return;
+        }
+      }
+    }
+
+    // Click sobre globo → POI
+    const inv = GLOBE.mainProj.invert([mx, my]);
+    if (!inv) return;
+    const [lon, lat] = inv;
+    if (!isFinite(lat) || !isFinite(lon)) return;
+    setGlobePoi(lat, lon);
+  });
+
+  function tick() {
+    if (GLOBE.autoSpin && !GLOBE.isDragging) {
+      GLOBE.rotate[0] += 0.05;
+    }
+    GLOBE.poiHaloPhase = (GLOBE.poiHaloPhase + 0.04) % (Math.PI * 2);
+    GLOBE.mainProj.rotate(GLOBE.rotate);
+    drawGlobeMain();
+    GLOBE.mainRAF = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function isPointVisible(lat, lon) {
+  const r = GLOBE.mainProj.rotate();
+  const center = [-r[0], -r[1]];
+  return d3.geoDistance([lon, lat], center) <= Math.PI / 2 - 0.005;
+}
+
+function drawGlobeMain() {
+  const cv = document.getElementById('globe-canvas');
+  if (!cv || !GLOBE.mainProj) return;
+  const ctx = cv.getContext('2d');
+  const isLight = document.body.classList.contains('light');
+  ctx.clearRect(0, 0, GLOBE.W, GLOBE.H);
+
+  // Glow detrás del globo
+  const cx = GLOBE.W / 2, cy = GLOBE.H / 2;
+  const rGlobe = Math.min(GLOBE.W, GLOBE.H) * 0.42 * GLOBE.zoomScale;
+  const halo = ctx.createRadialGradient(cx, cy, rGlobe * 0.85, cx, cy, rGlobe * 1.25);
+  halo.addColorStop(0, isLight ? 'rgba(15,95,168,0.18)' : 'rgba(77,163,255,0.30)');
+  halo.addColorStop(1, 'rgba(77,163,255,0)');
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(cx, cy, rGlobe * 1.25, 0, 2*Math.PI); ctx.fill();
+
+  // Océano
+  ctx.beginPath();
+  GLOBE.mainPath({ type: 'Sphere' });
+  const oceanGrad = ctx.createRadialGradient(cx - rGlobe*0.3, cy - rGlobe*0.3, rGlobe*0.2, cx, cy, rGlobe);
+  if (isLight) {
+    oceanGrad.addColorStop(0, '#E2EAF4');
+    oceanGrad.addColorStop(1, '#C9D6E8');
+  } else {
+    oceanGrad.addColorStop(0, '#152133');
+    oceanGrad.addColorStop(1, '#0B1422');
+  }
+  ctx.fillStyle = oceanGrad;
+  ctx.fill();
+
+  if (!GLOBE.mainReady) return;
+
+  // Graticule
+  ctx.beginPath();
+  GLOBE.mainPath(GLOBE.graticule);
+  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.10)' : 'rgba(77,163,255,0.08)';
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  // Land
+  ctx.beginPath();
+  GLOBE.mainPath(GLOBE.worldLand);
+  ctx.fillStyle = isLight ? '#E2E8F0' : '#1B2A40';
+  ctx.fill();
+  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.45)' : 'rgba(77,163,255,0.40)';
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+
+  // Outline
+  ctx.beginPath();
+  GLOBE.mainPath({ type: 'Sphere' });
+  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.7)' : 'rgba(77,163,255,0.7)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  // Catálogo: dibuja todas las estaciones (puntos pequeños) si las tenemos
+  if (GLOBE.sites.length) {
+    GLOBE.sites.forEach(s => {
+      if (!isPointVisible(s.lat, s.lon)) return;
+      const c = GLOBE.mainProj([s.lon, s.lat]);
+      if (!c) return;
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], 2.2, 0, 2*Math.PI);
+      ctx.fillStyle = isLight ? 'rgba(15,95,168,0.55)' : 'rgba(77,163,255,0.55)';
+      ctx.fill();
+    });
+  }
+
+  // POI (sitio elegido)
+  if (GLOBE.poi) {
+    const visible = isPointVisible(GLOBE.poi.lat, GLOBE.poi.lon);
+    if (visible) {
+      const c = GLOBE.mainProj([GLOBE.poi.lon, GLOBE.poi.lat]);
+      if (c) {
+        // Halo pulsante
+        const pulse = 1 + 0.4 * Math.sin(GLOBE.poiHaloPhase);
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], 14 * pulse, 0, 2*Math.PI);
+        ctx.fillStyle = 'rgba(180,83,9,0.18)';
+        ctx.fill();
+        // Dot
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], 6, 0, 2*Math.PI);
+        ctx.fillStyle = '#E5A86B';
+        ctx.fill();
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+        // Inner
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], 2.2, 0, 2*Math.PI);
+        ctx.fillStyle = '#0A0E15';
+        ctx.fill();
+
+        // Círculo de radio (km → en proyección)
+        const radiusKm = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
+        drawRadiusCircle(ctx, GLOBE.poi.lat, GLOBE.poi.lon, radiusKm);
+      }
+    }
+
+    // Estaciones dentro del radio (más prominentes)
+    GLOBE.visibleSites.forEach(s => {
+      if (!isPointVisible(s.lat, s.lon)) return;
+      const c = GLOBE.mainProj([s.lon, s.lat]);
+      if (!c) return;
+      const isMaster = (GLOBE.master === s.filename);
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], isMaster ? 7 : 5, 0, 2*Math.PI);
+      ctx.fillStyle = isMaster ? '#FFC890' : '#82BFFF';
+      ctx.fill();
+      ctx.strokeStyle = isLight ? '#0B1220' : '#0A0E15';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      // Estrella interna si es maestra
+      if (isMaster) {
+        ctx.beginPath();
+        ctx.arc(c[0], c[1], 2, 0, 2*Math.PI);
+        ctx.fillStyle = '#0A0E15'; ctx.fill();
+      }
+    });
+  }
+
+  // Coord readout
+  const center = GLOBE.mainProj.invert([cx, cy]);
+  if (center) {
+    const lat = center[1], lon = center[0];
+    const latStr = Math.abs(lat).toFixed(2) + (lat >= 0 ? '°N' : '°S');
+    const lonStr = Math.abs(lon).toFixed(2) + (lon >= 0 ? '°E' : '°W');
+    const out = document.getElementById('globe-readout');
+    if (out) out.textContent = `${latStr} · ${lonStr}`;
+  }
+}
+
+function drawRadiusCircle(ctx, lat, lon, km) {
+  const N = 96;
+  const R_EARTH = 6371;
+  const ang = km / R_EARTH;     // radianes
+  const lat0 = lat * Math.PI/180, lon0 = lon * Math.PI/180;
+  const pts = [];
+  for (let i = 0; i <= N; i++) {
+    const brg = (i / N) * 2 * Math.PI;
+    const lat2 = Math.asin(Math.sin(lat0)*Math.cos(ang) + Math.cos(lat0)*Math.sin(ang)*Math.cos(brg));
+    const lon2 = lon0 + Math.atan2(Math.sin(brg)*Math.sin(ang)*Math.cos(lat0),
+                                   Math.cos(ang) - Math.sin(lat0)*Math.sin(lat2));
+    pts.push([lon2 * 180/Math.PI, lat2 * 180/Math.PI]);
+  }
+  ctx.beginPath();
+  let started = false;
+  for (const p of pts) {
+    if (!isPointVisible(p[1], p[0])) { started = false; continue; }
+    const c = GLOBE.mainProj(p);
+    if (!c) { started = false; continue; }
+    if (!started) { ctx.moveTo(c[0], c[1]); started = true; }
+    else ctx.lineTo(c[0], c[1]);
+  }
+  ctx.strokeStyle = 'rgba(229,168,107,0.65)';
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// ──────────────────────────── POI + estaciones ───────────────────────────────
+function setGlobePoi(lat, lon) {
+  GLOBE.poi = { lat, lon };
+  document.getElementById('btn-globe-clear-poi')?.classList.add('is-visible');
+  globeFilterByRadius();
+  if (GLOBE.mode === 'leaflet' && GLOBE.leafletMap) {
+    GLOBE.leafletMap.flyTo([lat, lon], Math.max(GLOBE.leafletMap.getZoom(), 7), { duration: 0.9 });
+    leafletRenderPoi();
+  } else {
+    globeFlyTo(lon, lat, 800, 1.6);
+  }
+}
+
+function clearGlobePoi() {
+  GLOBE.poi = null;
+  GLOBE.visibleSites = [];
+  GLOBE.master = null;
+  document.getElementById('btn-globe-clear-poi')?.classList.remove('is-visible');
+  document.getElementById('globe-panel')?.classList.remove('is-open');
+  const status = document.getElementById('globe-status');
+  if (status) status.textContent = 'Marca un sitio en el mapa o busca una dirección';
+  leafletClearAll();
+}
+
+function globeHaversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+            Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) *
+            Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+async function globeFilterByRadius() {
+  if (!GLOBE.poi) return;
+  if (!GLOBE.sites.length) await globePreloadSites();
+  const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
+  const inside = [];
+  GLOBE.sites.forEach(s => {
+    const d = globeHaversineKm(GLOBE.poi.lat, GLOBE.poi.lon, s.lat, s.lon);
+    if (d <= km) inside.push({ ...s, _dist: d });
+  });
+  inside.sort((a, b) => a._dist - b._dist);
+  GLOBE.visibleSites = inside;
+  // Maestra por default = la más cercana
+  GLOBE.master = inside[0]?.filename || null;
+  globeRenderStationList();
+  globeUpdateStatus();
+  // Abrir el panel
+  document.getElementById('globe-panel')?.classList.add('is-open');
+  // Si estamos en modo Leaflet, redibujar marcadores y círculo
+  if (GLOBE.mode === 'leaflet' && GLOBE.leafletMap) {
+    leafletRenderPoi();
+    leafletRenderStations();
+  }
+}
+
+function globeUpdateStatus() {
+  const status = document.getElementById('globe-status');
+  if (!status) return;
+  const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
+  if (!GLOBE.poi) {
+    status.textContent = 'Marca un sitio en el mapa o busca una dirección';
+    return;
+  }
+  const n = GLOBE.visibleSites.length;
+  if (n === 0) {
+    status.innerHTML = `Sin estaciones a <b>${km} km</b> de tu sitio. Aumenta el radio o sube tu archivo.`;
+  } else {
+    status.innerHTML = `<b>${n}</b> estaciones a ≤ <b>${km} km</b> · ` +
+      `${GLOBE.poi.lat.toFixed(3)}°, ${GLOBE.poi.lon.toFixed(3)}°`;
+  }
+}
+
+function globeRenderStationList() {
+  const list = document.getElementById('globe-station-list');
+  const title = document.getElementById('globe-panel-title');
+  if (!list) return;
+  if (!GLOBE.visibleSites.length) {
+    list.innerHTML = '<div class="globe-panel__empty">Sin estaciones a este radio. Aumenta el radio o usa "+ Cargar mi propio archivo".</div>';
+    if (title) title.textContent = '0 estaciones';
+    return;
+  }
+  if (title) title.textContent = `${GLOBE.visibleSites.length} estaciones cercanas`;
+  list.innerHTML = GLOBE.visibleSites.map(s => {
+    const isMaster = (GLOBE.master === s.filename);
+    const src = (s.source || '').toUpperCase();
+    return `<div class="globe-station ${isMaster ? 'is-master' : ''}" data-fn="${s.filename}">
+      <div class="globe-station__star">${isMaster ? '★' : '○'}</div>
+      <div class="globe-station__body">
+        <div class="globe-station__name">${s.display_name || s.filename}</div>
+        <div class="globe-station__meta">${src} · ${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°${s.state ? ' · ' + s.state : ''}</div>
+      </div>
+      <div class="globe-station__dist">${s._dist.toFixed(0)} km</div>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('.globe-station').forEach(el => {
+    el.addEventListener('click', () => handleGlobeStationPick(el.dataset.fn));
+  });
+}
+
+async function handleGlobeStationPick(filename) {
+  if (!filename) return;
+  const site = GLOBE.visibleSites.find(s => s.filename === filename) ||
+               GLOBE.sites.find(s => s.filename === filename);
+  GLOBE.master = filename;
+  globeRenderStationList();
+  // Cargar al Data Hub
+  try {
+    await loadPresetFileByName(filename, site?.source || 'auto');
+  } finally {
+    collapseGlobeStage();
+  }
+}
+
+// ──────────────────────────── BÚSQUEDA + GEOCODING ───────────────────────────
+function bindGlobeSearchUI() {
+  const inp = document.getElementById('globe-search-input');
+  const btn = document.getElementById('btn-globe-search');
+  if (!inp || !btn) return;
+  let suggestTimer = null;
+
+  inp.addEventListener('input', () => {
+    clearTimeout(suggestTimer);
+    const q = inp.value.trim();
+    if (!q || q.length < 3 || /^-?\d/.test(q)) {
+      hideGlobeSuggest();
+      return;
+    }
+    suggestTimer = setTimeout(() => globeFetchSuggest(q), 280);
+  });
+  inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); globeSearchSubmit(); }
+    if (e.key === 'Escape') { hideGlobeSuggest(); inp.blur(); }
+  });
+  btn.addEventListener('click', globeSearchSubmit);
+  document.addEventListener('click', e => {
+    if (!e.target.closest('#globe-search')) hideGlobeSuggest();
+  });
+}
+
+async function globeFetchSuggest(q) {
+  const box = document.getElementById('globe-search-suggest');
+  if (!box) return;
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&addressdetails=1&countrycodes=mx&q=${encodeURIComponent(q)}`;
+    const res = await fetch(url, { headers: { 'Accept-Language': 'es' } });
+    const data = await res.json();
+    if (!data || !data.length) { hideGlobeSuggest(); return; }
+    box.innerHTML = data.map(d => {
+      const name = d.display_name || d.name || '';
+      return `<div class="globe-suggest__item" data-lat="${d.lat}" data-lon="${d.lon}">
+        ${name}
+        <small>${parseFloat(d.lat).toFixed(3)}°, ${parseFloat(d.lon).toFixed(3)}°</small>
+      </div>`;
+    }).join('');
+    box.classList.add('is-open');
+    box.querySelectorAll('.globe-suggest__item').forEach(el => {
+      el.addEventListener('click', () => {
+        const lat = parseFloat(el.dataset.lat);
+        const lon = parseFloat(el.dataset.lon);
+        document.getElementById('globe-search-input').value = el.firstChild.textContent.trim();
+        hideGlobeSuggest();
+        setGlobePoi(lat, lon);
+      });
+    });
+  } catch (e) { hideGlobeSuggest(); }
+}
+
+function hideGlobeSuggest() {
+  const box = document.getElementById('globe-search-suggest');
+  if (box) { box.classList.remove('is-open'); box.innerHTML = ''; }
+}
+
+async function globeSearchSubmit() {
+  const inp = document.getElementById('globe-search-input');
+  const sp = document.getElementById('globe-search-spinner');
+  const q = inp.value.trim();
+  if (!q) return;
+  hideGlobeSuggest();
+
+  // 1) Coordenadas: "lat, lon" o "16.5, -95.0"
+  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) {
+    const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
+    if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      setGlobePoi(lat, lon);
+      return;
+    }
+  }
+
+  // 2) Geocoding Nominatim (México first)
+  sp?.classList.add('is-active');
+  try {
+    const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=mx&q=${encodeURIComponent(q)}`;
+    let res = await fetch(url, { headers: { 'Accept-Language': 'es' } });
+    let data = await res.json();
+    if (!data || !data.length) {
+      // fallback global
+      const url2 = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}`;
+      res = await fetch(url2, { headers: { 'Accept-Language': 'es' } });
+      data = await res.json();
+    }
+    if (data && data[0]) {
+      setGlobePoi(parseFloat(data[0].lat), parseFloat(data[0].lon));
+    } else {
+      toast(`No se encontró "${q}".`, 'warning');
+    }
+  } catch (e) {
+    toast('Geocoding falló. Revisa tu conexión.', 'error');
+  } finally {
+    sp?.classList.remove('is-active');
+  }
+}
+
+// ──────────────────────────── FLY-TO ─────────────────────────────────────────
+function globeFlyTo(lon, lat, ms = 1100, targetZoom = 1.6) {
+  if (!GLOBE.mainProj) return;
+  GLOBE.autoSpin = false;
+  if (GLOBE.flyAF) cancelAnimationFrame(GLOBE.flyAF);
+  const startRot = [...GLOBE.rotate];
+  const targetRot = [-lon, -lat, 0];
+  const startZoom = GLOBE.zoomScale;
+  const t0 = performance.now();
+  function step(now) {
+    const t = Math.min((now - t0) / ms, 1);
+    const ease = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t;
+    GLOBE.rotate[0] = startRot[0] + (targetRot[0] - startRot[0]) * ease;
+    GLOBE.rotate[1] = startRot[1] + (targetRot[1] - startRot[1]) * ease;
+    GLOBE.zoomScale = startZoom + (targetZoom - startZoom) * ease;
+    const r = Math.min(GLOBE.W, GLOBE.H) * 0.42 * GLOBE.zoomScale;
+    GLOBE.mainProj.scale(r);
+    if (t < 1) GLOBE.flyAF = requestAnimationFrame(step);
+  }
+  GLOBE.flyAF = requestAnimationFrame(step);
+}
+
+// ──────────────────────────── RADIO + BORRAR ─────────────────────────────────
+function bindGlobeRadiusUI() {
+  const r = document.getElementById('globe-radius');
+  r?.addEventListener('input', () => { globeFilterByRadius(); });
+  r?.addEventListener('change', () => { globeFilterByRadius(); });
+  document.getElementById('btn-globe-clear-poi')?.addEventListener('click', clearGlobePoi);
+}
+
+// ──────────────────────────── MODAL UPLOAD ───────────────────────────────────
+function bindGlobeUploadModalUI() {
+  const open = document.getElementById('btn-globe-open-upload');
+  const close = document.getElementById('btn-globe-modal-close');
+  const back = document.getElementById('globe-modal-backdrop');
+  const modal = document.getElementById('globe-modal');
+  const zone = document.getElementById('globe-upload-zone');
+  const input = document.getElementById('globe-file-input');
+  const srcSel = document.getElementById('globe-source-select');
+
+  const openModal  = () => modal?.classList.add('is-open');
+  const closeModal = () => modal?.classList.remove('is-open');
+
+  open?.addEventListener('click', openModal);
+  close?.addEventListener('click', closeModal);
+  back?.addEventListener('click', closeModal);
+
+  zone?.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('is-drag'); });
+  zone?.addEventListener('dragleave', () => zone.classList.remove('is-drag'));
+  zone?.addEventListener('drop', e => {
+    e.preventDefault(); zone.classList.remove('is-drag');
+    if (e.dataTransfer.files[0]) handleGlobeOwnFile(e.dataTransfer.files[0], srcSel?.value);
+  });
+  zone?.addEventListener('click', () => input?.click());
+  input?.addEventListener('change', () => {
+    if (input.files[0]) handleGlobeOwnFile(input.files[0], srcSel?.value);
+  });
+}
+
+async function handleGlobeOwnFile(file, source) {
+  // Sincronizar con el select del Data Hub para que uploadFile use la fuente elegida
+  const dhSrc = document.getElementById('source-select');
+  if (dhSrc && source) dhSrc.value = source;
+  document.getElementById('globe-modal')?.classList.remove('is-open');
+  try {
+    await uploadFile(file);
+  } finally {
+    collapseGlobeStage();
+  }
+}
+
+// ──────────────────────────── COLAPSO + RESTAURACIÓN ─────────────────────────
+function switchToGlobeApp() {
+  const stage = document.getElementById('globe-stage');
+  if (!stage) return;
+  if (GLOBE.appOn) return;
+  stage.classList.add('loader-done');
+  // Pequeño retraso para que la transición del loader luzca
+  setTimeout(() => {
+    stage.classList.add('app-on');
+    GLOBE.appOn = true;
+  }, 300);
+}
+
+function collapseGlobeStage() {
+  const stage = document.getElementById('globe-stage');
+  if (!stage) return;
+  GLOBE.collapsed = true;
+  GLOBE.collapsedOnce = true;
+  stage.classList.add('is-collapsed');
+  document.body.classList.add('globe-collapsed');
+  GLOBE.autoSpin = false;
+}
+
+function bindGlobeBackButton() {
+  document.getElementById('btn-back-to-globe')?.addEventListener('click', restoreGlobeStage);
+}
+
+function restoreGlobeStage() {
+  const stage = document.getElementById('globe-stage');
+  if (!stage) return;
+  GLOBE.collapsed = false;
+  stage.classList.remove('is-collapsed');
+  // Si volvimos antes de avanzar al app (raro), aseguramos que el app esté visible
+  if (!GLOBE.appOn) switchToGlobeApp();
+  GLOBE.autoSpin = !GLOBE.poi;
+  // Refrescar Leaflet en caso de cambios de tamaño mientras estaba colapsado
+  if (GLOBE.mode === 'leaflet' && GLOBE.leafletMap) {
+    setTimeout(() => GLOBE.leafletMap.invalidateSize(), 360);
+  }
+}
+
+// ──────────────────────────── MODO 2D LEAFLET ────────────────────────────────
+function bindGlobeModeSwitch() {
+  document.querySelectorAll('#globe-modeswitch .globe-mode__btn').forEach(b => {
+    b.addEventListener('click', () => setGlobeMode(b.dataset.mode));
+  });
+  document.getElementById('globe-leaflet-layer')?.addEventListener('change', e => {
+    leafletSetTile(e.target.value);
+  });
+}
+
+function setGlobeMode(mode) {
+  if (mode !== 'globe' && mode !== 'leaflet') return;
+  if (GLOBE.mode === mode) return;
+  GLOBE.mode = mode;
+  const app = document.getElementById('globe-app');
+  app?.classList.toggle('is-mode-leaflet', mode === 'leaflet');
+  document.querySelectorAll('#globe-modeswitch .globe-mode__btn').forEach(b => {
+    b.classList.toggle('is-active', b.dataset.mode === mode);
+  });
+  if (mode === 'leaflet') {
+    initGlobeLeaflet();
+    GLOBE.autoSpin = false;
+  } else {
+    GLOBE.autoSpin = !GLOBE.poi;
+  }
+}
+
+function initGlobeLeaflet() {
+  if (GLOBE.leafletMap) {
+    setTimeout(() => GLOBE.leafletMap.invalidateSize(), 50);
+    return;
+  }
+  const el = document.getElementById('globe-leaflet');
+  if (!el || typeof L === 'undefined') return;
+  const map = L.map(el, {
+    zoomControl: true,
+    attributionControl: true,
+    minZoom: 2,
+    worldCopyJump: true,
+  }).setView([23.5, -102], 5);   // centrado en México
+  GLOBE.leafletMap = map;
+  const layerSel = document.getElementById('globe-leaflet-layer');
+  leafletSetTile(layerSel?.value || 'dark');
+
+  // Click → POI
+  map.on('click', (e) => {
+    setGlobePoi(e.latlng.lat, e.latlng.lng);
+  });
+
+  // Render del estado actual (si ya había POI/estaciones)
+  if (GLOBE.poi) {
+    leafletRenderPoi();
+    leafletRenderStations();
+    map.setView([GLOBE.poi.lat, GLOBE.poi.lon], 7);
+  }
+}
+
+function leafletSetTile(key) {
+  if (!GLOBE.leafletMap) return;
+  const conf = GLOBE_TILE_URLS[key] || GLOBE_TILE_URLS.dark;
+  if (GLOBE.leafletTile) {
+    GLOBE.leafletMap.removeLayer(GLOBE.leafletTile);
+    GLOBE.leafletTile = null;
+  }
+  const opts = { maxZoom: 19, attribution: conf.attr };
+  if (conf.subdomains) opts.subdomains = conf.subdomains;
+  GLOBE.leafletTile = L.tileLayer(conf.url, opts).addTo(GLOBE.leafletMap);
+}
+
+function leafletRenderPoi() {
+  if (!GLOBE.leafletMap) return;
+  if (GLOBE.leafletPoi)    { GLOBE.leafletMap.removeLayer(GLOBE.leafletPoi); GLOBE.leafletPoi = null; }
+  if (GLOBE.leafletCircle) { GLOBE.leafletMap.removeLayer(GLOBE.leafletCircle); GLOBE.leafletCircle = null; }
+  if (!GLOBE.poi) return;
+  const icon = L.divIcon({ className: 'globe-l-poi-icon', iconSize: [0,0], iconAnchor:[0,0] });
+  GLOBE.leafletPoi = L.marker([GLOBE.poi.lat, GLOBE.poi.lon], { icon, zIndexOffset: 1000 })
+    .addTo(GLOBE.leafletMap)
+    .bindTooltip('Sitio del estudio', { direction: 'top', offset: [0, -16] });
+  const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
+  GLOBE.leafletCircle = L.circle([GLOBE.poi.lat, GLOBE.poi.lon], {
+    radius: km * 1000,
+    color: '#E5A86B', weight: 1.5, dashArray: '6 4',
+    fillColor: '#E5A86B', fillOpacity: 0.06, interactive: false,
+  }).addTo(GLOBE.leafletMap);
+}
+
+function leafletRenderStations() {
+  if (!GLOBE.leafletMap) return;
+  GLOBE.leafletStations.forEach(m => GLOBE.leafletMap.removeLayer(m));
+  GLOBE.leafletStations = [];
+  GLOBE.visibleSites.forEach(s => {
+    const isMaster = (GLOBE.master === s.filename);
+    const icon = L.divIcon({
+      className: `globe-l-station ${isMaster ? 'is-master' : ''}`,
+      iconSize: [0,0], iconAnchor: [0,0],
+    });
+    const m = L.marker([s.lat, s.lon], { icon, zIndexOffset: isMaster ? 600 : 200 })
+      .addTo(GLOBE.leafletMap)
+      .bindTooltip(`${s.display_name || s.filename}<br><b>${s._dist.toFixed(0)} km</b>`,
+                   { direction: 'top', offset: [0, -10] });
+    m.on('click', () => handleGlobeStationPick(s.filename));
+    GLOBE.leafletStations.push(m);
+  });
+}
+
+function leafletClearAll() {
+  if (!GLOBE.leafletMap) return;
+  if (GLOBE.leafletPoi)    { GLOBE.leafletMap.removeLayer(GLOBE.leafletPoi); GLOBE.leafletPoi = null; }
+  if (GLOBE.leafletCircle) { GLOBE.leafletMap.removeLayer(GLOBE.leafletCircle); GLOBE.leafletCircle = null; }
+  GLOBE.leafletStations.forEach(m => GLOBE.leafletMap.removeLayer(m));
+  GLOBE.leafletStations = [];
 }

@@ -15,6 +15,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson@3.0.2/dist/topojson.min.js"></script>
 </head>
 <body>
 
@@ -35,6 +37,14 @@
     <span class="brand-name">AERO <span class="brand-sub">by OPEN CIM</span></span>
   </div>
   <nav class="topbar-nav">
+    <button class="nav-btn nav-btn--globe" id="btn-back-to-globe" type="button" title="Volver al Globe (selección de sitio)">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="vertical-align:-2px;margin-right:4px">
+        <circle cx="12" cy="12" r="9"/>
+        <ellipse cx="12" cy="12" rx="9" ry="3.5"/>
+        <path d="M3 12h18M12 3a13 13 0 010 18M12 3a13 13 0 000 18"/>
+      </svg>
+      Globe
+    </button>
     <button class="nav-btn active" data-module="data">Data Hub</button>
     <button class="nav-btn" data-module="overview">Resumen</button>
     <button class="nav-btn" data-module="wind">Viento</button>
@@ -67,6 +77,123 @@
     </button>
   </div>
 </header>
+
+<!-- ═══════════════════════════ GLOBE STAGE (overlay) ═══════════════════════════ -->
+<div id="globe-stage" class="globe-stage" aria-hidden="false">
+  <!-- Loader phase -->
+  <div class="globe-loader" id="globe-loader">
+    <div class="globe-loader__wrap">
+      <canvas id="globe-loader-canvas" width="220" height="220"></canvas>
+      <div class="globe-loader__rings" aria-hidden="true">
+        <svg viewBox="-12 -12 244 244">
+          <ellipse class="ring r1" cx="110" cy="110" rx="124" ry="38"/>
+          <ellipse class="ring r2" cx="110" cy="110" rx="130" ry="56" transform="rotate(30 110 110)"/>
+          <ellipse class="ring r3" cx="110" cy="110" rx="135" ry="24" transform="rotate(60 110 110)"/>
+          <ellipse class="ring r4" cx="110" cy="110" rx="128" ry="46" transform="rotate(-20 110 110)"/>
+        </svg>
+      </div>
+    </div>
+    <div class="globe-loader__hint">WINDPRO · CARGANDO MUNDO</div>
+  </div>
+
+  <!-- Main globe phase -->
+  <div class="globe-app" id="globe-app">
+    <canvas id="globe-canvas" class="globe-canvas"></canvas>
+    <div id="globe-leaflet" class="globe-leaflet"></div>
+
+    <!-- Mode toggle (3D ↔ 2D) + tile layer selector -->
+    <div class="globe-modeswitch" id="globe-modeswitch">
+      <button class="globe-mode__btn is-active" data-mode="globe" type="button">🌐 3D</button>
+      <button class="globe-mode__btn" data-mode="leaflet" type="button">🗺 2D</button>
+      <span class="globe-mode__sep"></span>
+      <select id="globe-leaflet-layer" class="globe-mode__layer" title="Capa base (Leaflet)">
+        <option value="dark" selected>Carto Dark</option>
+        <option value="voyager">Carto Voyager</option>
+        <option value="osm">OpenStreetMap</option>
+        <option value="topo">OpenTopoMap</option>
+        <option value="sat">Satélite ESRI</option>
+      </select>
+    </div>
+
+    <!-- Top-left brand -->
+    <div class="globe-brand">
+      <div class="globe-brand__kicker">WINDPRO · GLOBE</div>
+      <div class="globe-brand__title">Selecciona un sitio para iniciar el estudio</div>
+      <div class="globe-brand__hint">Arrastra para rotar · Rueda para acercar · Click en estación para cargar</div>
+    </div>
+
+    <!-- Search bar -->
+    <div class="globe-search" id="globe-search">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="globe-search__icon">
+        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.6" y2="16.6"/>
+      </svg>
+      <input id="globe-search-input" type="text" autocomplete="off"
+             placeholder="Lugar, dirección o coordenadas (lat, lon) en México…"/>
+      <div id="globe-search-spinner" class="globe-search__spinner"></div>
+      <button id="btn-globe-search" class="globe-search__btn" type="button">IR →</button>
+      <div id="globe-search-suggest" class="globe-suggest"></div>
+    </div>
+
+    <!-- Radius + status pill (bottom-center) -->
+    <div class="globe-controls" id="globe-controls">
+      <label class="globe-controls__lbl">RADIO</label>
+      <input id="globe-radius" type="number" value="200" min="25" step="25" class="globe-controls__input"/>
+      <span class="globe-controls__unit">km</span>
+      <span class="globe-controls__sep"></span>
+      <span id="globe-status" class="globe-controls__status">Marca un sitio en el mapa o busca una dirección</span>
+      <button id="btn-globe-clear-poi" class="globe-controls__chip" type="button" title="Quitar marcador">✕</button>
+    </div>
+
+    <!-- Coord readout (bottom-right) -->
+    <div class="globe-readout" id="globe-readout">0.00°N · 0.00°W</div>
+
+    <!-- Master station picker (right side) -->
+    <aside class="globe-panel" id="globe-panel">
+      <div class="globe-panel__head">
+        <div class="globe-panel__kicker">ESTACIONES EN RADIO</div>
+        <div class="globe-panel__title" id="globe-panel-title">—</div>
+      </div>
+      <div class="globe-panel__sub" id="globe-panel-sub">
+        Selecciona la estación maestra para cargar sus datos en el Data Hub.
+      </div>
+      <div class="globe-panel__list" id="globe-station-list">
+        <div class="globe-panel__empty">Sin estaciones aún. Marca un sitio para listar las cercanas.</div>
+      </div>
+      <button class="globe-panel__upload" id="btn-globe-open-upload" type="button">
+        + Cargar mi propio archivo
+      </button>
+    </aside>
+
+    <!-- Upload modal -->
+    <div class="globe-modal" id="globe-modal" aria-hidden="true">
+      <div class="globe-modal__backdrop" id="globe-modal-backdrop"></div>
+      <div class="globe-modal__card">
+        <button class="globe-modal__close" id="btn-globe-modal-close" type="button" aria-label="Cerrar">✕</button>
+        <div class="globe-modal__kicker">CARGAR ARCHIVO PROPIO</div>
+        <div class="globe-modal__title">Sube tu reanálisis o serie temporal</div>
+        <div class="globe-modal__desc">CSV · TXT · TSV · MERRA-2 · ERA5 · CONAGUA. Al cargar, el globo se colapsa y entras al Data Hub.</div>
+        <div class="globe-modal__zone" id="globe-upload-zone">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+            <path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/>
+          </svg>
+          <div class="globe-modal__zonetext">Arrastra tu archivo o <span class="globe-modal__pick">selecciona</span></div>
+          <input type="file" id="globe-file-input" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
+        </div>
+        <div class="globe-modal__source">
+          <label>Fuente</label>
+          <select id="globe-source-select">
+            <option value="auto">Auto-detectar</option>
+            <option value="csv">CSV genérico</option>
+            <option value="merra2">MERRA-2</option>
+            <option value="era5">ERA5</option>
+            <option value="conagua">CONAGUA/SMN</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════════════════════ MAIN CONTENT ══════════════════════ -->
 <main class="main-content">
