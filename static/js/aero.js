@@ -9054,12 +9054,12 @@ function initGlobeMain() {
   }, { passive: true });
   window.addEventListener('touchend', () => { GLOBE.isDragging = false; });
 
-  // Wheel: zoom de escala
+  // Wheel: zoom de escala (permite acercarse mucho más para ver detalle)
   cv.addEventListener('wheel', e => {
     if (!GLOBE.appOn) return;
     e.preventDefault();
-    const k = e.deltaY > 0 ? 0.92 : 1.08;
-    GLOBE.zoomScale = Math.max(0.7, Math.min(5, GLOBE.zoomScale * k));
+    const k = e.deltaY > 0 ? 0.90 : 1.12;
+    GLOBE.zoomScale = Math.max(0.7, Math.min(40, GLOBE.zoomScale * k));
     const r = Math.min(GLOBE.W, GLOBE.H) * 0.42 * GLOBE.zoomScale;
     GLOBE.mainProj.scale(r);
   }, { passive: false });
@@ -9089,13 +9089,13 @@ function initGlobeMain() {
       }
     }
 
-    // Click sobre globo → POI + auto-switch a Mapa 2D a 100 km
+    // Click sobre globo → POI + auto-switch a Mapa 2D a 50 km
     const inv = GLOBE.mainProj.invert([mx, my]);
     if (!inv) return;
     const [lon, lat] = inv;
     if (!isFinite(lat) || !isFinite(lon)) return;
     setGlobePoi(lat, lon);
-    switchTo2DAt(lat, lon, 100);
+    switchTo2DAt(lat, lon, 50);
   });
 
   function tick() {
@@ -9570,7 +9570,7 @@ async function globeFetchSuggest(q) {
         document.getElementById('globe-search-input').value = el.firstChild.textContent.trim();
         hideGlobeSuggest();
         setGlobePoi(lat, lon);
-        switchTo2DAt(lat, lon, 100);
+        switchTo2DAt(lat, lon, 40);
       });
     });
   } catch (e) { hideGlobeSuggest(); }
@@ -9594,7 +9594,7 @@ async function globeSearchSubmit() {
     const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
     if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
       setGlobePoi(lat, lon);
-      switchTo2DAt(lat, lon, 100);
+      switchTo2DAt(lat, lon, 40);
       return;
     }
   }
@@ -9614,7 +9614,7 @@ async function globeSearchSubmit() {
     if (data && data[0]) {
       const lat = parseFloat(data[0].lat), lon = parseFloat(data[0].lon);
       setGlobePoi(lat, lon);
-      switchTo2DAt(lat, lon, 100);
+      switchTo2DAt(lat, lon, 40);
     } else {
       toast(`No se encontró "${q}".`, 'warning');
     }
