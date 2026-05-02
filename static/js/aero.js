@@ -10199,6 +10199,111 @@ function bindResumenUnified() {
   // Si quedó arena-data-tab residual de un bind previo, lo retiramos.
   document.getElementById('arena-data-tab')?.remove();
   document.querySelector('#mod-models .tab-btn[data-tab="arena-data"]')?.remove();
+
+  // Al entrar a Kriging Clásico: encuadre 100 km al sitio del Globe +
+  // estación maestra fija + parámetros desde Model Arena.
+  document.querySelector('.nav-btn[data-module="kriging"]')?.addEventListener('click', () => {
+    setTimeout(() => krig3AutoFitFromGlobe(), 80);
+  });
+}
+
+// Encuadra el mapa Kriging a 100 km del POI del Globe, fija la estación
+// maestra como principal y aplica radio = 100 km. El usuario puede quitar
+// el emplazamiento o cambiar el radio igual que antes.
+async function krig3AutoFitFromGlobe() {
+  if (typeof krig3InitMap !== 'function') return;
+  const map = krig3InitMap();
+  if (!map) return;
+
+  // Pull parámetros económicos del cache de Model Arena
+  krig3PullParamsFromArena();
+
+  // Sin POI del Globe: dejamos comportamiento default
+  if (!GLOBE || !GLOBE.poi) return;
+
+  // Asegura que los sitios estén cargados
+  if (typeof KRIG !== 'undefined' && KRIG && (!KRIG.sites?.length) && typeof krig3LoadSites === 'function') {
+    try { await krig3LoadSites(); } catch (e) {}
+  }
+
+  // Setear radio a 100 km
+  const radInp = document.getElementById('krig3-poi-radius');
+  if (radInp) radInp.value = 100;
+
+  // Marcar POI usando la lógica existente de Kriging
+  if (typeof krig3PlacePoi === 'function') {
+    krig3PlacePoi({ lat: GLOBE.poi.lat, lng: GLOBE.poi.lon });
+  } else if (typeof KRIG !== 'undefined') {
+    KRIG.poi = { lat: GLOBE.poi.lat, lon: GLOBE.poi.lon };
+  }
+
+  // Estación maestra del Globe → estación principal del Kriging
+  if (GLOBE.master && typeof KRIG !== 'undefined') {
+    const exists = KRIG.sites?.some(s => s.filename === GLOBE.master);
+    if (exists) {
+      KRIG.principal = GLOBE.master;
+      try { krig3UpdateAllMarkers?.(); } catch (e) {}
+    }
+  }
+
+  // Encuadre rectángulo ~100 km
+  const km = 100;
+  const dLat = km / 111.32;
+  const dLon = km / (111.32 * Math.max(0.05, Math.cos(GLOBE.poi.lat * Math.PI / 180)));
+  const sw = [GLOBE.poi.lat - dLat, GLOBE.poi.lon - dLon];
+  const ne = [GLOBE.poi.lat + dLat, GLOBE.poi.lon + dLon];
+  try {
+    map.flyToBounds([sw, ne], { duration: 0.7, padding: [40, 40] });
+  } catch (e) {
+    map.setView([GLOBE.poi.lat, GLOBE.poi.lon], 9);
+  }
+}
+
+// Llena los inputs de parámetros del Kriging Clásico desde Model Arena cache
+function krig3PullParamsFromArena() {
+  if (typeof WP === 'undefined' || !WP.arenaCache) return;
+  const cache = WP.arenaCache;
+  const _avg = arr => (arr && arr.length) ? arr.reduce((s,v)=>s+v,0) / arr.length : null;
+
+  // Tasa de interés (%) — promedio del histórico observado
+  const tasa = _avg(cache.interest?.raw_values);
+  if (tasa != null) {
+    const inp = document.getElementById('krig3-tasa');
+    if (inp) inp.value = tasa.toFixed(2);
+  }
+
+  // USD/MXN — promedio del histórico observado
+  const fxAvg = _avg(cache.fx?.raw_values);
+  if (fxAvg != null) {
+    const inp = document.getElementById('krig3-fx');
+    if (inp) inp.value = fxAvg.toFixed(2);
+  }
+
+  // Precio (USD/kWh) — promedio del PML observado, convertido si está en $/MWh MXN
+  const pmlSide = cache.pml?.compra || cache.pml?.venta || cache.pml;
+  const pmlAvg = _avg(pmlSide?.raw_values);
+  if (pmlAvg != null) {
+    let usdKwh;
+    if (pmlAvg > 50) {                     // típicamente MXN/MWh
+      const fx = parseFloat(document.getElementById('krig3-fx')?.value) || fxAvg || 20;
+      usdKwh = (pmlAvg / 1000) / fx;
+    } else if (pmlAvg > 0.5) {             // MXN/kWh
+      const fx = parseFloat(document.getElementById('krig3-fx')?.value) || fxAvg || 20;
+      usdKwh = pmlAvg / fx;
+    } else {                                // USD/kWh ya
+      usdKwh = pmlAvg;
+    }
+    const inp = document.getElementById('krig3-price');
+    if (inp && Number.isFinite(usdKwh)) inp.value = usdKwh.toFixed(4);
+  }
+
+  // Demanda anual (MWh) — suma del histórico horario observado
+  const demSer = cache.demand_hourly?.raw_values || cache.demand?.raw_values;
+  if (demSer && demSer.length) {
+    const annualMWh = demSer.reduce((s,v)=>s+v, 0); // MW × 1h = MWh
+    const inp = document.getElementById('krig3-demand');
+    if (inp) inp.value = Math.round(annualMWh).toString();
+  }
 }
 
 function switchResumenTab(name) {
