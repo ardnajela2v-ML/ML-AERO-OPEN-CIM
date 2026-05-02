@@ -9508,11 +9508,15 @@ async function handleGlobeStationPick(filename) {
                GLOBE.sites.find(s => s.filename === filename);
   GLOBE.master = filename;
   globeRenderStationList();
-  // Cargar al Data Hub
+  // Cargar archivo y luego ejecutar pipeline (Resumen + Viento + Avanzado)
   try {
     await loadPresetFileByName(filename, site?.source || 'auto');
   } finally {
     collapseGlobeStage();
+    // Pipeline automático tras colapsar — Resumen unificado
+    if (typeof runResumenPipeline === 'function') {
+      setTimeout(() => runResumenPipeline(), 350);
+    }
   }
 }
 
@@ -9676,7 +9680,7 @@ function bindGlobeUploadModalUI() {
 }
 
 async function handleGlobeOwnFile(file, source) {
-  // Sincronizar con el select del Data Hub para que uploadFile use la fuente elegida
+  // Sincronizar con el select de Data Hub (que sigue oculto pero existe)
   const dhSrc = document.getElementById('source-select');
   if (dhSrc && source) dhSrc.value = source;
   document.getElementById('globe-modal')?.classList.remove('is-open');
@@ -9684,6 +9688,9 @@ async function handleGlobeOwnFile(file, source) {
     await uploadFile(file);
   } finally {
     collapseGlobeStage();
+    if (typeof runResumenPipeline === 'function') {
+      setTimeout(() => runResumenPipeline(), 350);
+    }
   }
 }
 
@@ -9867,6 +9874,14 @@ function bindResumenUnified() {
     const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
     arenaBtn?.click();
   });
+  // Mover el panel de Datos de Mercado al inicio de Model Arena (Data Hub queda oculto).
+  const market = document.getElementById('market-data-panel');
+  const arena  = document.getElementById('mod-models');
+  if (market && arena && arena.firstElementChild?.classList.contains('module-header')) {
+    arena.insertBefore(market, arena.firstElementChild.nextSibling);
+  } else if (market && arena) {
+    arena.insertBefore(market, arena.firstChild);
+  }
 }
 
 function switchResumenTab(name) {
