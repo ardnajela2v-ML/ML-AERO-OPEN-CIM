@@ -10056,34 +10056,29 @@ function bindResumenUnified() {
     const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
     arenaBtn?.click();
   });
-  // Inyectar el panel de Datos de Mercado como una NUEVA tab "Datos" en Model Arena.
-  // Así las tabs Viento/Demanda/PML/Tasa/FX siguen intactas y visibles.
-  const market = document.getElementById('market-data-panel');
-  const arena  = document.getElementById('mod-models');
-  const tabsBar = arena?.querySelector('.tabs');
-  if (market && arena && tabsBar && !document.getElementById('arena-data-tab')) {
-    // Botón al inicio de la barra de tabs
-    const dataBtn = document.createElement('button');
-    dataBtn.className = 'tab-btn';
-    dataBtn.dataset.tab = 'arena-data';
-    dataBtn.type = 'button';
-    dataBtn.textContent = '📦 Datos';
-    tabsBar.insertBefore(dataBtn, tabsBar.firstChild);
-    // Tab-content que envuelve el panel original
-    const dataTab = document.createElement('div');
-    dataTab.id = 'arena-data-tab';
-    dataTab.className = 'tab-content';
-    market.parentNode?.removeChild(market);
-    dataTab.appendChild(market);
-    arena.insertBefore(dataTab, tabsBar.nextSibling);
-    // Engancha al patrón de tabs ya bindado en bindModelArena
-    dataBtn.addEventListener('click', () => {
-      arena.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      arena.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-      dataBtn.classList.add('active');
-      dataTab.classList.add('active');
-    });
-  }
+  // Mover cada selector de archivo del panel de mercado a su sub-tab
+  // correspondiente dentro de Model Arena, así no necesitamos una tab
+  // "Datos" extra ni el panel agregado.
+  const movements = [
+    ['#market-demand-select',   'arena-demand-tab'],
+    ['#market-pml-select',      'arena-pml-tab'],
+    ['#market-interest-select', 'arena-interest-tab'],
+    ['#market-fx-select',       'arena-fx-tab'],
+  ];
+  movements.forEach(([sel, tabId]) => {
+    const select = document.querySelector(sel);
+    const tab = document.getElementById(tabId);
+    if (!select || !tab) return;
+    // Sube hasta el wrapper .market-data-row
+    const row = select.closest('.market-data-row');
+    if (!row || row.dataset.movedToArena === '1') return;
+    row.dataset.movedToArena = '1';
+    // Insertar al inicio del sub-tab como cabecera de carga
+    tab.insertBefore(row, tab.firstChild);
+  });
+  // Si quedó arena-data-tab residual de un bind previo, lo retiramos.
+  document.getElementById('arena-data-tab')?.remove();
+  document.querySelector('#mod-models .tab-btn[data-tab="arena-data"]')?.remove();
 }
 
 function switchResumenTab(name) {
