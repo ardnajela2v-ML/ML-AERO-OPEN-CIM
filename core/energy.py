@@ -185,11 +185,12 @@ class PowerCurve:
         fname = os.path.basename(filepath)
         stem  = fname.replace('.csv', '')
 
-        # parse rated power and rotor diameter from filename
+        # parse rated power and rotor radius from filename (_r is RADIUS, not diameter)
         p_match = re.search(r'_p(\d+)', stem, re.IGNORECASE)
         r_match = re.search(r'_r([\d.]+)', stem, re.IGNORECASE)
         rated_kw = float(p_match.group(1)) if p_match else None
-        rotor_m  = float(r_match.group(1)) if r_match else None
+        rotor_r_m = float(r_match.group(1)) if r_match else None
+        rotor_m   = (rotor_r_m * 2.0) if rotor_r_m else None  # diameter
 
         # pretty name: capitalise brand prefix
         name_clean = re.sub(r'_p\d+.*', '', stem)   # e.g. "vestas30"
@@ -209,10 +210,10 @@ class PowerCurve:
         # estimate hub height from rotor diameter
         hub_h = 80.0
         if rotor_m:
-            if rotor_m <= 40:   hub_h = 50.0
-            elif rotor_m <= 60: hub_h = 65.0
-            elif rotor_m <= 80: hub_h = 80.0
-            else:               hub_h = 100.0
+            if rotor_m <= 80:    hub_h = 50.0
+            elif rotor_m <= 120: hub_h = 65.0
+            elif rotor_m <= 160: hub_h = 80.0
+            else:                hub_h = 100.0
 
         return cls(name=name_clean,
                    rated_power_kw=rated_kw,
@@ -822,7 +823,8 @@ def list_turbine_info(folder_path):
         r_match = re.search(r'_r([\d.]+)', stem, re.IGNORECASE)
         name_clean = re.sub(r'_p\d+.*', '', stem).capitalize()
         rated_kw   = int(p_match.group(1)) if p_match else None
-        rotor_m    = float(r_match.group(1)) if r_match else None
+        rotor_r_m  = float(r_match.group(1)) if r_match else None
+        rotor_m    = (rotor_r_m * 2.0) if rotor_r_m else None  # _r es radio → diámetro
         result.append({
             'filename': fname,
             'name':  name_clean,

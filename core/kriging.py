@@ -92,13 +92,13 @@ _TURB_RE = re.compile(r'_p(\d+)_r([\d.]+)', re.IGNORECASE)
 def parse_turbine_filename(fn: str):
     """Return (name, rotor_diameter_m, power_nominal_kw).
 
-    Convención unificada con core/energy.py: el segundo elemento es DIÁMETRO
-    del rotor en metros, no radio. Default 80 m si no se encuentra el patrón.
+    El sufijo `_r<valor>` del filename es el RADIO del rotor en metros — se
+    multiplica por 2 para devolver diámetro. Default 80 m si no hay patrón.
     """
     base = os.path.splitext(fn)[0]
     m = _TURB_RE.search(base)
     if m:
-        return (base, float(m.group(2)), float(m.group(1)))
+        return (base, float(m.group(2)) * 2.0, float(m.group(1)))
     return (base, 80.0, 1000.0)
 
 
