@@ -9089,12 +9089,13 @@ function initGlobeMain() {
       }
     }
 
-    // Click sobre globo → POI
+    // Click sobre globo → POI + auto-switch a Mapa 2D a 100 km
     const inv = GLOBE.mainProj.invert([mx, my]);
     if (!inv) return;
     const [lon, lat] = inv;
     if (!isFinite(lat) || !isFinite(lon)) return;
     setGlobePoi(lat, lon);
+    switchTo2DAt(lat, lon, 100);
   });
 
   function tick() {
@@ -9569,6 +9570,7 @@ async function globeFetchSuggest(q) {
         document.getElementById('globe-search-input').value = el.firstChild.textContent.trim();
         hideGlobeSuggest();
         setGlobePoi(lat, lon);
+        switchTo2DAt(lat, lon, 100);
       });
     });
   } catch (e) { hideGlobeSuggest(); }
@@ -9592,6 +9594,7 @@ async function globeSearchSubmit() {
     const lat = parseFloat(m[1]), lon = parseFloat(m[2]);
     if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
       setGlobePoi(lat, lon);
+      switchTo2DAt(lat, lon, 100);
       return;
     }
   }
@@ -9609,7 +9612,9 @@ async function globeSearchSubmit() {
       data = await res.json();
     }
     if (data && data[0]) {
-      setGlobePoi(parseFloat(data[0].lat), parseFloat(data[0].lon));
+      const lat = parseFloat(data[0].lat), lon = parseFloat(data[0].lon);
+      setGlobePoi(lat, lon);
+      switchTo2DAt(lat, lon, 100);
     } else {
       toast(`No se encontró "${q}".`, 'warning');
     }
@@ -9998,6 +10003,31 @@ function leafletRenderStations() {
     m.on('click', () => handleGlobeStationPick(s.filename));
     GLOBE.leafletStations.push(m);
   });
+}
+
+// Vuela el mapa Leaflet a un cuadro de ~km × km alrededor del punto (auto-zoom)
+function leafletFlyToRadius(lat, lon, km = 100) {
+  if (!GLOBE.leafletMap) return;
+  const dLat = km / 111.32;
+  const dLon = km / (111.32 * Math.max(0.05, Math.cos(lat * Math.PI / 180)));
+  const sw = [lat - dLat, lon - dLon];
+  const ne = [lat + dLat, lon + dLon];
+  try {
+    GLOBE.leafletMap.flyToBounds([sw, ne], { duration: 0.9, padding: [50, 50] });
+  } catch (e) {
+    GLOBE.leafletMap.setView([lat, lon], 8);
+  }
+}
+
+// Cambia a modo 2D Leaflet y centra a ~km del punto. Si el map no existe,
+// lo inicializa y aplica el viaje en cuanto esté listo.
+async function switchTo2DAt(lat, lon, km = 100) {
+  setGlobeMode('leaflet');
+  // Esperar a que invalidateSize del init tome efecto
+  await new Promise(r => setTimeout(r, 80));
+  if (!GLOBE.leafletMap) return;
+  GLOBE.leafletMap.invalidateSize();
+  leafletFlyToRadius(lat, lon, km);
 }
 
 function leafletClearAll() {
