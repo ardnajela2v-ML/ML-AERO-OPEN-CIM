@@ -9812,19 +9812,100 @@ function leafletSetTile(key) {
   GLOBE.leafletTile = L.tileLayer(conf.url, opts).addTo(GLOBE.leafletMap);
 }
 
+function _poiIconHtml() {
+  // Pin grande con halo pulsante (gradient ámbar premium)
+  return `
+    <div class="globe-l-poi__pulse"></div>
+    <svg viewBox="0 0 56 64" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <radialGradient id="poiHead" cx="40%" cy="35%" r="65%">
+          <stop offset="0%"  stop-color="#FFE0BF"/>
+          <stop offset="55%" stop-color="#E5A86B"/>
+          <stop offset="100%" stop-color="#7A4A1A"/>
+        </radialGradient>
+        <linearGradient id="poiTail" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"  stop-color="#B45309"/>
+          <stop offset="100%" stop-color="#5A3210"/>
+        </linearGradient>
+      </defs>
+      <path d="M28 60 L18 38 Q28 36 38 38 Z" fill="url(#poiTail)" stroke="#0A0E15" stroke-width="1"/>
+      <circle cx="28" cy="24" r="14" fill="url(#poiHead)" stroke="#FFFFFF" stroke-width="2"/>
+      <circle cx="28" cy="24" r="5"  fill="#0A0E15"/>
+      <circle cx="24" cy="20" r="3"  fill="rgba(255,255,255,0.7)"/>
+    </svg>`;
+}
+
+function _turbineIconHtml(isMaster, distKm) {
+  const W = isMaster ? 52 : 36;
+  const H = isMaster ? 64 : 48;
+  const baseFill   = isMaster ? '#B45309' : '#0F5FA8';
+  const towerStop1 = isMaster ? '#7A4A1A' : '#0B3258';
+  const towerStop2 = isMaster ? '#FFE0BF' : '#9DD0FF';
+  const towerStop3 = isMaster ? '#5A3210' : '#0A1A2C';
+  const bladeStop1 = isMaster ? '#FFE7C7' : '#E0EFFF';
+  const bladeStop2 = isMaster ? '#B45309' : '#4DA3FF';
+  const hubStop    = isMaster ? '#FFC890' : '#82BFFF';
+  const id = isMaster ? 'M' : 'N';
+  const labelTxt = (distKm != null) ? `${distKm.toFixed(0)} km${isMaster ? ' ★' : ''}` : (isMaster ? '★ MAESTRA' : '');
+  return `
+    <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="t${id}Tower" x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0%"  stop-color="${towerStop1}"/>
+          <stop offset="50%" stop-color="${towerStop2}"/>
+          <stop offset="100%" stop-color="${towerStop3}"/>
+        </linearGradient>
+        <linearGradient id="t${id}Blade" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%"  stop-color="${bladeStop1}"/>
+          <stop offset="100%" stop-color="${bladeStop2}"/>
+        </linearGradient>
+        <radialGradient id="t${id}Hub" cx="35%" cy="35%" r="60%">
+          <stop offset="0%"  stop-color="#FFFFFF"/>
+          <stop offset="100%" stop-color="${hubStop}"/>
+        </radialGradient>
+      </defs>
+      <!-- Sombra base -->
+      <ellipse cx="${W/2}" cy="${H-3}" rx="${W*0.32}" ry="${W*0.07}" fill="rgba(0,0,0,0.45)"/>
+      <!-- Plataforma -->
+      <ellipse cx="${W/2}" cy="${H-7}" rx="${W*0.18}" ry="${W*0.05}" fill="${baseFill}" opacity="0.85"/>
+      <!-- Torre -->
+      <path d="M ${W/2 - W*0.07} ${H-8} L ${W/2 + W*0.07} ${H-8}
+               L ${W/2 + W*0.04} ${H*0.32} L ${W/2 - W*0.04} ${H*0.32} Z"
+            fill="url(#t${id}Tower)" stroke="rgba(0,0,0,0.45)" stroke-width="0.6"/>
+      <!-- Aspas (rotor con animación CSS) -->
+      <g class="globe-l-station__rotor" transform="translate(${W/2} ${H*0.32})">
+        ${[0,120,240].map(deg => `
+          <g transform="rotate(${deg})">
+            <path d="M -2 0 L 2 0 L 1 ${-H*0.30} L -1 ${-H*0.30} Z"
+                  fill="url(#t${id}Blade)" stroke="rgba(0,0,0,0.55)" stroke-width="0.5"/>
+          </g>`).join('')}
+      </g>
+      <!-- Hub (nacela) -->
+      <circle cx="${W/2}" cy="${H*0.32}" r="${isMaster ? 4.2 : 3.2}"
+              fill="url(#t${id}Hub)" stroke="rgba(0,0,0,0.5)" stroke-width="0.7"/>
+    </svg>
+    ${labelTxt ? `<div class="globe-l-station__label">${labelTxt}</div>` : ''}
+  `;
+}
+
 function leafletRenderPoi() {
   if (!GLOBE.leafletMap) return;
   if (GLOBE.leafletPoi)    { GLOBE.leafletMap.removeLayer(GLOBE.leafletPoi); GLOBE.leafletPoi = null; }
   if (GLOBE.leafletCircle) { GLOBE.leafletMap.removeLayer(GLOBE.leafletCircle); GLOBE.leafletCircle = null; }
   if (!GLOBE.poi) return;
-  const icon = L.divIcon({ className: 'globe-l-poi-icon', iconSize: [0,0], iconAnchor:[0,0] });
+  const icon = L.divIcon({
+    className: 'globe-l-poi',
+    html: _poiIconHtml(),
+    iconSize: [56, 64],
+    iconAnchor: [28, 60],   // punta inferior del pin
+  });
   GLOBE.leafletPoi = L.marker([GLOBE.poi.lat, GLOBE.poi.lon], { icon, zIndexOffset: 1000 })
     .addTo(GLOBE.leafletMap)
-    .bindTooltip('Sitio del estudio', { direction: 'top', offset: [0, -16] });
+    .bindTooltip('Sitio del estudio', { direction: 'top', offset: [0, -56] });
   const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
   GLOBE.leafletCircle = L.circle([GLOBE.poi.lat, GLOBE.poi.lon], {
     radius: km * 1000,
-    color: '#E5A86B', weight: 1.5, dashArray: '6 4',
+    color: '#E5A86B', weight: 1.8, dashArray: '8 5',
     fillColor: '#E5A86B', fillOpacity: 0.06, interactive: false,
   }).addTo(GLOBE.leafletMap);
 }
@@ -9835,14 +9916,18 @@ function leafletRenderStations() {
   GLOBE.leafletStations = [];
   GLOBE.visibleSites.forEach(s => {
     const isMaster = (GLOBE.master === s.filename);
+    const W = isMaster ? 52 : 36;
+    const H = isMaster ? 64 : 48;
     const icon = L.divIcon({
-      className: `globe-l-station ${isMaster ? 'is-master' : ''}`,
-      iconSize: [0,0], iconAnchor: [0,0],
+      className: `globe-l-station ${isMaster ? 'globe-l-station--master' : ''}`,
+      html: _turbineIconHtml(isMaster, s._dist),
+      iconSize: [W, H],
+      iconAnchor: [W/2, H - 6],   // base de la torre cerca del lat/lon real
     });
-    const m = L.marker([s.lat, s.lon], { icon, zIndexOffset: isMaster ? 600 : 200 })
+    const m = L.marker([s.lat, s.lon], { icon, zIndexOffset: isMaster ? 700 : 250 })
       .addTo(GLOBE.leafletMap)
-      .bindTooltip(`${s.display_name || s.filename}<br><b>${s._dist.toFixed(0)} km</b>`,
-                   { direction: 'top', offset: [0, -10] });
+      .bindTooltip(`<b>${s.display_name || s.filename}</b><br>${s._dist.toFixed(1)} km · ${(s.source||'').toUpperCase()}`,
+                   { direction: 'top', offset: [0, -H + 4] });
     m.on('click', () => handleGlobeStationPick(s.filename));
     GLOBE.leafletStations.push(m);
   });

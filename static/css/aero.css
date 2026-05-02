@@ -1505,27 +1505,88 @@ body.light .globe-mode__layer {
   border-color: rgba(15,95,168,0.22);
 }
 
-/* POI marker on Leaflet */
-.globe-l-poi-icon {
-  width: 28px; height: 28px;
-  border-radius: 50%;
-  background: radial-gradient(circle, #E5A86B 0%, #B45309 70%);
-  border: 2px solid #F4F7FB;
-  box-shadow: 0 0 14px rgba(229,168,107,0.65);
-  transform: translate(-14px, -14px);
+/* ── Markers Leaflet — AERO premium ── */
+.globe-l-poi {
+  width: 56px; height: 64px;
+  pointer-events: auto;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.55));
 }
+.globe-l-poi__pulse {
+  position: absolute;
+  left: 50%; bottom: 0;
+  width: 38px; height: 38px;
+  margin-left: -19px;
+  border-radius: 50%;
+  background: rgba(229,168,107,0.32);
+  animation: globePoiPulse 1.8s ease-out infinite;
+}
+@keyframes globePoiPulse {
+  0%   { transform: scale(0.5); opacity: 0.85; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+.globe-l-poi svg {
+  position: absolute;
+  inset: 0;
+}
+
+/* Estación 2D — turbina premium */
 .globe-l-station {
-  width: 14px; height: 14px;
-  border-radius: 50%;
-  background: #82BFFF;
-  border: 1.5px solid #0A0E15;
+  width: 36px; height: 48px;
+  pointer-events: auto;
   cursor: pointer;
-  transform: translate(-7px, -7px);
+  filter: drop-shadow(0 3px 5px rgba(0,0,0,0.45));
+  transition: transform 0.18s ease, filter 0.18s ease;
 }
-.globe-l-station.is-master {
-  width: 18px; height: 18px;
-  background: #FFC890;
-  transform: translate(-9px, -9px);
+.globe-l-station:hover {
+  transform: translateY(-3px) scale(1.08);
+  filter: drop-shadow(0 6px 10px rgba(77,163,255,0.55));
+}
+.globe-l-station svg { width: 100%; height: 100%; overflow: visible; }
+.globe-l-station--master {
+  width: 52px; height: 64px;
+  filter: drop-shadow(0 4px 10px rgba(229,168,107,0.7));
+  z-index: 600;
+}
+.globe-l-station--master:hover {
+  filter: drop-shadow(0 6px 14px rgba(255,200,144,0.85));
+}
+
+/* Aspas que giran */
+.globe-l-station__rotor { transform-origin: center center; animation: globeRotorSpin 4s linear infinite; }
+.globe-l-station--master .globe-l-station__rotor { animation-duration: 2.6s; }
+@keyframes globeRotorSpin { to { transform: rotate(360deg); } }
+
+/* Etiqueta de distancia debajo de cada estación */
+.globe-l-station__label {
+  position: absolute;
+  bottom: -14px; left: 50%;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: #82BFFF;
+  background: rgba(10,14,21,0.85);
+  border: 1px solid rgba(77,163,255,0.35);
+  padding: 1px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.globe-l-station--master .globe-l-station__label {
+  color: #FFC890;
+  border-color: rgba(229,168,107,0.5);
+  background: rgba(38,22,8,0.85);
+  font-weight: 600;
+}
+body.light .globe-l-station__label {
+  color: #0F5FA8;
+  background: rgba(255,255,255,0.92);
+  border-color: rgba(15,95,168,0.35);
+}
+body.light .globe-l-station--master .globe-l-station__label {
+  color: #B45309;
+  background: rgba(255,247,237,0.95);
+  border-color: rgba(180,83,9,0.5);
 }
 
 /* Brand block top-left */
