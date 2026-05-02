@@ -834,11 +834,16 @@ function getForecastFutureConfig(key) {
   }
 
   if (key === 'demand' || key === 'demand_hourly') {
-    const fc = WP.arenaCache.demand;
-    if (!fc?.projection) return null;
+    const fc  = WP.arenaCache.demand;
+    const fcH = WP.arenaCache.demand_hourly;
+    if (!fc?.projection && !fcH?.raw_values) return null;
+    // Para horario, raw_values vienen del cache horario; projection del anual.
+    const rawValues = (key === 'demand_hourly')
+      ? (fcH?.raw_values || fc?.raw_values || null)
+      : (fc?.raw_values || null);
     return {
-      projection: fc.projection, bestModel: fc.best_model,
-      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'sum',
+      projection: fc?.projection || {}, bestModel: fc?.best_model || (fcH?.best_model),
+      rawValues, annualKind: fc?.annual_kind || 'sum',
       ylabel: 'Demanda (MW)', unitLabel: 'MW', decimals: 1,
       scaler: v => v, filename: `forecast_studio_${key}_future_25y.csv`,
       source: key,
@@ -846,15 +851,19 @@ function getForecastFutureConfig(key) {
   }
 
   if (key === 'pml' || key === 'pml_hourly') {
-    const fc = WP.arenaCache.pml;
+    const fc  = WP.arenaCache.pml;
+    const fcH = WP.arenaCache.pml_hourly;
     const { sideKey, sideCache } = getPmlForecastStudioSide(fc);
-    if (!sideCache?.projection) return null;
+    if (!sideCache?.projection && !fcH?.raw_values) return null;
+    const rawValues = (key === 'pml_hourly')
+      ? (fcH?.raw_values || sideCache?.raw_values || null)
+      : (sideCache?.raw_values || null);
     return {
-      projection: sideCache.projection, bestModel: sideCache.best_model,
-      rawValues: sideCache.raw_values || null, annualKind: sideCache.annual_kind || 'sum',
-      ylabel: `PML ($/kWh) — ${sideKey}`, unitLabel: '$/kWh', decimals: 4,
-      scaler: v => v, filename: `forecast_studio_${key}_${sideKey}_future_25y.csv`,
-      source: `${key}_${sideKey}`,
+      projection: sideCache?.projection || {}, bestModel: sideCache?.best_model || (fcH?.best_model),
+      rawValues, annualKind: sideCache?.annual_kind || 'sum',
+      ylabel: `PML ($/kWh) — ${sideKey || 'serie'}`, unitLabel: '$/kWh', decimals: 4,
+      scaler: v => v, filename: `forecast_studio_${key}_${sideKey || 'series'}_future_25y.csv`,
+      source: `${key}_${sideKey || 'series'}`,
     };
   }
 
@@ -887,6 +896,7 @@ function getForecastFutureConfig(key) {
 
 function renderForecastFutureChart(key) {
   const prefix = `fs-${key}`;
+  try { renderForecastStatsCard(key); } catch (e) {}
   const cfg = getForecastFutureConfig(key);
   const badge = document.getElementById(`${prefix}-future-badge`);
   const btn = document.getElementById(`btn-download-${prefix}-future`);
@@ -963,7 +973,117 @@ function downloadForecastFutureCsv(key) {
   toast(`Descargado: ${cfg.filename}`, 'success');
 }
 
+// ─── Tabla estadística por sub-tab (Forecast Studio) ────────────────────────
+// Estadísticos: tendencia central + dispersión sobre observado, ajustado y
+// proyección futura cuando estén disponibles.
+function _statsBlock(values, label) {
+  const arr = (values || []).map(v => +v).filter(v => Number.isFinite(v));
+  if (!arr.length) return { label, n: 0 };
+  const sorted = [...arr].sort((a, b) => a - b);
+  const sum = arr.reduce((s, v) => s + v, 0);
+  const n = arr.length;
+  const mean = sum / n;
+  const median = n % 2 ? sorted[(n-1)/2] : (sorted[n/2-1] + sorted[n/2]) / 2;
+  const std = Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, n - 1));
+  const q = (p) => sorted[Math.min(n - 1, Math.max(0, Math.floor((p/100) * n)))];
+  const min = sorted[0], max = sorted[n - 1];
+  const p10 = q(10), p25 = q(25), p75 = q(75), p90 = q(90);
+  const iqr = p75 - p25;
+  const cv = mean !== 0 ? (std / Math.abs(mean)) * 100 : null;
+  // Skewness (Fisher-Pearson)
+  const skew = std > 0 ? arr.reduce((s, v) => s + ((v - mean) / std) ** 3, 0) / n : null;
+  return { label, n, mean, median, std, min, max, p10, p90, iqr, cv, skew };
+}
+
+function ensureForecastStatsCard(key) {
+  const tab = document.getElementById(`fs-${key}-tab`);
+  if (!tab) return null;
+  let card = document.getElementById(`fs-${key}-stats-card`);
+  if (card) return card;
+  card = document.createElement('div');
+  card.id = `fs-${key}-stats-card`;
+  card.className = 'card mt-3';
+  card.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">Parámetros estadísticos</span>
+      <span class="cbadge" id="fs-${key}-stats-badge" style="margin-left:.4rem">tendencia central · dispersión</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table class="tbl" id="fs-${key}-stats-tbl">
+        <thead><tr>
+          <th>Serie</th><th>N</th><th>Media</th><th>Mediana</th><th>σ</th>
+          <th>Mín</th><th>Máx</th><th>P10</th><th>P90</th><th>IQR</th>
+          <th>CV %</th><th>Skew</th>
+        </tr></thead>
+        <tbody><tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Carga datos para ver estadísticos.</td></tr></tbody>
+      </table>
+    </div>
+  `;
+  tab.appendChild(card);
+  return card;
+}
+
+function renderForecastStatsCard(key) {
+  ensureForecastStatsCard(key);
+  const tbody = document.querySelector(`#fs-${key}-stats-tbl tbody`);
+  if (!tbody) return;
+
+  // Recolectar series disponibles desde el cache correspondiente
+  const series = [];
+  const cache = (key === 'wind') ? WP.arenaCache.wind
+              : (key === 'demand' || key === 'demand_hourly') ? (WP.arenaCache[key] || WP.arenaCache.demand)
+              : (key === 'pml' || key === 'pml_hourly') ? (WP.arenaCache[key] || WP.arenaCache.pml)
+              : (key === 'interest') ? WP.arenaCache.interest
+              : (key === 'fx') ? WP.arenaCache.fx
+              : null;
+  if (!cache) {
+    tbody.innerHTML = `<tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Aún no hay datos cargados ni modelo entrenado.</td></tr>`;
+    return;
+  }
+
+  // Observado: raw_values o predictions.actual
+  const observed = cache.raw_values || cache.predictions?.actual || cache.observed || null;
+  if (observed) series.push(_statsBlock(observed, 'Observado (histórico horario)'));
+
+  // Predicho/ajustado del best model (si está disponible)
+  const best = cache.best_model;
+  const fittedMap = cache.fitted || cache.models || {};
+  const fittedBest = best && fittedMap[best];
+  const fittedVals = fittedBest?.fitted_values || fittedBest?.predicted_values || cache.predictions?.predicted || null;
+  if (fittedVals) series.push(_statsBlock(fittedVals, `Ajustado · ${best || 'best'}`));
+
+  // Proyección futura (si key es _hourly, expandimos rawValues con factor anual)
+  const cfg = getForecastFutureConfig(key);
+  if (cfg?.projection && cfg.bestModel && cfg.projection[cfg.bestModel]?.values?.length) {
+    series.push(_statsBlock(cfg.projection[cfg.bestModel].values, `Proyección 25a · ${cfg.bestModel}`));
+  }
+
+  if (!series.length) {
+    tbody.innerHTML = `<tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Sin series listas para estadísticos.</td></tr>`;
+    return;
+  }
+  const fmt = (v, d=2) => (v == null || !Number.isFinite(v)) ? '—' : (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(d));
+  tbody.innerHTML = series.map(s => `
+    <tr>
+      <td><b>${s.label}</b></td>
+      <td>${s.n.toLocaleString()}</td>
+      <td>${fmt(s.mean)}</td>
+      <td>${fmt(s.median)}</td>
+      <td>${fmt(s.std)}</td>
+      <td>${fmt(s.min)}</td>
+      <td>${fmt(s.max)}</td>
+      <td>${fmt(s.p10)}</td>
+      <td>${fmt(s.p90)}</td>
+      <td>${fmt(s.iqr)}</td>
+      <td>${fmt(s.cv, 1)}</td>
+      <td>${fmt(s.skew, 2)}</td>
+    </tr>`).join('');
+}
+
 function renderForecastMainChart(r, prefix='fs-wind') {
+  // Refresh stats card siempre que se renderice el main chart
+  const k = (prefix || 'fs-wind').replace(/^fs-/, '');
+  try { renderForecastStatsCard(k); } catch (e) {}
   destroyChart(`${prefix}-main`);
   const ctx = document.getElementById(`${prefix}-main-chart`).getContext('2d');
   const resetBtn = document.getElementById(`btn-reset-zoom-${prefix}`);
