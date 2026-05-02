@@ -1337,6 +1337,9 @@ body.light .hourly-nav-btn:hover:not(:disabled) {
   filter: blur(6px);
   pointer-events: none;
 }
+.globe-stage.is-hidden {
+  display: none !important;
+}
 
 /* Show "Volver al Globe" button only when stage is collapsed */
 .nav-btn--globe { display: none; }

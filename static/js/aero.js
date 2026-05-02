@@ -9070,14 +9070,18 @@ function initGlobeMain() {
     const rect = cv.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
 
-    // ¿Click sobre alguna estación visible?
+    // ¿Click sobre alguna estación visible? Hitbox grande (incluye torre + aspas)
     if (GLOBE.visibleSites.length) {
       for (const s of GLOBE.visibleSites) {
         if (!isPointVisible(s.lat, s.lon)) continue;
         const c = GLOBE.mainProj([s.lon, s.lat]);
         if (!c) continue;
-        const dx = mx - c[0], dy = my - c[1];
-        if (Math.sqrt(dx*dx + dy*dy) <= 11) {
+        const isMaster = (GLOBE.master === s.filename);
+        const hitR = isMaster ? 24 : 18;
+        // hitbox vertical: rectángulo desde la base hacia arriba
+        const dx = mx - c[0];
+        const dy = my - (c[1] - 9);   // centroide del icono está por encima de la base
+        if (Math.abs(dx) <= hitR && dy <= hitR && dy >= -16) {
           handleGlobeStationPick(s.filename);
           return;
         }
@@ -9093,13 +9097,14 @@ function initGlobeMain() {
   });
 
   function tick() {
+    GLOBE.mainRAF = requestAnimationFrame(tick);
+    if (GLOBE.collapsed) return;     // no dibujar mientras está oculto
     if (GLOBE.autoSpin && !GLOBE.isDragging) {
       GLOBE.rotate[0] += 0.05;
     }
     GLOBE.poiHaloPhase = (GLOBE.poiHaloPhase + 0.04) % (Math.PI * 2);
     GLOBE.mainProj.rotate(GLOBE.rotate);
     drawGlobeMain();
-    GLOBE.mainRAF = requestAnimationFrame(tick);
   }
   tick();
 }
@@ -9165,16 +9170,13 @@ function drawGlobeMain() {
   ctx.lineWidth = 1.2;
   ctx.stroke();
 
-  // Catálogo: dibuja todas las estaciones (puntos pequeños) si las tenemos
+  // Catálogo: estaciones del catálogo como pequeños pines elevados
   if (GLOBE.sites.length) {
     GLOBE.sites.forEach(s => {
       if (!isPointVisible(s.lat, s.lon)) return;
       const c = GLOBE.mainProj([s.lon, s.lat]);
       if (!c) return;
-      ctx.beginPath();
-      ctx.arc(c[0], c[1], 2.2, 0, 2*Math.PI);
-      ctx.fillStyle = isLight ? 'rgba(15,95,168,0.55)' : 'rgba(77,163,255,0.55)';
-      ctx.fill();
+      drawCatalogPin(ctx, c[0], c[1], isLight);
     });
   }
 
@@ -9210,25 +9212,13 @@ function drawGlobeMain() {
       }
     }
 
-    // Estaciones dentro del radio (más prominentes)
+    // Estaciones dentro del radio: turbina 3D con sombra y relieve
     GLOBE.visibleSites.forEach(s => {
       if (!isPointVisible(s.lat, s.lon)) return;
       const c = GLOBE.mainProj([s.lon, s.lat]);
       if (!c) return;
       const isMaster = (GLOBE.master === s.filename);
-      ctx.beginPath();
-      ctx.arc(c[0], c[1], isMaster ? 7 : 5, 0, 2*Math.PI);
-      ctx.fillStyle = isMaster ? '#FFC890' : '#82BFFF';
-      ctx.fill();
-      ctx.strokeStyle = isLight ? '#0B1220' : '#0A0E15';
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-      // Estrella interna si es maestra
-      if (isMaster) {
-        ctx.beginPath();
-        ctx.arc(c[0], c[1], 2, 0, 2*Math.PI);
-        ctx.fillStyle = '#0A0E15'; ctx.fill();
-      }
+      drawTurbineIcon(ctx, c[0], c[1], isMaster, isLight, GLOBE.poiHaloPhase);
     });
   }
 
@@ -9241,6 +9231,143 @@ function drawGlobeMain() {
     const out = document.getElementById('globe-readout');
     if (out) out.textContent = `${latStr} · ${lonStr}`;
   }
+}
+
+// ──────────────────────────── Iconos de estaciones ─────────────────────────
+// Pin 3D pequeño para estaciones del catálogo (no en radio)
+function drawCatalogPin(ctx, x, y, isLight) {
+  // Sombra debajo
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(x, y + 5, 4, 1.2, 0, 0, 2*Math.PI);
+  ctx.fillStyle = 'rgba(0,0,0,0.32)';
+  ctx.fill();
+  // Cabeza con gradiente para look 3D
+  const grad = ctx.createRadialGradient(x - 1.2, y - 1.5, 0.6, x, y, 4);
+  if (isLight) {
+    grad.addColorStop(0, '#FFFFFF');
+    grad.addColorStop(1, '#0F5FA8');
+  } else {
+    grad.addColorStop(0, '#9DD0FF');
+    grad.addColorStop(1, '#1F4A7A');
+  }
+  ctx.beginPath();
+  ctx.arc(x, y, 3.6, 0, 2*Math.PI);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.7)' : 'rgba(255,255,255,0.55)';
+  ctx.lineWidth = 0.7;
+  ctx.stroke();
+  // Brillo
+  ctx.beginPath();
+  ctx.arc(x - 1.1, y - 1.2, 1.2, 0, 2*Math.PI);
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fill();
+  ctx.restore();
+}
+
+// Turbina eólica 3D estilizada — base, mástil, nacela y tres aspas
+function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase) {
+  const scale = isMaster ? 1.45 : 1.0;
+  const mastH = 18 * scale;
+  const mastW = 2.4 * scale;
+  const hubR  = 3.2 * scale;
+  const bladeL = 11 * scale;
+
+  ctx.save();
+  // Sombra elíptica debajo
+  ctx.beginPath();
+  ctx.ellipse(x, y + 1.5, 9 * scale, 2.2 * scale, 0, 0, 2*Math.PI);
+  ctx.fillStyle = 'rgba(0,0,0,0.42)';
+  ctx.fill();
+
+  // Halo si es maestra
+  if (isMaster) {
+    const pulse = 1 + 0.18 * Math.sin(phase);
+    const halo = ctx.createRadialGradient(x, y - mastH/2, 4, x, y - mastH/2, 22 * pulse);
+    halo.addColorStop(0, 'rgba(255,200,144,0.55)');
+    halo.addColorStop(1, 'rgba(255,200,144,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(x, y - mastH/2, 22 * pulse, 0, 2*Math.PI);
+    ctx.fill();
+  }
+
+  // Base (anillo de cimentación)
+  ctx.beginPath();
+  ctx.ellipse(x, y, 4.2 * scale, 1.4 * scale, 0, 0, 2*Math.PI);
+  ctx.fillStyle = isLight ? '#3D4A5C' : '#0B121F';
+  ctx.fill();
+
+  // Mástil: gradient de izq oscuro a der claro para "cilindro 3D"
+  const mastTop = y - mastH;
+  const mastGrad = ctx.createLinearGradient(x - mastW, 0, x + mastW, 0);
+  if (isMaster) {
+    mastGrad.addColorStop(0,    '#7A4A1A');
+    mastGrad.addColorStop(0.45, '#FFC890');
+    mastGrad.addColorStop(1,    '#5A3210');
+  } else {
+    mastGrad.addColorStop(0,    isLight ? '#0B3258' : '#13243C');
+    mastGrad.addColorStop(0.45, isLight ? '#82BFFF' : '#9ECCFF');
+    mastGrad.addColorStop(1,    isLight ? '#0B3258' : '#0B1A2E');
+  }
+  ctx.fillStyle = mastGrad;
+  ctx.beginPath();
+  ctx.moveTo(x - mastW * 0.75, y);
+  ctx.lineTo(x + mastW * 0.75, y);
+  ctx.lineTo(x + mastW * 0.45, mastTop + hubR * 0.6);
+  ctx.lineTo(x - mastW * 0.45, mastTop + hubR * 0.6);
+  ctx.closePath();
+  ctx.fill();
+
+  // Aspas: 3 palas a 120° rotando lentamente con phase
+  const cx = x, cy = mastTop;
+  const rot = phase * 0.6 + (isMaster ? phase * 0.5 : 0);
+  for (let i = 0; i < 3; i++) {
+    const a = rot + (i * 2 * Math.PI / 3);
+    const x2 = cx + Math.cos(a) * bladeL;
+    const y2 = cy + Math.sin(a) * bladeL * 0.95;
+    // pala: línea con base ancha y punta fina (cuadrilátero)
+    const perp = a + Math.PI / 2;
+    const w0 = 1.7 * scale, w1 = 0.5 * scale;
+    const ax = cx + Math.cos(perp) * w0, ay = cy + Math.sin(perp) * w0;
+    const bx = cx - Math.cos(perp) * w0, by = cy - Math.sin(perp) * w0;
+    const dx = x2 + Math.cos(perp) * w1, dy = y2 + Math.sin(perp) * w1;
+    const ex = x2 - Math.cos(perp) * w1, ey = y2 - Math.sin(perp) * w1;
+    const bladeGrad = ctx.createLinearGradient(cx, cy, x2, y2);
+    if (isMaster) {
+      bladeGrad.addColorStop(0, '#FFE7C7');
+      bladeGrad.addColorStop(1, '#B45309');
+    } else {
+      bladeGrad.addColorStop(0, isLight ? '#FFFFFF' : '#E0EFFF');
+      bladeGrad.addColorStop(1, isLight ? '#0F5FA8' : '#4DA3FF');
+    }
+    ctx.fillStyle = bladeGrad;
+    ctx.strokeStyle = isLight ? 'rgba(11,18,32,0.55)' : 'rgba(0,0,0,0.55)';
+    ctx.lineWidth = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.lineTo(ex, ey);
+    ctx.lineTo(dx, dy);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  // Hub (nacela) con relieve
+  const hubGrad = ctx.createRadialGradient(cx - 1, cy - 1, 0.6, cx, cy, hubR);
+  hubGrad.addColorStop(0, '#FFFFFF');
+  hubGrad.addColorStop(1, isMaster ? '#B45309' : (isLight ? '#0F5FA8' : '#1B3A66'));
+  ctx.fillStyle = hubGrad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, hubR, 0, 2*Math.PI);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 function drawRadiusCircle(ctx, lat, lon, km) {
@@ -9577,9 +9704,16 @@ function collapseGlobeStage() {
   if (!stage) return;
   GLOBE.collapsed = true;
   GLOBE.collapsedOnce = true;
+  GLOBE.autoSpin = false;
+  GLOBE.isDragging = false;
+  GLOBE.appOn = false;
+  if (GLOBE.flyAF) { cancelAnimationFrame(GLOBE.flyAF); GLOBE.flyAF = null; }
   stage.classList.add('is-collapsed');
   document.body.classList.add('globe-collapsed');
-  GLOBE.autoSpin = false;
+  // Tras la transición, sacar del paint para que NO bloquee mouse / scroll
+  setTimeout(() => {
+    if (GLOBE.collapsed) stage.classList.add('is-hidden');
+  }, 700);
 }
 
 function bindGlobeBackButton() {
@@ -9590,11 +9724,12 @@ function restoreGlobeStage() {
   const stage = document.getElementById('globe-stage');
   if (!stage) return;
   GLOBE.collapsed = false;
+  stage.classList.remove('is-hidden');
+  void stage.offsetWidth;        // reflow para que la transición se vea
   stage.classList.remove('is-collapsed');
-  // Si volvimos antes de avanzar al app (raro), aseguramos que el app esté visible
-  if (!GLOBE.appOn) switchToGlobeApp();
+  document.body.classList.remove('globe-collapsed');
+  GLOBE.appOn = true;
   GLOBE.autoSpin = !GLOBE.poi;
-  // Refrescar Leaflet en caso de cambios de tamaño mientras estaba colapsado
   if (GLOBE.mode === 'leaflet' && GLOBE.leafletMap) {
     setTimeout(() => GLOBE.leafletMap.invalidateSize(), 360);
   }
