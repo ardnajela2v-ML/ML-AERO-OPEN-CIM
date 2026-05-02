@@ -45,10 +45,7 @@
       </svg>
       Globe
     </button>
-    <button class="nav-btn active" data-module="data">Data Hub</button>
-    <button class="nav-btn" data-module="overview">Resumen</button>
-    <button class="nav-btn" data-module="wind">Viento</button>
-    <button class="nav-btn" data-module="advanced">Recurso Avanzado</button>
+    <button class="nav-btn active" data-module="resumen">Resumen Eólico</button>
     <button class="nav-btn" data-module="models">Model Arena</button>
     <button class="nav-btn" data-module="forecast">Forecast Studio</button>
     <button class="nav-btn" data-module="kriging">Kriging Clásico</button>
@@ -190,6 +187,34 @@
             <option value="conagua">CONAGUA/SMN</option>
           </select>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════ PIPELINE OVERLAY ═══════════════════════════ -->
+<div class="resumen-pipeline" id="resumen-pipeline" aria-hidden="true">
+  <div class="resumen-pipeline__card">
+    <div class="resumen-pipeline__kicker">PROCESANDO SITIO</div>
+    <div class="resumen-pipeline__title" id="resumen-pipeline-title">Calculando análisis del recurso eólico…</div>
+    <div class="resumen-pipeline__steps">
+      <div class="resumen-pipeline__step is-pending" data-step="overview">
+        <span class="resumen-pipeline__dot"></span>
+        <span class="resumen-pipeline__icon"></span>
+        <span class="resumen-pipeline__check">✓</span>
+        <span>① Resumen del sitio · Estadísticos · Weibull · Densidad de potencia</span>
+      </div>
+      <div class="resumen-pipeline__step is-pending" data-step="wind">
+        <span class="resumen-pipeline__dot"></span>
+        <span class="resumen-pipeline__icon"></span>
+        <span class="resumen-pipeline__check">✓</span>
+        <span>② Análisis de viento · Rosa · Sectorial · Climatología</span>
+      </div>
+      <div class="resumen-pipeline__step is-pending" data-step="advanced">
+        <span class="resumen-pipeline__dot"></span>
+        <span class="resumen-pipeline__icon"></span>
+        <span class="resumen-pipeline__check">✓</span>
+        <span>③ Recurso avanzado · TI · Cizalladura · Períodos de retorno</span>
       </div>
     </div>
   </div>
@@ -1688,11 +1713,39 @@
 </section>
 
 <!-- ╔══════════════════ RESUMEN ══════════════════╗ -->
-<section class="module" id="mod-overview">
+<section class="module active" id="mod-resumen">
+  <!-- Header del módulo unificado -->
+  <div class="resumen-header">
+    <div>
+      <div class="resumen-kicker">SITIO SELECCIONADO</div>
+      <h1 class="module-title" id="resumen-site-title">— sin datos —</h1>
+      <p class="resumen-sub" id="resumen-site-sub">Selecciona una estación en el Globe para iniciar el análisis automático.</p>
+    </div>
+    <div class="resumen-verdict" id="resumen-verdict">
+      <div class="resumen-verdict__kicker">VEREDICTO</div>
+      <div class="resumen-verdict__value" id="resumen-verdict-value">—</div>
+      <div class="resumen-verdict__sub" id="resumen-verdict-sub">Calcula el análisis para ver la evaluación del recurso</div>
+      <button class="resumen-verdict__cta" id="btn-go-to-arena" type="button" disabled>
+        Continuar a Model Arena →
+      </button>
+    </div>
+  </div>
+
+  <!-- Sub-tabs internas -->
+  <div class="resumen-tabs" role="tablist">
+    <button class="resumen-tab is-active" data-rtab="recurso" type="button">① Recurso</button>
+    <button class="resumen-tab" data-rtab="viento" type="button">② Viento</button>
+    <button class="resumen-tab" data-rtab="avanzado" type="button">③ Avanzado</button>
+    <span class="resumen-tabs__sep"></span>
+    <button class="btn-secondary resumen-recalc" id="btn-resumen-recalc" type="button" title="Re-ejecutar las tres etapas con los datos cargados">↻ Re-calcular</button>
+  </div>
+
+  <!-- ═════════════ Sub-sección RECURSO (ex Resumen) ═════════════ -->
+  <div class="resumen-section is-active" data-rsect="recurso">
   <div class="sh">
     <div>
       <div class="st">Resumen del Sitio</div>
-      <div class="ss">KPIs clave del recurso eólico · Carga datos y calcula estadísticas</div>
+      <div class="ss">KPIs clave del recurso eólico · Generado automáticamente al seleccionar un sitio</div>
     </div>
     <div>
       <button class="btn-primary" id="btn-calc-stats">Calcular Estadísticas</button>
@@ -1759,10 +1812,10 @@
     </div>
     <div class="cbox" style="height:220px"><canvas id="chart-power-density"></canvas></div>
   </div>
-</section>
+  </div><!-- /sub-sección recurso -->
 
-<!-- ╔══════════════════ VIENTO ══════════════════╗ -->
-<section class="module" id="mod-wind">
+  <!-- ═════════════ Sub-sección VIENTO ═════════════ -->
+  <div class="resumen-section" data-rsect="viento">
   <div class="sh">
     <div>
       <div class="st">Análisis de Viento</div>
@@ -1847,12 +1900,12 @@
       </div>
     </div>
   </div>
-</section>
+  </div><!-- /sub-sección viento -->
 
-<!-- ╔══════════════════ RECURSO AVANZADO ══════════════════╗ -->
-<section class="module" id="mod-advanced">
+  <!-- ═════════════ Sub-sección AVANZADO ═════════════ -->
+  <div class="resumen-section" data-rsect="avanzado">
   <div class="module-header">
-    <h1 class="module-title">Recurso Avanzado</h1>
+    <h2 class="module-title" style="font-size:1.15rem">Recurso Avanzado</h2>
     <p class="module-desc">Turbulencia IEC · Cizalladura vertical · Análisis sectorial · Períodos de retorno (Windographer-style)</p>
   </div>
 
@@ -1977,6 +2030,7 @@
       </table>
     </div>
   </div>
+  </div><!-- /sub-sección avanzado -->
 </section>
 
 <!-- ╔══════════════════ MAPA & KRIGING ══════════════════╗ -->

@@ -111,6 +111,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindOverview();
   bindWind();
   bindAdvanced();
+  bindResumenUnified();
   bindHybrid();
   bindTechno();
   bindExport();
@@ -9846,4 +9847,140 @@ function leafletClearAll() {
   if (GLOBE.leafletCircle) { GLOBE.leafletMap.removeLayer(GLOBE.leafletCircle); GLOBE.leafletCircle = null; }
   GLOBE.leafletStations.forEach(m => GLOBE.leafletMap.removeLayer(m));
   GLOBE.leafletStations = [];
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  RESUMEN EÓLICO — módulo unificado (Recurso + Viento + Avanzado)
+// ════════════════════════════════════════════════════════════════════════════
+function bindResumenUnified() {
+  // Sub-tabs
+  document.querySelectorAll('.resumen-tab').forEach(tab => {
+    tab.addEventListener('click', () => switchResumenTab(tab.dataset.rtab));
+  });
+  // Re-calcular
+  document.getElementById('btn-resumen-recalc')?.addEventListener('click', () => {
+    if (!WP.sessionId) { toast('No hay sesión activa', 'warning'); return; }
+    runResumenPipeline();
+  });
+  // CTA → Model Arena
+  document.getElementById('btn-go-to-arena')?.addEventListener('click', () => {
+    const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
+    arenaBtn?.click();
+  });
+}
+
+function switchResumenTab(name) {
+  document.querySelectorAll('.resumen-tab').forEach(t => {
+    t.classList.toggle('is-active', t.dataset.rtab === name);
+  });
+  document.querySelectorAll('.resumen-section').forEach(s => {
+    s.classList.toggle('is-active', s.dataset.rsect === name);
+  });
+}
+
+// Pipeline automático: Resumen → Viento → Avanzado
+async function runResumenPipeline() {
+  const overlay = document.getElementById('resumen-pipeline');
+  if (!overlay) return;
+  overlay.classList.add('is-on');
+  resetPipelineSteps();
+
+  const setStep = (step, state) => {
+    const el = overlay.querySelector(`[data-step="${step}"]`);
+    if (!el) return;
+    el.classList.remove('is-pending', 'is-running', 'is-done', 'is-error');
+    el.classList.add(`is-${state}`);
+  };
+
+  // 1) Resumen
+  try {
+    setStep('overview', 'running');
+    await calcOverviewStats();
+    setStep('overview', 'done');
+  } catch (e) { setStep('overview', 'error'); }
+
+  // 2) Viento
+  try {
+    setStep('wind', 'running');
+    await calcWindAnalysis();
+    setStep('wind', 'done');
+  } catch (e) { setStep('wind', 'error'); }
+
+  // 3) Avanzado
+  try {
+    setStep('advanced', 'running');
+    await runAdvanced();
+    setStep('advanced', 'done');
+  } catch (e) { setStep('advanced', 'error'); }
+
+  // Cerrar overlay y mostrar veredicto
+  await new Promise(r => setTimeout(r, 600));
+  overlay.classList.remove('is-on');
+  updateResumenHeader();
+  updateResumenVerdict();
+  // Asegurar que el módulo Resumen esté visible
+  const btn = document.querySelector('.nav-btn[data-module="resumen"]');
+  if (btn && !btn.classList.contains('active')) btn.click();
+  switchResumenTab('recurso');
+}
+
+function resetPipelineSteps() {
+  document.querySelectorAll('.resumen-pipeline__step').forEach(el => {
+    el.classList.remove('is-running', 'is-done', 'is-error');
+    el.classList.add('is-pending');
+  });
+}
+
+function updateResumenHeader() {
+  const meta = WP.meta || {};
+  const title = document.getElementById('resumen-site-title');
+  const sub   = document.getElementById('resumen-site-sub');
+  if (!title) return;
+  const name = meta.display_name || meta.filename || meta.site_name || '— sin datos —';
+  title.textContent = name;
+  if (sub) {
+    const parts = [];
+    if (meta.reanalysis_type || meta.format) parts.push((meta.reanalysis_type || meta.format).toUpperCase());
+    if (meta.latitude != null && meta.longitude != null)
+      parts.push(`${(+meta.latitude).toFixed(3)}°, ${(+meta.longitude).toFixed(3)}°`);
+    if (meta.wind_height_m) parts.push(`z = ${meta.wind_height_m} m`);
+    sub.textContent = parts.length ? parts.join(' · ') : 'Datos cargados.';
+  }
+}
+
+function updateResumenVerdict() {
+  const ov = WP.windStats?.overview;
+  const vBox  = document.getElementById('resumen-verdict');
+  const vVal  = document.getElementById('resumen-verdict-value');
+  const vSub  = document.getElementById('resumen-verdict-sub');
+  const vCta  = document.getElementById('btn-go-to-arena');
+  if (!vBox || !vVal) return;
+  if (!ov) {
+    vVal.textContent = '—';
+    if (vSub) vSub.textContent = 'Calcula el análisis para ver la evaluación del recurso';
+    vCta?.setAttribute('disabled', '');
+    return;
+  }
+  const mean = parseFloat(ov.mean) || 0;
+  const pd   = parseFloat(ov.power_density_w_m2) || 0;
+  // Clasificación basada en NREL/IEC simplificada
+  // Bueno: V̄ ≥ 6.4 m/s y PD ≥ 250 W/m²
+  // Marginal: V̄ ≥ 5.0 m/s ó PD ≥ 150 W/m²
+  // Pobre: por debajo
+  let label, sub, cls;
+  if (mean >= 6.4 && pd >= 250) {
+    cls = 'is-good'; label = 'BUENO';
+    sub = `V̄ = ${mean.toFixed(2)} m/s · DP = ${pd.toFixed(0)} W/m². Recurso apto para parque eólico utility-scale.`;
+  } else if (mean >= 5.0 || pd >= 150) {
+    cls = 'is-marginal'; label = 'MARGINAL';
+    sub = `V̄ = ${mean.toFixed(2)} m/s · DP = ${pd.toFixed(0)} W/m². Considera turbinas de baja velocidad (Clase III) o sitio de respaldo.`;
+  } else {
+    cls = 'is-poor'; label = 'POBRE';
+    sub = `V̄ = ${mean.toFixed(2)} m/s · DP = ${pd.toFixed(0)} W/m². No recomendable para generación eólica utility-scale.`;
+  }
+  vBox.classList.remove('is-good', 'is-marginal', 'is-poor');
+  vBox.classList.add(cls);
+  vVal.textContent = label;
+  if (vSub) vSub.textContent = sub;
+  vCta?.removeAttribute('disabled');
 }
