@@ -3019,6 +3019,8 @@ def create_app():
                       'unit': 'MW',  'kind': 'demand'},
         'load':      {'file': 'LOAD.txt',           'label': 'Carga del sistema',
                       'unit': 'MW',  'kind': 'demand'},
+        'load50mwh': {'file': 'LOAD50MWH.txt',      'label': 'Carga del sistema (50 MWh)',
+                      'unit': 'MWh', 'kind': 'demand'},
     }
     PML_PRESETS = {
         'pml_ipo':   {'file': 'PML_IPO.txt',        'label': 'PML horario (compra/venta)',
