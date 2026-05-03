@@ -21,7 +21,7 @@ from typing import Dict, Optional, Any
 # ── Defaults centrales del estudio (valores y rangos para sensibilidad) ──────
 DEFAULT_COST_MODEL: Dict[str, Any] = {
     # Precio del aerogenerador
-    'turbine_usd_per_kw':  {'value': 1800.0, 'min': 1600.0, 'max': 2000.0},
+    'turbine_usd_per_kw':  {'value': 1800.0, 'min':  800.0, 'max': 2000.0},
 
     # Aerogenerador como % del CAPEX total (turbines + BOS = 100%)
     'turbines_pct':        {'value': 0.66,   'min': 0.60,   'max': 0.80},
