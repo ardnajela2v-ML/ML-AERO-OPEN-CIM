@@ -3023,6 +3023,10 @@ def create_app():
     PML_PRESETS = {
         'pml_ipo':   {'file': 'PML_IPO.txt',        'label': 'PML horario (compra/venta)',
                       'unit': '$/kWh', 'kind': 'pml'},
+        'pml_usd':   {'file': 'PML_usd.txt',        'label': 'PML en USD (compra/venta)',
+                      'unit': 'USD/kWh', 'kind': 'pml'},
+        'gdmth_usd': {'file': 'GDMTH_USD.txt',      'label': 'Tarifa GDMTH (USD/kWh)',
+                      'unit': 'USD/kWh', 'kind': 'pml'},
     }
     INTEREST_PRESETS = {
         'tiie_28d':  {'file': 'TIIE_28D_HISTORICO.txt', 'label': 'TIIE 28 Días (Banxico)',
