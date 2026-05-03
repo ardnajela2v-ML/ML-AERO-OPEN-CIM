@@ -9163,7 +9163,33 @@ async function globePreloadSites() {
     const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
     const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
     GLOBE.sites = r.sites || [];
-  } catch (e) { /* silent — sin red, el globo igual rueda */ }
+    updateGlobeStationsBadge();
+    console.log(`[globe] ${GLOBE.sites.length} estaciones cargadas (año ${year})`);
+  } catch (e) {
+    console.error('[globe] error cargando estaciones:', e);
+    updateGlobeStationsBadge(true);
+    if (typeof toast === 'function') toast('No se pudieron cargar las estaciones meteorológicas en el globo.', 'warn');
+  }
+}
+
+function updateGlobeStationsBadge(error = false) {
+  const el = document.getElementById('globe-stations-badge');
+  if (!el) return;
+  if (error) {
+    el.textContent = '⚠ Estaciones no cargadas';
+    el.style.color = '#d97706';
+    el.style.display = '';
+    return;
+  }
+  const n = GLOBE.sites?.length || 0;
+  if (n === 0) {
+    el.textContent = 'Cargando estaciones…';
+    el.style.color = 'var(--text-muted)';
+  } else {
+    el.textContent = `${n} estaciones meteorológicas disponibles`;
+    el.style.color = 'var(--text)';
+  }
+  el.style.display = '';
 }
 
 // ──────────────────────────── LOADER (200×200) ───────────────────────────────
@@ -9464,32 +9490,37 @@ function drawGlobeMain() {
 // ──────────────────────────── Iconos de estaciones ─────────────────────────
 // Pin 3D pequeño para estaciones del catálogo (no en radio)
 function drawCatalogPin(ctx, x, y, isLight) {
-  // Sombra debajo
   ctx.save();
+  // Halo exterior — ayuda a localizar la estación a vista de globo
   ctx.beginPath();
-  ctx.ellipse(x, y + 5, 4, 1.2, 0, 0, 2*Math.PI);
-  ctx.fillStyle = 'rgba(0,0,0,0.32)';
+  ctx.arc(x, y, 9, 0, 2 * Math.PI);
+  ctx.fillStyle = isLight ? 'rgba(15,95,168,0.18)' : 'rgba(77,163,255,0.22)';
+  ctx.fill();
+  // Sombra debajo
+  ctx.beginPath();
+  ctx.ellipse(x, y + 6, 5, 1.4, 0, 0, 2 * Math.PI);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
   ctx.fill();
   // Cabeza con gradiente para look 3D
-  const grad = ctx.createRadialGradient(x - 1.2, y - 1.5, 0.6, x, y, 4);
+  const grad = ctx.createRadialGradient(x - 1.6, y - 2, 0.8, x, y, 6);
   if (isLight) {
     grad.addColorStop(0, '#FFFFFF');
     grad.addColorStop(1, '#0F5FA8');
   } else {
-    grad.addColorStop(0, '#9DD0FF');
+    grad.addColorStop(0, '#CFE7FF');
     grad.addColorStop(1, '#1F4A7A');
   }
   ctx.beginPath();
-  ctx.arc(x, y, 3.6, 0, 2*Math.PI);
+  ctx.arc(x, y, 5.5, 0, 2 * Math.PI);
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.7)' : 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 0.7;
+  ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.85)' : 'rgba(255,255,255,0.75)';
+  ctx.lineWidth = 1.0;
   ctx.stroke();
   // Brillo
   ctx.beginPath();
-  ctx.arc(x - 1.1, y - 1.2, 1.2, 0, 2*Math.PI);
-  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.arc(x - 1.6, y - 1.8, 1.6, 0, 2 * Math.PI);
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
   ctx.fill();
   ctx.restore();
 }

@@ -144,6 +144,9 @@
     <!-- Coord readout (bottom-right) -->
     <div class="globe-readout" id="globe-readout">0.00°N · 0.00°W</div>
 
+    <!-- Stations counter (bottom-left) -->
+    <div id="globe-stations-badge" style="position:absolute;bottom:12px;left:12px;font-size:.72rem;color:var(--text-muted);background:rgba(15,26,46,.65);backdrop-filter:blur(6px);padding:4px 10px;border-radius:14px;border:1px solid rgba(77,163,255,.25);pointer-events:none;display:none">Cargando estaciones…</div>
+
     <!-- Master station picker (right side) -->
     <aside class="globe-panel" id="globe-panel">
       <div class="globe-panel__head">
@@ -3272,6 +3275,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260503-mxn-display"></script>
+<script src="/static/js/aero.js?v=20260503-globe-stations"></script>
 </body>
 </html>
