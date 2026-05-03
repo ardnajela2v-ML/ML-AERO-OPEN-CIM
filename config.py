@@ -37,9 +37,28 @@ class Config:
     TURBINES_FOLDER = os.environ.get(
         'AERO_TURBINES_FOLDER',
         '/Users/ale/Documents/suso/WindProPlatform/aerogeneradores')
+    # Carpeta legado (compatibilidad). Por defecto apunta a la carpeta original
+    # externa para retro-compatibilidad; los flujos nuevos usan las carpetas
+    # dedicadas por categoría definidas más abajo.
     MARKET_DATA_FOLDER = os.environ.get(
         'AERO_MARKET_FOLDER',
         '/Users/ale/Documents/suso/datos carga y precios pml compra y venta ')
+
+    # Carpetas dedicadas por categoría (dentro del proyecto). Cualquier archivo
+    # .txt/.csv/.tsv/.dat que se deposite en estas carpetas se descubre
+    # automáticamente como preset en su lista correspondiente.
+    DEMAND_FOLDER = os.environ.get(
+        'AERO_DEMAND_FOLDER',
+        '/Users/ale/Documents/suso/WindProPlatform/mercado_demanda')
+    PML_FOLDER = os.environ.get(
+        'AERO_PML_FOLDER',
+        '/Users/ale/Documents/suso/WindProPlatform/mercado_pml')
+    FX_FOLDER = os.environ.get(
+        'AERO_FX_FOLDER',
+        '/Users/ale/Documents/suso/WindProPlatform/mercado_fx')
+    INTEREST_FOLDER = os.environ.get(
+        'AERO_INTEREST_FOLDER',
+        '/Users/ale/Documents/suso/WindProPlatform/mercado_tasas')
 
     # Pronóstico a 25 años — escenarios de crecimiento histórico (CAGR)
     DEMAND_GROWTH_DEFAULT = 0.025   # 2.5 % anual (referencia PRODESEN)

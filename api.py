@@ -5,6 +5,7 @@ All scientific computation is delegated to core/ modules.
 import os
 import io
 import json
+import re
 import uuid
 import time
 import logging
@@ -3014,68 +3015,157 @@ def create_app():
 
     # ─── DEMANDA & PML — PRONÓSTICO A 25 AÑOS ────────────────────────────────
 
-    DEMAND_PRESETS = {
-        'juchitan':  {'file': 'JUCHITANDEMANDA.txt', 'label': 'Juchitán — Demanda nodal',
-                      'unit': 'MW',  'kind': 'demand'},
-        'load':      {'file': 'LOAD.txt',           'label': 'Carga del sistema',
-                      'unit': 'MW',  'kind': 'demand'},
-        'load50mwh': {'file': 'LOAD50MWH.txt',      'label': 'Carga del sistema (50 MWh)',
-                      'unit': 'MWh', 'kind': 'demand'},
+    # Carpetas dedicadas por categoría — cualquier archivo nuevo depositado se
+    # descubre automáticamente como preset.
+    MARKET_FOLDERS = {
+        'demand':   Config.DEMAND_FOLDER,
+        'pml':      Config.PML_FOLDER,
+        'interest': Config.INTEREST_FOLDER,
+        'fx':       Config.FX_FOLDER,
     }
-    PML_PRESETS = {
-        'pml_ipo':   {'file': 'PML_IPO.txt',        'label': 'PML horario (compra/venta)',
-                      'unit': '$/kWh', 'kind': 'pml'},
-        'pml_usd':   {'file': 'PML_usd.txt',        'label': 'PML en USD (compra/venta)',
-                      'unit': 'USD/kWh', 'kind': 'pml'},
-        'gdmth_usd': {'file': 'GDMTH_USD.txt',      'label': 'Tarifa GDMTH (USD/kWh)',
-                      'unit': 'USD/kWh', 'kind': 'pml'},
+    MARKET_UNITS_DEFAULT = {
+        'demand':   'MW',
+        'pml':      '$/kWh',
+        'interest': '%',
+        'fx':       'MXN',
     }
-    INTEREST_PRESETS = {
-        'tiie_28d':  {'file': 'TIIE_28D_HISTORICO.txt', 'label': 'TIIE 28 Días (Banxico)',
-                      'unit': '%', 'kind': 'interest'},
-    }
-    FX_PRESETS = {
-        'usdmxn':    {'file': 'USDMXN_HISTORICO.txt',   'label': 'USD/MXN FIX (Banxico)',
-                      'unit': 'MXN', 'kind': 'fx'},
+    MARKET_PRESET_EXTS = {'.txt', '.csv', '.tsv', '.dat'}
+
+    # Etiquetas amigables para archivos conocidos. Si un archivo nuevo no está
+    # listado aquí, se genera una etiqueta a partir del nombre.
+    KNOWN_PRESET_LABELS = {
+        'JUCHITANDEMANDA.txt':   ('juchitan',   'Juchitán — Demanda nodal',   'MW'),
+        'LOAD.txt':              ('load',       'Carga del sistema',           'MW'),
+        'LOAD50MWH.txt':         ('load50mwh',  'Carga del sistema (50 MWh)',  'MWh'),
+        'PML_IPO.txt':           ('pml_ipo',    'PML horario (compra/venta)',  '$/kWh'),
+        'PML_usd.txt':           ('pml_usd',    'PML en USD (compra/venta)',   'USD/kWh'),
+        'GDMTH_USD.txt':         ('gdmth_usd',  'Tarifa GDMTH (USD/kWh)',      'USD/kWh'),
+        'TIIE_28D_HISTORICO.txt':('tiie_28d',   'TIIE 28 Días (Banxico)',      '%'),
+        'USDMXN_HISTORICO.txt':  ('usdmxn',     'USD/MXN FIX (Banxico)',       'MXN'),
+        'INFLACION_HISTORICO.txt':('inflacion', 'Inflación histórica (INEGI)', '%'),
     }
 
-    def _market_path(filename):
+    def _slugify_preset_key(stem):
+        """Genera un key estable a partir del nombre de archivo (sin extensión)."""
+        slug = re.sub(r'[^a-z0-9]+', '_', stem.lower()).strip('_')
+        return slug or 'preset'
+
+    def _humanize_preset_label(stem):
+        """Convierte 'PML_usd' en 'PML usd' para usuarios."""
+        return re.sub(r'[_\-]+', ' ', stem).strip()
+
+    def _scan_market_folder(category):
+        """Escanea la carpeta dedicada de una categoría y la carpeta legado.
+        Devuelve dict {key: meta} con file, path, label, unit, kind."""
+        result = {}
+        seen_files = set()
+        folders = []
+        # 1) Carpeta dedicada por categoría
+        cat_folder = MARKET_FOLDERS.get(category)
+        if cat_folder:
+            folders.append(cat_folder)
+        # 2) Fallback: carpeta legado (compat)
+        if Config.MARKET_DATA_FOLDER and Config.MARKET_DATA_FOLDER not in folders:
+            folders.append(Config.MARKET_DATA_FOLDER)
+
+        unit_def = MARKET_UNITS_DEFAULT.get(category, '')
+        cat_folder = MARKET_FOLDERS.get(category)
+        for folder in folders:
+            if not folder or not os.path.isdir(folder):
+                continue
+            is_dedicated = (folder == cat_folder)
+            for fname in sorted(os.listdir(folder)):
+                if fname.startswith('.') or fname.startswith('~'):
+                    continue
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in MARKET_PRESET_EXTS:
+                    continue
+                # En la carpeta dedicada por categoría aceptamos cualquier
+                # archivo (el usuario lo puso ahí intencionalmente). Sólo
+                # filtramos por heurística cuando caemos a la carpeta legado
+                # para evitar que se mezclen categorías.
+                if not is_dedicated:
+                    detected = _detect_market_category(fname)
+                    if detected != category:
+                        continue
+                if fname in seen_files:
+                    continue
+                fpath = os.path.join(folder, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                seen_files.add(fname)
+                if fname in KNOWN_PRESET_LABELS:
+                    key, label, unit = KNOWN_PRESET_LABELS[fname]
+                else:
+                    stem = os.path.splitext(fname)[0]
+                    key = _slugify_preset_key(stem)
+                    label = _humanize_preset_label(stem)
+                    unit = unit_def
+                # Evitar colisión de keys
+                base_key = key
+                i = 2
+                while key in result:
+                    key = f'{base_key}_{i}'; i += 1
+                result[key] = {
+                    'file':  fname,
+                    'path':  fpath,
+                    'label': label,
+                    'unit':  unit,
+                    'kind':  category,
+                }
+        return result
+
+    # Las funciones siguientes leen el sistema de archivos en cada llamada para
+    # que cualquier archivo recién depositado aparezca sin reiniciar el server.
+    def DEMAND_PRESETS():    return _scan_market_folder('demand')
+    def PML_PRESETS():       return _scan_market_folder('pml')
+    def INTEREST_PRESETS():  return _scan_market_folder('interest')
+    def FX_PRESETS():        return _scan_market_folder('fx')
+
+    def _market_path(filename, category=None):
+        """Resuelve la ruta absoluta de un archivo de mercado.
+        Busca primero en la carpeta de la categoría (si se pasa), luego en
+        todas las carpetas dedicadas, y finalmente en la carpeta legado."""
         safe = os.path.basename(filename)
-        return os.path.join(Config.MARKET_DATA_FOLDER, safe)
+        candidates = []
+        if category and MARKET_FOLDERS.get(category):
+            candidates.append(MARKET_FOLDERS[category])
+        for cat, folder in MARKET_FOLDERS.items():
+            if folder and folder not in candidates:
+                candidates.append(folder)
+        if Config.MARKET_DATA_FOLDER and Config.MARKET_DATA_FOLDER not in candidates:
+            candidates.append(Config.MARKET_DATA_FOLDER)
+        for folder in candidates:
+            p = os.path.join(folder, safe)
+            if os.path.isfile(p):
+                return p
+        # Si no existe en ninguna, devolver path en carpeta categoría (o legado)
+        # para que el caller emita el error 404 con un path significativo.
+        fallback = (MARKET_FOLDERS.get(category) if category else None) or \
+                   Config.MARKET_DATA_FOLDER
+        return os.path.join(fallback, safe)
 
     @app.route('/api/market/list_presets', methods=['GET'])
     def market_list_presets():
-        """Lista los presets de demanda, PML, TIIE y USD/MXN disponibles en MARKET_DATA_FOLDER."""
-        folder = Config.MARKET_DATA_FOLDER
-        out = {'folder': folder, 'demand': [], 'pml': [], 'interest': [], 'fx': []}
-        if not os.path.isdir(folder):
-            out['error'] = 'MARKET_DATA_FOLDER not found'
-            return jsonify(out)
-        
-        for key, meta in DEMAND_PRESETS.items():
-            fpath = os.path.join(folder, meta['file'])
-            if os.path.isfile(fpath):
-                size_kb = round(os.path.getsize(fpath) / 1024, 1)
-                out['demand'].append({'key': key, **meta, 'size_kb': size_kb})
-                
-        for key, meta in PML_PRESETS.items():
-            fpath = os.path.join(folder, meta['file'])
-            if os.path.isfile(fpath):
-                size_kb = round(os.path.getsize(fpath) / 1024, 1)
-                out['pml'].append({'key': key, **meta, 'size_kb': size_kb})
-                
-        for key, meta in INTEREST_PRESETS.items():
-            fpath = os.path.join(folder, meta['file'])
-            if os.path.isfile(fpath):
-                size_kb = round(os.path.getsize(fpath) / 1024, 1)
-                out['interest'].append({'key': key, **meta, 'size_kb': size_kb})
-                
-        for key, meta in FX_PRESETS.items():
-            fpath = os.path.join(folder, meta['file'])
-            if os.path.isfile(fpath):
-                size_kb = round(os.path.getsize(fpath) / 1024, 1)
-                out['fx'].append({'key': key, **meta, 'size_kb': size_kb})
-                
+        """Lista los presets de demanda, PML, TIIE y USD/MXN disponibles
+        en sus carpetas dedicadas (descubrimiento dinámico)."""
+        out = {
+            'folders': {cat: f for cat, f in MARKET_FOLDERS.items()},
+            'legacy_folder': Config.MARKET_DATA_FOLDER,
+            'demand': [], 'pml': [], 'interest': [], 'fx': [],
+        }
+
+        def _emit(category, presets):
+            for key, meta in presets.items():
+                fpath = meta.get('path') or _market_path(meta['file'], category)
+                if os.path.isfile(fpath):
+                    size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                    out[category].append({'key': key, **meta, 'size_kb': size_kb})
+
+        _emit('demand',   DEMAND_PRESETS())
+        _emit('pml',      PML_PRESETS())
+        _emit('interest', INTEREST_PRESETS())
+        _emit('fx',       FX_PRESETS())
         return jsonify(out)
 
     def _get_market_values(sess, category, preset_key=None):
@@ -3129,7 +3219,7 @@ def create_app():
         # Intentar desde Data Hub primero
         values, meta = _get_market_values(sess, 'demand', key)
         if values is None:
-            meta = DEMAND_PRESETS.get(key)
+            meta = DEMAND_PRESETS().get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
@@ -3177,7 +3267,7 @@ def create_app():
         # Obtener valores — Data Hub primero, luego presets legacy
         values, meta = _get_market_values(sess, 'demand', key)
         if values is None:
-            meta = DEMAND_PRESETS.get(key)
+            meta = DEMAND_PRESETS().get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
@@ -3260,7 +3350,7 @@ def create_app():
         # Data Hub primero, luego legacy
         values, meta = _get_market_values(sess, 'demand', key)
         if values is None:
-            meta = DEMAND_PRESETS.get(key)
+            meta = DEMAND_PRESETS().get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
@@ -3313,7 +3403,7 @@ def create_app():
         # Intentar desde Data Hub primero
         pml_data, meta = _get_market_values(sess, 'pml', key)
         if pml_data is None:
-            meta = PML_PRESETS.get(key)
+            meta = PML_PRESETS().get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
@@ -3379,7 +3469,7 @@ def create_app():
         sess = get_session(sid)
         pml_data, meta = _get_market_values(sess, 'pml', key)
         if pml_data is None:
-            meta = PML_PRESETS.get(key)
+            meta = PML_PRESETS().get(key)
             if not meta:
                 return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
@@ -3477,7 +3567,7 @@ def create_app():
         else:
             cache = (sess.get('pml') or {}).get(preset)
             if not cache:
-                meta = PML_PRESETS.get(preset)
+                meta = PML_PRESETS().get(preset)
                 if not meta:
                     return jsonify({'error': f'Preset desconocido: {preset}'}), 400
                 fpath = _market_path(meta['file'])
@@ -3549,7 +3639,7 @@ def create_app():
                                index=pd.to_datetime(dates))
             col_name = 'v'
         else:
-            meta = INTEREST_PRESETS.get(key)
+            meta = INTEREST_PRESETS().get(key)
             if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
             if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
@@ -3655,7 +3745,7 @@ def create_app():
                                index=pd.to_datetime(dates))
             col_name = 'v'
         else:
-            meta = FX_PRESETS.get(key)
+            meta = FX_PRESETS().get(key)
             if not meta: return jsonify({'error': f'Preset desconocido: {key}'}), 400
             fpath = _market_path(meta['file'])
             if not os.path.isfile(fpath): return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404

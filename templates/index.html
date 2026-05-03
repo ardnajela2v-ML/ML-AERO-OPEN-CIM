@@ -603,10 +603,8 @@
         <div class="card-body">
           <div class="form-row">
             <label class="form-label">Serie de demanda</label>
-            <select class="form-select" id="dem-preset">
-              <option value="juchitan">Juchitán — Demanda nodal (MW)</option>
-              <option value="load">Carga del sistema (MW)</option>
-              <option value="load50mwh">Carga del sistema (50 MWh)</option>
+            <select class="form-select" id="dem-preset" data-market-category="demand">
+              <option value="">Cargando archivos…</option>
             </select>
           </div>
           <div class="form-row">
@@ -689,10 +687,8 @@
         <div class="card-body">
           <div class="form-row">
             <label class="form-label">Serie de PML</label>
-            <select class="form-select" id="pml-preset">
-              <option value="pml_ipo">PML horario — Ipomeas/Juchitán ($/kWh)</option>
-              <option value="pml_usd">PML en USD (compra/venta)</option>
-              <option value="gdmth_usd">Tarifa GDMTH (USD/kWh)</option>
+            <select class="form-select" id="pml-preset" data-market-category="pml">
+              <option value="">Cargando archivos…</option>
             </select>
           </div>
           <div class="form-row">
@@ -783,8 +779,8 @@
         <div class="card-body">
           <div class="form-row">
             <label class="form-label">Serie Histórica</label>
-            <select class="form-select" id="interest-preset">
-              <option value="tiie_28d">TIIE 28 Días (Banxico) - 1998 a la fecha</option>
+            <select class="form-select" id="interest-preset" data-market-category="interest">
+              <option value="">Cargando archivos…</option>
             </select>
           </div>
           <div class="form-row">
@@ -846,8 +842,8 @@
         <div class="card-body">
           <div class="form-row">
             <label class="form-label">Serie Histórica</label>
-            <select class="form-select" id="fx-preset">
-              <option value="usdmxn">USD/MXN FIX (Banxico) - 1993 a la fecha</option>
+            <select class="form-select" id="fx-preset" data-market-category="fx">
+              <option value="">Cargando archivos…</option>
             </select>
           </div>
           <div class="form-row">

@@ -118,6 +118,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindMarketDataHub();
   await loadPresetFiles();   // populate preset file dropdown
   await loadMarketFiles();   // populate market data selectors
+  await loadMarketPresets(); // populate dem/pml/interest/fx preset dropdowns
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
   setStatus('Plataforma iniciada — selecciona un parque eólico o carga tu archivo.');
@@ -8855,6 +8856,49 @@ function bindMarketDataHub() {
       });
     }
   });
+}
+
+// Pobla los selectores de preset (dem-preset, pml-preset, interest-preset,
+// fx-preset) leyendo /api/market/list_presets. Cualquier archivo nuevo
+// depositado en las carpetas mercado_demanda/, mercado_pml/, mercado_fx/,
+// mercado_tasas/ aparece automáticamente.
+const MARKET_PRESET_TARGETS = {
+  demand:   { selectId: 'dem-preset',      defaultKey: 'juchitan' },
+  pml:      { selectId: 'pml-preset',      defaultKey: 'pml_ipo'  },
+  interest: { selectId: 'interest-preset', defaultKey: 'tiie_28d' },
+  fx:       { selectId: 'fx-preset',       defaultKey: 'usdmxn'   },
+};
+
+async function loadMarketPresets() {
+  try {
+    const r = await api('/api/market/list_presets', 'GET');
+    Object.entries(MARKET_PRESET_TARGETS).forEach(([cat, cfg]) => {
+      const sel = document.getElementById(cfg.selectId);
+      if (!sel) return;
+      const items = r[cat] || [];
+      if (!items.length) {
+        sel.innerHTML = '<option value="">(sin archivos en carpeta)</option>';
+        return;
+      }
+      sel.innerHTML = '';
+      items.forEach(it => {
+        const opt = document.createElement('option');
+        opt.value = it.key;
+        const unit = it.unit ? ` (${it.unit})` : '';
+        opt.textContent = `${it.label}${unit}`;
+        sel.appendChild(opt);
+      });
+      // Restaurar selección preferida si existe
+      const has = (k) => Array.from(sel.options).some(o => o.value === k);
+      if (has(cfg.defaultKey)) sel.value = cfg.defaultKey;
+    });
+  } catch (e) {
+    console.warn('loadMarketPresets failed:', e);
+    Object.values(MARKET_PRESET_TARGETS).forEach(cfg => {
+      const sel = document.getElementById(cfg.selectId);
+      if (sel) sel.innerHTML = '<option value="">(error al listar presets)</option>';
+    });
+  }
 }
 
 async function loadMarketFile(category, filename) {
