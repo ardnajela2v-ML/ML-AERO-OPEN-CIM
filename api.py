@@ -1507,13 +1507,18 @@ def create_app():
             if n_turbines < 1:
                 return _err('n_turbines debe ser >= 1')
 
+            # Análisis siempre en USD puros; FX (MXN/USD) lo aplica el frontend
+            # como display equivalente. Antes el FX multiplicaba los flujos
+            # internamente y mezclaba unidades en las llaves *_usd.
+            fx_mxn_per_usd = float(fin_cfg.get('usd_to_mxn', 1.0))
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
                 energy_price_usd_kwh=float(fin_cfg.get('energy_price_usd_kwh', 0.07)),
                 discount_rate_pct=float(fin_cfg.get('discount_rate_pct', 8.0)),
                 project_years=int(fin_cfg.get('project_years', 20)),
-                usd_to_mxn=float(fin_cfg.get('usd_to_mxn', 1.0)),
+                usd_to_mxn=1.0,
             )
+            analysis['fx_mxn_per_usd'] = fx_mxn_per_usd
 
             # Cp analysis
             cp = tea.cp_analysis(turbine, ws_hub, rho=rho)

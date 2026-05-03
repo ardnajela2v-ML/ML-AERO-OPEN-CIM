@@ -2870,27 +2870,38 @@ function renderTechnoKPIs(r) {
   badge.className     = `badge ${isViable ? 'badge--success' : 'badge--error'}`;
 
   const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
+  const fx  = Number(a.fx_mxn_per_usd) || Number(document.getElementById('te-fx')?.value) || 1;
+  const showMxn = fx && fx > 1.0001;
+  const mxn = (usd) => showMxn && usd != null && Number.isFinite(usd)
+    ? `≈ $${fmt(usd * fx)} MXN${a.npv_usd != null && usd === a.npv_usd && a.npv_usd < 0 ? '' : ''}`
+    : '';
+  const signed = (n) => (n >= 0 ? '+' : '−') + ' $' + fmt(n);
+
+  // [label, valor, unidad, valor_usd_para_mxn (null = no aplica)]
   const items = [
-    ['VAN / NPV', (a.npv_usd >= 0 ? '+' : '-') + ' $' + fmt(a.npv_usd), 'USD'],
-    ['LCOE', '$' + a.lcoe_usd_kwh, 'USD/kWh'],
-    ['VAE', '$' + fmt(a.vae_usd), 'USD/año'],
-    ['Retorno simple', a.payback_years ? a.payback_years + ' años' : '> proyecto', ''],
-    ['Factor de capacidad', a.capacity_factor_pct + '%', ''],
-    ['Energía anual', fmt(a.annual_energy_mwh) + ' MWh', '/parque'],
-    ['Ingresos anuales', '$' + fmt(a.annual_revenue_usd), 'USD/año'],
-    ['OPEX anual', '$' + fmt(a.annual_opex_usd), 'USD/año'],
-    ['CAPEX total', '$' + fmt(a.capex?.total_capex_usd), 'USD'],
-    ['Área requerida', fmt(a.capex?.area_ha) + ' ha', ''],
-    ['Potencia instalada', a.capex?.installed_mw + ' MW', ''],
-    ['N° aerogeneradores', a.capex?.n_turbines, ''],
+    ['VAN / NPV',           signed(a.npv_usd),                       'USD',     a.npv_usd],
+    ['LCOE',                '$' + a.lcoe_usd_kwh,                    'USD/kWh', null],
+    ['VAE',                 signed(a.vae_usd),                       'USD/año', a.vae_usd],
+    ['Retorno simple',      a.payback_years ? a.payback_years + ' años' : '> proyecto', '', null],
+    ['Factor de capacidad', a.capacity_factor_pct + '%',             '',        null],
+    ['Energía anual',       fmt(a.annual_energy_mwh) + ' MWh',       '/parque', null],
+    ['Ingresos anuales',    '$' + fmt(a.annual_revenue_usd),         'USD/año', a.annual_revenue_usd],
+    ['OPEX anual',          '$' + fmt(a.annual_opex_usd),            'USD/año', a.annual_opex_usd],
+    ['CAPEX total',         '$' + fmt(a.capex?.total_capex_usd),     'USD',     a.capex?.total_capex_usd],
+    ['Área requerida',      fmt(a.capex?.area_ha) + ' ha',           '',        null],
+    ['Potencia instalada',  a.capex?.installed_mw + ' MW',           '',        null],
+    ['N° aerogeneradores',  a.capex?.n_turbines,                     '',        null],
   ];
 
   document.getElementById('te-kpi-grid').innerHTML =
-    `<div class="te-kpi-grid">${items.map(([l,v,u]) =>
-      `<div class="te-kpi-item">
+    `<div class="te-kpi-grid">${items.map(([l, v, u, usdVal]) => {
+      const mxnLine = mxn(usdVal);
+      return `<div class="te-kpi-item">
         <div class="kpi-label">${l}</div>
         <div class="kpi-value">${v}<span style="font-size:.7rem;color:var(--text-muted);margin-left:4px">${u}</span></div>
-      </div>`).join('')}</div>`;
+        ${mxnLine ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">${mxnLine}</div>` : ''}
+      </div>`;
+    }).join('')}</div>`;
 }
 
 function renderCapexChart(capex) {

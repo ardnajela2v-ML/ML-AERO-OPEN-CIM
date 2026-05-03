@@ -2983,7 +2983,8 @@
           </div>
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
-            <input type="number" class="form-input" id="te-fx" value="1" step="0.5" placeholder="1 = mantener USD">
+            <input type="number" class="form-input" id="te-fx" value="18" step="0.5" placeholder="ej. 18 = $1 USD = $18 MXN">
+            <small class="text-muted" style="font-size:.7rem">Análisis siempre en USD; FX solo muestra equivalente MXN bajo cada KPI.</small>
           </div>
         </div>
 
@@ -3271,6 +3272,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260503-cost-model"></script>
+<script src="/static/js/aero.js?v=20260503-mxn-display"></script>
 </body>
 </html>
