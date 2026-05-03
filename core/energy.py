@@ -6,11 +6,13 @@ Techno-economic analysis based on PhD research (ajusteMultiplesArchivosConMediaM
 import os
 import re
 import warnings
+from typing import Optional
 import numpy as np
 import pandas as pd
 from scipy.interpolate import interp1d
 from scipy import stats
-from config import Config   
+from config import Config
+from core.cost_model import CostModel, BOS_COMPONENTS   
 warnings.filterwarnings('ignore')
 
 # ─── AIR DENSITY ──────────────────────────────────────────────────────────────
@@ -574,32 +576,23 @@ class TechnoEconomicAnalyzer:
     Techno-economic analysis for wind farm projects.
     Methodology from PhD research (ajusteMultiplesArchivosConMediaMovil.m).
 
-    Cost model (configurable, defaults from MATLAB code):
-      - Turbine CAPEX:    rated_kW × cost_per_kw  (default 2000 USD/kW)
-      - Maintenance:      3% of turbine CAPEX/year
-      - Foundation:       1,000,000 USD/turbine  (offshore baseline)
-      - Cabling:          1,500,000 USD/turbine
-      - Roads/area cost:  rotor_spacing² × n_turbines × 10 USD/m²
-      - Substation:       installed_kW USD (≈ 1 USD/W)
+    Cost model (modelo central WindPro — core/cost_model.py):
+      - Turbine cost:       rated_kW × turbine_usd_per_kw   (default 1800 USD/kW)
+      - CAPEX total:        turbine_cost / turbines_pct     (default 66% → ×1.515)
+      - BOS (34%):          civil + electrical + installation + engineering + misc
+      - OPEX anual:         CAPEX_total × opex_pct_capex    (default 3.72%)
     Financial model:
       - NPV / VAN over project_years at discount_rate
-      - LCOE = (CAPEX + total maintenance) / total_energy_kWh
+      - LCOE = (CAPEX + OPEX × N) / total_energy_kWh
       - VAE  = NPV × r / (1 − (1+r)^-n)
     """
 
     def __init__(self,
-                 cost_per_kw_usd: float = 2000.0,
-                 maintenance_pct: float = 0.03,
-                 foundation_per_turbine: float = 1_000_000.0,
-                 cabling_per_turbine: float = 1_500_000.0,
-                 road_cost_per_m2: float = 10.0,
+                 cost_model: Optional['CostModel'] = None,
                  turbine_spacing_multiplier: float = 7.0):
-        self.cost_per_kw           = cost_per_kw_usd
-        self.maintenance_pct       = maintenance_pct
-        self.foundation_per_turbine= foundation_per_turbine
-        self.cabling_per_turbine   = cabling_per_turbine
-        self.road_cost_per_m2      = road_cost_per_m2
-        self.spacing_mult          = turbine_spacing_multiplier
+        from core.cost_model import CostModel
+        self.cost_model   = cost_model or CostModel.from_defaults()
+        self.spacing_mult = turbine_spacing_multiplier
 
     # ── park sizing ──────────────────────────────────────────────────────────
 
@@ -614,37 +607,21 @@ class TechnoEconomicAnalyzer:
 
     def capex_breakdown(self, turbine: 'PowerCurve', n_turbines: int) -> dict:
         """
-        Full CAPEX breakdown in USD.
-        turbine: PowerCurve object with rated_power_kw and rotor_diameter_m.
+        Desglose CAPEX en USD usando el modelo central WindPro.
+        turbine: PowerCurve con rated_power_kw y rotor_diameter_m.
         """
-        rated_kw     = turbine.rated_power_kw
-        rotor_r      = turbine.rotor_diameter_m / 2.0  # radius in m
-        spacing_m    = self.spacing_mult * rotor_r * 2  # turbine spacing (diameter × 7)
-        area_m2      = (spacing_m ** 2) * n_turbines
+        rated_kw  = turbine.rated_power_kw
+        spacing_m = self.spacing_mult * turbine.rotor_diameter_m  # 7·D
+        area_m2   = (spacing_m ** 2) * n_turbines
 
-        turbine_cost   = rated_kw * self.cost_per_kw
-        total_turbines = turbine_cost * n_turbines
-        total_foundation = self.foundation_per_turbine * n_turbines
-        total_cabling    = self.cabling_per_turbine * n_turbines
-        total_roads      = area_m2 * self.road_cost_per_m2
-        total_substation = rated_kw * n_turbines  # ≈ $1/W
-
-        total_capex = (total_turbines + total_foundation +
-                       total_cabling + total_roads + total_substation)
-
-        return {
-            'n_turbines':           n_turbines,
-            'turbine_unit_usd':     round(turbine_cost),
-            'turbines_total_usd':   round(total_turbines),
-            'foundation_usd':       round(total_foundation),
-            'cabling_usd':          round(total_cabling),
-            'roads_usd':            round(total_roads),
-            'substation_usd':       round(total_substation),
-            'total_capex_usd':      round(total_capex),
-            'area_m2':              round(area_m2),
-            'area_ha':              round(area_m2 / 10000, 1),
-            'installed_mw':         round(rated_kw * n_turbines / 1000, 2),
-        }
+        breakdown = self.cost_model.capex_breakdown(rated_kw, n_turbines)
+        breakdown.update({
+            'n_turbines':   n_turbines,
+            'area_m2':      round(area_m2),
+            'area_ha':      round(area_m2 / 10000, 1),
+            'installed_mw': round(rated_kw * n_turbines / 1000, 2),
+        })
+        return breakdown
 
     # ── financial metrics ─────────────────────────────────────────────────────
 
@@ -668,15 +645,16 @@ class TechnoEconomicAnalyzer:
         capex = self.capex_breakdown(turbine, n_turbines)
         total_capex = capex['total_capex_usd']
 
-        annual_maintenance = self.maintenance_pct * capex['turbines_total_usd']
+        # OPEX anual = % del CAPEX total (modelo central WindPro)
+        annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
         annual_revenue     = annual_energy_kwh * energy_price_usd_kwh * usd_to_mxn
         annual_opex        = annual_maintenance * usd_to_mxn
         annual_cashflow    = annual_revenue - annual_opex
 
-        # NPV / VAN
+        # NPV / VAN — la inversión es el CAPEX total (BOS ya incluye ingeniería,
+        # instalación, contingencias; el ×1.8 anterior se eliminó por duplicación).
         annuity_factor = (1 - (1 + r) ** -project_years) / r if r > 0 else project_years
-        # factor 1.8: obras civiles, instalación, conexión a red, ingeniería y contingencia (IRENA onshore México)
-        investment_cost = total_capex * usd_to_mxn * 1.8   # ×1.8 for contingency (from MATLAB)
+        investment_cost = total_capex * usd_to_mxn
         npv = annual_cashflow * annuity_factor - investment_cost
 
         # VAE — annual equivalent value
@@ -684,8 +662,7 @@ class TechnoEconomicAnalyzer:
 
         # LCOE  USD/kWh
         total_energy_kwh = annual_energy_kwh * project_years
-        total_costs_usd  = (total_capex +
-                            annual_maintenance * project_years)
+        total_costs_usd  = total_capex + annual_maintenance * project_years
         lcoe_usd_kwh = total_costs_usd / total_energy_kwh if total_energy_kwh > 0 else 0
 
         # Simple payback (years)

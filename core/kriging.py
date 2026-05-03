@@ -23,6 +23,7 @@ import pandas as pd
 from scipy.optimize import curve_fit
 from scipy.stats import weibull_min as wbl_dist
 from scipy.interpolate import interp1d
+from core.cost_model import CostModel
 
 warnings.filterwarnings('ignore')
 log = logging.getLogger(__name__)
@@ -470,7 +471,8 @@ def parallel_read_sites(paths: List[str], year: Optional[int] = None,
 
 def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
                            demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
-                           price_mxn_per_usd=20.0, anios=ANIOS, max_w=MAX_W):
+                           price_mxn_per_usd=20.0, anios=ANIOS, max_w=MAX_W,
+                           cost_model: Optional[CostModel] = None):
     """
     Compute per-site × per-turbine technical + economic metrics.
     All inputs are arrays/scalars already read from files.
@@ -515,20 +517,18 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
 
     demand_wh = demand_mwh * 1e6
     n = math.ceil(demand_wh / pt) if pt > 0 else 0
-    pr_aero = p_nom_kw * 2000.0     # USD per turbine (simple rule of thumb)
-    pan     = pt * n                # Wh/year total park
-    pin     = p_nom_kw * n          # kW installed
-    caero   = n * pr_aero
-    sep     = 7 * rotor_m           # 7 D streamwise (rotor_m = diámetro)
-    area    = sep ** 2 * n
-    road_cost_per_m2 = 10.0         # USD/m² (consistente con TechnoEconomicAnalyzer)
-    roads_usd = area * road_cost_per_m2
-    cm      = 0.03 * caero          # annual O&M
-    ccim    = 1e6 * n               # foundations
-    ccab    = 15e5 * n              # cabling
-    # CAPEX en USD; antes se sumaba `area` (m²) directamente, mezcla de unidades.
-    ctot    = caero + ccim + ccab + roads_usd
-    inv     = ctot                  # inversión inicial = CAPEX (one-time, no × anios)
+    pan = pt * n                                # Wh/year total park
+    pin = p_nom_kw * n                          # kW installed
+    sep = 7 * rotor_m                           # 7·D (rotor_m = diámetro)
+    area = sep ** 2 * n
+
+    # Modelo económico central WindPro (core/cost_model.py)
+    cm_model = cost_model or CostModel.from_defaults()
+    cap = cm_model.capex_breakdown(p_nom_kw, n)
+    caero = cap['turbines_total_usd']           # USD aerogeneradores
+    ctot  = cap['total_capex_usd']              # USD CAPEX total (incluye BOS)
+    cm    = cm_model.opex_annual_usd(ctot)      # USD/año OPEX
+    inv   = ctot                                # inversión inicial = CAPEX
 
     ekwh = pan / 1e3
     vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
@@ -563,6 +563,7 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
         'vae_usd':              float(VAE),
         'lcoe_usd_kwh':         float(lcoe),
         'roi':                  float(roi),
+        'capex_breakdown':      {k: float(v) for k, v in cap.items()},
     }
 
 
@@ -573,7 +574,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
                   price_mxn_per_usd=20.0, anios=ANIOS, max_files=None,
                   filter_filenames: Optional[List[str]] = None,
                   bounds: Optional[dict] = None,
-                  turbine_filenames: Optional[List[str]] = None):
+                  turbine_filenames: Optional[List[str]] = None,
+                  cost_model: Optional[CostModel] = None):
     """
     Full analysis: read all wind files + turbine csvs, compute metrics,
     return sites list + turbine results matrix suitable for JSON.
@@ -641,7 +643,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
                 stats['ws_hub'], stats['rho'], x_c, y_c, rotor, p_nom_kw,
                 demand_mwh=demand_mwh, tasa=tasa,
                 price_usd_kwh=price_usd_kwh,
-                price_mxn_per_usd=price_mxn_per_usd, anios=anios)
+                price_mxn_per_usd=price_mxn_per_usd, anios=anios,
+                cost_model=cost_model)
             econ['turbina']   = name
             econ['rotor_m']   = rotor
             turbines_out.append(econ)
@@ -748,24 +751,21 @@ def _min_max_grid(z):
 
 def _legacy_prefit_economics(mean_speed, k, rho_mean, power_interp, p_max_curve,
                              rotor_m, p_nom_kw, demand_mwh, tasa,
-                             price_usd_kwh, price_mxn_per_usd, anios):
+                             price_usd_kwh, price_mxn_per_usd, anios,
+                             cost_model: Optional[CostModel] = None):
     ws_hub = _virtual_weibull_series(mean_speed, k)
     psit = np.maximum(power_interp(ws_hub), 0)
     psit[ws_hub > MAX_W] = 0
     pt = float(np.sum(psit))
     demand_wh = demand_mwh * 1e6
     n = math.ceil(demand_wh / pt) if pt > 0 else 0
-    pr_aero = p_nom_kw * 2000.0
     pan = pt * n
-    caero = n * pr_aero
-    sep = 7 * rotor_m
-    area = sep ** 2 * n
-    roads_usd = area * 10.0
-    cm = 0.03 * caero
-    ccim = 1e6 * n
-    ccab = 15e5 * n
-    ctot = caero + ccim + ccab + roads_usd
-    inv = ctot
+
+    cm_model = cost_model or CostModel.from_defaults()
+    cap = cm_model.capex_breakdown(p_nom_kw, n)
+    ctot = cap['total_capex_usd']
+    cm   = cm_model.opex_annual_usd(ctot)
+    inv  = ctot
     ekwh = pan / 1e3
     vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
     flux = vtas - cm
@@ -790,7 +790,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                                  model: str = 'exponential',
                                  max_points: int = 72,
                                  filter_filenames: Optional[List[str]] = None,
-                                 turbine_filenames: Optional[List[str]] = None):
+                                 turbine_filenames: Optional[List[str]] = None,
+                                 cost_model: Optional[CostModel] = None):
     """
     Build virtual analysis sites from the kriged geospatial field.
 
@@ -974,7 +975,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                 ws_hub, rho, x_c, y_c, rotor, p_nom_kw,
                 demand_mwh=demand_mwh, tasa=tasa,
                 price_usd_kwh=price_usd_kwh,
-                price_mxn_per_usd=price_mxn_per_usd, anios=anios)
+                price_mxn_per_usd=price_mxn_per_usd, anios=anios,
+                cost_model=cost_model)
             econ['turbina'] = name
             econ['rotor_m'] = rotor
             turbines_out.append(econ)
@@ -1042,7 +1044,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                       physical: bool = False,
                       z_meas: float = 100.0,
                       z0_ref: float = 0.03,
-                      grid_bounds: Optional[dict] = None):
+                      grid_bounds: Optional[dict] = None,
+                      cost_model: Optional[CostModel] = None):
     """
     Reproduce el comportamiento original del script MATLAB/Tk:
     para cada sitio elige el último aerogenerador del catálogo (como el
@@ -1145,7 +1148,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                     r['ws_hub'], r['rho'], last_x_c, last_y_c, last_rotor, last_p_nom_kw,
                     demand_mwh=demand_mwh, tasa=tasa,
                     price_usd_kwh=price_usd_kwh,
-                    price_mxn_per_usd=price_mxn_per_usd, anios=anios)
+                    price_mxn_per_usd=price_mxn_per_usd, anios=anios,
+                    cost_model=cost_model)
                 ctot_last = econ['capex_usd']
                 VAN_last  = econ['van_usd']
             except Exception as e:
@@ -1341,7 +1345,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                 capex, van = _legacy_prefit_economics(
                     v_dir, k_local, rho_local, power_interp, p_max_curve,
                     float(last_curve['rotor_m']), float(last_curve['p_nom_kw']),
-                    demand_mwh, tasa, price_usd_kwh, price_mxn_per_usd, anios)
+                    demand_mwh, tasa, price_usd_kwh, price_mxn_per_usd, anios,
+                    cost_model=cost_model)
                 inversion_corrected[j][i] = capex
                 van_corrected[j][i] = van
             else:

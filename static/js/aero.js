@@ -2620,6 +2620,13 @@ function bindTechno() {
   document.querySelectorAll('[data-te-scenario]').forEach(btn => {
     btn.addEventListener('click', () => technoSwitchScenario(btn.dataset.teScenario));
   });
+  // Modelo económico: refrescar badge total CAPEX % al editar cualquier input
+  ['cm-turbines-pct','cm-civil-pct','cm-elec-pct','cm-install-pct','cm-eng-pct','cm-misc-pct']
+    .forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('input', technoUpdatePctTotalBadge);
+    });
+  technoUpdatePctTotalBadge();
   // populate turbine select from API
   loadTurbineList().then(() => {
     const sel = document.getElementById('turbine-real-group');
@@ -2638,6 +2645,47 @@ function technoCurrentScenario() {
   return WP.technoScenarios[WP.technoActiveScenario] || WP.technoScenarios.real;
 }
 
+function technoCollectCostModel() {
+  // Modelo económico central WindPro — % se ingresan como porcentajes (0–100), se convierten a fracción
+  const pct = id => (parseFloat(document.getElementById(id)?.value) || 0) / 100.0;
+  return {
+    turbine_usd_per_kw: parseFloat(document.getElementById('cm-turbine-usd-kw')?.value) || 1800,
+    turbines_pct:       pct('cm-turbines-pct'),
+    civil_works_pct:    pct('cm-civil-pct'),
+    electrical_pct:     pct('cm-elec-pct'),
+    installation_pct:   pct('cm-install-pct'),
+    engineering_pct:    pct('cm-eng-pct'),
+    miscellaneous_pct:  pct('cm-misc-pct'),
+    opex_pct_capex:     pct('cm-opex-pct'),
+  };
+}
+
+function technoApplyCostModel(cm) {
+  if (!cm) return;
+  const set = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  set('cm-turbine-usd-kw', cm.turbine_usd_per_kw);
+  set('cm-turbines-pct',   (cm.turbines_pct * 100).toFixed(1));
+  set('cm-civil-pct',      (cm.civil_works_pct * 100).toFixed(1));
+  set('cm-elec-pct',       (cm.electrical_pct * 100).toFixed(1));
+  set('cm-install-pct',    (cm.installation_pct * 100).toFixed(1));
+  set('cm-eng-pct',        (cm.engineering_pct * 100).toFixed(1));
+  set('cm-misc-pct',       (cm.miscellaneous_pct * 100).toFixed(1));
+  set('cm-opex-pct',       (cm.opex_pct_capex * 100).toFixed(2));
+  technoUpdatePctTotalBadge();
+}
+
+function technoUpdatePctTotalBadge() {
+  const cm = technoCollectCostModel();
+  const total = cm.turbines_pct + cm.civil_works_pct + cm.electrical_pct +
+                cm.installation_pct + cm.engineering_pct + cm.miscellaneous_pct;
+  const badge = document.getElementById('cm-pct-total-badge');
+  if (!badge) return;
+  const pct = (total * 100).toFixed(1);
+  const ok = Math.abs(total - 1.0) < 0.005;
+  badge.textContent = `${pct} %`;
+  badge.style.color = ok ? '' : '#d97706';
+}
+
 function technoCollectInputs() {
   return {
     turbine: document.getElementById('te-turbine')?.value || 'SG_8.0_167',
@@ -2646,8 +2694,8 @@ function technoCollectInputs() {
     price: parseFloat(document.getElementById('te-price')?.value) || 0.07,
     rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
     years: parseInt(document.getElementById('te-years')?.value) || 20,
-    costKw: parseFloat(document.getElementById('te-costkw')?.value) || 2000,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
+    costModel: technoCollectCostModel(),
   };
 }
 
@@ -2660,8 +2708,8 @@ function technoApplyInputs(inputs) {
   set('te-price', inputs.price);
   set('te-rate', inputs.rate);
   set('te-years', inputs.years);
-  set('te-costkw', inputs.costKw);
   set('te-fx', inputs.fx);
+  if (inputs.costModel) technoApplyCostModel(inputs.costModel);
 }
 
 function technoBestAnnualValue(key) {
@@ -2792,8 +2840,8 @@ async function calcTechnoEconomic() {
         energy_price_usd_kwh: inputs.price,
         discount_rate_pct:    inputs.rate,
         project_years:        inputs.years,
-        cost_per_kw:          inputs.costKw,
         usd_to_mxn:           inputs.fx,
+        cost_model:           inputs.costModel,
       }
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
@@ -2850,10 +2898,11 @@ function renderCapexChart(capex) {
   destroyChart('chart-capex');
   const ctx = document.getElementById('chart-capex')?.getContext('2d');
   if (!ctx) return;
-  const labels = ['Aerogeneradores', 'Cimentación', 'Cableado', 'Caminos/Área', 'Subestación'];
-  const values = [capex.turbines_total_usd, capex.foundation_usd,
-                  capex.cabling_usd, capex.roads_usd, capex.substation_usd];
-  const colors = [acc(), acc3(), acc2(), '#7f9b87', gold()];
+  const labels = ['Aerogeneradores', 'Obras civiles', 'Sistema eléctrico', 'Instalación', 'Ingeniería + permisos', 'Misceláneos'];
+  const values = [capex.turbines_total_usd, capex.civil_works_usd,
+                  capex.electrical_usd, capex.installation_usd,
+                  capex.engineering_usd, capex.miscellaneous_usd];
+  const colors = [acc(), acc3(), acc2(), '#7f9b87', gold(), '#9F7AEA'];
   WP.charts['chart-capex'] = new Chart(ctx, {
     type: 'doughnut',
     data: { labels, datasets: [{ data: values, backgroundColor: colors.map(c => c+'cc'), borderColor: colors, borderWidth: 2 }] },
@@ -3306,9 +3355,11 @@ function buildTechnoCsv(r) {
     `opex_anual,${a.annual_opex_usd},USD/año`,
     `capex_total,${cap.total_capex_usd},USD`,
     `capex_turbinas,${cap.turbines_total_usd},USD`,
-    `capex_cimentacion,${cap.foundation_usd},USD`,
-    `capex_cableado,${cap.cabling_usd},USD`,
-    `capex_subestacion,${cap.substation_usd},USD`,
+    `capex_obras_civiles,${cap.civil_works_usd},USD`,
+    `capex_sistema_electrico,${cap.electrical_usd},USD`,
+    `capex_instalacion,${cap.installation_usd},USD`,
+    `capex_ingenieria,${cap.engineering_usd},USD`,
+    `capex_miscelaneos,${cap.miscellaneous_usd},USD`,
     `area_ha,${cap.area_ha},ha`,
     `potencia_instalada,${cap.installed_mw},MW`,
     `n_turbinas,${cap.n_turbines},unidades`,

@@ -56,6 +56,7 @@ from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           TurbineComparator, TechnoEconomicAnalyzer,
                           air_density, extrapolate_wind_hellmann,
                           load_turbines_from_folder, list_turbine_info)
+from core.cost_model import CostModel, get_default_model_dict
 from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
                               compute_monthly_climatology, compute_extreme_events,
                               compute_histogram, compute_site_overview,
@@ -538,6 +539,11 @@ def create_app():
     @app.route('/api/version')
     def version():
         return jsonify({'version': '1.0', 'name': 'AERO by OPEN CIM'}), 200
+
+    @app.route('/api/cost_model/defaults', methods=['GET'])
+    def cost_model_defaults():
+        """Modelo económico central WindPro: valores y rangos para sensibilidad."""
+        return jsonify(get_default_model_dict()), 200
 
     @app.route('/api/sessions/<sid>', methods=['DELETE'])
     def delete_session(sid):
@@ -1490,15 +1496,11 @@ def create_app():
                 years_in_data = hours_in_data / 8760 if hours_in_data > 0 else 1
                 annual_kwh_per_turbine = float((p_kw * dt_h).sum() / years_in_data)
 
-            # sizing + financial
+            # sizing + financial — modelo de costos central WindPro
             demand_mwh    = float(fin_cfg.get('demand_mwh', 0))
             n_turbines_req= 0
-            tea = TechnoEconomicAnalyzer(
-                cost_per_kw_usd=float(fin_cfg.get('cost_per_kw', 2000)),
-                maintenance_pct=float(fin_cfg.get('maintenance_pct', 0.03)),
-                foundation_per_turbine=float(fin_cfg.get('foundation_per_turbine', 1_000_000)),
-                cabling_per_turbine=float(fin_cfg.get('cabling_per_turbine', 1_500_000)),
-            )
+            cost_model = CostModel.from_dict(fin_cfg.get('cost_model'))
+            tea = TechnoEconomicAnalyzer(cost_model=cost_model)
             if demand_mwh > 0:
                 n_turbines_req = tea.turbines_for_demand(annual_kwh_per_turbine, demand_mwh)
             n_turbines = int(body.get('n_turbines') or n_turbines_req or 1)
@@ -2574,6 +2576,7 @@ def create_app():
                     filter_filenames=body.get('filenames') or None,
                     physical=bool(body.get('physical', False)),
                     grid_bounds=grid_bounds,
+                    cost_model=CostModel.from_dict(body.get('cost_model')),
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'
@@ -2620,6 +2623,8 @@ def create_app():
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Iniciando análisis multi-sitio…', 'result': None}
 
+        cost_model_payload = body.get('cost_model')
+
         def _run():
             try:
                 results = analyze_sites(
@@ -2631,6 +2636,7 @@ def create_app():
                     max_files=max_files, filter_filenames=filter_files,
                     bounds=area_bounds,
                     turbine_filenames=turbine_files,
+                    cost_model=CostModel.from_dict(cost_model_payload),
                 )
                 tasks[task_id]['result'] = numpy_to_python(results)
                 tasks[task_id]['status'] = 'done'
@@ -2746,6 +2752,7 @@ def create_app():
                     max_points=max_points,
                     filter_filenames=filter_files,
                     turbine_filenames=turbine_files,
+                    cost_model=CostModel.from_dict(body.get('cost_model')),
                 )
                 ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
                 ranking['mode'] = mode

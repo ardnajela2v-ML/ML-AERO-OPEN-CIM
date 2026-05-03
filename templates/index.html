@@ -2982,14 +2982,57 @@
             <input type="number" class="form-input" id="te-years" value="20" min="5" max="40">
           </div>
           <div>
-            <label class="form-label">Costo por kW (USD/kW)</label>
-            <input type="number" class="form-input" id="te-costkw" value="2000">
-          </div>
-          <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
             <input type="number" class="form-input" id="te-fx" value="1" step="0.5" placeholder="1 = mantener USD">
           </div>
         </div>
+
+        <details class="mt-2" open style="border:1px solid var(--border);border-radius:10px;padding:.6rem .8rem">
+          <summary style="cursor:pointer;font-weight:600;font-size:.85rem">Modelo económico (CAPEX & OPEX) — editable</summary>
+          <p class="text-muted" style="font-size:.72rem;margin:.4rem 0 .6rem">Todos los valores en USD. Defaults del estudio WindPro. Los rangos se usarán en análisis de sensibilidad.</p>
+
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Precio aerogenerador (USD/kW) <span class="text-muted" style="font-size:.7rem">[1600–2000]</span></label>
+              <input type="number" class="form-input" id="cm-turbine-usd-kw" value="1800" step="50" min="0">
+            </div>
+            <div>
+              <label class="form-label">% Aerogeneradores del CAPEX <span class="text-muted" style="font-size:.7rem">[60–80]</span></label>
+              <input type="number" class="form-input" id="cm-turbines-pct" value="66" step="0.5" min="0" max="100">
+            </div>
+          </div>
+
+          <h6 style="margin:.7rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Desglose BOS (% del CAPEX)</h6>
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Obras civiles <span class="text-muted" style="font-size:.7rem">[10–15]</span></label>
+              <input type="number" class="form-input" id="cm-civil-pct" value="12" step="0.5" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Sistema eléctrico + red <span class="text-muted" style="font-size:.7rem">[5–10]</span></label>
+              <input type="number" class="form-input" id="cm-elec-pct" value="8" step="0.5" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Instalación y puesta en marcha <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
+              <input type="number" class="form-input" id="cm-install-pct" value="5" step="0.5" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Ingeniería + permisos <span class="text-muted" style="font-size:.7rem">[2–10]</span></label>
+              <input type="number" class="form-input" id="cm-eng-pct" value="6" step="0.5" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Misceláneos + contingencias <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
+              <input type="number" class="form-input" id="cm-misc-pct" value="3" step="0.5" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">OPEX anual (% del CAPEX) <span class="text-muted" style="font-size:.7rem">[2–4]</span></label>
+              <input type="number" class="form-input" id="cm-opex-pct" value="3.72" step="0.1" min="0" max="100">
+            </div>
+          </div>
+
+          <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
+        </details>
+
         <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular Análisis Tecno-Económico</button>
       </div>
     </div>
@@ -3228,6 +3271,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260430-krig-sites"></script>
+<script src="/static/js/aero.js?v=20260503-cost-model"></script>
 </body>
 </html>
