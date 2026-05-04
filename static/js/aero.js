@@ -2709,6 +2709,18 @@ function bindTechno() {
       if (technoCurrentScenario()?.result) renderTechnoScenarioResult();
     });
   }
+
+  // Selectores de modo (Fijo / 8760) — actualizar hints en tiempo real
+  ['te-price-mode', 'te-rate-mode', 'te-fx-mode'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', technoUpdateModeHints);
+  });
+  // Recalcular hints al cambiar FX manual (afecta conversión PML)
+  ['te-fx', 'te-price', 'te-rate', 'te-years'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', () => technoUpdateModeHints());
+  });
+  technoUpdateModeHints();
 }
 
 async function onTechnoLossChange() {
@@ -2842,7 +2854,6 @@ function technoAdjustedAnalysis(a) {
 
   const factor     = 1 - lossPct / 100;
   const esc        = escPct / 100;
-  const r          = (a.discount_rate_pct || 0) / 100;
   const N          = a.project_years || 20;
   const capexTotal = a.capex?.total_capex_usd || 0;
   const opex       = a.annual_opex_usd || 0;
@@ -2855,32 +2866,63 @@ function technoAdjustedAnalysis(a) {
   adj.annual_cashflow_usd = Math.round(baseRev - opex);
   adj.capacity_factor_pct = Math.round((a.capacity_factor_pct || 0) * factor * 100) / 100;
 
-  // Construye flujo anual con escalamiento aplicado al ingreso (OPEX constante)
+  // Si el backend usó series variables (price/rate/fx por año), reescalamos los
+  // flujos existentes preservando la variación por año. Si no, reconstruimos
+  // desde year-1 baseRev (compatibilidad histórica).
+  const useExisting = !!a.variable_params_used && Array.isArray(a.cashflow_table) && a.cashflow_table.length;
+  const rateSeries  = Array.isArray(a.discount_rate_series_pct) ? a.discount_rate_series_pct : null;
   let cum    = -capexTotal;
   let cumPv  = -capexTotal;
   let pbYears = null;
   adj.cashflow_table = [];
+  let cumDF = 1;  // cumulative discount factor when rate series available
   for (let yr = 1; yr <= N; yr++) {
-    const revT = baseRev * Math.pow(1 + esc, yr - 1);
-    const cfT  = revT - opex;
-    const pvT  = cfT / Math.pow(1 + r, yr);
+    let cfT;
+    if (useExisting) {
+      const baseRow = a.cashflow_table[yr - 1] || {};
+      const baseRevYr = (Number(baseRow.cashflow) || 0) + opex;  // recover revenue from cashflow + opex
+      const revT = baseRevYr * factor * Math.pow(1 + esc, yr - 1);
+      cfT = revT - opex;
+    } else {
+      const revT = baseRev * Math.pow(1 + esc, yr - 1);
+      cfT = revT - opex;
+    }
+    // Discount: variable rate per year if series provided
+    let pvT;
+    if (rateSeries && rateSeries.length) {
+      const rY = (Number(rateSeries[Math.min(yr - 1, rateSeries.length - 1)]) || 0) / 100;
+      cumDF *= (1 + rY);
+      pvT = cumDF > 0 ? cfT / cumDF : cfT;
+    } else {
+      const r = (a.discount_rate_pct || 0) / 100;
+      pvT = cfT / Math.pow(1 + r, yr);
+    }
     const prevCum = cum;
     cum   += cfT;
     cumPv += pvT;
     if (pbYears == null && cum >= 0 && prevCum < 0 && cfT > 0) {
       pbYears = Math.round((yr - 1 + (-prevCum) / cfT) * 10) / 10;
     }
+    const baseRow = useExisting ? (a.cashflow_table[yr - 1] || {}) : {};
     adj.cashflow_table.push({
       year: yr,
-      cashflow:    Math.round(cfT),
-      pv_cashflow: Math.round(pvT),
-      cumulative:  Math.round(cum),
+      energy_mwh:        baseRow.energy_mwh,
+      price_usd_kwh:     baseRow.price_usd_kwh,
+      discount_rate_pct: baseRow.discount_rate_pct,
+      fx_mxn_per_usd:    baseRow.fx_mxn_per_usd,
+      cashflow:          Math.round(cfT),
+      pv_cashflow:       Math.round(pvT),
+      cumulative:        Math.round(cum),
     });
   }
   adj.npv_usd       = Math.round(cumPv);
   adj.payback_years = pbYears;
-  adj.vae_usd = r > 0
-    ? Math.round(adj.npv_usd * r / (1 - Math.pow(1 + r, -N)))
+  // VAE / LCOE — usar rate medio cuando hay serie
+  const rMean = rateSeries && rateSeries.length
+    ? rateSeries.reduce((s,v) => s + (Number(v) || 0), 0) / rateSeries.length / 100
+    : (a.discount_rate_pct || 0) / 100;
+  adj.vae_usd = rMean > 0
+    ? Math.round(adj.npv_usd * rMean / (1 - Math.pow(1 + rMean, -N)))
     : Math.round(adj.npv_usd / N);
 
   // LCOE — métrica de costo, no se afecta por escalamiento; solo por pérdidas (vía energía)
@@ -2950,6 +2992,9 @@ function technoCollectInputs() {
     rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
     years: parseInt(document.getElementById('te-years')?.value) || 20,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
+    priceMode: document.getElementById('te-price-mode')?.value || 'fixed',
+    rateMode:  document.getElementById('te-rate-mode')?.value  || 'fixed',
+    fxMode:    document.getElementById('te-fx-mode')?.value    || 'fixed',
     costModel: technoCollectCostModel(),
   };
 }
@@ -2965,7 +3010,164 @@ function technoApplyInputs(inputs) {
   set('te-rate', inputs.rate);
   set('te-years', inputs.years);
   set('te-fx', inputs.fx);
+  set('te-price-mode', inputs.priceMode || 'fixed');
+  set('te-rate-mode',  inputs.rateMode  || 'fixed');
+  set('te-fx-mode',    inputs.fxMode    || 'fixed');
   if (inputs.costModel) technoApplyCostModel(inputs.costModel);
+  technoUpdateModeHints();
+}
+
+// ─── 8760 / Predicción ML — series anuales y arrays horarios ──────────────────
+
+function _arrMean(arr) {
+  if (!Array.isArray(arr) || !arr.length) return null;
+  let s = 0, n = 0;
+  for (const v of arr) {
+    const x = Number(v);
+    if (Number.isFinite(x)) { s += x; n++; }
+  }
+  return n ? s / n : null;
+}
+
+/**
+ * Devuelve el array crudo (raw_values) y un detector de unidad para PML.
+ * Para PML: prefiere pml_hourly (8760), si no hay usa la cara compra/venta del cache anual.
+ * Para interest/fx: usa cache.<key>.raw_values directamente.
+ */
+function _arenaRawValues(paramKey) {
+  const c = WP.arenaCache || {};
+  if (paramKey === 'price') {
+    const h = c.pml_hourly?.raw_values;
+    if (Array.isArray(h) && h.length) return { values: h, source: 'pml_hourly' };
+    const side = c.pml?.compra || c.pml?.venta || c.pml || null;
+    const r = side?.raw_values;
+    return Array.isArray(r) && r.length ? { values: r, source: 'pml_annual' } : null;
+  }
+  if (paramKey === 'rate') {
+    const r = c.interest?.raw_values;
+    return Array.isArray(r) && r.length ? { values: r, source: 'interest' } : null;
+  }
+  if (paramKey === 'fx') {
+    const r = c.fx?.raw_values;
+    return Array.isArray(r) && r.length ? { values: r, source: 'fx' } : null;
+  }
+  return null;
+}
+
+/**
+ * Devuelve la proyección anual (25 años) para un parámetro desde Forecast Studio.
+ * Para 'price' usa la cara activa de pml.
+ */
+function _arenaProjectionAnnual(paramKey) {
+  const cfgKey = paramKey === 'price' ? 'pml'
+              : paramKey === 'rate'  ? 'interest'
+              : paramKey === 'fx'    ? 'fx' : null;
+  if (!cfgKey) return null;
+  const cfg = getForecastFutureConfig(cfgKey);
+  if (!cfg) return null;
+  const proj = cfg.projection || {};
+  const model = cfg.bestModel && proj[cfg.bestModel] ? cfg.bestModel
+              : Object.keys(proj).find(k => proj[k]?.annual?.length);
+  const annual = model ? proj[model]?.annual : null;
+  return Array.isArray(annual) && annual.length ? annual.map(Number) : null;
+}
+
+/**
+ * Convierte un valor PML al sistema USD/kWh.
+ * Heurística: si val > 50 → asumimos MXN/MWh; entre 1 y 50 → USD/MWh; <1 → USD/kWh ya.
+ */
+function _pmlToUsdKwh(val, fxScalar) {
+  const v = Number(val);
+  if (!Number.isFinite(v)) return null;
+  if (v > 50) return v / (fxScalar > 0 ? fxScalar : 18) / 1000; // MXN/MWh → USD/kWh
+  if (v > 1)  return v / 1000;                                  // USD/MWh → USD/kWh
+  return v;                                                      // ya USD/kWh
+}
+
+/**
+ * Construye la serie anual (length nYears) para un parámetro según mode/escenario.
+ * - mode='fixed' → null (backend usa escalar)
+ * - mode='arena' + scenario in {real, corrected} → media histórica para todos los años
+ * - mode='arena' + scenario='ml' → año 1 = media histórica; años 2..N = proyección ML
+ * Devuelve { series, baseline, hourly } donde:
+ *   series = array length nYears (en unidades del backend) o null
+ *   baseline = valor escalar año 1 (mostrado al usuario)
+ *   hourly  = (solo para 'price') array de 8760 en USD/kWh para year-1 weighting
+ */
+function technoBuildParamSeries(paramKey, mode, scenarioKey, nYears, fxScalar) {
+  if (mode !== 'arena') return { series: null, baseline: null, hourly: null };
+  const raw = _arenaRawValues(paramKey);
+  if (!raw) return { series: null, baseline: null, hourly: null };
+
+  // baseline (year 1) en unidades del backend
+  let baseline = null;
+  let hourly   = null;
+  if (paramKey === 'price') {
+    const meanRaw = _arrMean(raw.values);
+    baseline = _pmlToUsdKwh(meanRaw, fxScalar);
+    // Hourly array (USD/kWh) cuando hay 8760 disponibles
+    if (raw.source === 'pml_hourly') {
+      hourly = raw.values.map(v => _pmlToUsdKwh(v, fxScalar)).map(v => Number.isFinite(v) ? v : baseline);
+    }
+  } else {
+    baseline = _arrMean(raw.values);
+  }
+  if (baseline == null || !Number.isFinite(baseline)) {
+    return { series: null, baseline: null, hourly: null };
+  }
+
+  const series = new Array(nYears).fill(baseline);
+  if (scenarioKey === 'ml') {
+    const annual = _arenaProjectionAnnual(paramKey);
+    if (annual && annual.length) {
+      // Años 2..N = annual[0..N-2] (proyección típicamente comienza en el año siguiente al base)
+      for (let i = 1; i < nYears; i++) {
+        let v = Number(annual[i - 1]);
+        if (!Number.isFinite(v)) continue;
+        if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar);
+        if (Number.isFinite(v)) series[i] = v;
+      }
+    }
+  }
+  return { series, baseline, hourly };
+}
+
+/**
+ * Actualiza los hints debajo de cada selector mostrando la fuente de datos
+ * cuando el modo es 'arena'.
+ */
+function technoUpdateModeHints() {
+  const fxScalar = parseFloat(document.getElementById('te-fx')?.value) || 18;
+  const scenarioKey = WP.technoActiveScenario || 'real';
+  const fmt = (v, dec=4) => Number.isFinite(v) ? Number(v).toLocaleString('es-MX', {maximumFractionDigits: dec}) : '—';
+
+  const cfg = [
+    { key: 'price', mode: document.getElementById('te-price-mode')?.value, hintId: 'te-price-mode-hint', label: 'USD/kWh', dec: 5 },
+    { key: 'rate',  mode: document.getElementById('te-rate-mode')?.value,  hintId: 'te-rate-mode-hint',  label: '%',       dec: 3 },
+    { key: 'fx',    mode: document.getElementById('te-fx-mode')?.value,    hintId: 'te-fx-mode-hint',    label: 'MXN/USD', dec: 3 },
+  ];
+  cfg.forEach(c => {
+    const el = document.getElementById(c.hintId);
+    if (!el) return;
+    if (c.mode !== 'arena') {
+      // Reset to default hint
+      if (c.key === 'fx') el.textContent = 'Análisis siempre en USD; FX solo muestra equivalente MXN bajo cada KPI.';
+      else el.textContent = '';
+      return;
+    }
+    const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 20, fxScalar);
+    if (!built.series) {
+      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos de Model Arena para ${c.key.toUpperCase()}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
+      return;
+    }
+    const hAvg = built.series.length > 1
+      ? built.series.slice(1).reduce((a,b)=>a+b,0) / (built.series.length - 1)
+      : built.baseline;
+    const tag = scenarioKey === 'ml'
+      ? `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (${built.hourly ? '8760 horario' : 'media hist.'}) · Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> (proy. ML)`
+      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Model Arena)`;
+    el.innerHTML = tag;
+  });
 }
 
 function technoBestAnnualValue(key) {
@@ -3013,6 +3215,7 @@ function technoSwitchScenario(key) {
   });
   const scenario = technoCurrentScenario();
   technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
+  technoUpdateModeHints();
   technoRefreshScenarioView();
 }
 
@@ -3133,6 +3336,22 @@ async function calcTechnoEconomic() {
       ? null
       : (scenarioKey === 'ml' || scenarioKey === 'corrected' ? technoBestAnnualValue('wind') : null);
     const parkAep = scenarioKey === 'corrected' ? PARQUE.result?.aep_mwh : null;
+
+    // ── Modos 8760 / Predicción ML para precio, tasa y FX ─────────────────
+    const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : 18;
+    const builtPrice = technoBuildParamSeries('price', inputs.priceMode, scenarioKey, inputs.years, fxScalar);
+    const builtRate  = technoBuildParamSeries('rate',  inputs.rateMode,  scenarioKey, inputs.years, fxScalar);
+    const builtFx    = technoBuildParamSeries('fx',    inputs.fxMode,    scenarioKey, inputs.years, fxScalar);
+
+    // Si la modalidad arena no encontró datos, avisamos pero continuamos en modo fijo
+    const missing = [];
+    if (inputs.priceMode === 'arena' && !builtPrice.series) missing.push('precio (PML)');
+    if (inputs.rateMode  === 'arena' && !builtRate.series)  missing.push('tasa (interés)');
+    if (inputs.fxMode    === 'arena' && !builtFx.series)    missing.push('FX');
+    if (missing.length) {
+      toast(`Modo 8760 sin datos para: ${missing.join(', ')}. Carga Forecast Studio o usa Fijo.`, 'warn');
+    }
+
     const body = {
       session_id:    WP.sessionId,
       scenario:      scenarioKey,
@@ -3149,6 +3368,16 @@ async function calcTechnoEconomic() {
         project_years:        inputs.years,
         usd_to_mxn:           inputs.fx,
         cost_model:           inputs.costModel,
+        // Series por año (cuando mode='arena')
+        energy_price_series_usd_kwh: builtPrice.series || null,
+        discount_rate_series_pct:    builtRate.series  || null,
+        usd_to_mxn_series:           builtFx.series    || null,
+        // Año 1 horario (precio) → backend usa override de revenue ponderado
+        price_hourly_year1_usd_kwh:  builtPrice.hourly || null,
+        // Metadatos de modo (informativos)
+        price_mode: inputs.priceMode,
+        rate_mode:  inputs.rateMode,
+        fx_mode:    inputs.fxMode,
       }
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
@@ -4262,25 +4491,36 @@ function renderCashflowTable(table, leveraged = null) {
   }
 
   // Modo simple — sin financiamiento
-  // Mostrar columna de energía si los valores varían año a año (escenario ML con serie)
-  const energyValues = table.map(r => r.energy_mwh).filter(v => v != null);
-  const showEnergy = energyValues.length === table.length &&
-    energyValues.some(v => Math.abs(v - energyValues[0]) > 0.5);
-  if (thead) thead.innerHTML = showEnergy
-    ? '<tr><th>Año</th><th>Energía (MWh)</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>'
-    : '<tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>';
+  // Mostrar columnas adicionales si los valores varían año a año
+  const varies = (key, eps) => {
+    const vals = table.map(r => r[key]).filter(v => v != null);
+    return vals.length === table.length && vals.some(v => Math.abs(v - vals[0]) > eps);
+  };
+  const showEnergy = varies('energy_mwh', 0.5);
+  const showPrice  = varies('price_usd_kwh', 1e-5);
+  const showRate   = varies('discount_rate_pct', 1e-3);
+  const showFx     = varies('fx_mxn_per_usd', 1e-3);
+
+  const headers = ['Año'];
+  if (showEnergy) headers.push('Energía (MWh)');
+  if (showPrice)  headers.push('Precio (USD/kWh)');
+  if (showRate)   headers.push('Tasa (%)');
+  if (showFx)     headers.push('FX (MXN/USD)');
+  headers.push('Flujo (USD)', 'VP Flujo', 'Acumulado');
+  if (thead) thead.innerHTML = '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
+
+  const fmtNum = (v, dec) => v != null && Number.isFinite(v) ? Number(v).toFixed(dec) : '—';
   tbody.innerHTML = table.map(r => {
     const cls = r.cumulative >= 0 ? 'positive' : 'negative';
-    const energyCell = showEnergy
-      ? `<td>${r.energy_mwh != null ? r.energy_mwh.toLocaleString('es-MX') : '—'}</td>`
-      : '';
-    return `<tr class="${cls}">
-      <td>${r.year}</td>
-      ${energyCell}
-      <td>${usd(r.cashflow)}</td>
-      <td>${usd(r.pv_cashflow)}</td>
-      <td>${usd(r.cumulative)}</td>
-    </tr>`;
+    const cells = [`<td>${r.year}</td>`];
+    if (showEnergy) cells.push(`<td>${r.energy_mwh != null ? r.energy_mwh.toLocaleString('es-MX') : '—'}</td>`);
+    if (showPrice)  cells.push(`<td>${fmtNum(r.price_usd_kwh, 5)}</td>`);
+    if (showRate)   cells.push(`<td>${fmtNum(r.discount_rate_pct, 3)}</td>`);
+    if (showFx)     cells.push(`<td>${fmtNum(r.fx_mxn_per_usd, 3)}</td>`);
+    cells.push(`<td>${usd(r.cashflow)}</td>`);
+    cells.push(`<td>${usd(r.pv_cashflow)}</td>`);
+    cells.push(`<td>${usd(r.cumulative)}</td>`);
+    return `<tr class="${cls}">${cells.join('')}</tr>`;
   }).join('');
 }
 

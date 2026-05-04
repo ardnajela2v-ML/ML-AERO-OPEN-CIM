@@ -632,7 +632,11 @@ class TechnoEconomicAnalyzer:
                 discount_rate_pct: float = 8.0,
                 project_years: int = 20,
                 usd_to_mxn: float = 1.0,
-                annual_energy_kwh_series: list = None) -> dict:
+                annual_energy_kwh_series: list = None,
+                energy_price_series_usd_kwh: list = None,
+                discount_rate_series_pct: list = None,
+                usd_to_mxn_series: list = None,
+                year1_revenue_override_usd: float = None) -> dict:
         """
         Full techno-economic analysis.
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
@@ -640,8 +644,25 @@ class TechnoEconomicAnalyzer:
         annual_energy_kwh: representative annual park energy (used for summary KPIs)
         annual_energy_kwh_series: optional per-year energy list (ML forecast series).
             When provided, NPV/LCOE/cashflows use year-specific AEP values.
+        energy_price_series_usd_kwh / discount_rate_series_pct / usd_to_mxn_series:
+            optional per-year arrays (length ≤ project_years). When provided,
+            override the corresponding scalar for each year (cashflow + NPV use
+            cumulative compounding for variable discount).
+        year1_revenue_override_usd: optional override for year-1 revenue (already
+            in USD, FX-adjusted). Used when revenue is computed via hourly
+            weighting (8760 PML × FX × dispatched energy). Bypasses
+            energy×price×fx for year 1 only.
         """
-        r    = discount_rate_pct / 100.0
+        def _at(seq, i, default):
+            try:
+                if seq and i < len(seq):
+                    v = float(seq[i])
+                    if v == v:  # not NaN
+                        return v
+            except (TypeError, ValueError):
+                pass
+            return default
+
         capex = self.capex_breakdown(turbine, n_turbines)
         total_capex = capex['total_capex_usd']
         investment_cost = total_capex * usd_to_mxn
@@ -660,15 +681,31 @@ class TechnoEconomicAnalyzer:
         npv = -investment_cost
         total_energy_kwh = 0.0
         payback_years = float('inf')
+        discount_factor = 1.0  # cumulative Π(1+r_i)
+        rates_used = []
+        prices_used = []
+        fx_used = []
 
         for yr in range(1, project_years + 1):
             if annual_energy_kwh_series and yr <= len(annual_energy_kwh_series):
                 yr_energy_kwh = float(annual_energy_kwh_series[yr - 1])
             else:
                 yr_energy_kwh = annual_energy_kwh
-            yr_revenue  = yr_energy_kwh * energy_price_usd_kwh * usd_to_mxn
+            yr_price = _at(energy_price_series_usd_kwh, yr - 1, energy_price_usd_kwh)
+            yr_rate  = _at(discount_rate_series_pct,    yr - 1, discount_rate_pct)
+            yr_fx    = _at(usd_to_mxn_series,           yr - 1, usd_to_mxn)
+            r_y = yr_rate / 100.0
+            prices_used.append(yr_price)
+            rates_used.append(yr_rate)
+            fx_used.append(yr_fx)
+
+            if yr == 1 and year1_revenue_override_usd is not None:
+                yr_revenue = float(year1_revenue_override_usd) * yr_fx
+            else:
+                yr_revenue = yr_energy_kwh * yr_price * yr_fx
             yr_cashflow = yr_revenue - annual_opex
-            pv = yr_cashflow / (1 + r) ** yr if r > 0 else yr_cashflow
+            discount_factor *= (1 + r_y)
+            pv = yr_cashflow / discount_factor if discount_factor > 0 else yr_cashflow
             npv += pv
             cumulative += yr_cashflow
             total_energy_kwh += yr_energy_kwh
@@ -680,13 +717,19 @@ class TechnoEconomicAnalyzer:
             cashflow_table.append({
                 'year':        yr,
                 'energy_mwh':  round(yr_energy_kwh / 1000, 1),
+                'price_usd_kwh': round(yr_price, 5),
+                'discount_rate_pct': round(yr_rate, 3),
+                'fx_mxn_per_usd': round(yr_fx, 4),
                 'cashflow':    round(yr_cashflow),
                 'pv_cashflow': round(pv),
                 'cumulative':  round(cumulative),
             })
 
-        # VAE — annual equivalent value
-        vae = npv * r / (1 - (1 + r) ** -project_years) if r > 0 else npv / project_years
+        # Mean rate for VAE / LCOE (when variable)
+        r_mean = (sum(rates_used) / len(rates_used) / 100.0) if rates_used else (discount_rate_pct / 100.0)
+        # VAE — annual equivalent value (uses mean rate when variable)
+        vae = (npv * r_mean / (1 - (1 + r_mean) ** -project_years)
+               if r_mean > 0 else npv / project_years)
 
         # LCOE uses actual total energy across project life
         total_costs_usd = total_capex + annual_maintenance * project_years
@@ -695,6 +738,14 @@ class TechnoEconomicAnalyzer:
         capacity_factor = (annual_energy_kwh /
                            (turbine.rated_power_kw * n_turbines * 8760)
                            if turbine.rated_power_kw * n_turbines > 0 else 0)
+
+        # Indicates whether series-based variable params were used
+        used_variable_params = bool(
+            (energy_price_series_usd_kwh and len(energy_price_series_usd_kwh) > 0) or
+            (discount_rate_series_pct and len(discount_rate_series_pct) > 0) or
+            (usd_to_mxn_series and len(usd_to_mxn_series) > 0) or
+            (year1_revenue_override_usd is not None)
+        )
 
         return {
             'capex': capex,
@@ -709,10 +760,12 @@ class TechnoEconomicAnalyzer:
             'payback_years':        round(payback_years, 1) if payback_years != float('inf') else None,
             'project_years':        project_years,
             'discount_rate_pct':    discount_rate_pct,
+            'discount_rate_mean_pct': round(r_mean * 100, 3),
             'energy_price_usd_kwh': energy_price_usd_kwh,
             'capacity_factor_pct':  round(capacity_factor * 100, 2),
             'cashflow_table':       cashflow_table,
             'is_viable':            npv > 0,
+            'variable_params_used': used_variable_params,
         }
 
     # ── Cp analysis ───────────────────────────────────────────────────────────

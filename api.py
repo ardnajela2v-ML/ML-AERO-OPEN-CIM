@@ -1597,6 +1597,81 @@ def create_app():
                     _annual_energy_series_kwh += [_mean_kwh] * (_project_years - len(_annual_energy_series_kwh))
                 _annual_energy_series_kwh = _annual_energy_series_kwh[:_project_years]
 
+            # ── Variable per-year params (Predicción ML / Histórico 8760) ──
+            def _clean_series(seq, ny):
+                if not isinstance(seq, list):
+                    return None
+                out = []
+                for v in seq[:ny]:
+                    try:
+                        fv = float(v)
+                        out.append(fv if np.isfinite(fv) else None)
+                    except (TypeError, ValueError):
+                        out.append(None)
+                # Replace None with last valid
+                last = None
+                for i, v in enumerate(out):
+                    if v is not None and np.isfinite(v):
+                        last = v
+                    else:
+                        out[i] = last
+                # Drop trailing Nones if no valid was found
+                if all(v is None for v in out):
+                    return None
+                # Pad to project_years if shorter
+                if out and len(out) < ny:
+                    fill = out[-1] if out[-1] is not None else None
+                    out += [fill] * (ny - len(out))
+                return out
+
+            _price_series = _clean_series(fin_cfg.get('energy_price_series_usd_kwh'), _project_years)
+            _rate_series  = _clean_series(fin_cfg.get('discount_rate_series_pct'),    _project_years)
+            _fx_series    = _clean_series(fin_cfg.get('usd_to_mxn_series'),           _project_years)
+
+            # ── Year-1 revenue ponderado horario (PML × FX × despacho 8760) ──
+            _year1_rev_override = None
+            try:
+                price_hourly = fin_cfg.get('price_hourly_year1_usd_kwh')
+                fx_hourly    = fin_cfg.get('fx_hourly_year1_mxn_per_usd')
+                if isinstance(price_hourly, list) and len(price_hourly) > 0:
+                    _ws_y1 = ws_hub if (ws_hub is not None and len(ws_hub) > 0) else None
+                    if _ws_y1 is not None:
+                        _p_kw_y1 = turbine.power_kw_density_corrected(_ws_y1, rho) * n_turbines
+                        # Energy per hour (kWh). dt_h might not be 1h; if dt != 1h we time-resample to 8760 by simple slicing/stretch.
+                        _energy_per_hour = _p_kw_y1 * dt_h
+                        # Use the first 8760 hours; if data <8760, pad with mean
+                        n_h = 8760
+                        if len(_energy_per_hour) >= n_h:
+                            e_arr = np.asarray(_energy_per_hour[:n_h], dtype=float)
+                        else:
+                            e_arr = np.full(n_h, float(np.mean(_energy_per_hour)))
+                            e_arr[:len(_energy_per_hour)] = np.asarray(_energy_per_hour, dtype=float)
+                        # Scale energy to match expected annual energy (year 1)
+                        _y1_energy_target_kwh = (
+                            float(_annual_energy_series_kwh[0]) if _annual_energy_series_kwh
+                            else annual_kwh_per_turbine * n_turbines
+                        )
+                        _e_sum = float(e_arr.sum())
+                        if _e_sum > 0 and _y1_energy_target_kwh > 0:
+                            e_arr = e_arr * (_y1_energy_target_kwh / _e_sum)
+                        # Price array (USD/kWh); pad/truncate to 8760
+                        p_arr_raw = np.asarray(price_hourly, dtype=float)
+                        if len(p_arr_raw) >= n_h:
+                            p_arr = p_arr_raw[:n_h]
+                        else:
+                            p_arr = np.full(n_h, float(np.nanmean(p_arr_raw)))
+                            p_arr[:len(p_arr_raw)] = p_arr_raw
+                        p_arr = np.where(np.isfinite(p_arr), p_arr, float(np.nanmean(p_arr_raw)))
+                        # FX hourly weight: convert hourly revenue to USD using a per-hour fx ratio
+                        # If user provided FX hourly series, the year-1 fx weighting for revenue is
+                        # implicitly the mean (since fx_series[0] is later applied to the override
+                        # when used to convert to MXN). We keep override in USD using p_arr directly.
+                        revenue_usd_y1 = float((e_arr * p_arr).sum())
+                        if np.isfinite(revenue_usd_y1) and revenue_usd_y1 > 0:
+                            _year1_rev_override = revenue_usd_y1
+            except Exception as _e_y1:
+                logger.warning('Year-1 hourly revenue override failed: %s', _e_y1)
+
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
                 energy_price_usd_kwh=float(fin_cfg.get('energy_price_usd_kwh', 0.07)),
@@ -1604,8 +1679,25 @@ def create_app():
                 project_years=_project_years,
                 usd_to_mxn=1.0,
                 annual_energy_kwh_series=_annual_energy_series_kwh,
+                energy_price_series_usd_kwh=_price_series,
+                discount_rate_series_pct=_rate_series,
+                usd_to_mxn_series=None,  # FX series only affects MXN display, not USD analysis
+                year1_revenue_override_usd=_year1_rev_override,
             )
             analysis['fx_mxn_per_usd'] = fx_mxn_per_usd
+            # Expose mean FX series for display (frontend may want average over years)
+            if _fx_series:
+                try:
+                    _fx_mean = float(np.mean([v for v in _fx_series if v is not None and np.isfinite(v)]))
+                    if np.isfinite(_fx_mean) and _fx_mean > 0:
+                        analysis['fx_mxn_per_usd_mean_series'] = _fx_mean
+                        analysis['fx_mxn_per_usd_series'] = _fx_series
+                except Exception:
+                    pass
+            if _price_series:
+                analysis['energy_price_series_usd_kwh'] = _price_series
+            if _rate_series:
+                analysis['discount_rate_series_pct'] = _rate_series
 
             # Cp analysis
             cp = tea.cp_analysis(turbine, ws_hub, rho=rho)
