@@ -3130,6 +3130,61 @@
       </div>
     </div>
   </div>
+
+  <!-- ══ Producción Energética del Parque ══ -->
+  <div class="card mt-2" id="te-energy-section" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Producción Energética del Parque</span>
+      <span class="badge badge--info" id="te-el-badge">—</span>
+    </div>
+    <div class="card-body" id="te-el-kpis">
+      <p class="text-muted" style="font-size:.8rem">Calculando…</p>
+    </div>
+    <div class="card-body" id="te-el-pvalues" style="display:none;padding-top:0">
+      <div class="p-value-row" id="te-el-pvalue-row"></div>
+      <p class="text-muted mt-2" style="font-size:.78rem">P50 = mediana esperada · P75 = excedido el 75% del tiempo · P90 = escenario conservador.</p>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2" id="te-el-charts-1" style="display:none">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva de Potencia</span></div>
+      <div class="chart-box"><canvas id="te-pcurve-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Producción Mensual (MWh)</span></div>
+      <div class="chart-box"><canvas id="te-monthly-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2" id="te-el-charts-2" style="display:none">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Serie de Potencia Estimada</span></div>
+      <div class="chart-box"><canvas id="te-pts-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Análisis de Sensibilidad AEP</span></div>
+      <div class="chart-box"><canvas id="te-sens-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-2" id="te-el-compare-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Comparador de Aerogeneradores</span>
+      <button class="btn-secondary" id="btn-te-compare-turbines" style="font-size:.75rem;padding:.25rem .75rem">Comparar turbinas</button>
+    </div>
+    <div class="card-body">
+      <div class="table-wrapper">
+        <table class="sci-table" id="te-comp-table">
+          <thead><tr>
+            <th>Turbina</th><th>P. Nominal (kW)</th><th>Diámetro (m)</th>
+            <th>H. Buje (m)</th><th>CF (%)</th><th>FLH</th><th>P. Media (kW)</th><th>Rank</th>
+          </tr></thead>
+          <tbody id="te-comp-tbody"><tr><td colspan="8" class="empty-msg">Haz clic en "Comparar turbinas"</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- ╔══════════════════ EXPORTAR ══════════════════╗ -->

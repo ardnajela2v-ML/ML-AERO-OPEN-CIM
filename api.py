@@ -1536,6 +1536,61 @@ def create_app():
                 p_kw_dispatch, load_kw, dispatch_index, dt_h, n_turbines, turbine, load_info
             )
 
+            # ── Energy Lab integration ────────────────────────────────────────
+            energy_lab = None
+            try:
+                aep_calc = AEPCalculator()
+                p_kw_el = turbine.power_kw_density_corrected(ws_hub, rho) * n_turbines
+
+                if dispatch_index is not None and len(dispatch_index) == len(ws_hub):
+                    idx_el = dispatch_index
+                else:
+                    freq_str = f'{int(dt_h * 60)}min' if dt_h < 1 else f'{int(dt_h)}h'
+                    idx_el = pd.date_range('2020-01-01', periods=len(ws_hub), freq=freq_str)
+
+                df_el = pd.DataFrame({
+                    'ws_hub': ws_hub,
+                    'power_net_kw': p_kw_el,
+                    'energy_net_kwh': p_kw_el * dt_h,
+                }, index=idx_el)
+
+                hours_el = len(ws_hub) * dt_h
+                years_el = hours_el / 8760 if hours_el > 0 else 1.0
+                annual_net_mwh = float((p_kw_el * dt_h).sum() / years_el / 1000)
+                rated_total_kw = turbine.rated_power_kw * n_turbines
+                cf_pct_el = round(annual_net_mwh * 1000 / (rated_total_kw * 8760) * 100, 1) if rated_total_kw > 0 else 0
+                flh_el = round(annual_net_mwh * 1000 / rated_total_kw) if rated_total_kw > 0 else 0
+
+                aep_el = {}
+                try:
+                    aep_el = aep_calc.compute_from_timeseries(df_el, 'energy_net_kwh')
+                except Exception:
+                    pass
+
+                monthly_el = aep_calc.monthly_distribution(df_el, 'energy_net_kwh')
+                sensitivity_el = aep_calc.sensitivity_table(aep_el.get('aep_p50_mwh', annual_net_mwh))
+
+                step_el = max(1, len(df_el) // 1500)
+                ts_labels_el = [str(t) for t in df_el.index[::step_el]]
+
+                energy_lab = {
+                    'summary': {
+                        'capacity_factor_pct': cf_pct_el,
+                        'energy_net_mwh': round(annual_net_mwh, 1),
+                        'full_load_hours': flh_el,
+                    },
+                    'aep': aep_el,
+                    'monthly': monthly_el,
+                    'sensitivity': sensitivity_el,
+                    'turbine': turbine.to_dict(),
+                    'timeseries': {
+                        'labels': ts_labels_el,
+                        'power_kw': safe_float_list(df_el['power_net_kw'].values[::step_el].tolist()),
+                    },
+                }
+            except Exception as _e_lab:
+                logger.warning('Energy Lab integration in techno_economic failed: %s', _e_lab)
+
             return jsonify(numpy_to_python({
                 'analysis': analysis,
                 'cp': cp,
@@ -1546,6 +1601,7 @@ def create_app():
                 'n_turbines_used':   n_turbines,
                 'annual_kwh_per_turbine': round(annual_kwh_per_turbine),
                 'rho': round(rho, 4),
+                'energy_lab': energy_lab,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)

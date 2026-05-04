@@ -2639,6 +2639,8 @@ function bindTechno() {
   technoRefreshScenarioView();
   const cmpBtn = document.getElementById('btn-te-compare');
   if (cmpBtn) cmpBtn.addEventListener('click', renderTechnoCompare);
+  const cmpTurb = document.getElementById('btn-te-compare-turbines');
+  if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
 }
 
 function technoCurrentScenario() {
@@ -2776,6 +2778,7 @@ function renderTechnoScenarioResult() {
     document.querySelector('#te-dispatch-table tbody').innerHTML = '';
     document.getElementById('badge-cp-max').textContent = '—';
     ['chart-capex', 'chart-cashflow', 'chart-cp', 'chart-te-dispatch'].forEach(destroyChart);
+    renderTechnoEnergyLab(null);
     return;
   }
   WP.technoResult = r;
@@ -2785,6 +2788,7 @@ function renderTechnoScenarioResult() {
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
   renderCpChart(r.cp);
   renderCashflowTable(r.analysis?.cashflow_table);
+  renderTechnoEnergyLab(r.energy_lab);
 }
 
 function renderTechnoLayoutPreview() {
@@ -3048,6 +3052,199 @@ function renderTechnoDispatch(d, windSource = null) {
       },
     },
   });
+}
+
+// ─── TECHNO ENERGY LAB INTEGRATION ───────────────────────────────────────────
+function renderTechnoEnergyLab(el) {
+  const sectionIds = ['te-energy-section', 'te-el-charts-1', 'te-el-charts-2', 'te-el-compare-card'];
+  if (!el) {
+    sectionIds.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = 'none'; });
+    ['te-pcurve', 'te-monthly', 'te-pts', 'te-sens'].forEach(destroyChart);
+    return;
+  }
+  sectionIds.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = ''; });
+
+  const fmt = (n, dec = 0) => Number.isFinite(Number(n))
+    ? Number(n).toLocaleString('es-MX', { maximumFractionDigits: dec }) : '—';
+  const a = el.summary || {};
+  const turbName = el.turbine?.name || '—';
+  const nTurb = el.summary ? '' : '';
+
+  const badge = document.getElementById('te-el-badge');
+  if (badge) badge.textContent = turbName;
+
+  const kpisEl = document.getElementById('te-el-kpis');
+  if (kpisEl) {
+    kpisEl.innerHTML = `<div class="te-kpi-grid">${[
+      ['Factor de Capacidad', (a.capacity_factor_pct ?? '—') + '%', ''],
+      ['AEP P50', fmt(el.aep?.aep_p50_mwh) + ' MWh', '/año'],
+      ['FLH', fmt(a.full_load_hours) + ' h', ''],
+      ['Energía neta', fmt(a.energy_net_mwh) + ' MWh', '/año'],
+      ['AEP P90', fmt(el.aep?.aep_p90_mwh) + ' MWh', ''],
+    ].map(([l, v, u]) => `<div class="te-kpi-item">
+      <div class="kpi-label">${l}</div>
+      <div class="kpi-value">${v}<span style="font-size:.7rem;color:var(--text-muted);margin-left:4px">${u}</span></div>
+    </div>`).join('')}</div>`;
+  }
+
+  const pvEl  = document.getElementById('te-el-pvalues');
+  const pvRow = document.getElementById('te-el-pvalue-row');
+  if (pvEl && pvRow && el.aep?.aep_p50_mwh) {
+    pvEl.style.display = '';
+    pvRow.innerHTML = [
+      ['P10', el.aep.aep_p10_mwh, 'p10'],
+      ['P50', el.aep.aep_p50_mwh, 'p50'],
+      ['P75', el.aep.aep_p75_mwh, 'p75'],
+      ['P90', el.aep.aep_p90_mwh, 'p90'],
+    ].map(([l, v, cls]) => `<div class="p-val-item ${cls}">
+      <div class="p-val-label">${l}</div>
+      <div class="p-val-value">${v?.toLocaleString() ?? '—'} MWh</div>
+    </div>`).join('');
+  }
+
+  renderTEPowerCurveChart(el.turbine);
+  renderTEMonthlyChart(el.monthly);
+  renderTETimeseries(el.timeseries);
+  renderTESensitivityChart(el.sensitivity || []);
+}
+
+function renderTEPowerCurveChart(turbine) {
+  destroyChart('te-pcurve');
+  if (!turbine) return;
+  const ctx = document.getElementById('te-pcurve-chart')?.getContext('2d');
+  if (!ctx) return;
+  const nominal = turbine.rated_power_kw;
+  WP.charts['te-pcurve'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: turbine.curve_ws,
+      datasets: [
+        { label: turbine.name, data: turbine.curve_pw,
+          borderColor: acc(), backgroundColor: acc() + '20',
+          borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
+        ...(nominal ? [{ label: `Nominal ${nominal} kW`,
+          data: turbine.curve_ws.map(() => nominal),
+          borderColor: gold() + '66', borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false }] : []),
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { font: { size: 9 }, boxWidth: 10 } } },
+      scales: {
+        x: { grid: { color: gridColor() }, title: { display: true, text: 'Velocidad (m/s)', font: { size: 9 } }, ticks: { font: { size: 9 } } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: 'Potencia (kW)', font: { size: 9 } }, ticks: { font: { size: 9 } } },
+      },
+    },
+  });
+}
+
+function renderTEMonthlyChart(monthly) {
+  destroyChart('te-monthly');
+  if (!monthly) return;
+  const ctx = document.getElementById('te-monthly-chart')?.getContext('2d');
+  if (!ctx) return;
+  const yearColors = [acc(), acc3(), gold(), acc2()];
+  const yearMap = {}; let yi = 0;
+  const bgColors = (monthly.labels || []).map(m => {
+    const yr = String(m).split('-')[0];
+    if (!(yr in yearMap)) yearMap[yr] = yearColors[yi++ % yearColors.length];
+    return yearMap[yr] + 'cc';
+  });
+  WP.charts['te-monthly'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: monthly.labels,
+      datasets: [{ label: 'Energía neta (MWh)', data: monthly.energy_mwh,
+        backgroundColor: bgColors, borderWidth: 0, borderRadius: 3 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false }, ticks: { maxTicksLimit: 18, font: { size: 8 }, maxRotation: 45 } },
+        y: { grid: { color: gridColor() }, ticks: { font: { size: 9 } } },
+      },
+    },
+  });
+}
+
+function renderTETimeseries(ts) {
+  destroyChart('te-pts');
+  if (!ts) return;
+  const ctx = document.getElementById('te-pts-chart')?.getContext('2d');
+  if (!ctx) return;
+  WP.charts['te-pts'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: ts.labels,
+      datasets: [{ label: 'Potencia estimada (kW)', data: ts.power_kw,
+        borderColor: acc3(), backgroundColor: acc3() + '18',
+        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.3 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { font: { size: 9 }, boxWidth: 10 } } },
+      scales: {
+        x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 12, font: { size: 9 } } },
+        y: { grid: { color: gridColor() }, min: 0, ticks: { font: { size: 9 } } },
+      },
+    },
+  });
+}
+
+function renderTESensitivityChart(sensitivity) {
+  destroyChart('te-sens');
+  if (!sensitivity?.length) return;
+  const ctx = document.getElementById('te-sens-chart')?.getContext('2d');
+  if (!ctx) return;
+  WP.charts['te-sens'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: sensitivity.map(s => s.assumption),
+      datasets: [{
+        label: 'Δ AEP (%)',
+        data: sensitivity.map(s => s.delta_pct),
+        backgroundColor: sensitivity.map(s => s.delta_pct >= 0 ? acc() + '50' : acc2() + '50'),
+        borderColor: sensitivity.map(s => s.delta_pct >= 0 ? acc() : acc2()),
+        borderWidth: 1,
+      }],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: gridColor() }, title: { display: true, text: 'Δ AEP (%)' } },
+        y: { grid: { display: false }, ticks: { font: { size: 10 } } },
+      },
+    },
+  });
+}
+
+async function compareTurbinesTE() {
+  if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
+  setStatus('Comparando turbinas…');
+  try {
+    const r = await api('/api/energy/compare_turbines', 'POST', {
+      session_id: WP.sessionId,
+      ws_height_m: parseFloat(document.getElementById('ws-height')?.value || 50),
+    });
+    const tbody = document.getElementById('te-comp-tbody');
+    tbody.innerHTML = (r.comparison || []).map((t, i) => `
+      <tr ${i === 0 ? 'class="best-row"' : ''}>
+        <td class="model-name">${i === 0 ? '★ ' : ''}${t.name}</td>
+        <td>${t.rated_power_kw?.toLocaleString()}</td>
+        <td>${t.rotor_diameter_m}</td>
+        <td>${t.hub_height_m}</td>
+        <td style="color:${i === 0 ? 'var(--green)' : ''}">${t.capacity_factor_pct}%</td>
+        <td>${t.full_load_hours?.toLocaleString()}</td>
+        <td>${t.mean_power_kw?.toLocaleString()}</td>
+        <td><span class="badge badge--${i === 0 ? 'success' : 'info'}">#${t.rank}</span></td>
+      </tr>`).join('');
+    toast('Comparación completada', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
 }
 
 // ─── EXPORT CENTER ───────────────────────────────────────────────────────────
