@@ -55,6 +55,7 @@ from core.validate import (compute_all_metrics, build_comparison_table,
 from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           TurbineComparator, TechnoEconomicAnalyzer,
                           air_density, extrapolate_wind_hellmann,
+                          extrapolate_wind_log,
                           load_turbines_from_folder, list_turbine_info)
 from core.cost_model import CostModel, get_default_model_dict
 from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
@@ -177,6 +178,19 @@ def create_app():
 
     def _err(msg, code=400):
         return jsonify({'success': False, 'error': msg}), code
+
+    def _sess_ws_h(src: dict, sess: dict, key: str = 'ws_height_m', default: float = 50.0) -> float:
+        """Return measurement height: explicit body param > session reference > default.
+        Ensures ALL calculations use the session reference height when set."""
+        val = src.get(key)
+        if val is None and key != 'measurement_height_m':
+            val = src.get('measurement_height_m')
+        if val is not None:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                pass
+        return float(sess.get('ws_height_m', default))
 
     def _validate_ranges(*, discount_rate=None, n_years=None,
                          rated_power_kw=None, hub_height_m=None):
@@ -632,26 +646,53 @@ def create_app():
         try:
             df, meta = _load_dataframe_from_path_cached(fpath, source_hint=source)
             sess = get_session(sid)
-            sess['df']   = df
+            sess['df']   = df.copy()
             sess['meta'] = meta
 
-            chart_col = 'wind_speed' if 'wind_speed' in df.columns else df.columns[0]
+            # ── Height normalization ──────────────────────────────────────────
+            target_h  = body.get('target_height_m')
+            extr_meth = body.get('extrapolation_method', 'hellmann')
+            native_h  = float(meta.get('wind_height_m') or 50.0)
+            height_normalized = False
+
+            if target_h is not None:
+                target_h = float(target_h)
+                ws_col = 'wind_speed' if 'wind_speed' in sess['df'].columns else None
+                if ws_col and abs(target_h - native_h) > 0.5:
+                    ws_raw = sess['df'][ws_col].values.astype(float)
+                    if extr_meth == 'log':
+                        ws_norm = extrapolate_wind_log(ws_raw, native_h, target_h)
+                    else:
+                        ws_norm = extrapolate_wind_hellmann(ws_raw, native_h, target_h)
+                    sess['df'] = sess['df'].copy()
+                    sess['df'][ws_col] = ws_norm
+                    height_normalized = True
+                sess['ws_height_m']        = target_h
+                sess['extrapolation_method'] = extr_meth
+                meta['wind_height_m']       = target_h
+            else:
+                sess['ws_height_m'] = native_h
+
+            chart_col = 'wind_speed' if 'wind_speed' in sess['df'].columns else sess['df'].columns[0]
             chart_data = None
-            if isinstance(df.index, pd.DatetimeIndex) and chart_col in df.columns:
-                s = df[chart_col].dropna()
+            if isinstance(sess['df'].index, pd.DatetimeIndex) and chart_col in sess['df'].columns:
+                s = sess['df'][chart_col].dropna()
                 chart_data = series_to_chart(s.index, s.values, label=chart_col)
 
             site_info = get_site_info(safe_name)
             return jsonify({
-                'session_id':   sid,
-                'meta':         numpy_to_python(meta),
-                'columns':      list(df.columns),
-                'chart':        chart_data,
-                'n_rows':       len(df),
-                'filename':     safe_name,
-                'display_name': site_info['display_name'],
-                'state':        site_info['state'],
-                'municipality': site_info['municipality'],
+                'session_id':        sid,
+                'meta':              numpy_to_python(meta),
+                'columns':           list(sess['df'].columns),
+                'chart':             chart_data,
+                'n_rows':            len(sess['df']),
+                'filename':          safe_name,
+                'display_name':      site_info['display_name'],
+                'state':             site_info['state'],
+                'municipality':      site_info['municipality'],
+                'reference_height_m': sess['ws_height_m'],
+                'height_normalized': height_normalized,
+                'native_height_m':   native_h,
             })
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -1075,7 +1116,7 @@ def create_app():
             elec_losses  = float(sim_cfg.get('electrical_losses', 0.0))
             wake_losses  = float(sim_cfg.get('wake_losses', 0.0))
             curt_losses  = float(sim_cfg.get('curtailment_losses', 0.0))
-            ws_height_m  = float(sim_cfg.get('ws_height_m', 50.0))
+            ws_height_m  = _sess_ws_h(sim_cfg, sess)
             altitude_m   = sim_cfg.get('altitude_m')
             extr_method  = sim_cfg.get('extrapolation', 'hellmann')
             hellmann_alpha = sim_cfg.get('hellmann_alpha')
@@ -1181,7 +1222,7 @@ def create_app():
 
         turbine_keys = body.get('turbine_keys', None)
         ws_col = sess.get('target_col', 'wind_speed')
-        ws_height_m = float(body.get('ws_height_m', 50.0))
+        ws_height_m = _sess_ws_h(body, sess)
 
         try:
             # load all available turbines (built-in + folder) if no explicit list given
@@ -1256,12 +1297,12 @@ def create_app():
         sid          = _require_sid(body)
         ws_col       = body.get('ws_col', 'wind_speed')
         wd_col       = body.get('wd_col', 'wind_dir')
-        ws_h         = float(body.get('ws_height',   50.0))
         orog_factor  = float(body.get('orog_factor', 0.15))
         z_scale      = float(body.get('z_scale',     80.0))
         z_hub        = body.get('z_hub')
         z_hub        = float(z_hub) if z_hub is not None else None
         sess         = get_session(sid)
+        ws_h         = _sess_ws_h(body, sess, 'ws_height')
 
         if 'df' not in sess:
             return jsonify({'error': 'No data loaded.'}), 400
@@ -1299,7 +1340,7 @@ def create_app():
         try:
             df     = sess['df']
             ws_col = sess.get('target_col', 'wind_speed')
-            ws_h   = float(body.get('ws_height', 50.0))
+            ws_h   = _sess_ws_h(body, sess, 'ws_height')
             lat    = float(body.get('lat', 20.0))
 
             # --- Wind power ---
@@ -1449,7 +1490,7 @@ def create_app():
                 )
 
             ws_col      = sess.get('target_col', 'wind_speed')
-            ws_height_m = float(body.get('ws_height_m', 50.0))
+            ws_height_m = _sess_ws_h(body, sess)
             df          = sess['df']
             requested_n_turbines = int(body.get('n_turbines') or 1)
             annual_energy_override_mwh = body.get('annual_energy_mwh')
@@ -1663,7 +1704,7 @@ def create_app():
             df = sess['df']
             ws_col = sess.get('target_col', 'wind_speed')
             wd_col = body.get('wd_col', 'wind_dir')
-            ws_h    = float(body.get('ws_height_m', 50.0))
+            ws_h    = _sess_ws_h(body, sess)
             ws_hub, wd, temperature_c, pressure_pa, _, wind_info = _farm_wind_from_session(
                 df, ws_col, wd_col, ws_h, turbine.hub_height_m
             )
@@ -1961,8 +2002,9 @@ def create_app():
             if target_hub_h is not None:
                 turbine.hub_height_m = float(target_hub_h)
             v_mean_rec = float(body.get('v_mean', 9.0))
-            if body.get('measurement_height_m') is not None:
-                measurement_h = float(body.get('measurement_height_m'))
+            measurement_h_rec = _sess_ws_h(body, sess, 'measurement_height_m')
+            if measurement_h_rec != 50.0 or body.get('measurement_height_m') is not None:
+                measurement_h = measurement_h_rec
                 v_mean_rec = float(extrapolate_wind_hellmann(
                     np.asarray([v_mean_rec], dtype=float), measurement_h, turbine.hub_height_m
                 )[0])
@@ -2041,7 +2083,7 @@ def create_app():
             weibull_k  = float(body.get('weibull_k',  2.0))
             avail      = float(body.get('availability',      0.97))
             elec_loss  = float(body.get('electrical_losses', 0.03))
-            measurement_h = float(body.get('measurement_height_m', body.get('ws_height_m', 50.0)))
+            measurement_h = _sess_ws_h(body, sess, 'measurement_height_m')
             v_mean_hub = float(extrapolate_wind_hellmann(
                 np.asarray([v_mean], dtype=float), measurement_h, turbine.hub_height_m
             )[0])
@@ -2519,9 +2561,11 @@ def create_app():
     def kriging_list_sites():
         """Escanea la carpeta meteorologica y devuelve sitios con stats Weibull.
         OPTIMIZADO: cache mtime-aware + lectura en paralelo (ThreadPool).
+        Acepta target_height_m para normalizar todas las estaciones a esa altura.
         """
         folder = Config.DATA_FOLDER
         year = request.args.get('year', type=int)
+        target_h = request.args.get('target_height_m', type=float)
         if not os.path.isdir(folder):
             return jsonify({'error': f'DATA_FOLDER not found: {folder}'}), 404
 
@@ -2536,8 +2580,8 @@ def create_app():
                 continue
             candidate_paths.append(os.path.join(folder, fname))
 
-        # 2. Leer en paralelo con cache
-        stat_list = parallel_read_sites(candidate_paths, year=year)
+        # 2. Leer en paralelo con cache (hub_height_m = reference height si se proveyó)
+        stat_list = parallel_read_sites(candidate_paths, year=year, hub_height_m=target_h)
 
         sites   = []
         skipped = list(skipped_names)
@@ -2676,6 +2720,7 @@ def create_app():
                     physical=bool(body.get('physical', False)),
                     grid_bounds=grid_bounds,
                     cost_model=CostModel.from_dict(body.get('cost_model')),
+                    z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'

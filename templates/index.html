@@ -195,6 +195,51 @@
   </div>
 </div>
 
+<!-- ═══════════════════════ HEIGHT NORMALIZATION MODAL ═══════════════════════ -->
+<div id="height-norm-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center">
+  <div id="height-norm-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)"></div>
+  <div style="position:relative;background:var(--card-bg,#141C28);border:1px solid var(--border,#2A3346);border-radius:16px;padding:2rem;width:min(440px,94vw);box-shadow:0 24px 64px rgba(0,0,0,.55)">
+    <div style="font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.4rem">REFERENCIA VERTICAL</div>
+    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem">Altura de análisis del parque</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="hnm-station-desc">—</p>
+
+    <div style="background:var(--surface,#1B2230);border:1px solid var(--border,#2A3346);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.82rem;line-height:1.7">
+      <span style="color:var(--text-muted)">Altura nativa:</span>
+      <strong id="hnm-native-h" style="margin-left:.4rem">— m</strong>
+      <span style="color:var(--text-muted);margin-left:1rem">Fuente:</span>
+      <span id="hnm-source-lbl" style="margin-left:.4rem;color:var(--accent,#4DA3FF)">—</span>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1.2rem">
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Altura de referencia (m)</label>
+        <input id="hnm-target-h" type="number" min="10" max="300" step="5"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+      </div>
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Método de extrapolación</label>
+        <select id="hnm-method"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.82rem">
+          <option value="hellmann">Ley potencial (Hellmann)</option>
+          <option value="log">Perfil logarítmico</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="font-size:.75rem;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
+      Todos los datos de viento — Data Hub, Kriging, Parque y cálculos de energía — se normalizarán a esta altura antes de cualquier análisis.
+    </div>
+
+    <!-- Reference height badge preview -->
+    <div id="hnm-preview" style="display:none;font-size:.78rem;margin-bottom:1rem;color:var(--green,#4ade80)"></div>
+
+    <div style="display:flex;gap:.75rem">
+      <button id="hnm-confirm" class="btn-primary" style="flex:1">Confirmar y cargar</button>
+      <button id="hnm-cancel" class="btn-secondary" style="min-width:90px">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════ PIPELINE OVERLAY ═══════════════════════════ -->
 <div class="resumen-pipeline" id="resumen-pipeline" aria-hidden="true">
   <div class="resumen-pipeline__card">
@@ -291,6 +336,7 @@
       <div class="card-header">
         <span class="card-title">Vista Previa</span>
         <span class="badge badge--info" id="badge-rows">— filas</span>
+        <span class="badge badge--success" id="ref-height-badge" style="display:none;margin-left:.4rem"></span>
       </div>
       <div class="card-body">
         <div id="preview-chart-container" style="height:200px;">

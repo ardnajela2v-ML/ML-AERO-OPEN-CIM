@@ -22,7 +22,30 @@ const WP = {
     ml: { inputs: null, result: null },
     corrected: { inputs: null, result: null },
   },
+  referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
+  referenceMethod: 'hellmann', // método de extrapolación seleccionado
 };
+
+/** Altura de referencia activa para todos los cálculos.
+ *  Prioridad: referenceHeight → input #ws-height → 50 m. */
+function wsH() {
+  if (WP.referenceHeight != null) return WP.referenceHeight;
+  const el = document.getElementById('ws-height');
+  return el ? (parseFloat(el.value) || 50) : 50;
+}
+
+/** Actualiza todos los inputs de altura de la UI con la altura de referencia. */
+function applyReferenceHeightToUI(h) {
+  ['ws-height', 'adv-ws-height'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = h;
+  });
+  const badge = document.getElementById('ref-height-badge');
+  if (badge) {
+    badge.textContent = `↕ ${h} m ref`;
+    badge.style.display = '';
+  }
+}
 
 // ─── CHART.JS DEFAULTS ───────────────────────────────────────────────────────
 Chart.defaults.color = '#A6B3C8';
@@ -231,19 +254,22 @@ async function loadPresetFiles() {
   }
 }
 
-async function loadPresetFileByName(filename, source) {
+async function loadPresetFileByName(filename, source, targetHeight = null, extrMethod = null) {
   if (!filename) return;
   setStatus(`Cargando ${filename}…`);
   const badge = document.getElementById('preset-source-badge');
   badge.textContent = source?.toUpperCase() || 'AUTO';
   badge.style.display = '';
 
+  const body = { session_id: WP.sessionId, filename, source: 'auto' };
+  const th = targetHeight ?? WP.referenceHeight;
+  if (th != null) {
+    body.target_height_m      = th;
+    body.extrapolation_method = extrMethod ?? WP.referenceMethod ?? 'hellmann';
+  }
+
   try {
-    const r = await api('/api/data/load_preset', 'POST', {
-      session_id: WP.sessionId,
-      filename,
-      source: 'auto',
-    });
+    const r = await api('/api/data/load_preset', 'POST', body);
 
     document.getElementById('badge-rows').textContent = `${r.n_rows.toLocaleString()} filas`;
     WP.meta = r.meta;
@@ -285,10 +311,14 @@ async function loadPresetFileByName(filename, source) {
       sel.appendChild(opt);
     });
 
-    // set ws_height default
-    if (meta.wind_height_m) {
-      const h = document.getElementById('ws-height');
-      if (h) h.value = meta.wind_height_m;
+    // Update reference height from server response
+    const refH = r.reference_height_m ?? meta.wind_height_m;
+    if (refH) {
+      WP.referenceHeight = refH;
+      applyReferenceHeightToUI(refH);
+    }
+    if (r.height_normalized) {
+      toast(`Datos normalizados ${r.native_height_m} m → ${r.reference_height_m} m`, 'info');
     }
 
     if (r.chart) renderLineChart('preview-chart', r.chart, {});
@@ -1394,7 +1424,7 @@ async function runEnergy() {
     availability: parseFloat(document.getElementById('availability').value) / 100,
     electrical_losses: parseFloat(document.getElementById('elec-losses').value) / 100,
     wake_losses: parseFloat(document.getElementById('wake-losses').value) / 100,
-    ws_height_m: parseFloat(document.getElementById('ws-height').value),
+    ws_height_m: wsH(),
     altitude_m: parseFloat(document.getElementById('site-altitude').value) || null,
     extrapolation: document.getElementById('extrapolation').value,
   };
@@ -1577,7 +1607,7 @@ async function compareTurbines() {
   try {
     const r = await api('/api/energy/compare_turbines', 'POST', {
       session_id: WP.sessionId,
-      ws_height_m: parseFloat(document.getElementById('ws-height').value),
+      ws_height_m: wsH(),
     });
 
     const tbody = document.getElementById('turbine-comp-tbody');
@@ -1816,7 +1846,7 @@ async function runFarmSimulation() {
       session_id: WP.sessionId,
       layout: turbines,
       turbine: turbineCfg,
-      ws_height_m: parseFloat(document.getElementById('ws-height').value) || 50,
+      ws_height_m: wsH(),
       availability: parseFloat(document.getElementById('availability').value) / 100 || 1.0,
       electrical_losses: parseFloat(document.getElementById('elec-losses').value) / 100 || 0.0,
     });
@@ -2835,7 +2865,7 @@ async function calcTechnoEconomic() {
       session_id:    WP.sessionId,
       scenario:      scenarioKey,
       n_turbines:    inputs.nTurbines,
-      ws_height_m:   parseFloat(document.getElementById('ws-height')?.value || 50),
+      ws_height_m:   wsH(),
       annual_wind_mean_ms: windMean,
       annual_energy_mwh: Number.isFinite(Number(parkAep)) ? Number(parkAep) : null,
       turbine: { builtin_model: inputs.turbine },
@@ -3227,7 +3257,7 @@ async function compareTurbinesTE() {
   try {
     const r = await api('/api/energy/compare_turbines', 'POST', {
       session_id: WP.sessionId,
-      ws_height_m: parseFloat(document.getElementById('ws-height')?.value || 50),
+      ws_height_m: wsH(),
     });
     const tbody = document.getElementById('te-comp-tbody');
     tbody.innerHTML = (r.comparison || []).map((t, i) => `
@@ -3685,12 +3715,12 @@ async function runAdvanced() {
   btn.disabled = true; btn.textContent = 'Calculando…';
   setStatus('Calculando análisis avanzado de recurso…');
   try {
-    const wsH        = parseFloat(document.getElementById('adv-ws-height')?.value)   || 50;
+    const wsHAdv     = parseFloat(document.getElementById('adv-ws-height')?.value) || wsH();
     const zHub       = parseFloat(document.getElementById('adv-z-hub')?.value)       || null;
     const orogFactor = parseFloat(document.getElementById('adv-orog-factor')?.value ?? '0.15') || 0.15;
     const zScale     = parseFloat(document.getElementById('adv-z-scale')?.value)     || 80;
     const r = await api('/api/wind/advanced', 'POST', {
-      session_id: WP.sessionId, ws_height: wsH, z_hub: zHub,
+      session_id: WP.sessionId, ws_height: wsHAdv, z_hub: zHub,
       orog_factor: orogFactor, z_scale: zScale,
     });
     WP.advancedResult = r;
@@ -5167,7 +5197,8 @@ async function krig3LoadSites(force=false) {
   const map = krig3InitMap();
   try {
     const year = parseInt(document.getElementById('krig3-year').value) || 2018;
-    const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
+    const htParam = WP.referenceHeight ? `&target_height_m=${WP.referenceHeight}` : '';
+    const r = await api(`/api/kriging/sites?year=${year}${htParam}`, 'GET');
     KRIG.sites = r.sites || [];
     KRIG.selected = new Set(KRIG.sites.map(s => s.filename));  // por defecto todos
     KRIG.principal = null;
@@ -5369,15 +5400,16 @@ async function krig3Run() {
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
   const physical = !!document.getElementById('krig3-physical')?.checked;
   const body = {
-    year:          parseInt(document.getElementById('krig3-year').value),
-    demand_mwh:    parseFloat(document.getElementById('krig3-demand').value),
-    tasa:          parseFloat(document.getElementById('krig3-tasa').value) / 100,
-    price_usd_kwh: parseFloat(document.getElementById('krig3-price').value),
+    year:             parseInt(document.getElementById('krig3-year').value),
+    demand_mwh:       parseFloat(document.getElementById('krig3-demand').value),
+    tasa:             parseFloat(document.getElementById('krig3-tasa').value) / 100,
+    price_usd_kwh:    parseFloat(document.getElementById('krig3-price').value),
     price_mxn_per_usd: parseFloat(document.getElementById('krig3-fx').value),
-    n_grid:        parseInt(document.getElementById('krig3-n').value),
-    model:         document.getElementById('krig3-model').value,
-    filenames:     Array.from(KRIG.selected),
-    physical:      physical,
+    n_grid:           parseInt(document.getElementById('krig3-n').value),
+    model:            document.getElementById('krig3-model').value,
+    filenames:        Array.from(KRIG.selected),
+    physical:         physical,
+    target_height_m:  wsH(),
   };
   if (principal) {
     body.center_file = principal.filename;
@@ -6737,7 +6769,7 @@ async function parqueUpdateRecommendation() {
       turbine: turbineCfg, demand_mwh: demand,
       v_mean: vMean, weibull_k: wK,
       hub_height_m: hubHeight,
-      measurement_height_m: 50,
+      measurement_height_m: wsH(),
       availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
       electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     });
@@ -9382,7 +9414,8 @@ async function globePreloadSites() {
   // 2) Versión completa con Weibull/v_mean en background — enriquece los pines
   //    sin bloquear el render inicial.
   try {
-    const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
+    const htParamG = WP.referenceHeight ? `&target_height_m=${WP.referenceHeight}` : '';
+    const r = await api(`/api/kriging/sites?year=${year}${htParamG}`, 'GET');
     if (r.sites && r.sites.length) {
       const byName = new Map(r.sites.map(s => [s.filename, s]));
       GLOBE.sites = GLOBE.sites.map(s => byName.get(s.filename) || s);
@@ -9992,18 +10025,94 @@ function globeRenderStationList() {
   });
 }
 
+// ─── HEIGHT NORMALIZATION MODAL ───────────────────────────────────────────────
+
+function showHeightNormModal(filename, source) {
+  const site = GLOBE.visibleSites.find(s => s.filename === filename) ||
+               GLOBE.sites.find(s => s.filename === filename);
+
+  // Derive native height: from site metadata, then from filename pattern, then 50 m
+  let nativeH = site?.wind_height_m ?? site?.z_ref ?? null;
+  if (!nativeH) {
+    const m = filename.match(/_(\d{2,3})M_|_U(\d{2,3})M/i);
+    nativeH = m ? parseInt(m[1] || m[2]) : 50;
+  }
+  nativeH = Number(nativeH) || 50;
+
+  const modal = document.getElementById('height-norm-modal');
+  document.getElementById('hnm-station-desc').textContent =
+    (site?.display_name || site?.municipality || filename) + ' — ' + (site?.state || '');
+  document.getElementById('hnm-native-h').textContent = nativeH + ' m';
+  document.getElementById('hnm-source-lbl').textContent =
+    site?.source?.toUpperCase() || filename.includes('MERRA') ? 'MERRA-2' :
+    filename.includes('ERA5') ? 'ERA5' : 'AUTO';
+
+  const targetInput = document.getElementById('hnm-target-h');
+  targetInput.value = WP.referenceHeight ?? nativeH;
+  document.getElementById('hnm-method').value = WP.referenceMethod || 'hellmann';
+  document.getElementById('hnm-preview').style.display = 'none';
+
+  // Show modal
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden', 'false');
+  targetInput.focus();
+  targetInput.select();
+
+  // Preview text on input change
+  targetInput.oninput = () => {
+    const t = parseFloat(targetInput.value);
+    const prev = document.getElementById('hnm-preview');
+    if (t && t !== nativeH) {
+      prev.textContent = `Datos convertidos de ${nativeH} m → ${t} m antes del análisis`;
+      prev.style.display = '';
+    } else {
+      prev.style.display = 'none';
+    }
+  };
+
+  return new Promise((resolve) => {
+    document.getElementById('hnm-confirm').onclick = () => {
+      const h = parseFloat(targetInput.value) || nativeH;
+      const method = document.getElementById('hnm-method').value;
+      closeHeightNormModal();
+      resolve({ confirmed: true, targetHeight: h, method, nativeHeight: nativeH, filename, source });
+    };
+    document.getElementById('hnm-cancel').onclick = () => {
+      closeHeightNormModal();
+      resolve({ confirmed: false });
+    };
+    document.getElementById('height-norm-backdrop').onclick = () => {
+      closeHeightNormModal();
+      resolve({ confirmed: false });
+    };
+  });
+}
+
+function closeHeightNormModal() {
+  const modal = document.getElementById('height-norm-modal');
+  if (modal) { modal.style.display = 'none'; modal.setAttribute('aria-hidden', 'true'); }
+}
+
 async function handleGlobeStationPick(filename) {
   if (!filename) return;
   const site = GLOBE.visibleSites.find(s => s.filename === filename) ||
                GLOBE.sites.find(s => s.filename === filename);
   GLOBE.master = filename;
   globeRenderStationList();
-  // Cargar archivo y luego ejecutar pipeline (Resumen + Viento + Avanzado)
+
+  // Show height normalization modal before loading
+  const result = await showHeightNormModal(filename, site?.source || 'auto');
+  if (!result.confirmed) return;
+
+  WP.referenceHeight = result.targetHeight;
+  WP.referenceMethod = result.method;
+  applyReferenceHeightToUI(result.targetHeight);
+
   try {
-    await loadPresetFileByName(filename, site?.source || 'auto');
+    await loadPresetFileByName(filename, site?.source || 'auto',
+                               result.targetHeight, result.method);
   } finally {
     collapseGlobeStage();
-    // Pipeline automático tras colapsar — Resumen unificado
     if (typeof runResumenPipeline === 'function') {
       setTimeout(() => runResumenPipeline(), 350);
     }

@@ -1045,7 +1045,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                       z_meas: float = 100.0,
                       z0_ref: float = 0.03,
                       grid_bounds: Optional[dict] = None,
-                      cost_model: Optional[CostModel] = None):
+                      cost_model: Optional[CostModel] = None,
+                      z_tgt: Optional[float] = None):
     """
     Reproduce el comportamiento original del script MATLAB/Tk:
     para cada sitio elige el último aerogenerador del catálogo (como el
@@ -1123,7 +1124,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     sector_freqs, sector_speeds, sector_powers, sector_energies = [], [], [], []
 
     paths = [os.path.join(wind_folder, wf) for wf in wind_files]
-    stats_rows = parallel_read_sites(paths, year=year, max_workers=6)
+    stats_rows = parallel_read_sites(paths, year=year, hub_height_m=z_tgt, max_workers=6)
 
     last_tf = turb_files[-1] if turb_files else None
     last_x_c, last_y_c, last_name, last_rotor, last_p_nom_kw = None, None, None, None, None
