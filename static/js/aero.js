@@ -11167,9 +11167,16 @@ async function handleGlobeStationPick(filename) {
  */
 const QD = {
   active:    false,
-  station:   null,   // filename de la estación
+  station:   null,
   refHeight: null,
-  results:   {},     // { kriging, topsis, parque, techno }
+  results:   {},
+  // Draw-modal state
+  drawMap:      null,
+  drawPoints:   [],
+  drawMarkers:  [],
+  drawPolyLine: null,
+  drawPolygon:  null,
+  params:       {},
 };
 
 function qdSetStep(n, msg) {
@@ -11199,32 +11206,236 @@ function quickDesignCancel() {
   toast('Diseño rápido cancelado.', 'info');
 }
 
-/** Punto de entrada: llamado justo después de cargar la estación. */
+/** Punto de entrada: abre el popup de dibujo en lugar de navegar a Parque. */
 function quickDesignStart(modalResult) {
   QD.active    = true;
   QD.station   = modalResult.filename;
   QD.refHeight = modalResult.targetHeight;
   QD.results   = {};
+  QD.drawPoints = []; QD.drawMarkers = [];
+  QD.drawPolyLine = null; QD.drawPolygon = null;
+  qdDrawModalOpen(modalResult);
+}
 
-  // Show wizard panel
+// ─── QD DRAW MODAL ────────────────────────────────────────────────────────────
+async function qdDrawModalOpen(modalResult) {
+  // Populate turbine select from MCDA cache or API
+  const sel = document.getElementById('qd-turbine');
+  if (sel && sel.options.length === 0) {
+    let turbines = (typeof MCDA !== 'undefined' && MCDA.turbines?.length)
+      ? MCDA.turbines
+      : [];
+    if (!turbines.length) {
+      try {
+        const r = await api('/api/energy/turbines', 'GET');
+        turbines = (r.turbines || []).filter(t => t.source === 'file');
+        if (typeof MCDA !== 'undefined') MCDA.turbines = turbines;
+      } catch (_) {}
+    }
+    turbines.forEach(t => {
+      const mw  = t.rated_power_kw ? (t.rated_power_kw/1000).toFixed(1)+' MW' : '';
+      const rot = t.rotor_diameter_m ? 'Ø'+t.rotor_diameter_m+'m' : '';
+      sel.appendChild(new Option(`${t.name||t.filename} ${mw} ${rot}`.trim(), t.filename));
+    });
+    // Pre-select G80
+    const g80 = Array.from(sel.options).find(o =>
+      o.value.toLowerCase().includes('g80') ||
+      o.textContent.toLowerCase().includes('g80') ||
+      o.value.toLowerCase().includes('gamesa'));
+    if (g80) sel.value = g80.value;
+  }
+
+  const modal = document.getElementById('qd-draw-modal');
+  modal.style.display = 'flex';
+  qdClearPoly();
+
+  // Init map after Leaflet can measure container size
+  setTimeout(() => {
+    const site = ((typeof GLOBE !== 'undefined') &&
+      [...(GLOBE.visibleSites||[]), ...(GLOBE.sites||[])]
+        .find(s => s.filename === (modalResult?.filename || QD.station)));
+    const center = (site?.lat && site?.lon) ? [site.lat, site.lon] : [16.533, -94.957];
+    qdDrawMapInit(center);
+  }, 160);
+}
+
+function qdDrawModalClose() {
+  const modal = document.getElementById('qd-draw-modal');
+  if (modal) modal.style.display = 'none';
+  if (QD.drawMap) { try { QD.drawMap.remove(); } catch(_){} QD.drawMap = null; }
+  QD.drawMarkers = []; QD.drawPolyLine = null; QD.drawPolygon = null; QD.drawPoints = [];
+  QD.active = false;
+}
+
+function qdDrawMapInit(center) {
+  const el = document.getElementById('qd-draw-map');
+  if (!el || typeof L === 'undefined') return;
+  if (QD.drawMap) { QD.drawMap.invalidateSize(); return; }
+
+  QD.drawMap = L.map('qd-draw-map', { zoomControl: true, attributionControl: false })
+    .setView(center, 11);
+
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 });
+  const sat = L.tileLayer(
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19 });
+  osm.addTo(QD.drawMap);
+  L.control.layers({ 'Mapa': osm, 'Satélite': sat }, {}, { position: 'topright' }).addTo(QD.drawMap);
+
+  // Station marker
+  L.circleMarker(center, {
+    radius: 7, color: '#f59e0b', fillColor: '#f59e0b', fillOpacity: 0.9, weight: 2
+  }).bindTooltip('Estación meteorológica').addTo(QD.drawMap);
+
+  // Kriging overlay if available
+  if (typeof KRIG !== 'undefined' && KRIG.result) {
+    const grid = KRIG.result.wind || KRIG.result.speed || KRIG.result[Object.keys(KRIG.result)[0]];
+    if (grid?.img_b64 && grid?.bounds) {
+      const b = grid.bounds;
+      L.imageOverlay('data:image/png;base64,' + grid.img_b64,
+        [[b.lat_min, b.lon_min],[b.lat_max, b.lon_max]], { opacity: 0.6 }).addTo(QD.drawMap);
+    }
+  }
+
+  QD.drawMap.on('click', e => qdAddVertex(e.latlng.lat, e.latlng.lng));
+  QD.drawMap.on('dblclick', e => { e.originalEvent.preventDefault(); qdClosePolygon(); });
+  QD.drawMap.on('contextmenu', e => { e.originalEvent.preventDefault(); qdClosePolygon(); });
+  QD.drawMap.invalidateSize();
+}
+
+function qdAddVertex(lat, lon) {
+  QD.drawPoints.push([lat, lon]);
+  const m = L.circleMarker([lat, lon], {
+    radius: 5, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1, weight: 2
+  }).addTo(QD.drawMap);
+  QD.drawMarkers.push(m);
+  qdUpdatePolyVisual();
+  const n = QD.drawPoints.length;
+  const countEl = document.getElementById('qd-poly-count');
+  if (countEl) countEl.textContent = n < 3
+    ? `${n} punto${n!==1?'s':''} — agrega ${3-n} más para habilitar cálculo`
+    : `${n} vértices · clic derecho o doble clic para cerrar`;
+  if (n >= 3) {
+    const btn = document.getElementById('qd-calc-btn');
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; btn.style.pointerEvents = ''; }
+  }
+}
+
+function qdUpdatePolyVisual() {
+  if (QD.drawPolyLine) { QD.drawMap.removeLayer(QD.drawPolyLine); QD.drawPolyLine = null; }
+  if (QD.drawPolygon)  { QD.drawMap.removeLayer(QD.drawPolygon);  QD.drawPolygon  = null; }
+  const pts = QD.drawPoints;
+  if (pts.length < 2) return;
+  if (pts.length >= 3) {
+    QD.drawPolygon = L.polygon(pts, {
+      color: '#f59e0b', fillColor: 'rgba(245,158,11,.15)', weight: 2, dashArray: '6 4'
+    }).addTo(QD.drawMap);
+  } else {
+    QD.drawPolyLine = L.polyline(pts, { color: '#f59e0b', weight: 2, dashArray: '6 4' }).addTo(QD.drawMap);
+  }
+}
+
+function qdClosePolygon() {
+  if (QD.drawPoints.length < 3) return;
+  if (QD.drawPolyLine) { QD.drawMap.removeLayer(QD.drawPolyLine); QD.drawPolyLine = null; }
+  if (QD.drawPolygon)  { QD.drawMap.removeLayer(QD.drawPolygon);  QD.drawPolygon  = null; }
+  QD.drawPolygon = L.polygon(QD.drawPoints, {
+    color: '#22c55e', fillColor: 'rgba(34,197,94,.18)', weight: 2.5
+  }).addTo(QD.drawMap);
+  const n = QD.drawPoints.length;
+  const countEl = document.getElementById('qd-poly-count');
+  if (countEl) countEl.textContent = `✓ Polígono cerrado · ${n} vértices`;
+}
+
+function qdClearPoly() {
+  QD.drawPoints = [];
+  QD.drawMarkers.forEach(m => { try { QD.drawMap?.removeLayer(m); } catch(_){} });
+  QD.drawMarkers = [];
+  if (QD.drawPolyLine) { try { QD.drawMap?.removeLayer(QD.drawPolyLine); } catch(_){} QD.drawPolyLine = null; }
+  if (QD.drawPolygon)  { try { QD.drawMap?.removeLayer(QD.drawPolygon);  } catch(_){} QD.drawPolygon  = null; }
+  const countEl = document.getElementById('qd-poly-count');
+  if (countEl) countEl.textContent = 'Sin polígono — haz clic en el mapa para comenzar';
+  const btn = document.getElementById('qd-calc-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '.45'; btn.style.pointerEvents = 'none'; }
+}
+
+function qdCollectParams() {
+  const g = id => document.getElementById(id);
+  return {
+    turbineKey:  g('qd-turbine')?.value       || '',
+    nTurbines:   parseInt(g('qd-nturbines')?.value)    || 10,
+    minSepD:     parseFloat(g('qd-min-sep')?.value)    || 4,
+    layoutType:  g('qd-layout-type')?.value            || 'auto',
+    ventaTotal:  g('qd-venta-total')?.checked          ?? true,
+    price:       parseFloat(g('qd-price')?.value)      || 0.10,
+    rate:        parseFloat(g('qd-rate')?.value)       || 9.5,
+    years:       parseInt(g('qd-years')?.value)        || 25,
+    escalation:  parseFloat(g('qd-escalation')?.value) || 0,
+    debtRatio:   parseFloat(g('qd-debt-ratio')?.value) || 70,
+    debtRate:    parseFloat(g('qd-debt-rate')?.value)  || 7,
+    loanYears:   parseInt(g('qd-loan-years')?.value)   || 15,
+    equityRate:  parseFloat(g('qd-equity-rate')?.value)|| 3,
+    kWake:       0.09,   // Istmo TI alto
+  };
+}
+
+async function qdStartCalc() {
+  if (QD.drawPoints.length < 3) { toast('Dibuja al menos 3 puntos en el mapa.', 'warn'); return; }
+
+  QD.params  = qdCollectParams();
+  const poly = [...QD.drawPoints];
+
+  // Close draw modal (destroy map)
+  const modal = document.getElementById('qd-draw-modal');
+  if (modal) modal.style.display = 'none';
+  if (QD.drawMap) { try { QD.drawMap.remove(); } catch(_){} QD.drawMap = null; }
+
+  // Store polygon in KRIG so parqueOptimize() picks it up
+  if (typeof KRIG !== 'undefined') KRIG.parkPoints = poly;
+
+  // Show wizard
   const wiz = document.getElementById('qd-wizard');
   if (wiz) wiz.style.display = 'block';
-  qdSetStep(1, 'Dibuja el polígono del parque');
-  qdMsg('Ve a la sección Parque, dibuja el área en el mapa y haz clic en ⚡ Optimizar.');
+  qdSetStep(4, 'Preparando parque…');
+  qdMsg('Configurando parámetros…');
 
-  // Navigate to Parque section
+  // Pre-fill ALL Parque DOM inputs
+  const sv = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  sv('parque-turbine',     QD.params.turbineKey);
+  sv('parque-n-turbines',  QD.params.nTurbines);
+  sv('parque-min-sep-d',   QD.params.minSepD);
+  sv('parque-layout-type', QD.params.layoutType);
+  sv('parque-demand',      0);          // venta total
+  sv('parque-avail',       97);
+  sv('parque-elec',        3);
+  sv('parque-kwake',       QD.params.kWake);
+
+  // Pre-fill TE DOM inputs
+  sv('te-turbine',          QD.params.turbineKey);
+  sv('te-nturbines',        QD.params.nTurbines);
+  sv('te-price',            QD.params.price);
+  sv('te-rate',             QD.params.rate);
+  sv('te-years',            QD.params.years);
+  sv('te-price-escalation', QD.params.escalation);
+  sv('te-demand',           0);
+
+  // Pre-fill leverage params
+  WP.levParams = {
+    debt_ratio_pct:           QD.params.debtRatio,
+    interest_rate_pct:        QD.params.debtRate,
+    loan_years:               QD.params.loanYears,
+    equity_discount_rate_pct: QD.params.equityRate,
+  };
+
+  // Navigate to Parque and run
   const parqueBtn = document.querySelector('.nav-btn[data-module="parque"]');
   if (parqueBtn) parqueBtn.click();
 
-  // Show banner in Parque
-  setTimeout(() => {
-    const banner = document.getElementById('qd-parque-banner');
-    if (banner) banner.style.display = '';
-    toast('⚡ Diseño rápido: dibuja el polígono del parque y haz clic en ⚡ Optimizar', 'info', 6000);
-  }, 500);
-
-  // Patch parqueOptimize so we intercept when it finishes
   WP._qdPipelineReady = true;
+  setTimeout(async () => {
+    if (typeof parqueRenderPolygon === 'function') parqueRenderPolygon();
+    await parqueOptimize();
+  }, 700);
 }
 
 /**

@@ -1,0 +1,119 @@
+<!-- ══════════════════════ QUICK DESIGN DRAW MODAL ═════════════════════════ -->
+<div id="qd-draw-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:10000;align-items:center;justify-content:center">
+  <div style="position:absolute;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px)"></div>
+  <div style="position:relative;background:var(--bg-surface);border:1px solid var(--border);border-radius:16px;width:min(1140px,97vw);max-height:93vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)">
+
+    <!-- Header -->
+    <div style="padding:.75rem 1.2rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:.75rem;flex-shrink:0">
+      <div style="flex:1">
+        <div style="font-size:.62rem;letter-spacing:.12em;text-transform:uppercase;color:#22c55e;margin-bottom:.1rem">&#x26A1; Diseño Rápido — Paso 1</div>
+        <div style="font-size:.95rem;font-weight:700;color:var(--text-primary)">Configura parámetros y dibuja el polígono del parque</div>
+      </div>
+      <button onclick="qdDrawModalClose()" style="background:transparent;border:1px solid var(--border);border-radius:8px;color:var(--text-muted);padding:.35rem .75rem;cursor:pointer;font-size:.85rem">&#x2715; Cancelar</button>
+    </div>
+
+    <!-- Body -->
+    <div style="display:flex;flex:1;overflow:hidden;min-height:0">
+
+      <!-- LEFT: params panel -->
+      <div style="width:268px;flex-shrink:0;border-right:1px solid var(--border);overflow-y:auto;padding:.8rem .85rem">
+
+        <div style="font-size:.67rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.3rem">Aerogenerador</div>
+        <select id="qd-turbine" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.4rem .55rem;font-size:.78rem;margin-bottom:.7rem"></select>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.7rem">
+          <div>
+            <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">N° turbinas</div>
+            <input type="number" id="qd-nturbines" value="10" min="1" max="100" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+          </div>
+          <div>
+            <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Sep. mín. (×D)</div>
+            <input type="number" id="qd-min-sep" value="4" min="2" max="12" step="0.5" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+          </div>
+        </div>
+
+        <div style="margin-bottom:.7rem">
+          <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Tipo de layout</div>
+          <select id="qd-layout-type" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .55rem;font-size:.78rem">
+            <option value="auto">Auto (mejor score energético)</option>
+            <option value="tresbolillo">Tresbolillo</option>
+            <option value="alineado">Alineado</option>
+          </select>
+        </div>
+
+        <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.8rem;margin-bottom:.85rem;color:var(--text-primary)">
+          <input type="checkbox" id="qd-venta-total" checked style="accent-color:#22c55e">
+          Venta total (toda la energía a red)
+        </label>
+
+        <div style="border-top:1px solid var(--border);padding-top:.65rem;margin-bottom:.6rem">
+          <div style="font-size:.67rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.5rem">Financiero</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.5rem">
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Precio (USD/kWh)</div>
+              <input type="number" id="qd-price" value="0.10" step="0.01" min="0" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Tasa desc. (%)</div>
+              <input type="number" id="qd-rate" value="9.5" step="0.1" min="0" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.5rem">
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Horizonte (años)</div>
+              <input type="number" id="qd-years" value="25" min="5" max="30" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Escal. precio (%/a)</div>
+              <input type="number" id="qd-escalation" value="0" step="0.5" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+          </div>
+        </div>
+
+        <div style="border-top:1px solid var(--border);padding-top:.65rem;margin-bottom:.6rem">
+          <div style="font-size:.67rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.5rem">Financiamiento</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.5rem">
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Razón deuda (%)</div>
+              <input type="number" id="qd-debt-ratio" value="70" min="0" max="100" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Interés deuda (%)</div>
+              <input type="number" id="qd-debt-rate" value="7" step="0.1" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.45rem;margin-bottom:.75rem">
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Plazo crédito (años)</div>
+              <input type="number" id="qd-loan-years" value="15" min="1" max="30" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+            <div>
+              <div style="font-size:.67rem;color:var(--text-muted);margin-bottom:.2rem">Tasa equity (%)</div>
+              <input type="number" id="qd-equity-rate" value="3" step="0.5" style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;color:var(--text-primary);padding:.38rem .45rem;font-size:.82rem">
+            </div>
+          </div>
+        </div>
+
+        <div style="font-size:.7rem;color:var(--text-muted);background:var(--bg-elevated);border:1px solid var(--border);border-radius:7px;padding:.5rem .65rem;line-height:1.55">
+          &#x1F449; Haz clic en el mapa para colocar vértices del polígono.<br>
+          Clic derecho o doble clic para cerrarlo.<br>
+          Mínimo 3 puntos para activar ⚡ Calcular.
+        </div>
+      </div>
+
+      <!-- RIGHT: Leaflet map -->
+      <div id="qd-draw-map" style="flex:1;min-width:0;background:#0b1220"></div>
+    </div>
+
+    <!-- Footer -->
+    <div style="padding:.7rem 1.2rem;border-top:1px solid var(--border);display:flex;align-items:center;gap:.75rem;flex-shrink:0">
+      <span id="qd-poly-count" style="font-size:.78rem;color:var(--text-muted)">Sin polígono — haz clic en el mapa para comenzar</span>
+      <div style="flex:1"></div>
+      <button onclick="qdClearPoly()" style="background:transparent;border:1px solid var(--border);border-radius:7px;color:var(--text-muted);padding:.38rem .8rem;cursor:pointer;font-size:.8rem">&#x1F5D1; Limpiar</button>
+      <button id="qd-calc-btn" onclick="qdStartCalc()" disabled
+        style="background:linear-gradient(135deg,#059669,#0d9488);color:#fff;border:none;border-radius:8px;padding:.5rem 1.3rem;font-weight:700;cursor:pointer;font-size:.88rem;opacity:.45;transition:opacity .3s;pointer-events:none">
+        &#x26A1; Calcular todo &#x2192;
+      </button>
+    </div>
+  </div>
+</div>
