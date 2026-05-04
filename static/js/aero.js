@@ -18,10 +18,11 @@ const WP = {
   arenaCache: {},
   technoActiveScenario: 'real',
   technoScenarios: {
-    real: { inputs: null, result: null },
-    ml: { inputs: null, result: null },
-    corrected: { inputs: null, result: null },
+    real:      { inputs: null, result: null, leveraged: null },
+    ml:        { inputs: null, result: null, leveraged: null },
+    corrected: { inputs: null, result: null, leveraged: null },
   },
+  levParams: { debt_ratio_pct: 70, interest_rate_pct: 8, loan_years: 15, equity_discount_rate_pct: 12 },
   referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
   referenceMethod: 'hellmann', // método de extrapolación seleccionado
 };
@@ -2671,15 +2672,14 @@ function bindTechno() {
   if (cmpBtn) cmpBtn.addEventListener('click', renderTechnoCompare);
   const cmpTurb = document.getElementById('btn-te-compare-turbines');
   if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
-  const levBtn = document.getElementById('btn-calc-leveraged');
-  if (levBtn) levBtn.addEventListener('click', calcLeveragedAnalysis);
-  const levBase = document.getElementById('lev-base-scenario');
-  if (levBase) levBase.addEventListener('change', refreshLevBaseInfo);
+  const levBtn = document.getElementById('btn-lev-from-scenario');
+  if (levBtn) levBtn.addEventListener('click', () => showFinancingModal(WP.technoActiveScenario));
+  document.getElementById('fin-modal-cancel')?.addEventListener('click', closeFinancingModal);
+  document.getElementById('financing-modal-backdrop')?.addEventListener('click', closeFinancingModal);
 }
 
 function technoCurrentScenario() {
-  const key = WP.technoActiveScenario === 'financing' ? 'real' : WP.technoActiveScenario;
-  return WP.technoScenarios[key] || WP.technoScenarios.real;
+  return WP.technoScenarios[WP.technoActiveScenario] || WP.technoScenarios.real;
 }
 
 function technoCollectCostModel() {
@@ -2777,30 +2777,18 @@ function technoScenarioDefaults(key) {
 }
 
 function technoSwitchScenario(key) {
-  if (WP.technoActiveScenario !== 'financing') {
-    WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
-  }
+  WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
   WP.technoActiveScenario = key || 'real';
   document.querySelectorAll('[data-te-scenario]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.teScenario === WP.technoActiveScenario);
   });
-  const isFinancing = key === 'financing';
-  const mainPanel = document.getElementById('te-main-content');
-  const finPanel  = document.getElementById('te-financing-content');
-  if (mainPanel) mainPanel.style.display = isFinancing ? 'none' : '';
-  if (finPanel)  finPanel.style.display  = isFinancing ? ''     : 'none';
-  if (isFinancing) {
-    refreshLevBaseInfo();
-  } else {
-    const scenario = technoCurrentScenario();
-    technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
-    technoRefreshScenarioView();
-  }
+  const scenario = technoCurrentScenario();
+  technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
+  technoRefreshScenarioView();
 }
 
 function technoRefreshScenarioView() {
   const key = WP.technoActiveScenario;
-  if (key === 'financing') return;
   const badge = document.getElementById('te-scenario-badge');
   const status = document.getElementById('te-scenario-status');
   const meta = {
@@ -2815,7 +2803,9 @@ function technoRefreshScenarioView() {
 }
 
 function renderTechnoScenarioResult() {
-  const r = technoCurrentScenario().result;
+  const scenario = technoCurrentScenario();
+  const r = scenario.result;
+  const levBtn = document.getElementById('btn-lev-from-scenario');
   if (!r) {
     document.getElementById('te-viable-badge').style.display = 'none';
     document.getElementById('te-kpi-grid').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>';
@@ -2825,6 +2815,8 @@ function renderTechnoScenarioResult() {
     document.querySelector('#te-dispatch-table tbody').innerHTML = '';
     document.getElementById('badge-cp-max').textContent = '—';
     ['chart-capex', 'chart-cashflow', 'chart-cp', 'chart-te-dispatch'].forEach(destroyChart);
+    if (levBtn) levBtn.style.display = 'none';
+    renderTechnoLeveraged(null);
     renderTechnoEnergyLab(null);
     return;
   }
@@ -2835,6 +2827,8 @@ function renderTechnoScenarioResult() {
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
   renderCpChart(r.cp);
   renderCashflowTable(r.analysis?.cashflow_table);
+  if (levBtn) levBtn.style.display = '';
+  renderTechnoLeveraged(scenario.leveraged);
   renderTechnoEnergyLab(r.energy_lab);
 }
 
@@ -3296,47 +3290,77 @@ async function compareTurbinesTE() {
 
 // ─── LEVERAGED FINANCIAL ANALYSIS ────────────────────────────────────────────
 
-function refreshLevBaseInfo() {
-  const key  = document.getElementById('lev-base-scenario')?.value || 'real';
-  const res  = WP.technoScenarios[key]?.result;
-  const box  = document.getElementById('lev-base-info');
-  if (!box) return;
+const _LEV_NAMES = { real: 'Sin predicción', ml: 'Con predicción ML', corrected: 'Viento corregido' };
+
+function showFinancingModal(scenarioKey) {
+  const res = WP.technoScenarios[scenarioKey]?.result;
   if (!res?.analysis) {
-    box.style.display = '';
-    box.className = 'info-box amber';
-    box.textContent = `El escenario "${key === 'real' ? 'Sin predicción' : key === 'ml' ? 'Con predicción ML' : 'Viento corregido'}" no tiene resultados aún. Calcúlalo primero en sus tabs.`;
+    toast('Calcula primero el escenario activo antes de incluir financiamiento', 'warn');
     return;
   }
   const a   = res.analysis;
   const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
-  box.style.display = '';
-  box.className = 'info-box';
-  box.innerHTML = `<strong>Referencia del escenario:</strong> CAPEX $${fmt(a.capex?.total_capex_usd)} USD · Ingreso anual $${fmt(a.annual_revenue_usd)} USD · OPEX $${fmt(a.annual_opex_usd)} USD · ${a.project_years || '—'} años`;
+
+  // Pre-fill with last used params
+  const p = WP.levParams;
+  document.getElementById('fin-debt-ratio').value    = p.debt_ratio_pct;
+  document.getElementById('fin-interest-rate').value = p.interest_rate_pct;
+  document.getElementById('fin-loan-years').value    = p.loan_years;
+  document.getElementById('fin-equity-rate').value   = p.equity_discount_rate_pct;
+
+  document.getElementById('fin-modal-desc').textContent =
+    `Escenario activo: ${_LEV_NAMES[scenarioKey] || scenarioKey}`;
+  document.getElementById('fin-modal-base-info').innerHTML =
+    `CAPEX <strong>$${fmt(a.capex?.total_capex_usd)} USD</strong> · Ingreso anual <strong>$${fmt(a.annual_revenue_usd)} USD</strong> · OPEX <strong>$${fmt(a.annual_opex_usd)} USD</strong> · <strong>${a.project_years || '—'} años</strong>`;
+
+  const modal = document.getElementById('financing-modal');
+  modal.style.display = 'flex';
+  modal.setAttribute('aria-hidden', 'false');
+
+  // Confirm handler (one-shot)
+  const confirmBtn = document.getElementById('fin-modal-confirm');
+  const handler = async () => {
+    confirmBtn.removeEventListener('click', handler);
+    closeFinancingModal();
+    WP.levParams = {
+      debt_ratio_pct:           parseFloat(document.getElementById('fin-debt-ratio').value)    || 70,
+      interest_rate_pct:        parseFloat(document.getElementById('fin-interest-rate').value)  || 8,
+      loan_years:               parseInt(document.getElementById('fin-loan-years').value)       || 15,
+      equity_discount_rate_pct: parseFloat(document.getElementById('fin-equity-rate').value)    || 12,
+    };
+    await calcLeveragedForScenario(scenarioKey, WP.levParams);
+  };
+  confirmBtn.addEventListener('click', handler);
 }
 
-async function calcLeveragedAnalysis() {
-  const key = document.getElementById('lev-base-scenario')?.value || 'real';
-  const res = WP.technoScenarios[key]?.result;
-  if (!res?.analysis) {
-    toast(`Calcula primero el escenario "${key === 'real' ? 'Sin predicción' : key === 'ml' ? 'ML' : 'Corregido'}"`, 'warn');
-    return;
-  }
+function closeFinancingModal() {
+  const modal = document.getElementById('financing-modal');
+  if (!modal) return;
+  modal.style.display = 'none';
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function calcLeveragedForScenario(scenarioKey, params) {
+  const res = WP.technoScenarios[scenarioKey]?.result;
+  if (!res?.analysis) return;
   const a = res.analysis;
   const body = {
-    capex_usd:                  a.capex?.total_capex_usd,
-    annual_revenue_usd:         a.annual_revenue_usd,
-    annual_opex_usd:            a.annual_opex_usd,
-    project_years:              a.project_years || parseInt(document.getElementById('te-years')?.value) || 20,
-    debt_ratio_pct:             parseFloat(document.getElementById('lev-debt-ratio')?.value)   || 70,
-    interest_rate_pct:          parseFloat(document.getElementById('lev-interest-rate')?.value) || 8,
-    loan_years:                 parseInt(document.getElementById('lev-loan-years')?.value)      || 15,
-    equity_discount_rate_pct:   parseFloat(document.getElementById('lev-equity-rate')?.value)   || 12,
-    usd_to_mxn:                 parseFloat(document.getElementById('te-fx')?.value) || 1,
+    capex_usd:                a.capex?.total_capex_usd,
+    annual_revenue_usd:       a.annual_revenue_usd,
+    annual_opex_usd:          a.annual_opex_usd,
+    project_years:            a.project_years || parseInt(document.getElementById('te-years')?.value) || 20,
+    debt_ratio_pct:           params.debt_ratio_pct,
+    interest_rate_pct:        params.interest_rate_pct,
+    loan_years:               params.loan_years,
+    equity_discount_rate_pct: params.equity_discount_rate_pct,
+    usd_to_mxn:               parseFloat(document.getElementById('te-fx')?.value) || 1,
   };
   setStatus('Calculando análisis apalancado…');
   try {
     const r = await api('/api/energy/leveraged', 'POST', body);
-    renderLeveragedResults(r);
+    WP.technoScenarios[scenarioKey].leveraged = r;
+    // Only render if this scenario is still active
+    if (WP.technoActiveScenario === scenarioKey) renderTechnoLeveraged(r);
     toast('Análisis apalancado completado', 'success');
     setStatus('Análisis apalancado completado.');
   } catch (e) {
@@ -3345,7 +3369,17 @@ async function calcLeveragedAnalysis() {
   }
 }
 
-function renderLeveragedResults(r) {
+function renderTechnoLeveraged(r) {
+  const section = document.getElementById('te-lev-section');
+  if (!section) return;
+  if (!r) {
+    section.style.display = 'none';
+    destroyChart('chart-lev-structure');
+    destroyChart('chart-lev-cashflow');
+    return;
+  }
+  section.style.display = '';
+
   // Badge
   const badge = document.getElementById('lev-viable-badge');
   if (badge) {
@@ -3358,20 +3392,20 @@ function renderLeveragedResults(r) {
   const signed = n => n != null && Number.isFinite(n) ? (n >= 0 ? '+' : '−') + ' $' + fmt(n) : '—';
   const fx     = parseFloat(document.getElementById('te-fx')?.value) || 1;
   const showMxn = fx > 1.0001;
-  const mxnStr = usd => showMxn && usd != null && Number.isFinite(usd)
+  const mxnStr  = usd => showMxn && usd != null && Number.isFinite(usd)
     ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">≈ $${fmt(usd * fx)} MXN</div>` : '';
 
   const items = [
-    ['Capital equity',          '$' + fmt(r.equity_usd),                    'USD',    r.equity_usd],
-    ['Deuda (CAPEX financiado)','$' + fmt(r.debt_usd),                      'USD',    r.debt_usd],
-    ['Servicio deuda anual (PMT)','$' + fmt(r.annual_pmt_usd),              'USD/año',r.annual_pmt_usd],
-    ['NOI anual',               signed(r.noi_usd),                          'USD/año',r.noi_usd],
-    ['WACC',                    r.wacc_pct != null ? r.wacc_pct + '%' : '—','',       null],
-    ['VAN apalancado',          signed(r.leveraged_npv_usd),                'USD',    r.leveraged_npv_usd],
-    ['TIR apalancada',          r.leveraged_irr_pct != null ? r.leveraged_irr_pct + '%' : '—', '', null],
-    ['Retorno equity',          r.equity_payback_years ? r.equity_payback_years + ' años' : '> proyecto', '', null],
-    ['DSCR promedio',           r.dscr_mean != null ? r.dscr_mean.toFixed(2) + 'x' : '—', '', null],
-    ['DSCR mínimo',             r.dscr_min  != null ? r.dscr_min.toFixed(2)  + 'x' : '—', '', null],
+    ['Capital equity',             '$' + fmt(r.equity_usd),        'USD',     r.equity_usd],
+    ['Deuda financiada',           '$' + fmt(r.debt_usd),          'USD',     r.debt_usd],
+    ['Servicio deuda anual (PMT)', '$' + fmt(r.annual_pmt_usd),    'USD/año', r.annual_pmt_usd],
+    ['NOI anual',                  signed(r.noi_usd),              'USD/año', r.noi_usd],
+    ['WACC',                       r.wacc_pct != null ? r.wacc_pct + '%' : '—', '', null],
+    ['VAN apalancado',             signed(r.leveraged_npv_usd),    'USD',     r.leveraged_npv_usd],
+    ['TIR apalancada',             r.leveraged_irr_pct != null ? r.leveraged_irr_pct + '%' : '—', '', null],
+    ['Retorno equity',             r.equity_payback_years ? r.equity_payback_years + ' años' : '> proyecto', '', null],
+    ['DSCR promedio',              r.dscr_mean != null ? r.dscr_mean.toFixed(2) + 'x' : '—', '', null],
+    ['DSCR mínimo',                r.dscr_min  != null ? r.dscr_min.toFixed(2)  + 'x' : '—', '', null],
   ];
 
   const grid = document.getElementById('lev-kpi-grid');

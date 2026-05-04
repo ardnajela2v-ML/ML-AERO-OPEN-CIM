@@ -240,6 +240,50 @@
   </div>
 </div>
 
+<!-- ═══════════════════════════ FINANCING MODAL ════════════════════════════ -->
+<div id="financing-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:9998;align-items:center;justify-content:center">
+  <div id="financing-modal-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)"></div>
+  <div style="position:relative;background:var(--card-bg,#141C28);border:1px solid var(--border,#2A3346);border-radius:16px;padding:2rem;width:min(480px,96vw);box-shadow:0 24px 64px rgba(0,0,0,.55)">
+    <div style="font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.4rem">ANÁLISIS FINANCIERO</div>
+    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem">Parámetros de financiamiento</h2>
+    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="fin-modal-desc">Escenario activo: —</p>
+
+    <div id="fin-modal-base-info" style="background:var(--surface,#1B2230);border:1px solid var(--border,#2A3346);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.78rem;line-height:1.7;color:var(--text-muted)">—</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1.2rem">
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Razón de deuda (% del CAPEX)</label>
+        <input id="fin-debt-ratio" type="number" min="0" max="100" step="5" value="70"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+      </div>
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Tasa de interés deuda (% anual)</label>
+        <input id="fin-interest-rate" type="number" min="0" step="0.25" value="8"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+      </div>
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Plazo del crédito (años)</label>
+        <input id="fin-loan-years" type="number" min="1" max="30" step="1" value="15"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+      </div>
+      <div>
+        <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Tasa retorno equity (% anual)</label>
+        <input id="fin-equity-rate" type="number" min="0" step="0.5" value="12"
+          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+      </div>
+    </div>
+
+    <div style="font-size:.75rem;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
+      Los parámetros ingresados se usarán para el escenario activo. Puedes recalcular con diferentes valores en cualquier momento.
+    </div>
+
+    <div style="display:flex;gap:.75rem">
+      <button id="fin-modal-confirm" class="btn-primary" style="flex:1">Calcular análisis apalancado</button>
+      <button id="fin-modal-cancel" class="btn-secondary" style="min-width:90px">Cancelar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ═══════════════════════════ PIPELINE OVERLAY ═══════════════════════════ -->
 <div class="resumen-pipeline" id="resumen-pipeline" aria-hidden="true">
   <div class="resumen-pipeline__card">
@@ -2977,11 +3021,7 @@
     <button class="tab-btn active" data-te-scenario="real">Sin predicción</button>
     <button class="tab-btn" data-te-scenario="ml">Con predicción ML</button>
     <button class="tab-btn" data-te-scenario="corrected">Viento corregido + predicción</button>
-    <button class="tab-btn" data-te-scenario="financing">Financiamiento</button>
   </div>
-
-  <!-- Panel principal (escenarios de viento) -->
-  <div id="te-main-content">
 
   <div class="grid-2 mt-2">
     <div class="card">
@@ -3093,7 +3133,14 @@
 
     <!-- Financial KPIs -->
     <div class="card">
-      <div class="card-header"><span class="card-title">Resultados financieros</span><span class="badge badge--info" id="te-viable-badge" style="display:none">—</span></div>
+      <div class="card-header">
+        <span class="card-title">Resultados financieros</span>
+        <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
+        <button class="btn-secondary" id="btn-lev-from-scenario"
+          style="display:none;margin-left:auto;font-size:.75rem;padding:.25rem .8rem;white-space:nowrap">
+          + Financiamiento
+        </button>
+      </div>
       <div class="card-body" id="te-kpi-grid">
         <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
       </div>
@@ -3236,71 +3283,26 @@
     </div>
   </div>
 
-  </div><!-- /te-main-content -->
-
-  <!-- ══ Panel de Financiamiento ══ -->
-  <div id="te-financing-content" style="display:none">
+  <!-- ══ Análisis Apalancado (inline, por escenario) ══ -->
+  <div id="te-lev-section" style="display:none">
 
     <div class="grid-2 mt-2">
-      <!-- Parámetros de deuda -->
-      <div class="card">
-        <div class="card-header"><span class="card-title">Parámetros de financiamiento</span></div>
-        <div class="card-body">
-          <p class="text-muted" style="font-size:.78rem;margin-bottom:.75rem">
-            Selecciona el escenario base calculado para obtener CAPEX, ingresos y OPEX de referencia.
-          </p>
-          <div class="form-grid-2">
-            <div>
-              <label class="form-label">Escenario base</label>
-              <select class="form-select" id="lev-base-scenario">
-                <option value="real">Sin predicción (viento real)</option>
-                <option value="ml">Con predicción ML</option>
-                <option value="corrected">Viento corregido + predicción</option>
-              </select>
-            </div>
-            <div>
-              <label class="form-label">Razón de deuda (% del CAPEX)</label>
-              <input type="number" class="form-input" id="lev-debt-ratio" value="70" min="0" max="100" step="5">
-            </div>
-            <div>
-              <label class="form-label">Tasa de interés deuda (% anual)</label>
-              <input type="number" class="form-input" id="lev-interest-rate" value="8" min="0" step="0.25">
-            </div>
-            <div>
-              <label class="form-label">Plazo del crédito (años)</label>
-              <input type="number" class="form-input" id="lev-loan-years" value="15" min="1" max="30">
-            </div>
-            <div>
-              <label class="form-label">Tasa retorno equity (% anual)</label>
-              <input type="number" class="form-input" id="lev-equity-rate" value="12" min="0" step="0.5">
-            </div>
-          </div>
-          <div id="lev-base-info" class="info-box" style="margin-top:.75rem;display:none;font-size:.78rem"></div>
-          <button class="btn-primary mt-2" id="btn-calc-leveraged" style="width:100%">Calcular análisis apalancado</button>
-        </div>
-      </div>
-
-      <!-- KPIs apalancados -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">KPIs financieros apalancados</span>
           <span class="badge badge--info" id="lev-viable-badge" style="display:none">—</span>
         </div>
-        <div class="card-body" id="lev-kpi-grid">
-          <p class="text-muted" style="font-size:.8rem">Calcula un escenario base y ejecuta el análisis apalancado.</p>
-        </div>
+        <div class="card-body" id="lev-kpi-grid"></div>
       </div>
-    </div>
-
-    <div class="grid-2 mt-2">
       <div class="card">
         <div class="card-header"><span class="card-title">Estructura de capital</span></div>
         <div class="chart-box"><canvas id="chart-lev-structure"></canvas></div>
       </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Flujo de caja equity vs servicio de deuda</span></div>
-        <div class="chart-box"><canvas id="chart-lev-cashflow"></canvas></div>
-      </div>
+    </div>
+
+    <div class="card mt-2">
+      <div class="card-header"><span class="card-title">Flujo de caja equity vs servicio de deuda</span></div>
+      <div class="chart-box" style="height:260px"><canvas id="chart-lev-cashflow"></canvas></div>
     </div>
 
     <div class="card mt-2">
@@ -3324,7 +3326,7 @@
       </div>
     </div>
 
-  </div><!-- /te-financing-content -->
+  </div><!-- /te-lev-section -->
 
 </section>
 
