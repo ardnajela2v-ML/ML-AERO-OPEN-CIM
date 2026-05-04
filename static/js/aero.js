@@ -5154,9 +5154,14 @@ function krig3SetExtent(mode) {
 
 function krig3FocusSite() {
   krig3InitMap();
-  // Preferimos sitio principal del Kriging; si no, leemos metadata de Data Hub.
+  // Preferimos POI del Globe (selección del usuario); si no, sitio principal
+  // del Kriging; si no, metadata de Data Hub.
   let target = null;
-  if (KRIG.principal) {
+  if (typeof GLOBE !== 'undefined' && GLOBE?.poi
+      && Number.isFinite(GLOBE.poi.lat) && Number.isFinite(GLOBE.poi.lon)) {
+    target = { lat: GLOBE.poi.lat, lon: GLOBE.poi.lon };
+  }
+  if (!target && KRIG.principal) {
     const s = KRIG.sites.find(x => x.filename === KRIG.principal);
     if (s) target = { lat: s.lat, lon: s.lon };
   }
@@ -5167,7 +5172,22 @@ function krig3FocusSite() {
     toast('Carga un sitio en Data Hub o marca un parque principal.', 'warning');
     return;
   }
-  KRIG.map.setView([target.lat, target.lon], 9);
+  // Encuadre a ~15 km del punto (cuadro ±15 km de medio-lado).
+  krig3FlyToHalfExtentKm(target.lat, target.lon, 15, 0.5);
+}
+
+/** Vuela el mapa Kriging a un cuadro de ±halfKm alrededor de (lat, lon). */
+function krig3FlyToHalfExtentKm(lat, lon, halfKm, durationS = 0.7) {
+  if (!KRIG.map) return;
+  const dLat = halfKm / 111.32;
+  const dLon = halfKm / (111.32 * Math.max(0.05, Math.cos(lat * Math.PI / 180)));
+  const sw = [lat - dLat, lon - dLon];
+  const ne = [lat + dLat, lon + dLon];
+  try {
+    KRIG.map.flyToBounds([sw, ne], { duration: durationS, padding: [40, 40] });
+  } catch (e) {
+    KRIG.map.setView([lat, lon], 11);
+  }
 }
 
 // ─── Selección de área de estudio (rectángulo fijo) ───────────────────────────
@@ -11607,37 +11627,50 @@ function bindResumenUnified() {
   document.getElementById('arena-data-tab')?.remove();
   document.querySelector('#mod-models .tab-btn[data-tab="arena-data"]')?.remove();
 
-  // Al entrar a Kriging Clásico: encuadre 100 km al sitio del Globe +
-  // estación maestra fija + parámetros desde Model Arena.
+  // Al entrar a Kriging Clásico: encuadre ~35 km al sitio del Globe +
+  // estación maestra fija + parámetros desde Model Arena. Solo se aplica la
+  // primera vez por POI; entradas posteriores conservan el estado del usuario.
   document.querySelector('.nav-btn[data-module="kriging"]')?.addEventListener('click', () => {
     setTimeout(() => krig3AutoFitFromGlobe(), 80);
   });
 }
 
-// Encuadra el mapa Kriging a 100 km del POI del Globe, fija la estación
-// maestra como principal y aplica radio = 100 km. El usuario puede quitar
-// el emplazamiento o cambiar el radio igual que antes.
+// Encuadra el mapa Kriging a ~35 km del POI del Globe, fija la estación
+// maestra como principal y aplica el radio por defecto. SOLO corre el setup
+// completo la primera vez por cada POI del Globe (cuando el usuario cambia el
+// punto en Globe). En entradas posteriores al módulo, conserva el estado
+// (polígono del parque, selección, vista del mapa, parámetros editados, etc.)
+// hasta que el usuario reinicie el diseño manualmente.
 async function krig3AutoFitFromGlobe() {
   if (typeof krig3InitMap !== 'function') return;
   const map = krig3InitMap();
   if (!map) return;
 
-  // Pull parámetros económicos del cache de Model Arena
-  krig3PullParamsFromArena();
+  // Sin POI del Globe: nada que aplicar; conservar estado existente.
+  if (!GLOBE || !GLOBE.poi) {
+    if (map) setTimeout(() => map.invalidateSize(), 60);
+    return;
+  }
 
-  // Sin POI del Globe: dejamos comportamiento default
-  if (!GLOBE || !GLOBE.poi) return;
+  // Identificador del POI del Globe actualmente aplicado al Kriging.
+  const poiKey = `${GLOBE.poi.lat.toFixed(5)},${GLOBE.poi.lon.toFixed(5)}|${GLOBE.master || ''}`;
+  if (KRIG._appliedGlobePoi === poiKey) {
+    // Mismo POI ya aplicado: solo refrescamos el tamaño del mapa, sin tocar
+    // estado ni encuadre. El usuario mantiene su vista/edición.
+    setTimeout(() => map.invalidateSize(), 60);
+    return;
+  }
+
+  // Pull parámetros económicos del cache de Model Arena (solo en primera aplicación
+  // de este POI; preserva ediciones manuales posteriores del usuario).
+  krig3PullParamsFromArena();
 
   // Asegura que los sitios estén cargados
   if (typeof KRIG !== 'undefined' && KRIG && (!KRIG.sites?.length) && typeof krig3LoadSites === 'function') {
     try { await krig3LoadSites(); } catch (e) {}
   }
 
-  // Setear radio a 100 km
-  const radInp = document.getElementById('krig3-poi-radius');
-  if (radInp) radInp.value = 100;
-
-  // Marcar POI usando la lógica existente de Kriging
+  // Marcar POI usando la lógica existente de Kriging (solo primera vez).
   if (typeof krig3PlacePoi === 'function') {
     krig3PlacePoi({ lat: GLOBE.poi.lat, lng: GLOBE.poi.lon });
   } else if (typeof KRIG !== 'undefined') {
@@ -11653,17 +11686,10 @@ async function krig3AutoFitFromGlobe() {
     }
   }
 
-  // Encuadre rectángulo ~100 km
-  const km = 100;
-  const dLat = km / 111.32;
-  const dLon = km / (111.32 * Math.max(0.05, Math.cos(GLOBE.poi.lat * Math.PI / 180)));
-  const sw = [GLOBE.poi.lat - dLat, GLOBE.poi.lon - dLon];
-  const ne = [GLOBE.poi.lat + dLat, GLOBE.poi.lon + dLon];
-  try {
-    map.flyToBounds([sw, ne], { duration: 0.7, padding: [40, 40] });
-  } catch (e) {
-    map.setView([GLOBE.poi.lat, GLOBE.poi.lon], 9);
-  }
+  // Encuadre inicial a ~35 km del punto (medio-lado del cuadro).
+  krig3FlyToHalfExtentKm(GLOBE.poi.lat, GLOBE.poi.lon, 35, 0.7);
+
+  KRIG._appliedGlobePoi = poiKey;
 }
 
 // Llena los inputs de parámetros del Kriging Clásico desde Model Arena cache
