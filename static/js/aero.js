@@ -7840,6 +7840,7 @@ async function parqueOptimize() {
   progWrap.style.display = ''; progFill.style.width = '20%';
   progText.textContent   = 'Optimizando layout (GSP)…';
   statusEl.textContent   = 'Optimizando…';
+  if (QD.active) { qdSetStep(4, 'Optimizando parque…'); qdMsg('Layout estructurado + estelas Jensen…'); }
 
   try {
     progFill.style.width = '50%';
@@ -7909,6 +7910,12 @@ async function parqueOptimize() {
     progFill.style.width = '100%';
     setTimeout(() => { progWrap.style.display = 'none'; }, 800);
     toast(`Parque optimizado: ${r.n_placed} turbinas`, 'success');
+
+    // Quick Design pipeline hook: continue to TE + report
+    if (WP._qdPipelineReady && QD.active) {
+      qdSetStep(4, 'Parque optimizado ✓');
+      setTimeout(() => quickDesignContinueAfterParque(r), 800);
+    }
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
     statusEl.textContent = 'Error en optimización';
@@ -11099,8 +11106,17 @@ function showHeightNormModal(filename, source) {
       const h = parseFloat(targetInput.value) || nativeH;
       const method = document.getElementById('hnm-method').value;
       closeHeightNormModal();
-      resolve({ confirmed: true, targetHeight: h, method, nativeHeight: nativeH, filename, source });
+      resolve({ confirmed: true, quickDesign: false, targetHeight: h, method, nativeHeight: nativeH, filename, source });
     };
+    const qdBtn = document.getElementById('hnm-quick');
+    if (qdBtn) {
+      qdBtn.onclick = () => {
+        const h = parseFloat(targetInput.value) || nativeH;
+        const method = document.getElementById('hnm-method').value;
+        closeHeightNormModal();
+        resolve({ confirmed: true, quickDesign: true, targetHeight: h, method, nativeHeight: nativeH, filename, source });
+      };
+    }
     document.getElementById('hnm-cancel').onclick = () => {
       closeHeightNormModal();
       resolve({ confirmed: false });
@@ -11124,7 +11140,6 @@ async function handleGlobeStationPick(filename) {
   GLOBE.master = filename;
   globeRenderStationList();
 
-  // Show height normalization modal before loading
   const result = await showHeightNormModal(filename, site?.source || 'auto');
   if (!result.confirmed) return;
 
@@ -11137,9 +11152,323 @@ async function handleGlobeStationPick(filename) {
                                result.targetHeight, result.method);
   } finally {
     collapseGlobeStage();
-    if (typeof runResumenPipeline === 'function') {
+    if (result.quickDesign) {
+      setTimeout(() => quickDesignStart(result), 400);
+    } else if (typeof runResumenPipeline === 'function') {
       setTimeout(() => runResumenPipeline(), 350);
     }
+  }
+}
+
+// ═══════════════════════ DISEÑO RÁPIDO (QUICK DESIGN) ════════════════════════
+/**
+ * Estado global del pipeline rápido.
+ * Persiste resultados para que cada módulo los muestre pre-cargados.
+ */
+const QD = {
+  active:    false,
+  station:   null,   // filename de la estación
+  refHeight: null,
+  results:   {},     // { kriging, topsis, parque, techno }
+};
+
+function qdSetStep(n, msg) {
+  const total = 6;
+  document.querySelectorAll('.qd-dot').forEach((d, i) => {
+    d.classList.toggle('done',   i + 1 < n);
+    d.classList.toggle('active', i + 1 === n);
+  });
+  const pct = Math.round(((n - 1) / total) * 100);
+  const fill = document.getElementById('qd-progress-fill');
+  if (fill) fill.style.width = pct + '%';
+  const lbl = document.getElementById('qd-step-label');
+  if (lbl) lbl.textContent = msg || '';
+  const msgEl = document.getElementById('qd-msg');
+  if (msgEl) msgEl.textContent = '';
+}
+
+function qdMsg(txt) {
+  const el = document.getElementById('qd-msg');
+  if (el) el.textContent = txt;
+}
+
+function quickDesignCancel() {
+  QD.active = false;
+  document.getElementById('qd-wizard').style.display = 'none';
+  document.getElementById('qd-parque-banner').style.display = 'none';
+  toast('Diseño rápido cancelado.', 'info');
+}
+
+/** Punto de entrada: llamado justo después de cargar la estación. */
+function quickDesignStart(modalResult) {
+  QD.active    = true;
+  QD.station   = modalResult.filename;
+  QD.refHeight = modalResult.targetHeight;
+  QD.results   = {};
+
+  // Show wizard panel
+  const wiz = document.getElementById('qd-wizard');
+  if (wiz) wiz.style.display = 'block';
+  qdSetStep(1, 'Dibuja el polígono del parque');
+  qdMsg('Ve a la sección Parque, dibuja el área en el mapa y haz clic en ⚡ Optimizar.');
+
+  // Navigate to Parque section
+  const parqueBtn = document.querySelector('.nav-btn[data-module="parque"]');
+  if (parqueBtn) parqueBtn.click();
+
+  // Show banner in Parque
+  setTimeout(() => {
+    const banner = document.getElementById('qd-parque-banner');
+    if (banner) banner.style.display = '';
+    toast('⚡ Diseño rápido: dibuja el polígono del parque y haz clic en ⚡ Optimizar', 'info', 6000);
+  }, 500);
+
+  // Patch parqueOptimize so we intercept when it finishes
+  WP._qdPipelineReady = true;
+}
+
+/**
+ * Hook called at the end of parqueOptimize() success path in quick-design mode.
+ * Continues the pipeline: TE → report.
+ */
+async function quickDesignContinueAfterParque(optResult) {
+  if (!QD.active) return;
+  QD.results.parque = optResult;
+
+  // Hide parque banner
+  const banner = document.getElementById('qd-parque-banner');
+  if (banner) banner.style.display = 'none';
+
+  // Step 5: Tecno-Económico
+  qdSetStep(5, 'Tecno-Económico…');
+  qdMsg('Calculando VAN, LCOE, TIR, payback…');
+  try {
+    await calcTechnoEconomic();
+    QD.results.techno = WP.technoScenarios[WP.technoActiveScenario]?.result || null;
+  } catch (e) {
+    qdMsg('Error en TE: ' + e.message);
+  }
+
+  // Step 6: Report
+  qdSetStep(6, 'Generando informe…');
+  qdMsg('Compilando resultados…');
+  await new Promise(r => setTimeout(r, 600));
+
+  // Mark all done
+  document.querySelectorAll('.qd-dot').forEach(d => {
+    d.classList.remove('active'); d.classList.add('done');
+  });
+  document.getElementById('qd-progress-fill').style.width = '100%';
+  document.getElementById('qd-step-label').textContent = '✓ Informe listo';
+  qdMsg('Abriendo en nueva pestaña…');
+
+  // Navigate to Export and generate report
+  const expBtn = document.querySelector('.nav-btn[data-module="export"]');
+  if (expBtn) setTimeout(() => expBtn.click(), 300);
+
+  setTimeout(() => quickDesignGenerateReport(), 800);
+
+  // Auto-hide wizard after 4s
+  setTimeout(() => {
+    if (document.getElementById('qd-wizard'))
+      document.getElementById('qd-wizard').style.display = 'none';
+    QD.active = false;
+    WP._qdPipelineReady = false;
+  }, 4000);
+}
+
+/** Helper: wait until predicate() is true, polling every 500 ms, with timeout. */
+function qdWaitFor(predicate, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const check = () => {
+      if (predicate()) { resolve(); return; }
+      if (Date.now() - t0 > timeoutMs) { reject(new Error('Timeout esperando resultado')); return; }
+      setTimeout(check, 500);
+    };
+    check();
+  });
+}
+
+/** Generate and open a comprehensive HTML feasibility report in a new window. */
+function quickDesignGenerateReport() {
+  const sim   = QD.results.parque?.simulation || PARQUE.result || {};
+  const opt   = QD.results.parque  || PARQUE.optResult || {};
+  const te    = QD.results.techno  || WP.technoResult  || {};
+  const stats = WP.windStats        || {};
+  const turb  = opt.turbine         || te.turbine       || {};
+
+  const now       = new Date();
+  const dateStr   = now.toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' });
+  const stationId = QD.station?.replace('.csv','') || '—';
+  const refH      = QD.refHeight || wsH();
+  const turbName  = turb.name || '—';
+  const turbMW    = turb.rated_power_kw ? (turb.rated_power_kw/1000).toFixed(2) : '—';
+  const turbD     = turb.rotor_diameter_m ? turb.rotor_diameter_m + ' m' : '—';
+  const turbHub   = turb.hub_height_m ? turb.hub_height_m + ' m' : '—';
+
+  const nTurb     = sim.n_turbines || opt.n_placed || '—';
+  const instMW    = sim.installed_mw || opt.installed_mw || '—';
+  const aepGWh    = sim.aep_mwh ? (Number(sim.aep_mwh)/1000).toFixed(3) : '—';
+  const cf        = sim.cf_pct ? Number(sim.cf_pct).toFixed(2) + '%' : '—';
+  const wakeLoss  = sim.wake_loss_pct ? Number(sim.wake_loss_pct).toFixed(2) + '%' : '—';
+  const flh       = sim.flh ? Math.round(sim.flh).toLocaleString() : '—';
+  const domDir    = sim.dominant_dir_deg ?? opt.layout_config?.dominant_dir_deg;
+  const layoutTyp = opt.layout_config?.layout_type || '—';
+  const sPara     = opt.layout_config?.s_para_d;
+  const sPerp     = opt.layout_config?.s_perp_d;
+
+  const an        = te.analysis || {};
+  const capex     = an.capex_total_usd   ? '$' + Math.round(an.capex_total_usd).toLocaleString() : '—';
+  const lcoe      = an.lcoe_usd_kwh      ? an.lcoe_usd_kwh.toFixed(4) : '—';
+  const npv       = an.npv_usd           ? '$' + Math.round(an.npv_usd).toLocaleString()          : '—';
+  const payback   = an.payback_years     ? Number(an.payback_years).toFixed(1) + ' años'          : '—';
+  const roi       = an.roi               ? (Number(an.roi)*100).toFixed(1) + '%'                  : '—';
+
+  const vMean     = stats.wind_stats?.mean_speed_ms ? Number(stats.wind_stats.mean_speed_ms).toFixed(2) : '—';
+  const wK        = stats.wind_stats?.weibull_k     ? Number(stats.wind_stats.weibull_k).toFixed(3)     : '—';
+  const wC        = stats.wind_stats?.weibull_c     ? Number(stats.wind_stats.weibull_c).toFixed(3)     : '—';
+
+  // CO₂ avoided (Mexico SFE grid factor ≈ 0.454 tCO₂/MWh)
+  const co2Factor = 0.454;
+  const co2Avoided = sim.aep_mwh ? (Number(sim.aep_mwh) * co2Factor / 1000).toFixed(1) : '—';
+  const treesEq    = sim.aep_mwh ? Math.round(Number(sim.aep_mwh) * co2Factor / 0.022).toLocaleString() : '—';
+
+  const row = (label, value, unit='') => `
+    <tr><td style="color:#6b7280;padding:.4rem .6rem;border-bottom:1px solid #1f2937">${label}</td>
+        <td style="font-weight:600;padding:.4rem .6rem;border-bottom:1px solid #1f2937;text-align:right">${value}<span style="font-size:.8em;font-weight:400;color:#6b7280;margin-left:.3rem">${unit}</span></td></tr>`;
+
+  const section = (title, content) => `
+    <div style="margin-bottom:2rem;break-inside:avoid">
+      <h3 style="font-size:1rem;font-weight:700;color:#0ea5e9;border-bottom:2px solid #0ea5e9;padding-bottom:.35rem;margin:0 0 .75rem">${title}</h3>
+      ${content}
+    </div>`;
+
+  const table = (rows) => `<table style="width:100%;border-collapse:collapse;font-size:.88rem">${rows}</table>`;
+
+  const html = `<!DOCTYPE html><html lang="es"><head>
+<meta charset="UTF-8">
+<title>Informe de Factibilidad Eólica — AERO by OPEN CIM</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0b1220; color: #e2e8f0; }
+  @media print { body { background: #fff; color: #000; } .no-print { display:none } }
+  .page { max-width: 900px; margin: 0 auto; padding: 2.5rem 2rem; }
+  .cover { text-align: center; padding: 4rem 2rem 3rem; background: linear-gradient(135deg,#0f172a,#1e3a5f); border-radius: 16px; margin-bottom: 2.5rem; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: .75rem; margin-bottom: 1.5rem; }
+  .kpi { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: .75rem 1rem; }
+  .kpi-val { font-size: 1.5rem; font-weight: 700; color: #22c55e; }
+  .kpi-lbl { font-size: .73rem; color: #6b7280; margin-top: .2rem; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  h1 { font-size: 2rem; font-weight: 800; color: #f0f9ff; }
+  h2 { font-size: 1rem; color: #94a3b8; font-weight: 400; margin-top:.5rem }
+  .badge { display: inline-block; background: #14532d; color: #86efac; font-size: .75rem; border-radius: 20px; padding: .2rem .7rem; margin-top: .5rem; }
+  @media print {
+    .cover { background: #fff; color: #000; }
+    .kpi { background: #f9fafb; border: 1px solid #e5e7eb; }
+    .kpi-val { color: #059669; }
+    body { color: #111827; }
+  }
+</style></head><body>
+<div class="page">
+
+  <!-- COVER -->
+  <div class="cover">
+    <div style="font-size:.7rem;letter-spacing:.15em;text-transform:uppercase;color:#38bdf8;margin-bottom:.5rem">AERO by OPEN CIM — Informe de factibilidad eólica</div>
+    <h1>Parque Eólico<br><span style="color:#38bdf8">${stationId}</span></h1>
+    <h2>Estación meteorológica: ${stationId} &nbsp;·&nbsp; Altura de referencia: ${refH} m</h2>
+    <div class="badge">Generado: ${dateStr}</div>
+  </div>
+
+  <!-- EXECUTIVE KPIs -->
+  <div class="kpi-grid">
+    <div class="kpi"><div class="kpi-val">${aepGWh}</div><div class="kpi-lbl">AEP GWh/año</div></div>
+    <div class="kpi"><div class="kpi-val">${instMW}</div><div class="kpi-lbl">MW instalados</div></div>
+    <div class="kpi"><div class="kpi-val">${cf}</div><div class="kpi-lbl">Factor de capacidad</div></div>
+    <div class="kpi"><div class="kpi-val">${npv}</div><div class="kpi-lbl">VAN (USD)</div></div>
+    <div class="kpi"><div class="kpi-val">${lcoe}</div><div class="kpi-lbl">LCOE (USD/kWh)</div></div>
+    <div class="kpi"><div class="kpi-val">${payback}</div><div class="kpi-lbl">Payback</div></div>
+  </div>
+
+  <div class="two-col">
+    <div>
+      ${section('1. Recurso eólico', table(
+        row('Velocidad media hub', vMean, 'm/s') +
+        row('Weibull k', wK) +
+        row('Weibull c', wC, 'm/s') +
+        row('Altura de referencia', refH, 'm') +
+        row('Dirección dominante (energía)', domDir != null ? Math.round(domDir)+'°' : '—') +
+        row('Fuente de datos', stationId)
+      ))}
+
+      ${section('2. Turbina seleccionada (TOPSIS #1)', table(
+        row('Modelo', turbName) +
+        row('Potencia nominal', turbMW, 'MW') +
+        row('Diámetro de rotor', turbD) +
+        row('Altura de buje', turbHub) +
+        row('Corte de entrada', turb.cut_in != null ? turb.cut_in : '—', 'm/s') +
+        row('Corte de salida', turb.cut_out != null ? turb.cut_out : '—', 'm/s')
+      ))}
+    </div>
+    <div>
+      ${section('3. Modelo de energía del parque', table(
+        row('N° aerogeneradores', nTurb) +
+        row('Capacidad instalada', instMW, 'MW') +
+        row('AEP bruto', sim.aep_no_wake_mwh ? (Number(sim.aep_no_wake_mwh)/1000).toFixed(3) : '—', 'GWh/año') +
+        row('AEP neto (con estela)', aepGWh, 'GWh/año') +
+        row('Pérdida por estela (wake)', wakeLoss) +
+        row('Factor de capacidad', cf) +
+        row('Horas equivalentes', flh, 'h/año') +
+        row('Tipo layout', layoutTyp) +
+        (sPara && sPerp ? row('Separación (axial × transv.)', `${sPara}D × ${sPerp}D`) : '') +
+        row('Área del parque', opt.area_km2 ? opt.area_km2 + ' km²' : '—') +
+        row('Densidad', opt.density_mw_km2 ? opt.density_mw_km2 + ' MW/km²' : '—')
+      ))}
+
+      ${section('4. Análisis financiero', table(
+        row('CAPEX total', capex) +
+        row('LCOE', lcoe, 'USD/kWh') +
+        row('VAN / NPV', npv, 'USD') +
+        row('ROI', roi) +
+        row('Payback simple', payback) +
+        row('Precio de energía', an.energy_price_usd_kwh ? an.energy_price_usd_kwh.toFixed(4) : '—', 'USD/kWh') +
+        row('Tasa de descuento', an.discount_rate_pct ? an.discount_rate_pct + '%' : '—') +
+        row('Horizonte del proyecto', an.project_years ? an.project_years + ' años' : '—')
+      ))}
+    </div>
+  </div>
+
+  ${section('5. Impacto ambiental', `
+    ${table(
+      row('CO₂ evitado (factor red México 0.454 tCO₂/MWh)', co2Avoided, 'ktCO₂/año') +
+      row('Equivalente en árboles plantados', treesEq, 'árboles/año') +
+      row('Energía renovable generada', aepGWh, 'GWh/año') +
+      row('Desplazamiento de generación fósil', instMW, 'MW')
+    )}
+  `)}
+
+  ${section('6. Conclusión', `
+    <div style="font-size:.88rem;line-height:1.8;color:#d1d5db">
+      El proyecto presenta un factor de capacidad de <strong>${cf}</strong> y una generación anual de
+      <strong>${aepGWh} GWh</strong> con <strong>${nTurb} aerogeneradores ${turbName}</strong>.
+      El LCOE de <strong>${lcoe} USD/kWh</strong> y VAN de <strong>${npv} USD</strong>
+      ${an.npv_usd > 0 ? 'indican un <strong style="color:#22c55e">proyecto viable</strong>.' : 'requieren revisión de parámetros financieros.'}
+      <br><br>
+      <em>Informe generado automáticamente por AERO by OPEN CIM — ${dateStr}. 
+      Resultados sujetos a verificación con datos de campo y estudio de micrositing detallado.</em>
+    </div>
+  `)}
+
+</div>
+</body></html>`;
+
+  const win = window.open('', '_blank', 'width=960,height=800,scrollbars=yes');
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+    toast('Informe de factibilidad abierto en nueva pestaña.', 'success');
+  } else {
+    toast('Activa ventanas emergentes para ver el informe.', 'warn');
   }
 }
 

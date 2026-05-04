@@ -233,12 +233,46 @@
     <!-- Reference height badge preview -->
     <div id="hnm-preview" style="display:none;font-size:.78rem;margin-bottom:1rem;color:var(--green,#4ade80)"></div>
 
-    <div style="display:flex;gap:.75rem">
-      <button id="hnm-confirm" class="btn-primary" style="flex:1">Confirmar y cargar</button>
-      <button id="hnm-cancel" class="btn-secondary" style="min-width:90px">Cancelar</button>
+    <div style="display:flex;gap:.75rem;flex-direction:column">
+      <div style="display:flex;gap:.75rem">
+        <button id="hnm-confirm" class="btn-primary" style="flex:1">Diseño complejo</button>
+        <button id="hnm-quick" style="flex:1;background:linear-gradient(135deg,#059669,#0d9488);color:#fff;border:none;border-radius:8px;padding:.6rem 1rem;font-weight:600;cursor:pointer;font-size:.88rem">&#x26A1; Diseño rápido</button>
+      </div>
+      <button id="hnm-cancel" class="btn-secondary" style="width:100%">Cancelar</button>
+    </div>
+    <div style="font-size:.68rem;color:var(--text-muted);margin-top:.75rem;line-height:1.5">
+      <strong>Complejo</strong>: accede a cada módulo por separado. &nbsp;
+      <strong>Rápido</strong>: dibuja el polígono del parque y AERO corre todo automáticamente.
     </div>
   </div>
 </div>
+
+<!-- ═════════════════ QUICK DESIGN WIZARD PANEL ══════════════════ -->
+<div id="qd-wizard" style="display:none;position:fixed;top:68px;right:16px;z-index:8000;
+  background:var(--bg-surface);border:1px solid var(--border);border-radius:12px;
+  padding:.9rem 1.1rem;min-width:230px;box-shadow:0 8px 32px rgba(0,0,0,.45)">
+  <div style="font-size:.65rem;letter-spacing:.1em;text-transform:uppercase;color:#22c55e;margin-bottom:.4rem">&#x26A1; Diseño Rápido</div>
+  <div id="qd-step-label" style="font-size:.82rem;font-weight:600;color:var(--text-primary);margin-bottom:.55rem">Iniciando…</div>
+  <div style="display:flex;gap:.35rem;margin-bottom:.6rem" id="qd-steps">
+    <div class="qd-dot" data-step="1" title="Dibuja polígono"></div>
+    <div class="qd-dot" data-step="2" title="Kriging"></div>
+    <div class="qd-dot" data-step="3" title="TOPSIS"></div>
+    <div class="qd-dot" data-step="4" title="Parque"></div>
+    <div class="qd-dot" data-step="5" title="Tecno-económico"></div>
+    <div class="qd-dot" data-step="6" title="Informe"></div>
+  </div>
+  <div id="qd-progress-bar" style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:.5rem">
+    <div id="qd-progress-fill" style="height:100%;width:0%;background:#22c55e;transition:width .5s"></div>
+  </div>
+  <div id="qd-msg" style="font-size:.72rem;color:var(--text-muted);line-height:1.5"></div>
+  <button id="qd-cancel-btn" onclick="quickDesignCancel()" style="margin-top:.6rem;width:100%;background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);font-size:.72rem;padding:.3rem;cursor:pointer">Cancelar</button>
+</div>
+<style>
+.qd-dot{width:26px;height:6px;border-radius:3px;background:var(--bg-hover);transition:background .4s}
+.qd-dot.done{background:#22c55e}
+.qd-dot.active{background:#0ea5e9;animation:qdPulse 1s ease-in-out infinite}
+@keyframes qdPulse{0%,100%{opacity:1}50%{opacity:.45}}
+</style>
 
 <!-- ═══════════════════════════ FINANCING MODAL ════════════════════════════ -->
 <div id="financing-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:9998;align-items:center;justify-content:center">
@@ -2643,6 +2677,11 @@
 
     </div><!-- /panel -->
   </div><!-- /grid -->
+
+  <!-- Quick Design banner (visible only in quick mode) -->
+  <div id="qd-parque-banner" style="display:none;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.5rem .9rem;margin-bottom:.6rem;font-size:.8rem;color:#10b981">
+    &#x26A1; <strong>Modo rápido</strong>: polígono listo. Haz clic en <em>⚡ Optimizar</em> para correr el pipeline completo.
+  </div>
 
   <!-- badge estado post-simulación -->
   <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">
