@@ -181,18 +181,23 @@ class PowerCurve:
         """
         Load a turbine power curve from aerogeneradores folder CSV.
         File format: no header, two columns → wind_speed_m/s, power_kw
-        Filename convention: {brand}{id}_p{rated_kW}_r{rotor_m}.csv
+        Filename convention: {brand}{id}_p{rated_kW}_r{rotor_radius_m}[_h{hub_m}].csv
+          _p  = rated power in kW
+          _r  = rotor RADIUS in metres (diameter = 2 × r)
+          _h  = hub height in metres (optional, overrides heuristic when present)
         """
         import os, re
         fname = os.path.basename(filepath)
         stem  = fname.replace('.csv', '')
 
-        # parse rated power and rotor radius from filename (_r is RADIUS, not diameter)
-        p_match = re.search(r'_p(\d+)', stem, re.IGNORECASE)
-        r_match = re.search(r'_r([\d.]+)', stem, re.IGNORECASE)
-        rated_kw = float(p_match.group(1)) if p_match else None
+        # parse rated power, rotor radius and optional explicit hub height
+        p_match = re.search(r'_p(\d+)',       stem, re.IGNORECASE)
+        r_match = re.search(r'_r([\d.]+)',    stem, re.IGNORECASE)
+        h_match = re.search(r'_h(\d+(?:\.\d+)?)', stem, re.IGNORECASE)
+        rated_kw  = float(p_match.group(1)) if p_match else None
         rotor_r_m = float(r_match.group(1)) if r_match else None
         rotor_m   = (rotor_r_m * 2.0) if rotor_r_m else None  # diameter
+        hub_explicit = float(h_match.group(1)) if h_match else None
 
         # pretty name: capitalise brand prefix
         name_clean = re.sub(r'_p\d+.*', '', stem)   # e.g. "vestas30"
@@ -209,13 +214,23 @@ class PowerCurve:
         rated_spd = next((ws for ws, pw in pts if pw >= rated_kw * 0.98), 12.0)
         cut_out   = max(ws for ws, pw in pts if pw > 0)
 
-        # estimate hub height from rotor diameter
-        hub_h = 80.0
-        if rotor_m:
-            if rotor_m <= 80:    hub_h = 50.0
-            elif rotor_m <= 120: hub_h = 65.0
-            elif rotor_m <= 160: hub_h = 80.0
-            else:                hub_h = 100.0
+        # Hub height: use explicit _h suffix when present, else estimate from rotor diameter.
+        # Heuristic updated from real machine datasheets (ranges are approximate mid-values):
+        #   rotor < 60 m  → small turbines (Acciona AW-70, etc.)         ≈ 55 m
+        #   rotor 60-89 m → G80 / V80 / E70 class (2 MW)                ≈ 78 m
+        #   rotor 90-129 m→ G87 / V90 / Alstom / Clipper / SWT-3.6 class≈ 80 m
+        #   rotor 130-169 m→ SWT-4.0-128 / V100 / E-101                  ≈ 100 m
+        #   rotor ≥ 170 m → 7–8 MW+ modern machines                      ≈ 120 m
+        if hub_explicit is not None:
+            hub_h = hub_explicit
+        elif rotor_m:
+            if   rotor_m < 60:   hub_h = 55.0
+            elif rotor_m < 90:   hub_h = 78.0   # G80 (80m), V80 (80m), E70 (70m)
+            elif rotor_m < 130:  hub_h = 80.0   # G87, V90, Alstom 3MW, Clipper 2.5MW
+            elif rotor_m < 170:  hub_h = 100.0  # SWT-4.0-128, V100, V110, E-101
+            else:                hub_h = 120.0  # 7-8 MW+
+        else:
+            hub_h = 80.0
 
         return cls(name=name_clean,
                    rated_power_kw=rated_kw,
@@ -850,6 +865,7 @@ def list_turbine_info(folder_path):
     """
     Return a lightweight list of turbine metadata dicts from the folder,
     without loading full curve interpolators (fast for UI listing).
+    Includes hub_height_m estimated by the same heuristic as from_file().
     """
     import os, re
     result = []
@@ -859,16 +875,30 @@ def list_turbine_info(folder_path):
         if not fname.lower().endswith('.csv'):
             continue
         stem = fname.replace('.csv', '')
-        p_match = re.search(r'_p(\d+)', stem, re.IGNORECASE)
-        r_match = re.search(r'_r([\d.]+)', stem, re.IGNORECASE)
-        name_clean = re.sub(r'_p\d+.*', '', stem).capitalize()
-        rated_kw   = int(p_match.group(1)) if p_match else None
-        rotor_r_m  = float(r_match.group(1)) if r_match else None
-        rotor_m    = (rotor_r_m * 2.0) if rotor_r_m else None  # _r es radio → diámetro
+        p_match = re.search(r'_p(\d+)',              stem, re.IGNORECASE)
+        r_match = re.search(r'_r([\d.]+)',           stem, re.IGNORECASE)
+        h_match = re.search(r'_h(\d+(?:\.\d+)?)',    stem, re.IGNORECASE)
+        name_clean   = re.sub(r'_p\d+.*', '', stem).capitalize()
+        rated_kw     = int(p_match.group(1)) if p_match else None
+        rotor_r_m    = float(r_match.group(1)) if r_match else None
+        rotor_m      = (rotor_r_m * 2.0) if rotor_r_m else None
+        hub_explicit = float(h_match.group(1)) if h_match else None
+        if hub_explicit is not None:
+            hub_h = hub_explicit
+        elif rotor_m:
+            if   rotor_m < 60:  hub_h = 55.0
+            elif rotor_m < 90:  hub_h = 78.0
+            elif rotor_m < 130: hub_h = 80.0
+            elif rotor_m < 170: hub_h = 100.0
+            else:               hub_h = 120.0
+        else:
+            hub_h = 80.0
         result.append({
-            'filename': fname,
-            'name':  name_clean,
-            'rated_power_kw':  rated_kw,
+            'filename':         fname,
+            'name':             name_clean,
+            'rated_power_kw':   rated_kw,
             'rotor_diameter_m': rotor_m,
+            'hub_height_m':     hub_h,
+            'hub_source':       'explicit' if hub_explicit else 'heuristic',
         })
     return result

@@ -3282,6 +3282,21 @@ function renderTechnoScenarioResult() {
   renderCashflowChart(adjR.analysis?.cashflow_table);
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
   renderCpChart(r.cp);
+  // Badge de alturas: medición vs hub — clave para detectar extrapolaciones inesperadas
+  const hBadge = document.getElementById('te-height-badge');
+  if (hBadge && r.ws_height_m_used != null && r.hub_height_m_used != null) {
+    const wsH_val  = r.ws_height_m_used;
+    const hubH_val = r.hub_height_m_used;
+    const diff = Math.abs(wsH_val - hubH_val);
+    const arrow = wsH_val < hubH_val ? '↑' : wsH_val > hubH_val ? '↓' : '=';
+    const color = diff > 10 ? '#f59e0b' : 'var(--text-muted)';
+    hBadge.innerHTML = `<span title="Altura medición → hub (extrapolación Hellmann)" style="color:${color}">` +
+      `⚙ Medición ${wsH_val} m ${arrow} Hub ${hubH_val} m` +
+      (diff > 30 ? ' ⚠' : '') + `</span>`;
+    hBadge.style.display = '';
+  } else if (hBadge) {
+    hBadge.style.display = 'none';
+  }
   // La tabla de flujos se construye en renderTechnoLeveraged si hay financiamiento (integrada);
   // si no, se renderiza aquí simple.
   if (!scenario.leveraged) renderCashflowTable(adjR.analysis?.cashflow_table);

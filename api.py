@@ -1781,6 +1781,9 @@ def create_app():
                 'annual_kwh_per_turbine': round(annual_kwh_per_turbine),
                 'rho': round(rho, 4),
                 'energy_lab': energy_lab,
+                # Altura de medición y hub usado — para auditoría / debug en UI
+                'ws_height_m_used':  round(ws_height_m, 1),
+                'hub_height_m_used': round(turbine.hub_height_m, 1),
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
