@@ -198,35 +198,35 @@
 <!-- ═══════════════════════ HEIGHT NORMALIZATION MODAL ═══════════════════════ -->
 <div id="height-norm-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center">
   <div id="height-norm-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)"></div>
-  <div style="position:relative;background:var(--card-bg,#141C28);border:1px solid var(--border,#2A3346);border-radius:16px;padding:2rem;width:min(440px,94vw);box-shadow:0 24px 64px rgba(0,0,0,.55)">
+  <div style="position:relative;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;padding:2rem;width:min(440px,94vw);box-shadow:var(--shadow,0 24px 64px rgba(0,0,0,.55))">
     <div style="font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.4rem">REFERENCIA VERTICAL</div>
-    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem">Altura de análisis del parque</h2>
+    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem;color:var(--text-primary)">Altura de análisis del parque</h2>
     <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="hnm-station-desc">—</p>
 
-    <div style="background:var(--surface,#1B2230);border:1px solid var(--border,#2A3346);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.82rem;line-height:1.7">
+    <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.82rem;line-height:1.7;color:var(--text-primary)">
       <span style="color:var(--text-muted)">Altura nativa:</span>
-      <strong id="hnm-native-h" style="margin-left:.4rem">— m</strong>
+      <strong id="hnm-native-h" style="margin-left:.4rem;color:var(--text-primary)">— m</strong>
       <span style="color:var(--text-muted);margin-left:1rem">Fuente:</span>
-      <span id="hnm-source-lbl" style="margin-left:.4rem;color:var(--accent,#4DA3FF)">—</span>
+      <span id="hnm-source-lbl" style="margin-left:.4rem;color:var(--accent)">—</span>
     </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1.2rem">
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Altura de referencia (m)</label>
         <input id="hnm-target-h" type="number" min="10" max="300" step="5"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
       </div>
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Método de extrapolación</label>
         <select id="hnm-method"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.82rem">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.82rem">
           <option value="hellmann">Ley potencial (Hellmann)</option>
           <option value="log">Perfil logarítmico</option>
         </select>
       </div>
     </div>
 
-    <div style="font-size:.75rem;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
+    <div style="font-size:.75rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
       Todos los datos de viento — Data Hub, Kriging, Parque y cálculos de energía — se normalizarán a esta altura antes de cualquier análisis.
     </div>
 
@@ -243,37 +243,37 @@
 <!-- ═══════════════════════════ FINANCING MODAL ════════════════════════════ -->
 <div id="financing-modal" aria-hidden="true" style="display:none;position:fixed;inset:0;z-index:9998;align-items:center;justify-content:center">
   <div id="financing-modal-backdrop" style="position:absolute;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px)"></div>
-  <div style="position:relative;background:var(--card-bg,#141C28);border:1px solid var(--border,#2A3346);border-radius:16px;padding:2rem;width:min(480px,96vw);box-shadow:0 24px 64px rgba(0,0,0,.55)">
+  <div style="position:relative;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;padding:2rem;width:min(480px,96vw);box-shadow:var(--shadow,0 24px 64px rgba(0,0,0,.55))">
     <div style="font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.4rem">ANÁLISIS FINANCIERO</div>
-    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem">Parámetros de financiamiento</h2>
+    <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem;color:var(--text-primary)">Parámetros de financiamiento</h2>
     <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="fin-modal-desc">Escenario activo: —</p>
 
-    <div id="fin-modal-base-info" style="background:var(--surface,#1B2230);border:1px solid var(--border,#2A3346);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.78rem;line-height:1.7;color:var(--text-muted)">—</div>
+    <div id="fin-modal-base-info" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.78rem;line-height:1.7;color:var(--text-secondary)">—</div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:1.2rem">
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Razón de deuda (% del CAPEX)</label>
         <input id="fin-debt-ratio" type="number" min="0" max="100" step="5" value="70"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
       </div>
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Tasa de interés deuda (% anual)</label>
         <input id="fin-interest-rate" type="number" min="0" step="0.25" value="8"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
       </div>
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Plazo del crédito (años)</label>
         <input id="fin-loan-years" type="number" min="1" max="30" step="1" value="15"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
       </div>
       <div>
         <label style="font-size:.75rem;color:var(--text-muted);display:block;margin-bottom:.35rem">Tasa retorno equity (% anual)</label>
         <input id="fin-equity-rate" type="number" min="0" step="0.5" value="12"
-          style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
+          style="width:100%;background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:.55rem .75rem;font-size:.9rem;font-family:var(--font-mono,'JetBrains Mono',monospace)">
       </div>
     </div>
 
-    <div style="font-size:.75rem;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
+    <div style="font-size:.75rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
       Los parámetros ingresados se usarán para el escenario activo. Puedes recalcular con diferentes valores en cualquier momento.
     </div>
 
@@ -3136,14 +3136,45 @@
       <div class="card-header">
         <span class="card-title">Resultados financieros</span>
         <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
-        <button class="btn-secondary" id="btn-lev-from-scenario"
-          style="display:none;margin-left:auto;font-size:.75rem;padding:.25rem .8rem;white-space:nowrap">
-          + Financiamiento
-        </button>
+        <span class="badge" id="te-loss-applied-badge"
+          style="display:none;background:rgba(246,161,86,.15);color:var(--orange);border:1px solid rgba(246,161,86,.35);font-size:.65rem">—</span>
+        <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <label id="te-loss-toggle-wrap"
+            title="Aplica un % de pérdidas eléctricas finales al AEP. Re-escala VAN, LCOE, flujos y financiamiento sin re-ejecutar la simulación."
+            style="display:inline-flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);padding:.2rem .55rem;border-radius:18px;cursor:pointer;user-select:none">
+            <input type="checkbox" id="te-final-loss-enable" style="margin:0;cursor:pointer;accent-color:var(--accent)">
+            <span>Pérdidas finales</span>
+            <input type="number" id="te-final-loss-pct" value="3" step="0.5" min="0" max="30" disabled
+              style="width:46px;background:transparent;border:none;color:var(--text-primary);font-family:var(--font-mono),monospace;font-size:.78rem;padding:0;text-align:right">
+            <span>%</span>
+          </label>
+          <button class="btn-secondary" id="btn-lev-from-scenario"
+            style="display:none;font-size:.75rem;padding:.25rem .8rem;white-space:nowrap">
+            + Financiamiento
+          </button>
+        </div>
       </div>
       <div class="card-body" id="te-kpi-grid">
         <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
       </div>
+    </div>
+  </div>
+
+  <!-- Indicadores de retorno y viabilidad — VAN, TIR, payback simple y descontado -->
+  <div class="card mt-2" id="te-summary-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Indicadores de retorno y viabilidad</span>
+      <span class="badge badge--info" id="te-summary-mode-badge" style="font-size:.65rem">sólo proyecto</span>
+      <span class="text-muted" style="margin-left:auto;font-size:.7rem">VAN, TIR, retorno simple y descontado</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table class="data-table" id="te-summary-table">
+        <thead></thead>
+        <tbody id="te-summary-tbody"></tbody>
+      </table>
+      <p class="text-muted" style="font-size:.7rem;margin:.5rem 0 0">
+        VAN: Valor Actual Neto · TIR: Tasa Interna de Retorno · DPBP: payback descontado al costo de capital · Equity payback: solo refleja flujos del inversionista (sin deuda).
+      </p>
     </div>
   </div>
 
@@ -3189,8 +3220,11 @@
       <div class="chart-box"><canvas id="chart-cp"></canvas></div>
     </div>
     <div class="card">
-      <div class="card-header"><span class="card-title">Tabla de flujos anuales</span></div>
-      <div class="card-body" style="overflow-x:auto;max-height:280px">
+      <div class="card-header">
+        <span class="card-title" id="te-cashflow-title">Tabla de flujos anuales</span>
+        <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
+      </div>
+      <div class="card-body" style="overflow-x:auto;max-height:320px">
         <table class="data-table" id="te-cashflow-table">
           <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
           <tbody></tbody>
@@ -3305,7 +3339,7 @@
       <div class="chart-box" style="height:260px"><canvas id="chart-lev-cashflow"></canvas></div>
     </div>
 
-    <div class="card mt-2">
+    <div class="card mt-2" id="te-lev-amort-card">
       <div class="card-header"><span class="card-title">Tabla de amortización y flujos equity</span></div>
       <div class="card-body" style="overflow-x:auto;max-height:320px">
         <table class="data-table" id="lev-amort-table">

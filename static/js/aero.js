@@ -23,6 +23,7 @@ const WP = {
     corrected: { inputs: null, result: null, leveraged: null },
   },
   levParams: { debt_ratio_pct: 70, interest_rate_pct: 8, loan_years: 15, equity_discount_rate_pct: 12 },
+  technoFinalLoss: { enabled: false, pct: 3.0 },  // Pérdidas eléctricas aplicadas al AEP final (post-simulación)
   referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
   referenceMethod: 'hellmann', // método de extrapolación seleccionado
 };
@@ -2676,6 +2677,193 @@ function bindTechno() {
   if (levBtn) levBtn.addEventListener('click', () => showFinancingModal(WP.technoActiveScenario));
   document.getElementById('fin-modal-cancel')?.addEventListener('click', closeFinancingModal);
   document.getElementById('financing-modal-backdrop')?.addEventListener('click', closeFinancingModal);
+
+  // Toggle de % pérdidas eléctricas finales — re-escala AEP/VAN/LCOE/flujos en cliente
+  const lossEn  = document.getElementById('te-final-loss-enable');
+  const lossPct = document.getElementById('te-final-loss-pct');
+  if (lossEn) {
+    lossEn.checked = WP.technoFinalLoss.enabled;
+    lossEn.addEventListener('change', () => {
+      WP.technoFinalLoss.enabled = lossEn.checked;
+      if (lossPct) lossPct.disabled = !lossEn.checked;
+      onTechnoLossChange();
+    });
+  }
+  if (lossPct) {
+    lossPct.value = WP.technoFinalLoss.pct;
+    lossPct.disabled = !WP.technoFinalLoss.enabled;
+    lossPct.addEventListener('input', () => {
+      const v = parseFloat(lossPct.value);
+      WP.technoFinalLoss.pct = Number.isFinite(v) ? Math.max(0, Math.min(30, v)) : 0;
+      if (WP.technoFinalLoss.enabled) onTechnoLossChange();
+    });
+  }
+}
+
+async function onTechnoLossChange() {
+  // Re-render escenario con la analysis ajustada
+  renderTechnoScenarioResult();
+  // Si el escenario activo tiene financiamiento calculado, recalcular con cifras ajustadas
+  const sc = technoCurrentScenario();
+  if (sc?.leveraged && sc?.result?.analysis) {
+    await calcLeveragedForScenario(WP.technoActiveScenario, WP.levParams);
+  }
+}
+
+/** TIR de proyecto (sin apalancamiento) por bisección sobre [-CAPEX, CF1..CFn]. */
+function _projectIRR(cashflowTable, capexUsd) {
+  if (!cashflowTable?.length || !(capexUsd > 0)) return null;
+  const cfs = [-capexUsd, ...cashflowTable.map(r => Number(r.cashflow) || 0)];
+  const npv = r => cfs.reduce((acc, cf, t) => acc + cf / Math.pow(1 + r, t), 0);
+  let lo = -0.9999, hi = 9.99;
+  let fLo = npv(lo), fHi = npv(hi);
+  if (!Number.isFinite(fLo) || !Number.isFinite(fHi) || fLo * fHi > 0) return null;
+  for (let i = 0; i < 256; i++) {
+    const mid = (lo + hi) / 2;
+    if (Math.abs(hi - lo) < 1e-9) return mid * 100;
+    const fMid = npv(mid);
+    if (fMid * fLo < 0) { hi = mid; fHi = fMid; }
+    else                { lo = mid; fLo = fMid; }
+  }
+  return ((lo + hi) / 2) * 100;
+}
+
+/** Discounted Payback Period: primer año donde el acumulado de flujos en VP cubre la inversión.
+ *  Usa interpolación lineal dentro del año. */
+function _projectDPBP(cashflowTable, capexUsd) {
+  if (!cashflowTable?.length || !(capexUsd > 0)) return null;
+  let cum = -capexUsd;
+  for (const row of cashflowTable) {
+    const pv = Number(row.pv_cashflow) || 0;
+    const prev = cum;
+    cum += pv;
+    if (cum >= 0 && prev < 0 && pv > 0) {
+      return Math.round((row.year - 1 + (-prev) / pv) * 10) / 10;
+    }
+    if (cum >= 0) return row.year;
+  }
+  return null;  // no se recupera dentro del horizonte
+}
+
+/** DPBP del equity: suma equity_cf descontados al equity rate hasta cubrir el capital propio. */
+function _equityDPBP(leveraged, equityRate) {
+  if (!leveraged?.cashflow_table?.length) return null;
+  const equity0 = Number(leveraged.equity_usd) || 0;
+  if (!(equity0 > 0)) return null;
+  let cum = -equity0;
+  for (const r of leveraged.cashflow_table) {
+    const pv = (Number(r.equity_cf) || 0) / Math.pow(1 + equityRate, r.year);
+    const prev = cum;
+    cum += pv;
+    if (cum >= 0 && prev < 0 && pv > 0) {
+      return Math.round((r.year - 1 + (-prev) / pv) * 10) / 10;
+    }
+    if (cum >= 0) return r.year;
+  }
+  return null;
+}
+
+/** Render de la tarjeta resumen "Indicadores de retorno y viabilidad". */
+function renderTechnoSummaryCard(adjAnalysis, leveraged) {
+  const card = document.getElementById('te-summary-card');
+  if (!card) return;
+  if (!adjAnalysis) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const fmtUsd = n => (n != null && Number.isFinite(n))
+    ? (n >= 0 ? '+' : '−') + ' $' + Math.abs(Math.round(n)).toLocaleString('es-MX') : '—';
+  const fmtPct = n => (n != null && Number.isFinite(n)) ? n.toFixed(2) + ' %' : '—';
+  const fmtYrs = n => (n != null && Number.isFinite(n)) ? n.toFixed(1) + ' años' : '> proyecto';
+
+  const capex   = adjAnalysis.capex?.total_capex_usd || 0;
+  const projIRR = _projectIRR(adjAnalysis.cashflow_table, capex);
+  const projDPBP= _projectDPBP(adjAnalysis.cashflow_table, capex);
+
+  const badge = document.getElementById('te-summary-mode-badge');
+  const thead = card.querySelector('thead');
+
+  if (leveraged) {
+    if (badge) badge.textContent = 'proyecto + financiamiento';
+    if (thead) thead.innerHTML =
+      '<tr><th>Indicador</th>' +
+      '<th style="text-align:right">Sin financiamiento</th>' +
+      '<th style="text-align:right">Con financiamiento (equity)</th></tr>';
+    const eqRate = (leveraged.inputs?.equity_discount_rate_pct
+                    ?? WP.levParams.equity_discount_rate_pct ?? 12) / 100;
+    const rows = [
+      ['VAN / VPN',                  fmtUsd(adjAnalysis.npv_usd),       fmtUsd(leveraged.leveraged_npv_usd)],
+      ['TIR',                        fmtPct(projIRR),                   fmtPct(leveraged.leveraged_irr_pct)],
+      ['Retorno simple',             fmtYrs(adjAnalysis.payback_years), fmtYrs(leveraged.equity_payback_years)],
+      ['Retorno descontado (DPBP)',  fmtYrs(projDPBP),                  fmtYrs(_equityDPBP(leveraged, eqRate))],
+    ];
+    document.getElementById('te-summary-tbody').innerHTML = rows.map(([l, a, b]) =>
+      `<tr><td>${l}</td>
+        <td style="text-align:right;font-family:var(--font-mono),monospace">${a}</td>
+        <td style="text-align:right;font-family:var(--font-mono),monospace">${b}</td></tr>`
+    ).join('');
+  } else {
+    if (badge) badge.textContent = 'sólo proyecto';
+    if (thead) thead.innerHTML =
+      '<tr><th>Indicador</th><th style="text-align:right">Valor</th></tr>';
+    const rows = [
+      ['VAN / VPN',                  fmtUsd(adjAnalysis.npv_usd)],
+      ['TIR del proyecto',           fmtPct(projIRR)],
+      ['Retorno simple',             fmtYrs(adjAnalysis.payback_years)],
+      ['Retorno descontado (DPBP)',  fmtYrs(projDPBP)],
+    ];
+    document.getElementById('te-summary-tbody').innerHTML = rows.map(([l, v]) =>
+      `<tr><td>${l}</td>
+        <td style="text-align:right;font-family:var(--font-mono),monospace">${v}</td></tr>`
+    ).join('');
+  }
+}
+
+/** Devuelve una analysis "ajustada" tras aplicar el % pérdidas finales al AEP.
+ *  No muta el original. Si el toggle está apagado o el % es 0, devuelve `a` tal cual. */
+function technoAdjustedAnalysis(a) {
+  if (!a) return a;
+  const ls = WP.technoFinalLoss;
+  if (!ls?.enabled || !ls.pct || ls.pct <= 0) return a;
+  const factor = 1 - ls.pct / 100;
+  const r = (a.discount_rate_pct || 0) / 100;
+  const N = a.project_years || 20;
+  const capexTotal = a.capex?.total_capex_usd || 0;
+  const opex       = a.annual_opex_usd || 0;
+
+  const adj = JSON.parse(JSON.stringify(a));
+  adj.annual_energy_kwh   = Math.round((a.annual_energy_kwh || 0) * factor);
+  adj.annual_energy_mwh   = Math.round((a.annual_energy_mwh || 0) * factor * 10) / 10;
+  adj.annual_revenue_usd  = Math.round((a.annual_revenue_usd || 0) * factor);
+  adj.annual_cashflow_usd = adj.annual_revenue_usd - opex;
+  adj.capacity_factor_pct = Math.round((a.capacity_factor_pct || 0) * factor * 100) / 100;
+
+  const annuityFactor = r > 0 ? (1 - Math.pow(1 + r, -N)) / r : N;
+  adj.npv_usd = Math.round(adj.annual_cashflow_usd * annuityFactor - capexTotal);
+  adj.vae_usd = r > 0
+    ? Math.round(adj.npv_usd * r / (1 - Math.pow(1 + r, -N)))
+    : Math.round(adj.npv_usd / N);
+  const totalEnergyKwh = adj.annual_energy_kwh * N;
+  const totalCostsUsd  = capexTotal + opex * N;
+  adj.lcoe_usd_kwh = totalEnergyKwh > 0
+    ? Math.round((totalCostsUsd / totalEnergyKwh) * 10000) / 10000 : 0;
+  adj.payback_years = adj.annual_cashflow_usd > 0
+    ? Math.round((capexTotal / adj.annual_cashflow_usd) * 10) / 10 : null;
+  adj.is_viable = adj.npv_usd > 0;
+
+  let cum = -capexTotal;
+  adj.cashflow_table = [];
+  for (let yr = 1; yr <= N; yr++) {
+    const pv = adj.annual_cashflow_usd / Math.pow(1 + r, yr);
+    cum += adj.annual_cashflow_usd;
+    adj.cashflow_table.push({
+      year: yr,
+      cashflow:    Math.round(adj.annual_cashflow_usd),
+      pv_cashflow: Math.round(pv),
+      cumulative:  Math.round(cum),
+    });
+  }
+  adj._final_loss_applied_pct = ls.pct;
+  return adj;
 }
 
 function technoCurrentScenario() {
@@ -2805,9 +2993,11 @@ function technoRefreshScenarioView() {
 function renderTechnoScenarioResult() {
   const scenario = technoCurrentScenario();
   const r = scenario.result;
-  const levBtn = document.getElementById('btn-lev-from-scenario');
+  const levBtn  = document.getElementById('btn-lev-from-scenario');
+  const lossBadge = document.getElementById('te-loss-applied-badge');
   if (!r) {
     document.getElementById('te-viable-badge').style.display = 'none';
+    if (lossBadge) lossBadge.style.display = 'none';
     document.getElementById('te-kpi-grid').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>';
     document.querySelector('#te-cashflow-table tbody').innerHTML = '';
     document.getElementById('te-dispatch-kpis').innerHTML = '<p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver despacho horario.</p>';
@@ -2817,18 +3007,37 @@ function renderTechnoScenarioResult() {
     ['chart-capex', 'chart-cashflow', 'chart-cp', 'chart-te-dispatch'].forEach(destroyChart);
     if (levBtn) levBtn.style.display = 'none';
     renderTechnoLeveraged(null);
+    renderTechnoSummaryCard(null, null);
     renderTechnoEnergyLab(null);
     return;
   }
   WP.technoResult = r;
-  renderTechnoKPIs(r);
-  renderCapexChart(r.analysis?.capex);
-  renderCashflowChart(r.analysis?.cashflow_table);
+
+  // Aplicar pérdidas finales al AEP si el toggle está activo
+  const adjAnalysis = technoAdjustedAnalysis(r.analysis);
+  const adjR = { ...r, analysis: adjAnalysis };
+
+  // Badge informativo de pérdidas aplicadas
+  if (lossBadge) {
+    if (WP.technoFinalLoss.enabled && WP.technoFinalLoss.pct > 0) {
+      lossBadge.textContent = `−${WP.technoFinalLoss.pct}% pérdidas`;
+      lossBadge.style.display = '';
+    } else {
+      lossBadge.style.display = 'none';
+    }
+  }
+
+  renderTechnoKPIs(adjR);
+  renderCapexChart(adjR.analysis?.capex);
+  renderCashflowChart(adjR.analysis?.cashflow_table);
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
   renderCpChart(r.cp);
-  renderCashflowTable(r.analysis?.cashflow_table);
+  // La tabla de flujos se construye en renderTechnoLeveraged si hay financiamiento (integrada);
+  // si no, se renderiza aquí simple.
+  if (!scenario.leveraged) renderCashflowTable(adjR.analysis?.cashflow_table);
   if (levBtn) levBtn.style.display = '';
   renderTechnoLeveraged(scenario.leveraged);
+  renderTechnoSummaryCard(adjR.analysis, scenario.leveraged);
   renderTechnoEnergyLab(r.energy_lab);
 }
 
@@ -3298,7 +3507,7 @@ function showFinancingModal(scenarioKey) {
     toast('Calcula primero el escenario activo antes de incluir financiamiento', 'warn');
     return;
   }
-  const a   = res.analysis;
+  const a   = technoAdjustedAnalysis(res.analysis);
   const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
 
   // Pre-fill with last used params
@@ -3343,7 +3552,9 @@ function closeFinancingModal() {
 async function calcLeveragedForScenario(scenarioKey, params) {
   const res = WP.technoScenarios[scenarioKey]?.result;
   if (!res?.analysis) return;
-  const a = res.analysis;
+  // Usa la analysis ajustada por pérdidas finales (si aplica) — los flujos apalancados
+  // deben coincidir con los KPIs de proyecto que el usuario ve.
+  const a = technoAdjustedAnalysis(res.analysis);
   const body = {
     capex_usd:                a.capex?.total_capex_usd,
     annual_revenue_usd:       a.annual_revenue_usd,
@@ -3370,15 +3581,33 @@ async function calcLeveragedForScenario(scenarioKey, params) {
 }
 
 function renderTechnoLeveraged(r) {
-  const section = document.getElementById('te-lev-section');
+  const section   = document.getElementById('te-lev-section');
+  const amortCard = document.getElementById('te-lev-amort-card');
+  const cfTitle   = document.getElementById('te-cashflow-title');
+  const cfBadge   = document.getElementById('te-cashflow-mode-badge');
   if (!section) return;
   if (!r) {
     section.style.display = 'none';
     destroyChart('chart-lev-structure');
     destroyChart('chart-lev-cashflow');
+    if (amortCard) amortCard.style.display = '';
+    if (cfTitle) cfTitle.textContent = 'Tabla de flujos anuales';
+    if (cfBadge) cfBadge.style.display = 'none';
     return;
   }
   section.style.display = '';
+  // Los flujos del proyecto + financiamiento se integran en la tabla de flujos del proyecto
+  // (no se muestran aparte). La tabla de amortización queda oculta porque su info
+  // está embebida en la tabla principal.
+  if (amortCard) amortCard.style.display = 'none';
+  if (cfTitle) cfTitle.textContent = 'Flujos anuales — proyecto + financiamiento';
+  if (cfBadge) {
+    cfBadge.textContent = 'con financiamiento';
+    cfBadge.style.display = '';
+  }
+  const sc = technoCurrentScenario();
+  const baseCF = technoAdjustedAnalysis(sc?.result?.analysis)?.cashflow_table || [];
+  renderCashflowTable(baseCF, r);
 
   // Badge
   const badge = document.getElementById('lev-viable-badge');
@@ -3887,16 +4116,62 @@ function buildTechnoCsv(r) {
   return rows.join('\n');
 }
 
-function renderCashflowTable(table) {
-  if (!table?.length) return;
-  const tbody = document.querySelector('#te-cashflow-table tbody');
+function renderCashflowTable(table, leveraged = null) {
+  const tableEl = document.getElementById('te-cashflow-table');
+  if (!tableEl) return;
+  const thead = tableEl.querySelector('thead');
+  const tbody = tableEl.querySelector('tbody');
+  if (!table?.length) { if (tbody) tbody.innerHTML = ''; return; }
+
+  const fmt = n => (n != null && Number.isFinite(n))
+    ? Math.abs(Math.round(n)).toLocaleString('es-MX') : '—';
+  const usd    = n => '$' + fmt(n);
+  const signed = n => (n != null && Number.isFinite(n))
+    ? (n >= 0 ? '+' : '−') + ' $' + fmt(n) : '—';
+
+  if (leveraged?.cashflow_table?.length) {
+    const lev = Object.fromEntries(leveraged.cashflow_table.map(row => [row.year, row]));
+    if (thead) thead.innerHTML = `<tr>
+      <th>Año</th>
+      <th>Flujo proyecto</th>
+      <th>VP Flujo</th>
+      <th>Acumulado</th>
+      <th>Interés</th>
+      <th>Principal</th>
+      <th>FC Equity</th>
+      <th>FC Equity acum.</th>
+    </tr>`;
+    tbody.innerHTML = table.map(r => {
+      const lr     = lev[r.year] || {};
+      const cls    = r.cumulative >= 0 ? 'positive' : 'negative';
+      const ecf    = lr.equity_cf;
+      const cumEcf = lr.cum_equity_cf;
+      const ecfStyle = ecf == null ? '' : `color:${ecf >= 0 ? 'var(--green)' : '#f87171'}`;
+      const cumStyle = cumEcf == null ? '' : `color:${cumEcf >= 0 ? 'var(--green)' : '#f87171'}`;
+      return `<tr class="${cls}">
+        <td>${r.year}</td>
+        <td>${usd(r.cashflow)}</td>
+        <td>${usd(r.pv_cashflow)}</td>
+        <td>${usd(r.cumulative)}</td>
+        <td>${usd(lr.interest)}</td>
+        <td>${usd(lr.principal)}</td>
+        <td style="${ecfStyle}">${signed(ecf)}</td>
+        <td style="${cumStyle}">${signed(cumEcf)}</td>
+      </tr>`;
+    }).join('');
+    return;
+  }
+
+  // Modo simple — sin financiamiento
+  if (thead) thead.innerHTML =
+    '<tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>';
   tbody.innerHTML = table.map(r => {
     const cls = r.cumulative >= 0 ? 'positive' : 'negative';
     return `<tr class="${cls}">
       <td>${r.year}</td>
-      <td>$${r.cashflow.toLocaleString('es-MX')}</td>
-      <td>$${r.pv_cashflow.toLocaleString('es-MX')}</td>
-      <td>$${r.cumulative.toLocaleString('es-MX')}</td>
+      <td>${usd(r.cashflow)}</td>
+      <td>${usd(r.pv_cashflow)}</td>
+      <td>${usd(r.cumulative)}</td>
     </tr>`;
   }).join('');
 }
@@ -10316,6 +10591,12 @@ function showHeightNormModal(filename, source) {
     nativeH = m ? parseInt(m[1] || m[2]) : 50;
   }
   nativeH = Number(nativeH) || 50;
+
+  // Override: archivos con 'certe' o '2018' en el nombre → altura nativa 80 m
+  const fnLower = (filename || '').toLowerCase();
+  if (fnLower.includes('certe') || fnLower.includes('2018')) {
+    nativeH = 80;
+  }
 
   const modal = document.getElementById('height-norm-modal');
   document.getElementById('hnm-station-desc').textContent =

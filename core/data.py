@@ -3,6 +3,7 @@ AERO by OPEN CIM — Data loading, feature engineering, and quality control.
 Supports: CSV/TXT (auto-detect), MERRA-2 tabular exports, ERA5 tabular exports.
 """
 import io
+import os
 import re
 import json
 import logging
@@ -137,6 +138,12 @@ class DataLoader:
         meta['source'] = source_hint
         meta['filename'] = filename
         meta['loaded_at'] = datetime.now(timezone.utc).isoformat()
+
+        fn_lower = os.path.basename(filename).lower()
+        if 'certe' in fn_lower or '2018' in fn_lower:
+            meta['wind_height_m'] = 80
+            meta['wind_height_override'] = 'filename:certe|2018→80m'
+
         return df, meta
 
     # ─── source detection ─────────────────────────────────────────────────────
