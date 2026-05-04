@@ -2721,6 +2721,13 @@ function bindTechno() {
     if (el) el.addEventListener('input', () => technoUpdateModeHints());
   });
   technoUpdateModeHints();
+
+  // Sync TOPSIS winner on TE tab activation (in case TOPSIS ran before)
+  document.querySelectorAll('.nav-btn[data-module="techno"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      requestAnimationFrame(() => syncTopsisWinnerToModules());
+    });
+  });
 }
 
 async function onTechnoLossChange() {
@@ -7058,6 +7065,63 @@ function mcdaRenderRanking(r) {
       <td>${Math.round(a.capex_usd).toLocaleString()}</td>
     </tr>`;
   }).join('');
+  // Propagate winner to Parque and Tecno-Económico
+  syncTopsisWinnerToModules();
+}
+
+function syncTopsisWinnerToModules() {
+  if (typeof MCDA === 'undefined' || !MCDA.lastRanking) return;
+  const ranking = MCDA.lastRanking.ranking || [];
+  if (!ranking.length) return;
+
+  // Unique turbines by key, sorted by TOPSIS score
+  const seen = new Set();
+  const items = [];
+  ranking.forEach(row => {
+    const key = row.turbina || row.label;
+    if (key && !seen.has(key)) { seen.add(key); items.push(row); }
+  });
+  if (!items.length) return;
+
+  const winner    = items[0];
+  const winnerKey = winner.turbina || winner.label || '';
+  if (!winnerKey) return;
+
+  // ── 1. Parque: already handled by parquePopulateTopsisRanking ─────────
+  if (typeof parquePopulateTopsisRanking === 'function') {
+    parquePopulateTopsisRanking();
+  }
+
+  // ── 2. Tecno-Económico: set #te-turbine to winner ─────────────────────
+  const teSelect = document.getElementById('te-turbine');
+  if (!teSelect) return;
+
+  // Try to find option (CSV turbines are appended by bindTechno → loadTurbineList)
+  let matchOpt = Array.from(teSelect.options).find(o => o.value === winnerKey);
+
+  // If CSV turbine not yet loaded as option, add it now
+  if (!matchOpt) {
+    const meta = (MCDA.turbines || []).find(t => t.filename === winnerKey);
+    const label = meta
+      ? `${meta.name || winnerKey} — ${meta.rated_power_kw ? (meta.rated_power_kw/1000).toFixed(1)+' MW' : ''} ⌀${meta.rotor_diameter_m||'?'} m`
+      : winnerKey.replace('.csv', '');
+    matchOpt = new Option(label, winnerKey, false, false);
+    teSelect.appendChild(matchOpt);
+  }
+
+  teSelect.value = winnerKey;
+
+  // Badge below the select
+  const badge = document.getElementById('te-turbine-topsis-badge');
+  if (badge) {
+    const meta  = (MCDA.turbines || []).find(t => t.filename === winnerKey);
+    const name  = meta?.name || winnerKey.replace('.csv', '');
+    const score = Number(winner.topsis_score || 0).toFixed(4);
+    const cf    = winner.factor_capacidad != null
+      ? ` · CF ${(Number(winner.factor_capacidad)*100).toFixed(1)}%` : '';
+    badge.textContent = `🥇 TOPSIS #1: ${name} · Score ${score}${cf}`;
+    badge.style.display = '';
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
