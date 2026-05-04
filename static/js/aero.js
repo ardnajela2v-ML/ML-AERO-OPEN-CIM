@@ -3073,7 +3073,7 @@ function renderTechnoScenarioResult() {
     }
   }
 
-  renderTechnoKPIs(adjR);
+  renderTechnoKPIs(adjR, scenario.leveraged);
   renderCapexChart(adjR.analysis?.capex);
   renderCashflowChart(adjR.analysis?.cashflow_table);
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
@@ -3166,25 +3166,46 @@ async function calcTechnoEconomic() {
   }
 }
 
-function renderTechnoKPIs(r) {
+function renderTechnoKPIs(r, leveraged = null) {
   const a = r.analysis;
   if (!a) return;
-  const isViable = a.is_viable;
+
+  // Viability badge reflects leveraged NPV when financing is active
+  const isViable = leveraged
+    ? (leveraged.leveraged_npv_usd != null ? leveraged.leveraged_npv_usd > 0 : a.is_viable)
+    : a.is_viable;
   const badge = document.getElementById('te-viable-badge');
   badge.style.display = '';
   badge.textContent   = isViable ? '✓ VAN POSITIVO' : '✗ VAN NEGATIVO';
   badge.className     = `badge ${isViable ? 'badge--success' : 'badge--error'}`;
 
+  // Badge de modo apalancado
+  const levBadge = document.getElementById('te-lev-active-badge');
+  if (levBadge) levBadge.style.display = leveraged ? '' : 'none';
+
   const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
   const fx  = Number(a.fx_mxn_per_usd) || Number(document.getElementById('te-fx')?.value) || 1;
   const showMxn = fx && fx > 1.0001;
   const mxn = (usd) => showMxn && usd != null && Number.isFinite(usd)
-    ? `≈ $${fmt(usd * fx)} MXN${a.npv_usd != null && usd === a.npv_usd && a.npv_usd < 0 ? '' : ''}`
-    : '';
+    ? `≈ $${fmt(usd * fx)} MXN` : '';
   const signed = (n) => (n >= 0 ? '+' : '−') + ' $' + fmt(n);
 
-  // [label, valor, unidad, valor_usd_para_mxn (null = no aplica)]
-  const items = [
+  // Con financiamiento activo: métricas equity sustituyen las del proyecto
+  // [label, valor, unidad, valor_usd_para_mxn]
+  const items = leveraged ? [
+    ['VAN (equity)',        signed(leveraged.leveraged_npv_usd),                                                      'USD',     leveraged.leveraged_npv_usd],
+    ['LCOE',               '$' + a.lcoe_usd_kwh,                                                                     'USD/kWh', null],
+    ['TIR equity',         leveraged.leveraged_irr_pct != null ? leveraged.leveraged_irr_pct + '%' : '—',            '',        null],
+    ['Retorno equity',     leveraged.equity_payback_years != null ? leveraged.equity_payback_years + ' años' : '> proyecto', '', null],
+    ['Factor de capacidad', a.capacity_factor_pct + '%',                                                              '',        null],
+    ['Energía anual',      fmt(a.annual_energy_mwh) + ' MWh',                                                        '/parque', null],
+    ['Ingresos anuales',   '$' + fmt(a.annual_revenue_usd),                                                          'USD/año', a.annual_revenue_usd],
+    ['OPEX anual',         '$' + fmt(a.annual_opex_usd),                                                             'USD/año', a.annual_opex_usd],
+    ['Capital equity',     '$' + fmt(leveraged.equity_usd),                                                          'USD',     leveraged.equity_usd],
+    ['Área requerida',     fmt(a.capex?.area_ha) + ' ha',                                                            '',        null],
+    ['Potencia instalada', a.capex?.installed_mw + ' MW',                                                            '',        null],
+    ['N° aerogeneradores', a.capex?.n_turbines,                                                                       '',        null],
+  ] : [
     ['VAN / NPV',           signed(a.npv_usd),                       'USD',     a.npv_usd],
     ['LCOE',                '$' + a.lcoe_usd_kwh,                    'USD/kWh', null],
     ['VAE',                 signed(a.vae_usd),                       'USD/año', a.vae_usd],
@@ -3645,6 +3666,11 @@ function renderTechnoLeveraged(r) {
     if (amortCard) amortCard.style.display = '';
     if (cfTitle) cfTitle.textContent = 'Tabla de flujos anuales';
     if (cfBadge) cfBadge.style.display = 'none';
+    // Revert main KPI grid to unlevered values
+    const _sc0 = technoCurrentScenario();
+    if (_sc0?.result?.analysis) {
+      renderTechnoKPIs({ ..._sc0.result, analysis: technoAdjustedAnalysis(_sc0.result.analysis) }, null);
+    }
     return;
   }
   section.style.display = '';
@@ -3703,6 +3729,12 @@ function renderTechnoLeveraged(r) {
   renderLevStructureChart(r);
   renderLevCashflowChart(r);
   renderLevAmortTable(r.cashflow_table);
+
+  // Sync main KPI grid to show leveraged metrics
+  const _sc = technoCurrentScenario();
+  if (_sc?.result?.analysis) {
+    renderTechnoKPIs({ ..._sc.result, analysis: technoAdjustedAnalysis(_sc.result.analysis) }, r);
+  }
 }
 
 function renderLevStructureChart(r) {

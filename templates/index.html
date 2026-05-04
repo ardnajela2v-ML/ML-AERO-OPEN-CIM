@@ -51,9 +51,9 @@
     <button class="nav-btn" data-module="kriging">Kriging Clásico</button>
     <button class="nav-btn" data-module="parque">Parque</button>
     <button class="nav-btn" data-module="techno">Tecno-Económico</button>
-    <button class="nav-btn" data-module="mapa">Mapa & Kriging</button>
-    <button class="nav-btn" data-module="hybrid">Sistema Híbrido</button>
-    <button class="nav-btn" data-module="energy">Energy Lab</button>
+    <button class="nav-btn" data-module="mapa" style="display:none" hidden>Mapa & Kriging</button>
+    <button class="nav-btn" data-module="hybrid" style="display:none" hidden>Sistema Híbrido</button>
+    <button class="nav-btn" data-module="energy" style="display:none" hidden>Energy Lab</button>
     <button class="nav-btn" data-module="validation">Validation</button>
     <button class="nav-btn" data-module="export">Exportar</button>
     <button class="nav-btn" data-module="ai">AI Assistant</button>
@@ -3143,6 +3143,8 @@
         <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
         <span class="badge" id="te-loss-applied-badge"
           style="display:none;background:rgba(246,161,86,.15);color:var(--orange);border:1px solid rgba(246,161,86,.35);font-size:.65rem">—</span>
+        <span class="badge" id="te-lev-active-badge"
+          style="display:none;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3);font-size:.65rem">⚡ Apalancado</span>
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
           <label id="te-loss-toggle-wrap"
             title="Aplica un % de pérdidas eléctricas finales al AEP. Re-escala VAN, LCOE, flujos y financiamiento sin re-ejecutar la simulación."
@@ -3379,6 +3381,47 @@
   <!-- Status info -->
   <div id="export-session-info" class="info-box amber" style="margin-bottom:1rem">
     Carga un archivo de datos y ejecuta los módulos para habilitar las exportaciones.
+  </div>
+
+  <!-- ═══ REPORTE PROFESIONAL CIENTÍFICO-TÉCNICO ═══ -->
+  <div class="sci-report-banner">
+    <div class="sci-report-banner__icon" aria-hidden="true">
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+        <line x1="16" y1="13" x2="8" y2="13"/>
+        <line x1="16" y1="17" x2="8" y2="17"/>
+        <polyline points="10 9 9 9 8 9"/>
+      </svg>
+    </div>
+    <div class="sci-report-banner__body">
+      <div class="sci-report-banner__kicker">DOCUMENTO TÉCNICO · WINDPRO PLATFORM</div>
+      <h2 class="sci-report-banner__title">Reporte Profesional Científico-Técnico</h2>
+      <p class="sci-report-banner__desc">
+        Documento integral de los resultados de simulación de cada módulo activo:
+        recurso eólico, modelado predictivo, forecast, kriging, optimización de parque,
+        análisis tecno-económico apalancado y validación. Incluye metodología,
+        métricas, tablas y figuras listo para imprimir o exportar a PDF.
+      </p>
+      <div class="sci-report-banner__chips">
+        <span class="sci-chip">Recurso eólico</span>
+        <span class="sci-chip">Model Arena</span>
+        <span class="sci-chip">Forecast</span>
+        <span class="sci-chip">Kriging</span>
+        <span class="sci-chip">Parque</span>
+        <span class="sci-chip">Tecno-Económico</span>
+        <span class="sci-chip">Validación</span>
+      </div>
+      <div class="sci-report-banner__actions">
+        <button class="btn-primary" id="btn-sci-report-html" type="button">
+          ↗ Generar reporte (HTML)
+        </button>
+        <button class="btn-secondary" id="btn-sci-report-pdf" type="button">
+          ⤓ Imprimir / Guardar PDF
+        </button>
+        <span class="sci-report-banner__hint">Se abrirá en una pestaña nueva con tipografía Inter / JetBrains Mono.</span>
+      </div>
+    </div>
   </div>
 
   <!-- Download cards -->
