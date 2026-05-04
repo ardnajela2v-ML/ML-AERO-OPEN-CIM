@@ -3330,6 +3330,61 @@
       </div>
     </div>
 
+    <!-- ── ANÁLISIS DE RIESGO ── -->
+    <div class="card" id="te-risk-card" style="display:none">
+      <div class="card-header">
+        <span class="card-title">Análisis de Riesgo Financiero</span>
+        <button id="btn-calc-sensitivity" class="btn-secondary" style="font-size:.75rem;padding:.25rem .8rem;margin-left:auto">
+          &#x27F3; Recalcular
+        </button>
+      </div>
+      <div class="card-body">
+        <!-- Toggle metric -->
+        <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.85rem;flex-wrap:wrap">
+          <span style="font-size:.72rem;color:var(--text-muted)">Métrica:</span>
+          <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
+            <input type="radio" name="risk-metric" value="npv" checked style="accent-color:var(--accent)"> ΔVAN %
+          </label>
+          <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
+            <input type="radio" name="risk-metric" value="lcoe"> ΔLCOE %
+          </label>
+          <span id="risk-base-info" style="font-size:.72rem;color:var(--text-muted);margin-left:auto"></span>
+        </div>
+
+        <!-- Tornado chart -->
+        <div style="margin-bottom:1.2rem">
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+            Sensibilidad — Tornado ΔVan/ΔLCOE por parámetro
+          </div>
+          <div style="position:relative;height:220px">
+            <canvas id="risk-tornado-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- Heatmap: VAN (M USD) vs precio × tasa -->
+        <div style="margin-bottom:1.2rem">
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+            Mapa de correlación — VAN (MUSD) · Precio energía × Tasa de descuento
+          </div>
+          <div id="risk-heatmap-container" style="overflow-x:auto">
+            <canvas id="risk-heatmap-canvas" style="display:block"></canvas>
+          </div>
+          <div style="font-size:.68rem;color:var(--text-muted);margin-top:.3rem">Verde = VAN positivo · Rojo = VAN negativo · Cada celda = un escenario</div>
+        </div>
+
+        <!-- ML Regimes (shown only if price data available) -->
+        <div id="risk-regimes-wrap" style="display:none">
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+            Regímenes de precio (K-means ML) — <span id="risk-regime-col"></span>
+          </div>
+          <div style="display:flex;gap:.6rem;margin-bottom:.6rem;flex-wrap:wrap" id="risk-regime-stats"></div>
+          <div style="position:relative;height:120px">
+            <canvas id="risk-regime-chart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Financial KPIs -->
     <div class="card">
       <div class="card-header">

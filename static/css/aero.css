@@ -1038,6 +1038,86 @@ body:not(.light) .badge--error   { background:#F2657A1A; color:#F2657A; border-c
 body.light .export-card h4 { font-family:'Fraunces',serif; font-size:.9rem; }
 body.light .export-card .export-icon { background:#f0faf5; color:#1a6b4a; }
 
+/* ─── REPORTE PROFESIONAL CIENTÍFICO-TÉCNICO (Banner) ─── */
+.sci-report-banner {
+  display:grid; grid-template-columns:auto 1fr; gap:1.25rem;
+  padding:1.5rem 1.75rem;
+  margin-bottom:1.25rem;
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  background:
+    linear-gradient(135deg, rgba(77,163,255,.06) 0%, rgba(159,122,234,.05) 60%, rgba(246,161,86,.04) 100%),
+    var(--bg-surface);
+  position:relative; overflow:hidden;
+}
+.sci-report-banner::before {
+  content:""; position:absolute; inset:0;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 23px, rgba(77,163,255,.04) 23px 24px),
+    repeating-linear-gradient(0deg,  transparent 0 23px, rgba(77,163,255,.04) 23px 24px);
+  pointer-events:none;
+}
+.sci-report-banner__icon {
+  width:64px; height:64px; border-radius:12px;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(77,163,255,.12); color:var(--accent);
+  border:1px solid rgba(77,163,255,.25);
+  position:relative; z-index:1;
+}
+.sci-report-banner__body { position:relative; z-index:1; min-width:0; }
+.sci-report-banner__kicker {
+  font-family:'JetBrains Mono', ui-monospace, monospace;
+  font-size:.65rem; letter-spacing:.18em; font-weight:600;
+  color:var(--accent); text-transform:uppercase; margin-bottom:.35rem;
+}
+.sci-report-banner__title {
+  font-size:1.35rem; font-weight:700; margin:0 0 .55rem 0;
+  color:var(--text-primary); letter-spacing:-.02em;
+}
+.sci-report-banner__desc {
+  font-size:.78rem; line-height:1.65; color:var(--text-muted);
+  margin:0 0 .9rem 0; max-width:780px;
+}
+.sci-report-banner__chips {
+  display:flex; flex-wrap:wrap; gap:.4rem; margin-bottom:1rem;
+}
+.sci-chip {
+  font-family:'JetBrains Mono', ui-monospace, monospace;
+  font-size:.62rem; letter-spacing:.04em; font-weight:500;
+  padding:.25rem .55rem; border-radius:999px;
+  background:rgba(77,163,255,.08);
+  color:var(--text-primary);
+  border:1px solid rgba(77,163,255,.18);
+}
+.sci-report-banner__actions {
+  display:flex; flex-wrap:wrap; gap:.6rem; align-items:center;
+}
+.sci-report-banner__hint {
+  font-size:.68rem; color:var(--text-muted); margin-left:.25rem;
+}
+body.light .sci-report-banner {
+  background:
+    linear-gradient(135deg, rgba(15,95,168,.05) 0%, rgba(180,83,9,.04) 100%),
+    #FFFFFF;
+}
+body.light .sci-report-banner::before {
+  background:
+    repeating-linear-gradient(90deg, transparent 0 23px, rgba(15,95,168,.05) 23px 24px),
+    repeating-linear-gradient(0deg,  transparent 0 23px, rgba(15,95,168,.05) 23px 24px);
+}
+body.light .sci-report-banner__icon {
+  background:rgba(15,95,168,.08); color:#0F5FA8;
+  border-color:rgba(15,95,168,.2);
+}
+body.light .sci-report-banner__kicker { color:#0F5FA8; }
+body.light .sci-chip {
+  background:rgba(15,95,168,.06); border-color:rgba(15,95,168,.18);
+}
+@media (max-width: 720px) {
+  .sci-report-banner { grid-template-columns:1fr; padding:1.25rem; }
+  .sci-report-banner__icon { width:52px; height:52px; }
+}
+
 /* ─── META LIST ─── */
 .metalist { font-size:.71rem; line-height:2.1; }
 .metalist > div { display:flex; gap:.5rem; align-items:flex-start; }

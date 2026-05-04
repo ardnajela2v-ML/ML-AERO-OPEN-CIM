@@ -1932,6 +1932,215 @@ def create_app():
             logger.exception('Error en leveraged_analysis')
             return _err(str(e), 500)
 
+    # ─── FINANCIAL SENSITIVITY & RISK ────────────────────────────────────────
+    @app.route('/api/energy/sensitivity', methods=['POST'])
+    def energy_sensitivity():
+        """
+        Tornado + correlation heatmap for financial risk analysis.
+        Runs TechnoEconomicAnalyzer.analyze() for ±variations of each param.
+        Input: session_id, turbine config, financial params, base_annual_kwh,
+               n_turbines. Also returns price-regime ML clustering if session
+               has a price column.
+        """
+        body        = request.get_json(silent=True) or {}
+        sid         = _require_sid(body)
+        sess        = get_session(sid)
+        turbine_cfg = body.get('turbine', {})
+        fin_cfg     = body.get('financial', {})
+
+        # ── Resolve turbine ───────────────────────────────────────────────────
+        builtin = turbine_cfg.get('builtin_model')
+        if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+            turbine = PowerCurve.from_builtin(builtin)
+        elif builtin and builtin.endswith('.csv'):
+            fpath   = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+            turbine = _cached_power_curve(fpath)
+        else:
+            turbine = PowerCurve(
+                name='Custom',
+                rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
+                cut_in=3.0, rated_speed=12.0, cut_out=25.0,
+                hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
+                rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
+            )
+
+        base_kwh   = float(body.get('base_annual_kwh', 0))
+        n_turb     = int(body.get('n_turbines', 1))
+        base_price = float(fin_cfg.get('energy_price_usd_kwh', 0.07))
+        base_rate  = float(fin_cfg.get('discount_rate_pct', 8.0))
+        base_years = int(fin_cfg.get('project_years', 20))
+        base_fx    = float(fin_cfg.get('usd_to_mxn', 1.0))
+        base_escal = float(fin_cfg.get('price_escalation_pct', 0.0))
+        cost_mdl   = CostModel.from_dict(fin_cfg.get('cost_model'))
+
+        if base_kwh <= 0:
+            return _err('base_annual_kwh must be > 0')
+
+        def _run(price=None, rate=None, aep_scale=1.0, escal=None, capex_mult=1.0):
+            cm = CostModel.from_dict(fin_cfg.get('cost_model'))
+            # apply capex multiplier via OPEX/CAPEX override
+            if capex_mult != 1.0:
+                cm2_dict = cm.to_dict() if hasattr(cm, 'to_dict') else {}
+                # scale all percentage cost items
+                for k in ['turbine_pct','civil_pct','electrical_pct','installation_pct','engineering_pct','misc_pct']:
+                    if k in cm2_dict:
+                        cm2_dict[k] = float(cm2_dict[k])
+                try:
+                    from core.cost_model import CostModel as CM2
+                    cm = CM2.from_dict(cm2_dict)
+                    cm._capex_mult = capex_mult
+                except Exception:
+                    pass
+            tea = TechnoEconomicAnalyzer(cost_model=cm)
+            p   = base_price if price is None else price
+            r   = base_rate  if rate  is None else rate
+            e   = base_escal if escal is None else escal
+            kwh = base_kwh * aep_scale
+
+            # build price escalation series
+            price_series = None
+            if e and e != 0:
+                price_series = [p * ((1 + e/100) ** yr) for yr in range(base_years)]
+
+            res = tea.analyze(
+                turbine, n_turb, kwh,
+                energy_price_usd_kwh=p,
+                discount_rate_pct=r,
+                project_years=base_years,
+                usd_to_mxn=base_fx,
+                energy_price_series_usd_kwh=price_series,
+            )
+            npv     = float(res.get('npv_usd', 0) or 0)
+            lcoe    = float(res.get('lcoe_usd_kwh', 0) or 0)
+            payback = res.get('payback_years')
+            payback = float(payback) if payback is not None and np.isfinite(float(payback)) else base_years * 2
+            # Correct for capex multiplier in CAPEX total
+            if capex_mult != 1.0:
+                capex_base = float(res.get('capex_total_usd', 0) or 0)
+                delta_capex = capex_base * (capex_mult - 1.0)
+                npv -= delta_capex  # higher capex ↓ NPV
+            return npv, lcoe, payback
+
+        base_npv, base_lcoe, base_pb = _run()
+
+        def _delta(npv, lcoe, payback):
+            dnpv = (npv - base_npv) / max(abs(base_npv), 1) * 100 if base_npv != 0 else 0
+            dlcoe = (lcoe - base_lcoe) / max(base_lcoe, 1e-9) * 100
+            dpb  = payback - base_pb
+            return round(dnpv, 2), round(dlcoe, 2), round(dpb, 2)
+
+        # ── Tornado variations ────────────────────────────────────────────────
+        tornado = []
+        cases = [
+            ('Precio energía',    'price',   base_price*0.8,   base_price*1.2,   '-20%', '+20%'),
+            ('Tasa de descuento', 'rate',    base_rate-2.0,    base_rate+2.0,    '-2pp', '+2pp'),
+            ('CAPEX',             'capex',   0.85,             1.15,             '-15%', '+15%'),
+            ('Producción (AEP)',  'aep',     0.9,              1.1,              '-10%', '+10%'),
+            ('Escalamiento prec.','escal',   0.0,              3.0,              '0%/a', '+3%/a'),
+        ]
+        for label, kind, lo_v, hi_v, lo_lbl, hi_lbl in cases:
+            if kind == 'price':
+                lo_r = _run(price=lo_v);   hi_r = _run(price=hi_v)
+            elif kind == 'rate':
+                lo_r = _run(rate=lo_v);    hi_r = _run(rate=hi_v)
+            elif kind == 'capex':
+                lo_r = _run(capex_mult=lo_v); hi_r = _run(capex_mult=hi_v)
+            elif kind == 'aep':
+                lo_r = _run(aep_scale=lo_v);  hi_r = _run(aep_scale=hi_v)
+            elif kind == 'escal':
+                lo_r = _run(escal=lo_v);   hi_r = _run(escal=hi_v)
+            else:
+                continue
+            lo_dn, lo_dl, lo_dp = _delta(*lo_r)
+            hi_dn, hi_dl, hi_dp = _delta(*hi_r)
+            tornado.append({
+                'label': label,
+                'low_npv_pct':  lo_dn, 'high_npv_pct':  hi_dn,
+                'low_lcoe_pct': lo_dl, 'high_lcoe_pct': hi_dl,
+                'low_label': lo_lbl,   'high_label': hi_lbl,
+                'swing': round(abs(hi_dn - lo_dn), 2),
+            })
+        tornado.sort(key=lambda x: -x['swing'])
+
+        # ── Heatmap: price × rate grid ────────────────────────────────────────
+        price_steps = [round(base_price * m, 4) for m in [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]]
+        rate_steps  = [round(base_rate + d, 2)  for d in [-3, -2, -1, 0, 1, 2, 3]]
+        heatmap = []
+        for p in price_steps:
+            row = []
+            for r in rate_steps:
+                npv_v, _, _ = _run(price=p, rate=r)
+                row.append(round(npv_v / 1e6, 3))
+            heatmap.append(row)
+
+        # ── Price-regime ML clustering ────────────────────────────────────────
+        regimes = None
+        try:
+            df = sess.get('df')
+            price_col = next(
+                (c for c in (df.columns if df is not None else [])
+                 if any(k in c.lower() for k in ['precio','price','pml','costo','tarifa'])),
+                None)
+            if price_col is not None and df is not None:
+                import warnings
+                from sklearn.cluster import KMeans
+                from sklearn.preprocessing import StandardScaler
+                pdata = df[[price_col]].dropna()
+                if len(pdata) >= 6:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter('ignore')
+                        sc   = StandardScaler()
+                        X    = sc.fit_transform(pdata.values)
+                        km   = KMeans(n_clusters=3, random_state=42, n_init=10)
+                        lbls = km.fit_predict(X)
+                    centers = sc.inverse_transform(km.cluster_centers_).flatten()
+                    order   = np.argsort(centers)  # low→mid→high
+                    rank    = {int(order[i]): i for i in range(3)}
+                    names   = ['Bajo', 'Medio', 'Alto']
+                    colors  = ['#22c55e', '#f59e0b', '#ef4444']
+                    pdata   = pdata.copy()
+                    pdata['regime'] = [rank[int(l)] for l in lbls]
+                    regime_stats = []
+                    for i in range(3):
+                        mask = pdata['regime'] == i
+                        vals = pdata.loc[mask, price_col]
+                        regime_stats.append({
+                            'name':   names[i],
+                            'color':  colors[i],
+                            'mean':   round(float(vals.mean()), 4),
+                            'std':    round(float(vals.std()), 4),
+                            'pct':    round(float(mask.mean()) * 100, 1),
+                            'center': round(float(centers[order[i]]), 4),
+                        })
+                    step = max(1, len(pdata) // 600)
+                    ts_labels = [str(t) for t in pdata.index[::step]]
+                    ts_regimes= [int(r) for r in pdata['regime'].values[::step]]
+                    ts_values = [round(float(v), 4) for v in pdata[price_col].values[::step]]
+                    regimes = {
+                        'column': price_col,
+                        'stats':  regime_stats,
+                        'ts_labels':  ts_labels,
+                        'ts_regimes': ts_regimes,
+                        'ts_values':  ts_values,
+                    }
+        except Exception as _re:
+            logger.debug('Regime ML error: %s', _re)
+
+        return jsonify({
+            'tornado': tornado,
+            'heatmap': {
+                'data':         heatmap,
+                'price_labels': [str(p) for p in price_steps],
+                'rate_labels':  [f'{r:.1f}%' for r in rate_steps],
+            },
+            'base': {
+                'npv_usd':      round(base_npv, 0),
+                'lcoe_usd_kwh': round(base_lcoe, 5),
+                'payback_years':round(base_pb, 1),
+            },
+            'regimes': regimes,
+        })
+
     # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
     @app.route('/api/farm/simulate', methods=['POST'])
     def farm_simulate():

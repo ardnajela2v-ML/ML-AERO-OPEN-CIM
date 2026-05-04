@@ -2678,6 +2678,7 @@ function bindTechno() {
   document.getElementById('btn-clear-financing')?.addEventListener('click', clearLeveraged);
   document.getElementById('fin-modal-cancel')?.addEventListener('click', closeFinancingModal);
   document.getElementById('financing-modal-backdrop')?.addEventListener('click', closeFinancingModal);
+  document.getElementById('btn-calc-sensitivity')?.addEventListener('click', calcSensitivity);
 
   // Toggle de % pérdidas eléctricas finales — re-escala AEP/VAN/LCOE/flujos en cliente
   const lossEn  = document.getElementById('te-final-loss-enable');
@@ -3412,10 +3413,220 @@ async function calcTechnoEconomic() {
     }
     toast('Análisis completado', 'success');
     setStatus('Análisis tecno-económico completado.');
+    // Auto-trigger risk analysis after TE completes
+    setTimeout(() => calcSensitivity(), 400);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
     setStatus('Error en análisis tecno-económico.');
   }
+}
+
+// ─── ANÁLISIS DE RIESGO FINANCIERO ───────────────────────────────────────────
+let _riskData = null;
+
+async function calcSensitivity() {
+  const r = WP.technoScenarios[WP.technoActiveScenario]?.result;
+  if (!r?.analysis || !WP.sessionId) return;
+  const a   = r.analysis;
+  const inp = technoCollectInputs();
+  const body = {
+    session_id: WP.sessionId,
+    turbine:    { builtin_model: inp.turbine },
+    n_turbines: inp.nTurbines,
+    base_annual_kwh: (a.annual_energy_kwh_per_turbine || 0) * inp.nTurbines,
+    financial: {
+      energy_price_usd_kwh:    inp.price,
+      discount_rate_pct:       inp.rate,
+      project_years:           inp.years,
+      usd_to_mxn:              inp.fx || 1,
+      price_escalation_pct:    inp.priceEscalation || 0,
+      cost_model:              technoCollectCostModel(),
+    },
+  };
+  try {
+    setStatus('Calculando análisis de riesgo…');
+    const data = await api('/api/energy/sensitivity', 'POST', body);
+    _riskData  = data;
+    renderRiskSection(data);
+    setStatus('Análisis de riesgo completado.');
+  } catch (e) {
+    setStatus('Error en análisis de riesgo: ' + e.message);
+  }
+}
+
+function renderRiskSection(data) {
+  if (!data) return;
+  document.getElementById('te-risk-card').style.display = '';
+
+  const metric  = document.querySelector('input[name="risk-metric"]:checked')?.value || 'npv';
+  const base    = data.base || {};
+  const infoEl  = document.getElementById('risk-base-info');
+  if (infoEl) infoEl.textContent =
+    `VAN base: $${Math.round(base.npv_usd||0).toLocaleString()} · LCOE: ${(base.lcoe_usd_kwh||0).toFixed(4)} · Payback: ${(base.payback_years||0).toFixed(1)}a`;
+
+  renderTornadoChart(data.tornado || [], metric);
+  renderHeatmapCanvas(data.heatmap);
+  if (data.regimes) renderRegimeChart(data.regimes);
+
+  // Re-render when metric toggle changes
+  document.querySelectorAll('input[name="risk-metric"]').forEach(el => {
+    el.onchange = () => renderTornadoChart(data.tornado || [], el.value);
+  });
+}
+
+function renderTornadoChart(tornado, metric) {
+  const canvas = document.getElementById('risk-tornado-chart');
+  if (!canvas) return;
+  if (WP.charts.riskTornado) { WP.charts.riskTornado.destroy(); WP.charts.riskTornado = null; }
+
+  const loKey = metric === 'lcoe' ? 'low_lcoe_pct'  : 'low_npv_pct';
+  const hiKey = metric === 'lcoe' ? 'high_lcoe_pct' : 'high_npv_pct';
+  const unit  = metric === 'lcoe' ? 'ΔLCOE %' : 'ΔVAN %';
+
+  const labels = tornado.map(t => t.label);
+  const loVals = tornado.map(t => t[loKey] || 0);
+  const hiVals = tornado.map(t => t[hiKey] || 0);
+
+  WP.charts.riskTornado = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Reducción (peor escenario)', data: loVals.map(v => v < 0 ? v : 0),
+          backgroundColor: 'rgba(239,68,68,.75)', borderRadius: 3 },
+        { label: 'Aumento (mejor escenario)', data: hiVals.map(v => v > 0 ? v : 0),
+          backgroundColor: 'rgba(34,197,94,.75)', borderRadius: 3 },
+        { label: 'Cambio positivo bajo', data: loVals.map(v => v > 0 ? v : 0),
+          backgroundColor: 'rgba(34,197,94,.45)', borderRadius: 3 },
+        { label: 'Cambio negativo alto', data: hiVals.map(v => v < 0 ? v : 0),
+          backgroundColor: 'rgba(239,68,68,.45)', borderRadius: 3 },
+      ],
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.raw > 0 ? '+' : ''}${ctx.raw.toFixed(2)}%`,
+          },
+        },
+        annotation: {
+          annotations: { zeroline: { type: 'line', x: 0, borderColor: 'rgba(255,255,255,.3)', borderWidth: 1 } }
+        },
+      },
+      scales: {
+        x: { stacked: true, grid: { color: gridColor() }, ticks: { callback: v => v + '%', font: { size: 9 } }, title: { display: true, text: unit, font: { size: 9 }, color: mut() } },
+        y: { stacked: true, grid: { display: false }, ticks: { font: { size: 9 } } },
+      },
+    },
+  });
+}
+
+function renderHeatmapCanvas(hm) {
+  if (!hm?.data?.length) return;
+  const canvas = document.getElementById('risk-heatmap-canvas');
+  if (!canvas) return;
+  const rows       = hm.data.length;
+  const cols       = hm.data[0].length;
+  const cellW      = 58;
+  const cellH      = 26;
+  const padL       = 58;
+  const padT       = 22;
+  const padB       = 16;
+  canvas.width     = padL + cols * cellW;
+  canvas.height    = padT + rows * cellH + padB;
+  const ctx        = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Find min/max for colour scale
+  const flat = hm.data.flat();
+  const vMin = Math.min(...flat);
+  const vMax = Math.max(...flat);
+
+  function cellColor(v) {
+    if (vMax === vMin) return 'rgba(100,116,139,.5)';
+    const t = (v - vMin) / (vMax - vMin);  // 0→red, 1→green
+    const r = Math.round(239 + (34 - 239) * t);
+    const g = Math.round(68 + (197 - 68) * t);
+    const b = Math.round(68 + (94 - 68) * t);
+    return `rgba(${r},${g},${b},0.82)`;
+  }
+
+  ctx.font = '9px Inter, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#94a3b8';
+
+  // Column headers (rate)
+  hm.rate_labels.forEach((lbl, ci) => {
+    ctx.fillText(lbl, padL + ci * cellW + cellW / 2, padT - 6);
+  });
+  // Row labels (price)
+  ctx.textAlign = 'right';
+  hm.price_labels.forEach((lbl, ri) => {
+    ctx.fillText(lbl, padL - 4, padT + ri * cellH + cellH / 2 + 4);
+  });
+
+  // Cells
+  ctx.textAlign = 'center';
+  hm.data.forEach((row, ri) => {
+    row.forEach((val, ci) => {
+      const x = padL + ci * cellW;
+      const y = padT + ri * cellH;
+      ctx.fillStyle = cellColor(val);
+      ctx.fillRect(x, y, cellW - 1, cellH - 1);
+      ctx.fillStyle = Math.abs(val) > (Math.abs(vMax) * 0.3) ? '#fff' : '#374151';
+      ctx.font = '8.5px Inter, system-ui';
+      ctx.fillText(val.toFixed(2), x + cellW / 2, y + cellH / 2 + 3);
+    });
+  });
+}
+
+function renderRegimeChart(regimes) {
+  if (!regimes) return;
+  document.getElementById('risk-regimes-wrap').style.display = '';
+  document.getElementById('risk-regime-col').textContent = regimes.column || '';
+
+  // Stat badges
+  const statsEl = document.getElementById('risk-regime-stats');
+  if (statsEl) {
+    statsEl.innerHTML = (regimes.stats || []).map(s => `
+      <div style="background:${s.color}22;border:1px solid ${s.color}55;border-radius:8px;padding:.3rem .65rem;font-size:.75rem">
+        <strong style="color:${s.color}">${s.name}</strong>
+        <span style="color:var(--text-muted);margin-left:.35rem">μ=${s.mean} · ${s.pct}% del tiempo</span>
+      </div>`).join('');
+  }
+
+  const canvas = document.getElementById('risk-regime-chart');
+  if (!canvas) return;
+  if (WP.charts.riskRegime) { WP.charts.riskRegime.destroy(); WP.charts.riskRegime = null; }
+
+  const colors = ['#22c55e', '#f59e0b', '#ef4444'];
+  const bgColors = regimes.ts_regimes.map(r => colors[r] || '#94a3b8');
+
+  WP.charts.riskRegime = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels:   regimes.ts_labels,
+      datasets: [{
+        label: regimes.column,
+        data:  regimes.ts_values,
+        backgroundColor: bgColors,
+        borderWidth: 0,
+        barPercentage: 1.0,
+        categoryPercentage: 1.0,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${ctx.raw} · ${['Bajo','Medio','Alto'][regimes.ts_regimes[ctx.dataIndex]]}` } } },
+      scales: {
+        x: { display: false },
+        y: { grid: { color: gridColor() }, ticks: { font: { size: 8 } } },
+      },
+    },
+  });
 }
 
 function renderTechnoKPIs(r, leveraged = null) {
