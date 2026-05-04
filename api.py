@@ -2421,6 +2421,44 @@ def create_app():
         return jsonify(numpy_to_python(hm))
 
     # ─── KRIGING & MULTI-SITE ─────────────────────────────────────────────────
+    @app.route('/api/kriging/sites/light', methods=['GET'])
+    def kriging_list_sites_light():
+        """Versión rápida: solo metadatos derivables del nombre del archivo.
+        No abre los .txt ni calcula stats — sirve para pintar pines en el globo
+        antes de que llegue la versión completa con Weibull/v_mean.
+        """
+        folder = Config.DATA_FOLDER
+        if not os.path.isdir(folder):
+            return jsonify({'error': f'DATA_FOLDER not found: {folder}'}), 404
+
+        sites = []
+        for fname in _cached_list_files(folder):
+            if not fname.lower().endswith('.txt'):
+                continue
+            coords = parse_coords_from_filename(fname)
+            if coords is None:
+                continue
+            lat, lon = coords
+            info = get_site_info(fname)
+            sites.append({
+                'filename':     fname,
+                'display_name': info['display_name'],
+                'state':        info['state'],
+                'municipality': info['municipality'],
+                'lat':          float(lat),
+                'lon':          float(lon),
+                'source': ('merra2' if 'MERRA' in fname.upper()
+                           else 'era5' if 'ERA5' in fname.upper()
+                           else 'other'),
+            })
+
+        return jsonify({
+            'folder': folder,
+            'sites':  sites,
+            'count':  len(sites),
+            'light':  True,
+        })
+
     @app.route('/api/kriging/sites', methods=['GET'])
     def kriging_list_sites():
         """Escanea la carpeta meteorologica y devuelve sitios con stats Weibull.

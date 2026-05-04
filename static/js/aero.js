@@ -9155,20 +9155,46 @@ function fetchWorldAtlas() {
       GLOBE.mainReady = true;
     })
     .catch(e => console.warn('[globe] no se pudo cargar world-atlas:', e));
+
+  // Estados de México (estética) — fetch en background, no bloquea el render
+  fetch('https://cdn.jsdelivr.net/gh/strotgen/mexico-leaflet@master/states.geojson')
+    .then(r => r.json())
+    .then(geo => { GLOBE.mxStates = geo; })
+    .catch(e => console.warn('[globe] estados MX no disponibles:', e));
 }
 
 async function globePreloadSites() {
+  const yearSel = document.getElementById('krig3-year');
+  const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
+
+  // 1) Versión LIGHT: solo nombre + coords. Responde casi instantáneo y permite
+  //    pintar los pines del globo de inmediato.
   try {
-    const yearSel = document.getElementById('krig3-year');
-    const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
-    const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
-    GLOBE.sites = r.sites || [];
+    const rl = await api('/api/kriging/sites/light', 'GET');
+    GLOBE.sites = rl.sites || [];
+    GLOBE.sitesLight = true;
     updateGlobeStationsBadge();
-    console.log(`[globe] ${GLOBE.sites.length} estaciones cargadas (año ${year})`);
+    console.log(`[globe] ${GLOBE.sites.length} estaciones (light) listas`);
   } catch (e) {
-    console.error('[globe] error cargando estaciones:', e);
+    console.error('[globe] error light:', e);
     updateGlobeStationsBadge(true);
     if (typeof toast === 'function') toast('No se pudieron cargar las estaciones meteorológicas en el globo.', 'warn');
+    return;
+  }
+
+  // 2) Versión completa con Weibull/v_mean en background — enriquece los pines
+  //    sin bloquear el render inicial.
+  try {
+    const r = await api(`/api/kriging/sites?year=${year}`, 'GET');
+    if (r.sites && r.sites.length) {
+      const byName = new Map(r.sites.map(s => [s.filename, s]));
+      GLOBE.sites = GLOBE.sites.map(s => byName.get(s.filename) || s);
+      GLOBE.sitesLight = false;
+      updateGlobeStationsBadge();
+      console.log(`[globe] enriquecimiento completo (año ${year})`);
+    }
+  } catch (e) {
+    console.warn('[globe] enriquecimiento falló (pines siguen visibles):', e);
   }
 }
 
@@ -9416,6 +9442,15 @@ function drawGlobeMain() {
   ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.45)' : 'rgba(77,163,255,0.40)';
   ctx.lineWidth = 0.6;
   ctx.stroke();
+
+  // Fronteras de estados de México (solo si MX está en el hemisferio visible)
+  if (GLOBE.mxStates && isPointVisible(23.6, -102.5)) {
+    ctx.beginPath();
+    GLOBE.mainPath(GLOBE.mxStates);
+    ctx.strokeStyle = isLight ? 'rgba(15,95,168,0.55)' : 'rgba(159,122,234,0.45)';
+    ctx.lineWidth = 0.55;
+    ctx.stroke();
+  }
 
   // Outline
   ctx.beginPath();
