@@ -631,56 +631,66 @@ class TechnoEconomicAnalyzer:
                 energy_price_usd_kwh: float = 0.07,
                 discount_rate_pct: float = 8.0,
                 project_years: int = 20,
-                usd_to_mxn: float = 1.0) -> dict:
+                usd_to_mxn: float = 1.0,
+                annual_energy_kwh_series: list = None) -> dict:
         """
         Full techno-economic analysis.
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
 
-        annual_energy_kwh: total park energy per year in kWh
-        energy_price_usd_kwh: selling price in USD/kWh
-        discount_rate_pct: % e.g. 8.0
-        usd_to_mxn: FX multiplier (set to 1.0 to keep USD)
+        annual_energy_kwh: representative annual park energy (used for summary KPIs)
+        annual_energy_kwh_series: optional per-year energy list (ML forecast series).
+            When provided, NPV/LCOE/cashflows use year-specific AEP values.
         """
         r    = discount_rate_pct / 100.0
         capex = self.capex_breakdown(turbine, n_turbines)
         total_capex = capex['total_capex_usd']
+        investment_cost = total_capex * usd_to_mxn
 
         # OPEX anual = % del CAPEX total (modelo central WindPro)
         annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
-        annual_revenue     = annual_energy_kwh * energy_price_usd_kwh * usd_to_mxn
         annual_opex        = annual_maintenance * usd_to_mxn
-        annual_cashflow    = annual_revenue - annual_opex
 
-        # NPV / VAN — la inversión es el CAPEX total (BOS ya incluye ingeniería,
-        # instalación, contingencias; el ×1.8 anterior se eliminó por duplicación).
-        annuity_factor = (1 - (1 + r) ** -project_years) / r if r > 0 else project_years
-        investment_cost = total_capex * usd_to_mxn
-        npv = annual_cashflow * annuity_factor - investment_cost
+        # Representative revenue/cashflow for summary KPIs (mean year)
+        annual_revenue  = annual_energy_kwh * energy_price_usd_kwh * usd_to_mxn
+        annual_cashflow = annual_revenue - annual_opex
+
+        # Build cashflow table with per-year energy when series is available
+        cashflow_table = []
+        cumulative = -investment_cost
+        npv = -investment_cost
+        total_energy_kwh = 0.0
+        payback_years = float('inf')
+
+        for yr in range(1, project_years + 1):
+            if annual_energy_kwh_series and yr <= len(annual_energy_kwh_series):
+                yr_energy_kwh = float(annual_energy_kwh_series[yr - 1])
+            else:
+                yr_energy_kwh = annual_energy_kwh
+            yr_revenue  = yr_energy_kwh * energy_price_usd_kwh * usd_to_mxn
+            yr_cashflow = yr_revenue - annual_opex
+            pv = yr_cashflow / (1 + r) ** yr if r > 0 else yr_cashflow
+            npv += pv
+            cumulative += yr_cashflow
+            total_energy_kwh += yr_energy_kwh
+            if payback_years == float('inf') and cumulative >= 0:
+                # interpolate within the year
+                prev_cum = cumulative - yr_cashflow
+                payback_years = (yr - 1 + (-prev_cum) / yr_cashflow
+                                 if yr_cashflow > 0 else float(yr))
+            cashflow_table.append({
+                'year':        yr,
+                'energy_mwh':  round(yr_energy_kwh / 1000, 1),
+                'cashflow':    round(yr_cashflow),
+                'pv_cashflow': round(pv),
+                'cumulative':  round(cumulative),
+            })
 
         # VAE — annual equivalent value
         vae = npv * r / (1 - (1 + r) ** -project_years) if r > 0 else npv / project_years
 
-        # LCOE  USD/kWh
-        total_energy_kwh = annual_energy_kwh * project_years
-        total_costs_usd  = total_capex + annual_maintenance * project_years
+        # LCOE uses actual total energy across project life
+        total_costs_usd = total_capex + annual_maintenance * project_years
         lcoe_usd_kwh = total_costs_usd / total_energy_kwh if total_energy_kwh > 0 else 0
-
-        # Simple payback (years)
-        payback_years = (investment_cost / annual_cashflow
-                         if annual_cashflow > 0 else float('inf'))
-
-        # Annual cash flow table
-        cashflow_table = []
-        cumulative = -investment_cost
-        for yr in range(1, project_years + 1):
-            pv = annual_cashflow / (1 + r) ** yr
-            cumulative += annual_cashflow
-            cashflow_table.append({
-                'year':             yr,
-                'cashflow':         round(annual_cashflow),
-                'pv_cashflow':      round(pv),
-                'cumulative':       round(cumulative),
-            })
 
         capacity_factor = (annual_energy_kwh /
                            (turbine.rated_power_kw * n_turbines * 8760)

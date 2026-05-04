@@ -2698,6 +2698,16 @@ function bindTechno() {
       if (WP.technoFinalLoss.enabled) onTechnoLossChange();
     });
   }
+
+  // Escalamiento de exportación — re-render proyecto al cambiar (no requiere API)
+  const escEl = document.getElementById('te-price-escalation');
+  if (escEl) {
+    escEl.addEventListener('input', () => {
+      // Re-renderiza KPIs/flujos del proyecto. Leveraged se mantiene con NOI
+      // del año 1 (asunción conservadora — el escalamiento aplica al proyecto).
+      if (technoCurrentScenario()?.result) renderTechnoScenarioResult();
+    });
+  }
 }
 
 async function onTechnoLossChange() {
@@ -2818,51 +2828,69 @@ function renderTechnoSummaryCard(adjAnalysis, leveraged) {
   }
 }
 
-/** Devuelve una analysis "ajustada" tras aplicar el % pérdidas finales al AEP.
- *  No muta el original. Si el toggle está apagado o el % es 0, devuelve `a` tal cual. */
+/** Devuelve una analysis "ajustada" tras aplicar:
+ *    1) % pérdidas finales al AEP (si el toggle está activo)
+ *    2) tasa anual de escalamiento de exportación de electricidad (input `te-price-escalation`)
+ *  No muta el original. Si ambos parámetros son 0, devuelve `a` tal cual. */
 function technoAdjustedAnalysis(a) {
   if (!a) return a;
-  const ls = WP.technoFinalLoss;
-  if (!ls?.enabled || !ls.pct || ls.pct <= 0) return a;
-  const factor = 1 - ls.pct / 100;
-  const r = (a.discount_rate_pct || 0) / 100;
-  const N = a.project_years || 20;
+  const ls      = WP.technoFinalLoss;
+  const lossPct = ls?.enabled ? Math.max(0, Number(ls.pct) || 0) : 0;
+  const escPct  = parseFloat(document.getElementById('te-price-escalation')?.value) || 0;
+  if (lossPct <= 0 && escPct <= 0) return a;
+
+  const factor     = 1 - lossPct / 100;
+  const esc        = escPct / 100;
+  const r          = (a.discount_rate_pct || 0) / 100;
+  const N          = a.project_years || 20;
   const capexTotal = a.capex?.total_capex_usd || 0;
   const opex       = a.annual_opex_usd || 0;
+  const baseRev    = (a.annual_revenue_usd || 0) * factor;   // revenue año 1 (post-pérdidas)
 
   const adj = JSON.parse(JSON.stringify(a));
   adj.annual_energy_kwh   = Math.round((a.annual_energy_kwh || 0) * factor);
   adj.annual_energy_mwh   = Math.round((a.annual_energy_mwh || 0) * factor * 10) / 10;
-  adj.annual_revenue_usd  = Math.round((a.annual_revenue_usd || 0) * factor);
-  adj.annual_cashflow_usd = adj.annual_revenue_usd - opex;
+  adj.annual_revenue_usd  = Math.round(baseRev);             // KPI = revenue año 1
+  adj.annual_cashflow_usd = Math.round(baseRev - opex);
   adj.capacity_factor_pct = Math.round((a.capacity_factor_pct || 0) * factor * 100) / 100;
 
-  const annuityFactor = r > 0 ? (1 - Math.pow(1 + r, -N)) / r : N;
-  adj.npv_usd = Math.round(adj.annual_cashflow_usd * annuityFactor - capexTotal);
+  // Construye flujo anual con escalamiento aplicado al ingreso (OPEX constante)
+  let cum    = -capexTotal;
+  let cumPv  = -capexTotal;
+  let pbYears = null;
+  adj.cashflow_table = [];
+  for (let yr = 1; yr <= N; yr++) {
+    const revT = baseRev * Math.pow(1 + esc, yr - 1);
+    const cfT  = revT - opex;
+    const pvT  = cfT / Math.pow(1 + r, yr);
+    const prevCum = cum;
+    cum   += cfT;
+    cumPv += pvT;
+    if (pbYears == null && cum >= 0 && prevCum < 0 && cfT > 0) {
+      pbYears = Math.round((yr - 1 + (-prevCum) / cfT) * 10) / 10;
+    }
+    adj.cashflow_table.push({
+      year: yr,
+      cashflow:    Math.round(cfT),
+      pv_cashflow: Math.round(pvT),
+      cumulative:  Math.round(cum),
+    });
+  }
+  adj.npv_usd       = Math.round(cumPv);
+  adj.payback_years = pbYears;
   adj.vae_usd = r > 0
     ? Math.round(adj.npv_usd * r / (1 - Math.pow(1 + r, -N)))
     : Math.round(adj.npv_usd / N);
+
+  // LCOE — métrica de costo, no se afecta por escalamiento; solo por pérdidas (vía energía)
   const totalEnergyKwh = adj.annual_energy_kwh * N;
   const totalCostsUsd  = capexTotal + opex * N;
   adj.lcoe_usd_kwh = totalEnergyKwh > 0
     ? Math.round((totalCostsUsd / totalEnergyKwh) * 10000) / 10000 : 0;
-  adj.payback_years = adj.annual_cashflow_usd > 0
-    ? Math.round((capexTotal / adj.annual_cashflow_usd) * 10) / 10 : null;
-  adj.is_viable = adj.npv_usd > 0;
 
-  let cum = -capexTotal;
-  adj.cashflow_table = [];
-  for (let yr = 1; yr <= N; yr++) {
-    const pv = adj.annual_cashflow_usd / Math.pow(1 + r, yr);
-    cum += adj.annual_cashflow_usd;
-    adj.cashflow_table.push({
-      year: yr,
-      cashflow:    Math.round(adj.annual_cashflow_usd),
-      pv_cashflow: Math.round(pv),
-      cumulative:  Math.round(cum),
-    });
-  }
-  adj._final_loss_applied_pct = ls.pct;
+  adj.is_viable = adj.npv_usd > 0;
+  adj._final_loss_applied_pct = lossPct;
+  adj._price_escalation_pct   = escPct;
   return adj;
 }
 
@@ -2917,6 +2945,7 @@ function technoCollectInputs() {
     nTurbines: parseInt(document.getElementById('te-nturbines')?.value) || 10,
     demand: parseFloat(document.getElementById('te-demand')?.value) || 0,
     price: parseFloat(document.getElementById('te-price')?.value) || 0.07,
+    priceEscalation: parseFloat(document.getElementById('te-price-escalation')?.value) || 0,
     rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
     years: parseInt(document.getElementById('te-years')?.value) || 20,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
@@ -2931,6 +2960,7 @@ function technoApplyInputs(inputs) {
   set('te-nturbines', inputs.nTurbines);
   set('te-demand', inputs.demand);
   set('te-price', inputs.price);
+  set('te-price-escalation', inputs.priceEscalation ?? 0);
   set('te-rate', inputs.rate);
   set('te-years', inputs.years);
   set('te-fx', inputs.fx);
@@ -2946,6 +2976,16 @@ function technoBestAnnualValue(key) {
   const vals = arr.map(Number).filter(Number.isFinite);
   if (!vals.length) return null;
   return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function technoWindAnnualSeries() {
+  const cfg = getForecastFutureConfig('wind');
+  const proj = cfg?.projection || {};
+  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel : Object.keys(proj).find(k => proj[k]?.annual?.length);
+  const arr = model ? proj[model]?.annual : null;
+  if (!arr?.length) return null;
+  const vals = arr.map(Number).filter(Number.isFinite);
+  return vals.length ? vals : null;
 }
 
 function technoScenarioDefaults(key) {
@@ -3017,10 +3057,16 @@ function renderTechnoScenarioResult() {
   const adjAnalysis = technoAdjustedAnalysis(r.analysis);
   const adjR = { ...r, analysis: adjAnalysis };
 
-  // Badge informativo de pérdidas aplicadas
+  // Badge informativo de ajustes aplicados (pérdidas y/o escalamiento)
   if (lossBadge) {
+    const parts = [];
     if (WP.technoFinalLoss.enabled && WP.technoFinalLoss.pct > 0) {
-      lossBadge.textContent = `−${WP.technoFinalLoss.pct}% pérdidas`;
+      parts.push(`−${WP.technoFinalLoss.pct}% pérdidas`);
+    }
+    const escVal = parseFloat(document.getElementById('te-price-escalation')?.value) || 0;
+    if (escVal > 0) parts.push(`+${escVal}%/año esc.`);
+    if (parts.length) {
+      lossBadge.textContent = parts.join(' · ');
       lossBadge.style.display = '';
     } else {
       lossBadge.style.display = 'none';
@@ -3079,13 +3125,19 @@ async function calcTechnoEconomic() {
   setStatus('Calculando análisis tecno-económico…');
   try {
     const inputs = technoCollectInputs();
-    const windMean = scenarioKey === 'ml' || scenarioKey === 'corrected' ? technoBestAnnualValue('wind') : null;
+    // For ML scenario: send full 25-year annual series so backend uses per-year AEP.
+    // For corrected scenario: keep single mean (Kriging AEP overrides energy anyway).
+    const windSeries = scenarioKey === 'ml' ? technoWindAnnualSeries() : null;
+    const windMean = windSeries
+      ? null
+      : (scenarioKey === 'ml' || scenarioKey === 'corrected' ? technoBestAnnualValue('wind') : null);
     const parkAep = scenarioKey === 'corrected' ? PARQUE.result?.aep_mwh : null;
     const body = {
       session_id:    WP.sessionId,
       scenario:      scenarioKey,
       n_turbines:    inputs.nTurbines,
       ws_height_m:   wsH(),
+      annual_wind_series_ms: windSeries,
       annual_wind_mean_ms: windMean,
       annual_energy_mwh: Number.isFinite(Number(parkAep)) ? Number(parkAep) : null,
       turbine: { builtin_model: inputs.turbine },
@@ -3632,7 +3684,7 @@ function renderTechnoLeveraged(r) {
     ['WACC',                       r.wacc_pct != null ? r.wacc_pct + '%' : '—', '', null],
     ['VAN apalancado',             signed(r.leveraged_npv_usd),    'USD',     r.leveraged_npv_usd],
     ['TIR apalancada',             r.leveraged_irr_pct != null ? r.leveraged_irr_pct + '%' : '—', '', null],
-    ['Retorno equity',             r.equity_payback_years ? r.equity_payback_years + ' años' : '> proyecto', '', null],
+    ['Retorno equity',             r.equity_payback_years != null ? Number(r.equity_payback_years).toFixed(1) + ' años' : '> proyecto', '', null],
     ['DSCR promedio',              r.dscr_mean != null ? r.dscr_mean.toFixed(2) + 'x' : '—', '', null],
     ['DSCR mínimo',                r.dscr_min  != null ? r.dscr_min.toFixed(2)  + 'x' : '—', '', null],
   ];
@@ -4163,12 +4215,21 @@ function renderCashflowTable(table, leveraged = null) {
   }
 
   // Modo simple — sin financiamiento
-  if (thead) thead.innerHTML =
-    '<tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>';
+  // Mostrar columna de energía si los valores varían año a año (escenario ML con serie)
+  const energyValues = table.map(r => r.energy_mwh).filter(v => v != null);
+  const showEnergy = energyValues.length === table.length &&
+    energyValues.some(v => Math.abs(v - energyValues[0]) > 0.5);
+  if (thead) thead.innerHTML = showEnergy
+    ? '<tr><th>Año</th><th>Energía (MWh)</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>'
+    : '<tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr>';
   tbody.innerHTML = table.map(r => {
     const cls = r.cumulative >= 0 ? 'positive' : 'negative';
+    const energyCell = showEnergy
+      ? `<td>${r.energy_mwh != null ? r.energy_mwh.toLocaleString('es-MX') : '—'}</td>`
+      : '';
     return `<tr class="${cls}">
       <td>${r.year}</td>
+      ${energyCell}
       <td>${usd(r.cashflow)}</td>
       <td>${usd(r.pv_cashflow)}</td>
       <td>${usd(r.cumulative)}</td>

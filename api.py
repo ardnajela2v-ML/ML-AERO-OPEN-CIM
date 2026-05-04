@@ -1495,11 +1495,36 @@ def create_app():
             requested_n_turbines = int(body.get('n_turbines') or 1)
             annual_energy_override_mwh = body.get('annual_energy_mwh')
             annual_wind_mean_ms = body.get('annual_wind_mean_ms')
+            annual_wind_series_ms = body.get('annual_wind_series_ms')
+            _wind_series = None
+            if annual_wind_series_ms and isinstance(annual_wind_series_ms, list):
+                _clean = []
+                for _sv in annual_wind_series_ms:
+                    try:
+                        _fv = float(_sv)
+                        if np.isfinite(_fv) and _fv > 0:
+                            _clean.append(_fv)
+                    except (TypeError, ValueError):
+                        pass
+                if _clean:
+                    _wind_series = _clean
+
             dt_h = _infer_dt_h(df.index)
             wind_info = {'source': 'session'}
             dispatch_index = df.index
 
-            if annual_wind_mean_ms is not None and np.isfinite(float(annual_wind_mean_ms)) and float(annual_wind_mean_ms) > 0:
+            if _wind_series:
+                # ML series: use mean speed for representative Weibull (Cp/dispatch display)
+                _v_mean = float(np.mean(_wind_series))
+                ws_hub, _ = _farm_weibull_fallback(_v_mean, 2.0, n_hours=8760)
+                dt_h = 1.0
+                dispatch_index = None
+                wind_info = {
+                    'source': 'forecast_ml_series',
+                    'n_years': len(_wind_series),
+                    'v_mean_ms': round(_v_mean, 3),
+                }
+            elif annual_wind_mean_ms is not None and np.isfinite(float(annual_wind_mean_ms)) and float(annual_wind_mean_ms) > 0:
                 ws_hub, _ = _farm_weibull_fallback(float(annual_wind_mean_ms), 2.0, n_hours=8760)
                 dt_h = 1.0
                 dispatch_index = None
@@ -1528,8 +1553,19 @@ def create_app():
                 except Exception:
                     pass
 
+            # Per-year AEP per turbine for ML wind series (computed post-rho)
+            _per_yr_kwh_per_turbine = None
+            if _wind_series:
+                _per_yr_kwh_per_turbine = []
+                for _v in _wind_series:
+                    _ws_yr, _ = _farm_weibull_fallback(_v, 2.0, n_hours=8760)
+                    _p_kw_yr = turbine.power_kw_density_corrected(_ws_yr, rho)
+                    _per_yr_kwh_per_turbine.append(float(_p_kw_yr.sum()))
+
             if annual_energy_override_mwh is not None and np.isfinite(float(annual_energy_override_mwh)) and float(annual_energy_override_mwh) > 0:
                 annual_kwh_per_turbine = float(annual_energy_override_mwh) * 1000 / max(requested_n_turbines, 1)
+            elif _per_yr_kwh_per_turbine:
+                annual_kwh_per_turbine = float(np.mean(_per_yr_kwh_per_turbine))
             else:
                 # annual energy per turbine
                 p_kw  = turbine.power_kw_density_corrected(ws_hub, rho)
@@ -1552,12 +1588,22 @@ def create_app():
             # como display equivalente. Antes el FX multiplicaba los flujos
             # internamente y mezclaba unidades en las llaves *_usd.
             fx_mxn_per_usd = float(fin_cfg.get('usd_to_mxn', 1.0))
+            _project_years = int(fin_cfg.get('project_years', 20))
+            _annual_energy_series_kwh = None
+            if _per_yr_kwh_per_turbine:
+                _annual_energy_series_kwh = [v * n_turbines for v in _per_yr_kwh_per_turbine]
+                if len(_annual_energy_series_kwh) < _project_years:
+                    _mean_kwh = annual_kwh_per_turbine * n_turbines
+                    _annual_energy_series_kwh += [_mean_kwh] * (_project_years - len(_annual_energy_series_kwh))
+                _annual_energy_series_kwh = _annual_energy_series_kwh[:_project_years]
+
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
                 energy_price_usd_kwh=float(fin_cfg.get('energy_price_usd_kwh', 0.07)),
                 discount_rate_pct=float(fin_cfg.get('discount_rate_pct', 8.0)),
-                project_years=int(fin_cfg.get('project_years', 20)),
+                project_years=_project_years,
                 usd_to_mxn=1.0,
+                annual_energy_kwh_series=_annual_energy_series_kwh,
             )
             analysis['fx_mxn_per_usd'] = fx_mxn_per_usd
 
@@ -1745,7 +1791,22 @@ def create_app():
             dscr_mean  = round(sum(dscr_vals) / len(dscr_vals), 3) if dscr_vals else None
             dscr_min   = round(min(dscr_vals), 3) if dscr_vals else None
 
-            equity_payback = next((r['year'] for r in rows if r['cum_equity_cf'] >= 0), None)
+            # Simple equity payback — interpola dentro del año para ser comparable
+            # con el DPBP (que también interpola). Sin esto, payback se redondea
+            # al siguiente año entero y puede aparecer ≥ que el DPBP, que es
+            # imposible matemáticamente con flujos positivos.
+            equity_payback = None
+            prev_cum = -equity_usd
+            for r in rows:
+                cf = r['equity_cf']
+                cum_now = r['cum_equity_cf']
+                if cum_now >= 0 and prev_cum < 0 and cf > 0:
+                    equity_payback = round(r['year'] - 1 + (-prev_cum) / cf, 1)
+                    break
+                if cum_now >= 0:
+                    equity_payback = float(r['year'])
+                    break
+                prev_cum = cum_now
 
             return jsonify({
                 'equity_usd':           round(equity_usd),
