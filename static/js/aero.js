@@ -7657,6 +7657,24 @@ function parqueClearTurbineMarkers() {
   PARQUE.turbineMarkers = [];
 }
 
+function _parkTurbineIconHtml(num, color) {
+  const W = 32, H = 40, cx = 16;
+  const topY = H * 0.12, botY = H - 5;
+  const blades = [0, 120, 240].map(deg =>
+    '<g transform="translate(' + cx + ' ' + (topY + 4) + ') rotate(' + deg + ')">' +
+    '<path d="M -1.8 0 L 1.8 0 L 0.9 ' + (-(H * 0.26)) + ' L -0.9 ' + (-(H * 0.26)) + ' Z" fill="' + color + '" opacity="0.92" stroke="rgba(255,255,255,0.15)" stroke-width="0.3"/>' +
+    '</g>'
+  ).join('');
+  return '<div style="position:relative;width:' + W + 'px;height:' + (H + 14) + 'px;cursor:grab">' +
+    '<svg viewBox="0 0 ' + W + ' ' + H + '" style="display:block;overflow:visible" xmlns="http://www.w3.org/2000/svg">' +
+    '<polygon points="' + (cx-3) + ',' + botY + ' ' + (cx+3) + ',' + botY + ' ' + (cx+1.2) + ',' + (topY+4) + ' ' + (cx-1.2) + ',' + (topY+4) + '" fill="' + color + '" stroke="rgba(255,255,255,0.2)" stroke-width="0.7"/>' +
+    blades +
+    '<circle cx="' + cx + '" cy="' + (topY + 4) + '" r="3" fill="#e2e8f0" stroke="' + color + '" stroke-width="1"/>' +
+    '</svg>' +
+    '<div style="position:absolute;bottom:0;left:50%;transform:translateX(-50%);background:' + color + ';color:#0b1220;border-radius:10px;padding:1px 5px;font-size:9px;font-weight:700;border:1px solid rgba(255,255,255,0.25);white-space:nowrap">' + num + '</div>' +
+    '</div>';
+}
+
 function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
   parqueClearTurbineMarkers();
   const map = parqueInitMap();
@@ -7671,21 +7689,102 @@ function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
     const aep = Number(sim?.aep_mwh);
     const t = Number.isFinite(aep) ? (aep - minA) / (maxA - minA + 1e-6) : 0.5;
     const [r_, g_, b_] = krigColor(t);
-    const clr = `rgb(${r_|0},${g_|0},${b_|0})`;
+    const clr = 'rgb(' + (r_|0) + ',' + (g_|0) + ',' + (b_|0) + ')';
     const tip = sim
-      ? `<b>T${i+1}</b><br>AEP: ${parqueFmt(sim.aep_mwh, 1)} MWh<br>Estela: ${parqueFmt(sim.wake_loss_pct, 1)}%<br>CF: ${parqueFmt(sim.cf_pct, 1)}%`
-      : `<b>T${i+1}</b><br>${parqueFmt(lat, 5)}°, ${parqueFmt(lon, 5)}°`;
+      ? '<b>T' + (i+1) + '</b><br>AEP: ' + parqueFmt(sim.aep_mwh, 1) + ' MWh<br>Estela: ' + parqueFmt(sim.wake_loss_pct, 1) + '%<br>CF: ' + parqueFmt(sim.cf_pct, 1) + '%'
+      : '<b>T' + (i+1) + '</b><br>' + parqueFmt(lat, 5) + '°, ' + parqueFmt(lon, 5) + '°';
     const icon = L.divIcon({
       className: '',
-      html: `<div style="width:24px;height:24px;border-radius:50%;background:${clr};border:2px solid #fff;
-               box-shadow:0 2px 8px rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;
-               font-size:9px;font-weight:700;color:#0b1220">${i+1}</div>`,
-      iconSize: [24, 24], iconAnchor: [12, 12],
+      html: _parkTurbineIconHtml(i + 1, clr),
+      iconSize: [32, 54], iconAnchor: [16, 40],
     });
-    const m = L.marker([lat, lon], { icon }).bindPopup(tip);
+    const m = L.marker([lat, lon], { icon, draggable: true }).bindPopup(tip);
+    m.on('dragend', parqueMarkEdited);
     m.addTo(map);
     PARQUE.turbineMarkers.push(m);
   });
+}
+
+function parqueMarkEdited() {
+  let btn = document.getElementById('btn-parque-recalc-edit');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'btn-parque-recalc-edit';
+    btn.style.cssText = 'position:absolute;bottom:12px;left:50%;transform:translateX(-50%);z-index:1000;font-size:.78rem;padding:.42rem 1.1rem;background:#f59e0b;color:#0b1220;border:none;border-radius:8px;font-weight:700;cursor:pointer;box-shadow:0 2px 14px rgba(0,0,0,.5);letter-spacing:.02em';
+    btn.textContent = '↺ Recalcular con posiciones editadas';
+    btn.onclick = parqueRecalcEditedLayout;
+    const mapEl = document.getElementById('parque-map');
+    if (mapEl) { mapEl.style.position = 'relative'; mapEl.appendChild(btn); }
+  }
+  btn.style.display = '';
+}
+
+async function parqueRecalcEditedLayout() {
+  if (!WP.sessionId) { toast('Carga datos primero.', 'warn'); return; }
+  const EARTH_R = 6371000;
+  const opt = PARQUE.optResult || {};
+  // Best origin: centroid of original layout
+  const orig = opt.layout_latlon || [];
+  const lat0 = orig.length ? orig.reduce((s, p) => s + p[0], 0) / orig.length : 0;
+  const lon0 = orig.length ? orig.reduce((s, p) => s + p[1], 0) / orig.length : 0;
+  const lat0r = lat0 * Math.PI / 180;
+  const layoutXY = PARQUE.turbineMarkers.map(m => {
+    const ll = m.getLatLng();
+    const x = (ll.lng - lon0) * Math.PI / 180 * EARTH_R * Math.cos(lat0r);
+    const y = (ll.lat - lat0) * Math.PI / 180 * EARTH_R;
+    return [x, y];
+  });
+  const layoutLatLon = PARQUE.turbineMarkers.map(m => { const ll = m.getLatLng(); return [ll.lat, ll.lng]; });
+  const turbineKey = document.getElementById('parque-turbine')?.value;
+  const hubHeight = parseFloat(document.getElementById('parque-ws-h')?.value) || 110;
+  const body = {
+    layout:            layoutXY,
+    turbine:           { builtin_model: turbineKey, hub_height_m: hubHeight },
+    ws_height_m:       wsH(),
+    k_wake:            parseFloat(document.getElementById('parque-kwake')?.value) || 0.075,
+    ct:                parseFloat(document.getElementById('parque-ct')?.value) || 0.8,
+    availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
+    electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
+    n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
+    session_id:        WP.sessionId,
+  };
+  const btn = document.getElementById('btn-parque-recalc-edit');
+  if (btn) btn.textContent = '⏳ Recalculando…';
+  setStatus('Recalculando con layout editado…');
+  try {
+    const r = await api('/api/farm/simulate', 'POST', body);
+    PARQUE.result = r;
+    PARQUE.optResult = Object.assign({}, PARQUE.optResult, { simulation: r, layout_latlon: layoutLatLon });
+    // Update marker colors
+    const simTurbines = r.turbines || [];
+    const aeps = simTurbines.map(t => Number(t?.aep_mwh)).filter(Number.isFinite);
+    const maxA = aeps.length ? Math.max(...aeps, 0.001) : 1;
+    const minA = aeps.length ? Math.min(...aeps, maxA) : 0;
+    PARQUE.turbineMarkers.forEach((m, i) => {
+      const sim = simTurbines[i] || null;
+      const aep = Number(sim?.aep_mwh);
+      const t2 = Number.isFinite(aep) ? (aep - minA) / (maxA - minA + 1e-6) : 0.5;
+      const [r2, g2, b2] = krigColor(t2);
+      const clr = 'rgb(' + (r2|0) + ',' + (g2|0) + ',' + (b2|0) + ')';
+      m.setIcon(L.divIcon({ className: '', html: _parkTurbineIconHtml(i + 1, clr), iconSize: [32, 54], iconAnchor: [16, 40] }));
+      const tip = sim
+        ? '<b>T' + (i+1) + '</b><br>AEP: ' + parqueFmt(sim.aep_mwh, 1) + ' MWh<br>Estela: ' + parqueFmt(sim.wake_loss_pct, 1) + '%<br>CF: ' + parqueFmt(sim.cf_pct, 1) + '%'
+        : '<b>T' + (i+1) + '</b>';
+      m.setPopupContent(tip);
+    });
+    // Update KPIs
+    document.getElementById('parque-kpi-aep').textContent = parqueFmt(Number(r.aep_mwh) / 1000, 3, '0.000');
+    document.getElementById('parque-kpi-wl').textContent  = parqueFmt(r.wake_loss_pct, 2, '0.00');
+    document.getElementById('parque-kpi-cf').textContent  = parqueFmt(r.cf_pct, 2, '0.00');
+    parqueRenderAEPChart(simTurbines, layoutLatLon);
+    parqueRenderTable(layoutLatLon, r.wind_at_turbines || [], simTurbines);
+    if (btn) { btn.textContent = '✓ Recalculado'; setTimeout(() => { if (btn) btn.style.display = 'none'; }, 2500); }
+    toast('Layout editado recalculado.', 'success');
+    setStatus('Simulación con layout editado completada.');
+  } catch (e) {
+    if (btn) btn.textContent = '↺ Recalcular con posiciones editadas';
+    toast('Error: ' + e.message, 'error');
+  }
 }
 
 // ── Controles de mapa ────────────────────────────────────────────────────────
@@ -12280,56 +12379,34 @@ function _poiIconHtml() {
     </svg>`;
 }
 
-function _turbineIconHtml(isMaster, distKm) {
-  const W = isMaster ? 52 : 36;
-  const H = isMaster ? 64 : 48;
-  const baseFill   = isMaster ? '#B45309' : '#0F5FA8';
-  const towerStop1 = isMaster ? '#7A4A1A' : '#0B3258';
-  const towerStop2 = isMaster ? '#FFE0BF' : '#9DD0FF';
-  const towerStop3 = isMaster ? '#5A3210' : '#0A1A2C';
-  const bladeStop1 = isMaster ? '#FFE7C7' : '#E0EFFF';
-  const bladeStop2 = isMaster ? '#B45309' : '#4DA3FF';
-  const hubStop    = isMaster ? '#FFC890' : '#82BFFF';
-  const id = isMaster ? 'M' : 'N';
-  const labelTxt = (distKm != null) ? `${distKm.toFixed(0)} km${isMaster ? ' ★' : ''}` : (isMaster ? '★ MAESTRA' : '');
+function _metStationIconHtml(isMaster, distKm) {
+  const W = isMaster ? 44 : 30;
+  const H = isMaster ? 58 : 42;
+  const mastClr   = isMaster ? '#B45309' : '#475569';
+  const sensorClr = isMaster ? '#F59E0B' : '#60A5FA';
+  const topClr    = isMaster ? '#FFC890' : '#E2F0FF';
+  const guyClr    = isMaster ? '#92400E' : '#2D3748';
+  const lbl = (distKm != null)
+    ? distKm.toFixed(0) + ' km' + (isMaster ? ' ★' : '')
+    : (isMaster ? '★ MAESTRA' : '');
+  const cx = W / 2, topY = H * 0.09, botY = H - 7;
   return `
-    <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="t${id}Tower" x1="0" x2="1" y1="0" y2="0">
-          <stop offset="0%"  stop-color="${towerStop1}"/>
-          <stop offset="50%" stop-color="${towerStop2}"/>
-          <stop offset="100%" stop-color="${towerStop3}"/>
-        </linearGradient>
-        <linearGradient id="t${id}Blade" x1="0" x2="1" y1="0" y2="1">
-          <stop offset="0%"  stop-color="${bladeStop1}"/>
-          <stop offset="100%" stop-color="${bladeStop2}"/>
-        </linearGradient>
-        <radialGradient id="t${id}Hub" cx="35%" cy="35%" r="60%">
-          <stop offset="0%"  stop-color="#FFFFFF"/>
-          <stop offset="100%" stop-color="${hubStop}"/>
-        </radialGradient>
-      </defs>
-      <!-- Sombra base -->
-      <ellipse cx="${W/2}" cy="${H-3}" rx="${W*0.32}" ry="${W*0.07}" fill="rgba(0,0,0,0.45)"/>
-      <!-- Plataforma -->
-      <ellipse cx="${W/2}" cy="${H-7}" rx="${W*0.18}" ry="${W*0.05}" fill="${baseFill}" opacity="0.85"/>
-      <!-- Torre -->
-      <path d="M ${W/2 - W*0.07} ${H-8} L ${W/2 + W*0.07} ${H-8}
-               L ${W/2 + W*0.04} ${H*0.32} L ${W/2 - W*0.04} ${H*0.32} Z"
-            fill="url(#t${id}Tower)" stroke="rgba(0,0,0,0.45)" stroke-width="0.6"/>
-      <!-- Aspas (rotor con animación CSS) -->
-      <g class="globe-l-station__rotor" transform="translate(${W/2} ${H*0.32})">
-        ${[0,120,240].map(deg => `
-          <g transform="rotate(${deg})">
-            <path d="M -2 0 L 2 0 L 1 ${-H*0.30} L -1 ${-H*0.30} Z"
-                  fill="url(#t${id}Blade)" stroke="rgba(0,0,0,0.55)" stroke-width="0.5"/>
-          </g>`).join('')}
-      </g>
-      <!-- Hub (nacela) -->
-      <circle cx="${W/2}" cy="${H*0.32}" r="${isMaster ? 4.2 : 3.2}"
-              fill="url(#t${id}Hub)" stroke="rgba(0,0,0,0.5)" stroke-width="0.7"/>
+    <svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" overflow="visible">
+      <ellipse cx="${cx}" cy="${botY+4}" rx="${W*0.28}" ry="${W*0.07}" fill="rgba(0,0,0,0.45)"/>
+      <rect x="${cx-6}" y="${botY-2}" width="12" height="5" rx="2" fill="${mastClr}" opacity="0.9"/>
+      <line x1="${cx}" y1="${topY+10}" x2="${cx-W*0.38}" y2="${botY}" stroke="${guyClr}" stroke-width="0.7" opacity="0.5" stroke-dasharray="3 2"/>
+      <line x1="${cx}" y1="${topY+10}" x2="${cx+W*0.38}" y2="${botY}" stroke="${guyClr}" stroke-width="0.7" opacity="0.5" stroke-dasharray="3 2"/>
+      <polygon points="${cx-2.2},${botY} ${cx+2.2},${botY} ${cx+0.7},${topY+4} ${cx-0.7},${topY+4}" fill="${mastClr}" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/>
+      <line x1="${cx}" y1="${H*0.35}" x2="${cx+W*0.42}" y2="${H*0.35}" stroke="${sensorClr}" stroke-width="1.4"/>
+      <circle cx="${cx+W*0.42}" cy="${H*0.35}" r="2.8" fill="${sensorClr}" stroke="#fff" stroke-width="0.8"/>
+      <line x1="${cx}" y1="${H*0.56}" x2="${cx-W*0.35}" y2="${H*0.56}" stroke="#94A3B8" stroke-width="1.2"/>
+      <rect x="${cx-W*0.35-3}" y="${H*0.56-3}" width="6" height="5" rx="1.2" fill="#94A3B8" stroke="#fff" stroke-width="0.7"/>
+      <circle cx="${cx}" cy="${topY}" r="${isMaster ? 3.5 : 2.8}" fill="${topClr}" stroke="${sensorClr}" stroke-width="1.2"/>
+      <circle cx="${cx}" cy="${topY-4.5}" r="1.8" fill="${sensorClr}"/>
+      <circle cx="${cx+3.9}" cy="${topY+2.2}" r="1.8" fill="${sensorClr}"/>
+      <circle cx="${cx-3.9}" cy="${topY+2.2}" r="1.8" fill="${sensorClr}"/>
     </svg>
-    ${labelTxt ? `<div class="globe-l-station__label">${labelTxt}</div>` : ''}
+    ${lbl ? '<div class="globe-l-station__label">' + lbl + '</div>' : ''}
   `;
 }
 
@@ -12361,11 +12438,11 @@ function leafletRenderStations() {
   GLOBE.leafletStations = [];
   GLOBE.visibleSites.forEach(s => {
     const isMaster = (GLOBE.master === s.filename);
-    const W = isMaster ? 52 : 36;
-    const H = isMaster ? 64 : 48;
+    const W = isMaster ? 44 : 30;
+    const H = isMaster ? 58 : 42;
     const icon = L.divIcon({
       className: `globe-l-station ${isMaster ? 'globe-l-station--master' : ''}`,
-      html: _turbineIconHtml(isMaster, s._dist),
+      html: _metStationIconHtml(isMaster, s._dist),
       iconSize: [W, H],
       iconAnchor: [W/2, H - 6],   // base de la torre cerca del lat/lon real
     });
