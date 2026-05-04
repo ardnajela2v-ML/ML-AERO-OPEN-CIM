@@ -3433,7 +3433,7 @@ async function calcSensitivity() {
     session_id: WP.sessionId,
     turbine:    { builtin_model: inp.turbine },
     n_turbines: inp.nTurbines,
-    base_annual_kwh: (a.annual_energy_kwh_per_turbine || 0) * inp.nTurbines,
+    base_annual_kwh: a.annual_energy_kwh || 0,
     financial: {
       energy_price_usd_kwh:    inp.price,
       discount_rate_pct:       inp.rate,
