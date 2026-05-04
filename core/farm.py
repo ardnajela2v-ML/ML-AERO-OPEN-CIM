@@ -150,6 +150,49 @@ def dominant_direction(wd: np.ndarray, n_sectors: int = 36) -> float:
     return float(s * sector_width + sector_width / 2)
 
 
+def energy_weighted_dominant_direction(
+        ws: np.ndarray, wd: np.ndarray,
+        turbine: 'PowerCurve',
+        n_sectors: int = 16,
+        rho: float = 1.225,
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """
+    Energy-weighted dominant wind direction from a 16-sector wind rose.
+
+    Weights each direction sector by its total power contribution
+    (P(v) × frequency), which is more representative than simple frequency
+    because it accounts for how much energy each sector actually delivers.
+
+    Returns
+    -------
+    dominant_dir_deg : float   — centre of the highest-energy sector
+    sector_dirs_deg  : ndarray — centre direction of each of the n_sectors
+    sector_energy_pct: ndarray — energy fraction per sector (sums to 100)
+    """
+    valid = np.isfinite(ws) & np.isfinite(wd) & (ws > 0)
+    sector_width = 360.0 / n_sectors
+    sector_dirs = np.arange(n_sectors) * sector_width + sector_width / 2.0
+
+    if not valid.any():
+        return 270.0, sector_dirs, np.ones(n_sectors) / n_sectors * 100.0
+
+    ws_v = ws[valid]
+    wd_v = wd[valid] % 360.0
+
+    sector_energy = np.zeros(n_sectors)
+    p_kw = turbine.power_kw_density_corrected(ws_v, rho)
+    sector_idx = (wd_v / sector_width).astype(int) % n_sectors
+    np.add.at(sector_energy, sector_idx, p_kw)
+
+    total_e = sector_energy.sum()
+    sector_energy_pct = (sector_energy / total_e * 100.0) if total_e > 0 \
+        else np.ones(n_sectors) / n_sectors * 100.0
+
+    dom_sector = int(np.argmax(sector_energy_pct))
+    dom_dir = float(sector_dirs[dom_sector])
+    return dom_dir, sector_dirs, sector_energy_pct
+
+
 # ── Top-level farm AEP ────────────────────────────────────────────────────────
 
 def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
@@ -623,4 +666,307 @@ def optimize_layout_greedy(
         'installed_mw':      round(installed_kw / 1000.0, 3),
         'density_mw_km2':    round(
             installed_kw / 1000.0 / (area_m2 / 1e6) if area_m2 > 0 else 0.0, 3),
+    }
+
+
+# ── Structured (rose-aligned) layout helpers ─────────────────────────────────
+
+def _build_structured_grid(
+        poly_xs: list, poly_ys: list,
+        lat0: float, lon0: float,
+        D: float,
+        dominant_dir_deg: float,
+        s_para_d: float, s_perp_d: float,
+        stagger: float,
+        wind_grid, fallback_wind_ms: float,
+) -> List[Dict[str, Any]]:
+    """
+    Generate candidate turbine positions on a structured grid aligned with
+    the dominant wind direction.
+
+    Grid axes (in local Cartesian, x=East, y=North):
+      u_down  = unit vector in the downwind direction (wind blows toward)
+      u_cross = unit vector 90° clockwise from u_down (cross-wind)
+
+    Rows (lines of turbines perpendicular to wind) are spaced s_para_d × D
+    along u_down.  Within each row, turbines are spaced s_perp_d × D along
+    u_cross.  Odd-numbered rows are shifted by stagger × s_perp_d × D in
+    the crosswind direction (tresbolillo/quincunx when stagger=0.5).
+    """
+    toward_deg = (dominant_dir_deg + 180.0) % 360.0
+    tr = math.radians(toward_deg)
+    u_down  = np.array([ math.sin(tr),  math.cos(tr)])   # downwind (E,N)
+    u_cross = np.array([ math.cos(tr), -math.sin(tr)])   # cross-wind
+
+    s_para_m = s_para_d * D
+    s_perp_m = s_perp_d * D
+    stag_m   = stagger * s_perp_m
+
+    # Project polygon vertices onto wind-aligned axes for extent
+    poly_arr = np.array([poly_xs, poly_ys]).T
+    along_proj = poly_arr @ u_down
+    cross_proj = poly_arr @ u_cross
+
+    along_min = along_proj.min() - s_para_m
+    along_max = along_proj.max() + s_para_m
+    cross_min = cross_proj.min() - s_perp_m
+    cross_max = cross_proj.max() + s_perp_m
+
+    candidates: List[Dict[str, Any]] = []
+    r = 0
+    a = along_min
+    while a <= along_max + 1.0:
+        row_stag = (r % 2) * stag_m
+        c = cross_min
+        while c <= cross_max + 1.0:
+            x = a * u_down[0] + (c + row_stag) * u_cross[0]
+            y = a * u_down[1] + (c + row_stag) * u_cross[1]
+            if _point_in_polygon_xy(x, y, poly_xs, poly_ys):
+                lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
+                v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
+                     if wind_grid else None)
+                if v is None or not math.isfinite(v) or v <= 0:
+                    v = fallback_wind_ms
+                candidates.append({
+                    'x': x, 'y': y,
+                    'lat': lats_c[0], 'lon': lons_c[0],
+                    'v': float(v),
+                    'row': r,
+                })
+            c += s_perp_m
+        a += s_para_m
+        r += 1
+    return candidates
+
+
+def _min_pair_distance(layout_xy: List[List[float]], D: float) -> float:
+    """Return the minimum pairwise distance as multiples of D."""
+    if len(layout_xy) < 2:
+        return 999.0
+    arr = np.array(layout_xy, dtype=float)
+    diffs = arr[:, None, :] - arr[None, :, :]   # (N,N,2)
+    dists = np.sqrt((diffs ** 2).sum(axis=2))    # (N,N)
+    np.fill_diagonal(dists, np.inf)
+    return float(dists.min()) / D
+
+
+def _score_layout_fast(
+        layout_xy: List[List[float]], D: float,
+        sector_dirs: np.ndarray, sector_weights: np.ndarray,
+        turbine: 'PowerCurve', k_wake: float, ct: float,
+        v_mean: float, rho: float = 1.225,
+) -> float:
+    """
+    Fast energy score: sector-weighted average farm power [kW].
+    Loops over the 16 energy sectors, computes Jensen wake for each,
+    returns expected farm power weighted by sector energy fraction.
+    """
+    if not layout_xy:
+        return 0.0
+    arr = np.array(layout_xy, dtype=float)
+    score = 0.0
+    for s_dir, s_w in zip(sector_dirs.tolist(), sector_weights.tolist()):
+        if s_w <= 0.0:
+            continue
+        v_eff = effective_wind_per_turbine(arr, v_mean, float(s_dir), D,
+                                           k=k_wake, ct=ct)
+        p_kw  = turbine.power_kw_density_corrected(v_eff, rho)
+        score += float(np.sum(p_kw)) * s_w
+    return score
+
+
+# ── Structured layout optimisation ───────────────────────────────────────────
+
+def optimize_layout_structured(
+        polygon_latlon,
+        turbine: PowerCurve,
+        n_turbines: int,
+        ws: Optional[np.ndarray] = None,
+        wd: Optional[np.ndarray] = None,
+        wind_grid: Optional[Dict[str, Any]] = None,
+        fallback_wind_ms: float = 9.0,
+        k_wake: float = 0.075,
+        ct: float = 0.8,
+        min_spacing_d: float = 3.0,
+        s_para_range: Tuple = (5, 6, 7, 8, 10),
+        s_perp_range:  Tuple = (3, 4, 5, 6),
+        stagger_options: Tuple = (0.0, 0.5),
+        n_rose_sectors: int = 16,
+        rho: float = 1.225,
+) -> dict:
+    """
+    Wind-rose-aligned structured layout optimisation.
+
+    Searches over combinations of:
+      s_para_d  — along-wind row spacing (rotor diameters)
+      s_perp_d  — cross-wind column spacing (rotor diameters)
+      stagger   — 0.0 = aligned grid, 0.5 = tresbolillo (quincunx):
+                  alternate rows shifted s_perp_d/2 in the crosswind
+                  direction so each downwind turbine sits between two
+                  upwind neighbours, avoiding direct wake exposure.
+
+    The grid is rotated to align rows perpendicular to the dominant wind
+    direction, which is computed as the energy-weighted maximum of the
+    16-sector wind rose (power × frequency per sector).
+
+    After finding the best configuration, falls back to optimize_layout_greedy
+    if no valid structured layout could be built.
+
+    Returns a dict compatible with optimize_layout_greedy output, plus:
+      layout_config      — chosen (s_para_d, s_perp_d, stagger, dom_dir)
+      top_configs        — top-5 ranked configurations tried
+      sector_energy_pct  — energy % per rose sector
+      sector_dirs_deg    — direction centre of each sector
+    """
+    D         = float(turbine.rotor_diameter_m or 80.0)
+    min_sep_m = min_spacing_d * D
+
+    # Parse polygon
+    poly: List[Tuple[float, float]] = []
+    for p in polygon_latlon:
+        if isinstance(p, dict):
+            poly.append((float(p['lat']), float(p['lon'])))
+        else:
+            poly.append((float(p[0]), float(p[1])))
+    if len(poly) < 3:
+        raise ValueError('El polígono del parque necesita al menos 3 vértices.')
+
+    lats_p = [p[0] for p in poly]
+    lons_p = [p[1] for p in poly]
+    lat0 = sum(lats_p) / len(lats_p)
+    lon0 = sum(lons_p) / len(lons_p)
+    poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+
+    n_p = len(poly_xs)
+    area_m2 = abs(sum(
+        poly_xs[i] * poly_ys[(i + 1) % n_p] -
+        poly_xs[(i + 1) % n_p] * poly_ys[i]
+        for i in range(n_p)
+    )) / 2.0
+
+    rho_val = float(rho) if rho and math.isfinite(float(rho)) and rho > 0 else 1.225
+
+    # ── Energy-weighted dominant direction from wind rose ──────────────────
+    if ws is not None and wd is not None and len(ws) > 0:
+        dom_dir, sector_dirs, sector_energy_pct = energy_weighted_dominant_direction(
+            ws, wd, turbine, n_sectors=n_rose_sectors, rho=rho_val,
+        )
+        ws_valid = ws[np.isfinite(ws) & (ws > 0)]
+        v_mean = float(np.mean(ws_valid)) if len(ws_valid) > 0 else fallback_wind_ms
+    else:
+        dom_dir = 270.0
+        sector_dirs = np.linspace(0.0, 360.0, n_rose_sectors, endpoint=False) \
+                      + 180.0 / n_rose_sectors
+        sector_energy_pct = np.ones(n_rose_sectors) / n_rose_sectors * 100.0
+        v_mean = fallback_wind_ms
+
+    sector_weights = sector_energy_pct / 100.0
+
+    # ── Search over configuration space ───────────────────────────────────
+    all_configs: List[Dict[str, Any]] = []
+
+    for s_para_d in s_para_range:
+        for s_perp_d in s_perp_range:
+            for stagger in stagger_options:
+                # Minimum distance check for this configuration
+                # Same-row neighbour: s_perp_d × D
+                # Staggered next-row diagonal: sqrt((stagger × s_perp_d)² + s_para_d²) × D
+                min_same_row_d   = float(s_perp_d)
+                if stagger > 0:
+                    min_diag_d = math.hypot(stagger * s_perp_d, s_para_d)
+                else:
+                    min_diag_d = float(s_para_d)
+                effective_min_d  = min(min_same_row_d, min_diag_d)
+                if effective_min_d < min_spacing_d:
+                    continue
+
+                cands = _build_structured_grid(
+                    poly_xs, poly_ys, lat0, lon0, D,
+                    dom_dir, s_para_d, s_perp_d, stagger,
+                    wind_grid, v_mean,
+                )
+                if not cands:
+                    continue
+
+                # Trim to n_turbines: prefer highest-wind-speed positions
+                if n_turbines > 0 and len(cands) > n_turbines:
+                    sel = sorted(cands, key=lambda c: -c['v'])[:n_turbines]
+                else:
+                    sel = cands
+
+                if not sel:
+                    continue
+
+                layout_xy = [[c['x'], c['y']] for c in sel]
+                score = _score_layout_fast(
+                    layout_xy, D, sector_dirs, sector_weights,
+                    turbine, k_wake, ct, v_mean, rho_val,
+                )
+                all_configs.append({
+                    's_para_d':  float(s_para_d),
+                    's_perp_d':  float(s_perp_d),
+                    'stagger':   float(stagger),
+                    'n_fit':     len(cands),
+                    'n_used':    len(sel),
+                    'score_kw':  round(score, 1),
+                    '_layout_xy': layout_xy,
+                    '_candidates': sel,
+                })
+
+    # ── Fall back to greedy if no structured config found ─────────────────
+    if not all_configs:
+        result = optimize_layout_greedy(
+            polygon_latlon, turbine, n_turbines,
+            wind_grid=wind_grid, fallback_wind_ms=fallback_wind_ms,
+            min_spacing_d=min_spacing_d, k_wake=k_wake, ct=ct,
+        )
+        result['layout_config'] = {
+            's_para_d': None, 's_perp_d': None, 'stagger': 0.0,
+            'dominant_dir_deg': round(dom_dir, 1),
+            'layout_type': 'greedy_fallback',
+            'n_configs_tried': 0,
+        }
+        result['sector_energy_pct'] = [round(v, 2) for v in sector_energy_pct.tolist()]
+        result['sector_dirs_deg']   = [round(v, 1) for v in sector_dirs.tolist()]
+        return result
+
+    best = max(all_configs, key=lambda c: c['score_kw'])
+    placed       = best['_candidates']
+    layout_latlon = [[p['lat'], p['lon']] for p in placed]
+    layout_xy_m   = [[p['x'],  p['y']]   for p in placed]
+    n_placed      = len(placed)
+    installed_kw  = n_placed * float(turbine.rated_power_kw)
+
+    top5 = sorted(all_configs, key=lambda c: -c['score_kw'])[:5]
+    top5_clean = [
+        {k: v for k, v in c.items() if not k.startswith('_')}
+        for c in top5
+    ]
+
+    return {
+        'n_placed':         n_placed,
+        'n_requested':      int(n_turbines),
+        'n_candidates':     len(placed),
+        'layout_latlon':    layout_latlon,
+        'layout_xy_m':      layout_xy_m,
+        'wind_at_turbines': [round(p['v'], 3) for p in placed],
+        'origin_lat':       lat0,
+        'origin_lon':       lon0,
+        'D_m':              D,
+        'min_sep_m':        round(min_sep_m, 1),
+        'area_km2':         round(area_m2 / 1e6, 4),
+        'installed_mw':     round(installed_kw / 1000.0, 3),
+        'density_mw_km2':   round(
+            installed_kw / 1000.0 / (area_m2 / 1e6) if area_m2 > 0 else 0.0, 3),
+        'layout_config': {
+            's_para_d':         best['s_para_d'],
+            's_perp_d':         best['s_perp_d'],
+            'stagger':          best['stagger'],
+            'dominant_dir_deg': round(dom_dir, 1),
+            'layout_type':      'tresbolillo' if best['stagger'] >= 0.25 else 'alineado',
+            'n_configs_tried':  len(all_configs),
+        },
+        'top_configs':          top5_clean,
+        'sector_energy_pct':    [round(v, 2) for v in sector_energy_pct.tolist()],
+        'sector_dirs_deg':      [round(v, 1) for v in sector_dirs.tolist()],
     }

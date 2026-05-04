@@ -7762,8 +7762,9 @@ async function parqueOptimize() {
     availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
     electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
+    layout_type:       document.getElementById('parque-layout-type')?.value || 'auto',
     hub_height_m:      hubHeight,
-    measurement_height_m: 50,
+    measurement_height_m: wsH(),
     session_id:        WP.sessionId,
   };
 
@@ -7796,6 +7797,22 @@ async function parqueOptimize() {
       ? `${r.n_placed} turbinas · ${r.installed_mw} MW · ${sim.hours?.toLocaleString()||'—'} h`
       : `${r.n_placed} turbinas colocadas (sin serie temporal)`;
 
+    // Layout config badge (tresbolillo / alineado / spacings / direction)
+    const lcfg = r.layout_config;
+    const lBadge = document.getElementById('parque-layout-badge');
+    if (lBadge && lcfg) {
+      const typeLabel = lcfg.layout_type === 'tresbolillo' ? '⬡ Tresbolillo'
+                      : lcfg.layout_type === 'alineado'    ? '▦ Alineado'
+                      : '⚙ GSP';
+      const spacings = (lcfg.s_para_d != null && lcfg.s_perp_d != null)
+        ? ` · ${lcfg.s_para_d}D×${lcfg.s_perp_d}D` : '';
+      const dirLabel = lcfg.dominant_dir_deg != null
+        ? ` · Dir ${Math.round(lcfg.dominant_dir_deg)}°` : '';
+      const nTried = lcfg.n_configs_tried > 0 ? ` (${lcfg.n_configs_tried} configs)` : '';
+      lBadge.textContent = typeLabel + spacings + dirLabel + nTried;
+      lBadge.style.display = '';
+    } else if (lBadge) { lBadge.style.display = 'none'; }
+
     document.getElementById('parque-layout-meta').textContent =
       `Área: ${r.area_km2} km² · D: ${r.D_m}m · Sep. mín: ${r.min_sep_m}m · ${r.n_candidates} candidatos`;
 
@@ -7806,9 +7823,10 @@ async function parqueOptimize() {
       if (sim.error === 'wind_series_invalid') {
         toast('⚠ Serie de viento con todos-NaN — se usó síntesis Weibull para AEP. Recarga datos en Data Hub.', 'warn', 7000);
       }
-      // Auto-update wake direction from dominant wind direction
+      // Auto-update wake direction from energy-weighted dominant direction
       const wdirEl = document.getElementById('parque-wake-dir');
-      if (wdirEl && sim.dominant_dir_deg != null) wdirEl.value = Math.round(sim.dominant_dir_deg ?? 270);
+      const domDir = r.layout_config?.dominant_dir_deg ?? sim.dominant_dir_deg;
+      if (wdirEl && domDir != null) wdirEl.value = Math.round(domDir);
 
       document.getElementById('parque-kpis').style.display = '';
       document.getElementById('parque-kpi-aep').textContent = parqueFmt(Number(sim.aep_mwh) / 1000, 3, '0.000');

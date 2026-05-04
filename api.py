@@ -75,7 +75,8 @@ from core.kriging import (parse_coords_from_filename, read_wind_file,
                           _compute_site_stats_cached, clear_site_stats_cache,
                           _haversine_km)
 from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
-                       recommend_n_turbines, optimize_layout_greedy)
+                       recommend_n_turbines, optimize_layout_greedy,
+                       optimize_layout_structured, energy_weighted_dominant_direction)
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION)
@@ -2373,30 +2374,8 @@ def create_app():
                 np.asarray([v_mean], dtype=float), measurement_h, turbine.hub_height_m
             )[0])
 
-            n_turbines = int(body.get('n_turbines', 0))
-            demand_mwh = float(body.get('demand_mwh', 5000))
-
-            if n_turbines <= 0:
-                rec        = recommend_n_turbines(
-                    turbine=turbine, demand_mwh=demand_mwh,
-                    v_mean=v_mean_hub, weibull_k=weibull_k,
-                    availability=avail, electrical_losses=elec_loss,
-                )
-                n_turbines = rec['n_turbines']
-
-            opt = optimize_layout_greedy(
-                polygon_latlon=polygon,
-                turbine=turbine,
-                n_turbines=n_turbines,
-                wind_grid=wind_grid,
-                fallback_wind_ms=v_mean_hub,
-                min_spacing_d=float(body.get('min_spacing_d', 5.0)),
-                grid_step_d=float(body.get('grid_step_d',   1.5)),
-                k_wake=float(body.get('k_wake', 0.075)),
-                ct=float(body.get('ct',    0.8)),
-            )
-
-            sim_result = None
+            # ── Load real wind series FIRST so the structured optimizer
+            # can use it for energy-weighted dominant direction ─────────────
             ws_hub = None
             wd = None
             temp_c = None
@@ -2416,14 +2395,14 @@ def create_app():
                 else:
                     wind_info = {'source': 'weibull_fallback', 'valid': False, 'reason': 'session_without_df'}
 
-            ws_hub_arr = np.asarray(ws_hub, dtype=float) if ws_hub is not None else np.array([], dtype=float)
-            hub_finite = np.isfinite(ws_hub_arr)
+            ws_hub_arr   = np.asarray(ws_hub, dtype=float) if ws_hub is not None else np.array([], dtype=float)
+            hub_finite   = np.isfinite(ws_hub_arr)
             hub_positive = hub_finite & (ws_hub_arr > 0)
             if ws_hub is None or not hub_finite.any() or not hub_positive.any():
                 fallback_reason = wind_info.get('reason', 'invalid_session_wind')
                 logger.warning(
-                    'farm_optimize: viento inválido para sesión %s '
-                    '(columna «%s», razón=%s). Usando síntesis Weibull v_mean=%.2f m/s.',
+                    'farm_optimize: viento inválido sesión %s (col «%s», razón=%s). '
+                    'Usando Weibull v_mean=%.2f m/s.',
                     sid or '—', ws_col or '—', fallback_reason, v_mean_hub
                 )
                 reference_wind_mean = v_mean
@@ -2439,23 +2418,64 @@ def create_app():
                     'valid': True,
                 }
 
+            # Air density for scoring
+            rho_opt = 1.225
+            if temp_c is not None and pres_p is not None:
+                try:
+                    from core.energy import air_density as _air_density
+                    rho_opt = float(np.mean(_air_density(temp_c, pres_p)))
+                except Exception:
+                    pass
+
+            n_turbines = int(body.get('n_turbines', 0))
+            demand_mwh = float(body.get('demand_mwh', 5000))
+            if n_turbines <= 0:
+                rec = recommend_n_turbines(
+                    turbine=turbine, demand_mwh=demand_mwh,
+                    v_mean=v_mean_hub, weibull_k=weibull_k,
+                    availability=avail, electrical_losses=elec_loss,
+                )
+                n_turbines = rec['n_turbines']
+
+            # ── Structured layout: filter stagger_options by layout_type ──
+            layout_type = body.get('layout_type', 'auto')  # 'auto'|'aligned'|'staggered'
+            if layout_type == 'aligned':
+                stagger_opts = (0.0,)
+            elif layout_type == 'staggered':
+                stagger_opts = (0.5,)
+            else:
+                stagger_opts = (0.0, 0.5)
+
+            opt = optimize_layout_structured(
+                polygon_latlon=polygon,
+                turbine=turbine,
+                n_turbines=n_turbines,
+                ws=np.asarray(ws_hub, dtype=float),
+                wd=np.asarray(wd,     dtype=float),
+                wind_grid=wind_grid,
+                fallback_wind_ms=v_mean_hub,
+                min_spacing_d=float(body.get('min_spacing_d', 5.0)),
+                k_wake=float(body.get('k_wake', 0.075)),
+                ct=float(body.get('ct', 0.8)),
+                stagger_options=stagger_opts,
+                rho=rho_opt,
+            )
+
             sim_result = None
             if ws_hub is not None and len(ws_hub) > 0:
                 mean_ws = float(np.nanmean(ws_hub))
                 local_multipliers = None
                 multiplier_ref = reference_wind_mean if reference_wind_mean and reference_wind_mean > 0 else mean_ws
-                if wind_grid and 'wind_at_turbines' in opt and opt['wind_at_turbines'] and multiplier_ref > 0:
+                if wind_grid and opt.get('wind_at_turbines') and multiplier_ref > 0:
                     wind_at = np.asarray(opt['wind_at_turbines'], dtype=float)
                     if wind_at.shape[0] == len(opt['layout_xy_m']):
                         wind_at_valid = np.isfinite(wind_at) & (wind_at > 0)
                         wind_at = np.where(wind_at_valid, wind_at, multiplier_ref)
                         local_multipliers = np.nan_to_num(
                             wind_at / multiplier_ref,
-                            nan=1.0,
-                            posinf=1.0,
-                            neginf=1.0,
+                            nan=1.0, posinf=1.0, neginf=1.0,
                         )
-                
+
                 sim_result = simulate_wind_farm(
                     layout_xy=opt['layout_xy_m'],
                     turbine=turbine,
