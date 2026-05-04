@@ -2210,6 +2210,8 @@ def create_app():
             weibull_k  = float(body.get('weibull_k',  2.0))
             avail      = float(body.get('availability',      0.97))
             elec_loss  = float(body.get('electrical_losses', 0.03))
+            sid  = body.get('session_id')
+            sess = sessions.get(sid, {}) if sid else {}
             measurement_h = _sess_ws_h(body, sess, 'measurement_height_m')
             v_mean_hub = float(extrapolate_wind_hellmann(
                 np.asarray([v_mean], dtype=float), measurement_h, turbine.hub_height_m
@@ -2239,7 +2241,6 @@ def create_app():
             )
 
             sim_result = None
-            sid = body.get('session_id')
             ws_hub = None
             wd = None
             temp_c = None
@@ -2249,7 +2250,6 @@ def create_app():
             ws_col = None
 
             if sid:
-                sess   = sessions.get(sid, {})
                 if 'df' in sess:
                     df     = sess['df']
                     ws_col = sess.get('target_col', 'wind_speed')
