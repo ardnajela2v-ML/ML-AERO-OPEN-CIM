@@ -2675,6 +2675,7 @@ function bindTechno() {
   if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
   const levBtn = document.getElementById('btn-lev-from-scenario');
   if (levBtn) levBtn.addEventListener('click', () => showFinancingModal(WP.technoActiveScenario));
+  document.getElementById('btn-clear-financing')?.addEventListener('click', clearLeveraged);
   document.getElementById('fin-modal-cancel')?.addEventListener('click', closeFinancingModal);
   document.getElementById('financing-modal-backdrop')?.addEventListener('click', closeFinancingModal);
 
@@ -3653,12 +3654,24 @@ async function calcLeveragedForScenario(scenarioKey, params) {
   }
 }
 
+function clearLeveraged() {
+  WP.technoScenarios[WP.technoActiveScenario].leveraged = null;
+  renderTechnoLeveraged(null);
+  const sc = technoCurrentScenario();
+  if (sc?.result?.analysis) {
+    const adjA = technoAdjustedAnalysis(sc.result.analysis);
+    renderCashflowTable(adjA.cashflow_table);
+    renderTechnoSummaryCard(adjA, null);
+  }
+}
+
 function renderTechnoLeveraged(r) {
   const section   = document.getElementById('te-lev-section');
   const amortCard = document.getElementById('te-lev-amort-card');
   const cfTitle   = document.getElementById('te-cashflow-title');
   const cfBadge   = document.getElementById('te-cashflow-mode-badge');
   if (!section) return;
+  const clearBtn = document.getElementById('btn-clear-financing');
   if (!r) {
     section.style.display = 'none';
     destroyChart('chart-lev-structure');
@@ -3666,6 +3679,7 @@ function renderTechnoLeveraged(r) {
     if (amortCard) amortCard.style.display = '';
     if (cfTitle) cfTitle.textContent = 'Tabla de flujos anuales';
     if (cfBadge) cfBadge.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = 'none';
     // Revert main KPI grid to unlevered values
     const _sc0 = technoCurrentScenario();
     if (_sc0?.result?.analysis) {
@@ -3673,6 +3687,7 @@ function renderTechnoLeveraged(r) {
     }
     return;
   }
+  if (clearBtn) clearBtn.style.display = '';
   section.style.display = '';
   // Los flujos del proyecto + financiamiento se integran en la tabla de flujos del proyecto
   // (no se muestran aparte). La tabla de amortización queda oculta porque su info
