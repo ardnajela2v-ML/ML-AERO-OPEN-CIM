@@ -2219,7 +2219,17 @@ def create_app():
                     rated_speed=float(t_cfg.get('rated_speed', 12.0)),
                     cut_out=float(t_cfg.get('cut_out', 25.0)),
                     hub_height_m=hub_h,
+                )
+
+            df = sess['df']
+            ws_col = sess.get('target_col', 'wind_speed')
+            wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
+            ws_h = _sess_ws_h(body, sess)
+            ws_hub, wd, temperature_c, pressure_pa, _, wind_info = _farm_wind_from_session(
+                df, ws_col, wd_col, ws_h, turbine.hub_height_m
             )
+            if ws_hub is None:
+                v_mean = float(body.get('v_mean', 9.0))
                 weibull_k = float(body.get('weibull_k', 2.0))
                 v_mean_hub = float(extrapolate_wind_hellmann(
                     np.asarray([v_mean], dtype=float), ws_h, turbine.hub_height_m
