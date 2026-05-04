@@ -314,7 +314,31 @@ def create_app():
         if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
         return obj
 
+    def _auto_detect_wd_col(df):
+        """Return the best wind-direction column from df, or None."""
+        _DIR_KEYWORDS = ['dir', 'wd', 'direction', 'wdir', 'bearing', 'azimuth']
+        _DIR_EXCLUDES = ['std', 'stdev', 'dev', 'sigma', 'gust', 'speed', 'vel']
+        best = None
+        for col in df.columns:
+            cl = col.lower()
+            if not any(k in cl for k in _DIR_KEYWORDS):
+                continue
+            if any(x in cl for x in _DIR_EXCLUDES):
+                continue
+            vals = pd.to_numeric(df[col], errors='coerce').dropna()
+            if len(vals) == 0:
+                continue
+            if vals.min() >= 0 and vals.max() <= 360:
+                best = col
+                break  # first match wins; columns are usually ordered wind_speed, wind_dir
+        return best
+
     def _farm_wind_from_session(df, ws_col, wd_col, measurement_h, hub_height_m):
+        # If requested wd_col is missing, auto-detect from the dataframe
+        if wd_col not in df.columns:
+            detected = _auto_detect_wd_col(df)
+            if detected:
+                wd_col = detected
         info = {
             'source': 'session',
             'ws_col': ws_col,
@@ -721,6 +745,10 @@ def create_app():
             sess = get_session(sid)
             sess['df'] = df
             sess['meta'] = meta
+            # Auto-detect and store wind direction column for later use
+            auto_wd = _auto_detect_wd_col(df)
+            if auto_wd:
+                sess['wd_col'] = auto_wd
 
             # quick preview
             preview_rows = df_to_json_safe(df, max_rows=200)
@@ -2191,18 +2219,7 @@ def create_app():
                     rated_speed=float(t_cfg.get('rated_speed', 12.0)),
                     cut_out=float(t_cfg.get('cut_out', 25.0)),
                     hub_height_m=hub_h,
-                    rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
-                )
-
-            df = sess['df']
-            ws_col = sess.get('target_col', 'wind_speed')
-            wd_col = body.get('wd_col', 'wind_dir')
-            ws_h    = _sess_ws_h(body, sess)
-            ws_hub, wd, temperature_c, pressure_pa, _, wind_info = _farm_wind_from_session(
-                df, ws_col, wd_col, ws_h, turbine.hub_height_m
             )
-            if ws_hub is None:
-                v_mean = float(body.get('v_mean', 9.0))
                 weibull_k = float(body.get('weibull_k', 2.0))
                 v_mean_hub = float(extrapolate_wind_hellmann(
                     np.asarray([v_mean], dtype=float), ws_h, turbine.hub_height_m
@@ -2597,7 +2614,7 @@ def create_app():
                 if 'df' in sess:
                     df     = sess['df']
                     ws_col = sess.get('target_col', 'wind_speed')
-                    wd_col = body.get('wd_col', 'wind_dir')
+                    wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
                     ws_hub, wd, temp_c, pres_p, reference_wind_mean, wind_info = _farm_wind_from_session(
                         df, ws_col, wd_col, measurement_h, turbine.hub_height_m
                     )
