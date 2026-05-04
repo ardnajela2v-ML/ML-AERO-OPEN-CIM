@@ -1648,6 +1648,133 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    # ─── LEVERAGED FINANCIAL ANALYSIS ────────────────────────────────────────
+    @app.route('/api/energy/leveraged', methods=['POST'])
+    def leveraged_analysis():
+        """Pure financial calculation — no session required.
+        Inputs: capex_usd, annual_revenue_usd, annual_opex_usd, project_years,
+                equity_discount_rate_pct, debt_ratio_pct, interest_rate_pct,
+                loan_years, usd_to_mxn (optional).
+        """
+        body = request.json or {}
+        try:
+            capex          = float(body['capex_usd'])
+            annual_revenue = float(body['annual_revenue_usd'])
+            annual_opex    = float(body['annual_opex_usd'])
+            project_years  = int(body.get('project_years', 20))
+            equity_rate    = float(body.get('equity_discount_rate_pct', 12)) / 100.0
+            debt_ratio     = float(body.get('debt_ratio_pct', 70)) / 100.0
+            interest_rate  = float(body.get('interest_rate_pct', 8)) / 100.0
+            loan_years     = int(body.get('loan_years', 15))
+            fx             = float(body.get('usd_to_mxn', 1.0))
+
+            equity_usd = capex * (1.0 - debt_ratio)
+            debt_usd   = capex * debt_ratio
+
+            # PMT (annuity formula)
+            if debt_usd > 0 and interest_rate > 0:
+                pmt = debt_usd * interest_rate / (1.0 - (1.0 + interest_rate) ** (-loan_years))
+            elif debt_usd > 0:
+                pmt = debt_usd / loan_years
+            else:
+                pmt = 0.0
+
+            noi = annual_revenue - annual_opex  # net operating income
+
+            # WACC (simplified, no tax shield)
+            wacc = equity_rate * (1.0 - debt_ratio) + interest_rate * debt_ratio
+
+            # Build year-by-year table
+            rows = []
+            balance = debt_usd
+            cum_ecf = -equity_usd  # year-0 equity outflow
+
+            for yr in range(1, project_years + 1):
+                in_debt = yr <= loan_years and debt_usd > 0
+                if in_debt:
+                    interest   = balance * interest_rate
+                    principal  = pmt - interest
+                    balance_end = max(balance - principal, 0.0)
+                    dscr       = round(noi / pmt, 3) if pmt > 0 else None
+                else:
+                    interest = principal = 0.0
+                    balance_end = 0.0
+                    dscr = None
+
+                equity_cf = noi - (pmt if in_debt else 0.0)
+                cum_ecf  += equity_cf
+
+                rows.append({
+                    'year':          yr,
+                    'balance_start': round(balance),
+                    'interest':      round(interest),
+                    'principal':     round(principal),
+                    'balance_end':   round(balance_end),
+                    'dscr':          dscr,
+                    'equity_cf':     round(equity_cf),
+                    'cum_equity_cf': round(cum_ecf),
+                })
+                balance = balance_end
+
+            # Leveraged NPV: equity CFs discounted at equity_rate
+            ecfs = [-equity_usd] + [r['equity_cf'] for r in rows]
+            lev_npv = sum(cf / (1.0 + equity_rate) ** t for t, cf in enumerate(ecfs))
+
+            # Leveraged IRR (bisection)
+            def _npv_r(r):
+                return sum(cf / (1.0 + r) ** t for t, cf in enumerate(ecfs))
+
+            lev_irr = None
+            try:
+                lo, hi = -0.9999, 9.99
+                f_lo, f_hi = _npv_r(lo), _npv_r(hi)
+                if f_lo * f_hi < 0:
+                    for _ in range(256):
+                        mid = (lo + hi) / 2.0
+                        if abs(hi - lo) < 1e-9:
+                            break
+                        if _npv_r(mid) * f_lo > 0:
+                            lo = mid
+                        else:
+                            hi = mid
+                    lev_irr = round(mid * 100.0, 2)
+            except Exception:
+                pass
+
+            dscr_vals  = [r['dscr'] for r in rows if r['dscr'] is not None]
+            dscr_mean  = round(sum(dscr_vals) / len(dscr_vals), 3) if dscr_vals else None
+            dscr_min   = round(min(dscr_vals), 3) if dscr_vals else None
+
+            equity_payback = next((r['year'] for r in rows if r['cum_equity_cf'] >= 0), None)
+
+            return jsonify({
+                'equity_usd':           round(equity_usd),
+                'debt_usd':             round(debt_usd),
+                'annual_pmt_usd':       round(pmt),
+                'noi_usd':              round(noi),
+                'wacc_pct':             round(wacc * 100.0, 2),
+                'leveraged_npv_usd':    round(lev_npv),
+                'leveraged_irr_pct':    lev_irr,
+                'equity_payback_years': equity_payback,
+                'dscr_mean':            dscr_mean,
+                'dscr_min':             dscr_min,
+                'is_viable':            lev_npv > 0,
+                'cashflow_table':       rows,
+                'inputs': {
+                    'capex_usd':       round(capex),
+                    'equity_usd':      round(equity_usd),
+                    'debt_usd':        round(debt_usd),
+                    'debt_ratio_pct':  round(debt_ratio * 100.0, 1),
+                    'equity_ratio_pct': round((1.0 - debt_ratio) * 100.0, 1),
+                    'project_years':   project_years,
+                    'loan_years':      loan_years,
+                    'fx_mxn_per_usd':  fx,
+                },
+            })
+        except Exception as e:
+            logger.exception('Error en leveraged_analysis')
+            return _err(str(e), 500)
+
     # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
     @app.route('/api/farm/simulate', methods=['POST'])
     def farm_simulate():

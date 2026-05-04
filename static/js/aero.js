@@ -2671,10 +2671,15 @@ function bindTechno() {
   if (cmpBtn) cmpBtn.addEventListener('click', renderTechnoCompare);
   const cmpTurb = document.getElementById('btn-te-compare-turbines');
   if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
+  const levBtn = document.getElementById('btn-calc-leveraged');
+  if (levBtn) levBtn.addEventListener('click', calcLeveragedAnalysis);
+  const levBase = document.getElementById('lev-base-scenario');
+  if (levBase) levBase.addEventListener('change', refreshLevBaseInfo);
 }
 
 function technoCurrentScenario() {
-  return WP.technoScenarios[WP.technoActiveScenario] || WP.technoScenarios.real;
+  const key = WP.technoActiveScenario === 'financing' ? 'real' : WP.technoActiveScenario;
+  return WP.technoScenarios[key] || WP.technoScenarios.real;
 }
 
 function technoCollectCostModel() {
@@ -2772,18 +2777,30 @@ function technoScenarioDefaults(key) {
 }
 
 function technoSwitchScenario(key) {
-  WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
+  if (WP.technoActiveScenario !== 'financing') {
+    WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
+  }
   WP.technoActiveScenario = key || 'real';
   document.querySelectorAll('[data-te-scenario]').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.teScenario === WP.technoActiveScenario);
   });
-  const scenario = technoCurrentScenario();
-  technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
-  technoRefreshScenarioView();
+  const isFinancing = key === 'financing';
+  const mainPanel = document.getElementById('te-main-content');
+  const finPanel  = document.getElementById('te-financing-content');
+  if (mainPanel) mainPanel.style.display = isFinancing ? 'none' : '';
+  if (finPanel)  finPanel.style.display  = isFinancing ? ''     : 'none';
+  if (isFinancing) {
+    refreshLevBaseInfo();
+  } else {
+    const scenario = technoCurrentScenario();
+    technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
+    technoRefreshScenarioView();
+  }
 }
 
 function technoRefreshScenarioView() {
   const key = WP.technoActiveScenario;
+  if (key === 'financing') return;
   const badge = document.getElementById('te-scenario-badge');
   const status = document.getElementById('te-scenario-status');
   const meta = {
@@ -3275,6 +3292,233 @@ async function compareTurbinesTE() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   }
+}
+
+// ─── LEVERAGED FINANCIAL ANALYSIS ────────────────────────────────────────────
+
+function refreshLevBaseInfo() {
+  const key  = document.getElementById('lev-base-scenario')?.value || 'real';
+  const res  = WP.technoScenarios[key]?.result;
+  const box  = document.getElementById('lev-base-info');
+  if (!box) return;
+  if (!res?.analysis) {
+    box.style.display = '';
+    box.className = 'info-box amber';
+    box.textContent = `El escenario "${key === 'real' ? 'Sin predicción' : key === 'ml' ? 'Con predicción ML' : 'Viento corregido'}" no tiene resultados aún. Calcúlalo primero en sus tabs.`;
+    return;
+  }
+  const a   = res.analysis;
+  const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
+  box.style.display = '';
+  box.className = 'info-box';
+  box.innerHTML = `<strong>Referencia del escenario:</strong> CAPEX $${fmt(a.capex?.total_capex_usd)} USD · Ingreso anual $${fmt(a.annual_revenue_usd)} USD · OPEX $${fmt(a.annual_opex_usd)} USD · ${a.project_years || '—'} años`;
+}
+
+async function calcLeveragedAnalysis() {
+  const key = document.getElementById('lev-base-scenario')?.value || 'real';
+  const res = WP.technoScenarios[key]?.result;
+  if (!res?.analysis) {
+    toast(`Calcula primero el escenario "${key === 'real' ? 'Sin predicción' : key === 'ml' ? 'ML' : 'Corregido'}"`, 'warn');
+    return;
+  }
+  const a = res.analysis;
+  const body = {
+    capex_usd:                  a.capex?.total_capex_usd,
+    annual_revenue_usd:         a.annual_revenue_usd,
+    annual_opex_usd:            a.annual_opex_usd,
+    project_years:              a.project_years || parseInt(document.getElementById('te-years')?.value) || 20,
+    debt_ratio_pct:             parseFloat(document.getElementById('lev-debt-ratio')?.value)   || 70,
+    interest_rate_pct:          parseFloat(document.getElementById('lev-interest-rate')?.value) || 8,
+    loan_years:                 parseInt(document.getElementById('lev-loan-years')?.value)      || 15,
+    equity_discount_rate_pct:   parseFloat(document.getElementById('lev-equity-rate')?.value)   || 12,
+    usd_to_mxn:                 parseFloat(document.getElementById('te-fx')?.value) || 1,
+  };
+  setStatus('Calculando análisis apalancado…');
+  try {
+    const r = await api('/api/energy/leveraged', 'POST', body);
+    renderLeveragedResults(r);
+    toast('Análisis apalancado completado', 'success');
+    setStatus('Análisis apalancado completado.');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+    setStatus('Error en análisis apalancado.');
+  }
+}
+
+function renderLeveragedResults(r) {
+  // Badge
+  const badge = document.getElementById('lev-viable-badge');
+  if (badge) {
+    badge.style.display = '';
+    badge.textContent   = r.is_viable ? '✓ VAN POSITIVO' : '✗ VAN NEGATIVO';
+    badge.className     = `badge ${r.is_viable ? 'badge--success' : 'badge--error'}`;
+  }
+
+  const fmt    = n => n != null && Number.isFinite(n) ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
+  const signed = n => n != null && Number.isFinite(n) ? (n >= 0 ? '+' : '−') + ' $' + fmt(n) : '—';
+  const fx     = parseFloat(document.getElementById('te-fx')?.value) || 1;
+  const showMxn = fx > 1.0001;
+  const mxnStr = usd => showMxn && usd != null && Number.isFinite(usd)
+    ? `<div style="font-size:.7rem;color:var(--text-muted);margin-top:2px">≈ $${fmt(usd * fx)} MXN</div>` : '';
+
+  const items = [
+    ['Capital equity',          '$' + fmt(r.equity_usd),                    'USD',    r.equity_usd],
+    ['Deuda (CAPEX financiado)','$' + fmt(r.debt_usd),                      'USD',    r.debt_usd],
+    ['Servicio deuda anual (PMT)','$' + fmt(r.annual_pmt_usd),              'USD/año',r.annual_pmt_usd],
+    ['NOI anual',               signed(r.noi_usd),                          'USD/año',r.noi_usd],
+    ['WACC',                    r.wacc_pct != null ? r.wacc_pct + '%' : '—','',       null],
+    ['VAN apalancado',          signed(r.leveraged_npv_usd),                'USD',    r.leveraged_npv_usd],
+    ['TIR apalancada',          r.leveraged_irr_pct != null ? r.leveraged_irr_pct + '%' : '—', '', null],
+    ['Retorno equity',          r.equity_payback_years ? r.equity_payback_years + ' años' : '> proyecto', '', null],
+    ['DSCR promedio',           r.dscr_mean != null ? r.dscr_mean.toFixed(2) + 'x' : '—', '', null],
+    ['DSCR mínimo',             r.dscr_min  != null ? r.dscr_min.toFixed(2)  + 'x' : '—', '', null],
+  ];
+
+  const grid = document.getElementById('lev-kpi-grid');
+  if (grid) {
+    grid.innerHTML = `<div class="te-kpi-grid">${items.map(([l, v, u, usdVal]) =>
+      `<div class="te-kpi-item">
+        <div class="kpi-label">${l}</div>
+        <div class="kpi-value">${v}<span style="font-size:.7rem;color:var(--text-muted);margin-left:4px">${u}</span></div>
+        ${mxnStr(usdVal)}
+      </div>`
+    ).join('')}</div>`;
+  }
+
+  renderLevStructureChart(r);
+  renderLevCashflowChart(r);
+  renderLevAmortTable(r.cashflow_table);
+}
+
+function renderLevStructureChart(r) {
+  destroyChart('chart-lev-structure');
+  const ctx = document.getElementById('chart-lev-structure')?.getContext('2d');
+  if (!ctx) return;
+  WP.charts['chart-lev-structure'] = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Equity (capital propio)', 'Deuda (financiado)'],
+      datasets: [{
+        data: [r.equity_usd, r.debt_usd],
+        backgroundColor: ['#4DA3FF', '#9F7AEA'],
+        borderColor: '#121823',
+        borderWidth: 3,
+        hoverOffset: 8,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      cutout: '62%',
+      plugins: {
+        legend: { position: 'bottom', labels: { padding: 16 } },
+        tooltip: {
+          callbacks: {
+            label: ctx => {
+              const v = ctx.parsed;
+              const total = r.equity_usd + r.debt_usd;
+              const pct = total > 0 ? ((v / total) * 100).toFixed(1) : 0;
+              return ` $${Math.abs(v).toLocaleString('es-MX', {maximumFractionDigits:0})} USD (${pct}%)`;
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+function renderLevCashflowChart(r) {
+  destroyChart('chart-lev-cashflow');
+  const ctx = document.getElementById('chart-lev-cashflow')?.getContext('2d');
+  if (!ctx || !r.cashflow_table?.length) return;
+  const rows  = r.cashflow_table;
+  const years = rows.map(row => `Año ${row.year}`);
+  const noi   = rows.map(row => (r.noi_usd / 1e3).toFixed(1));
+  const pmt   = rows.map(row => row.year <= (r.inputs?.loan_years || 0) ? (r.annual_pmt_usd / 1e3).toFixed(1) : 0);
+  const ecf   = rows.map(row => (row.equity_cf / 1e3).toFixed(1));
+  const cumEcf= rows.map(row => (row.cum_equity_cf / 1e3).toFixed(1));
+  WP.charts['chart-lev-cashflow'] = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: years,
+      datasets: [
+        {
+          label: 'NOI (kUSD)',
+          data: noi,
+          backgroundColor: 'rgba(77,163,255,.35)',
+          borderColor: '#4DA3FF',
+          borderWidth: 1.5,
+          borderRadius: 3,
+          order: 2,
+        },
+        {
+          label: 'Servicio deuda PMT (kUSD)',
+          data: pmt,
+          backgroundColor: 'rgba(159,122,234,.35)',
+          borderColor: '#9F7AEA',
+          borderWidth: 1.5,
+          borderRadius: 3,
+          order: 3,
+        },
+        {
+          label: 'FC Equity (kUSD)',
+          data: ecf,
+          type: 'line',
+          borderColor: '#34D399',
+          backgroundColor: 'rgba(52,211,153,.12)',
+          borderWidth: 2,
+          pointRadius: 2.5,
+          tension: 0.3,
+          fill: false,
+          order: 1,
+        },
+        {
+          label: 'FC Equity acum. (kUSD)',
+          data: cumEcf,
+          type: 'line',
+          borderColor: '#F59E0B',
+          backgroundColor: 'transparent',
+          borderWidth: 1.5,
+          borderDash: [5, 3],
+          pointRadius: 0,
+          tension: 0.3,
+          fill: false,
+          order: 0,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { grid: { color: 'rgba(255,255,255,.05)' }, ticks: { maxTicksLimit: 10 } },
+        y: {
+          grid: { color: 'rgba(255,255,255,.07)' },
+          title: { display: true, text: 'Miles USD (kUSD)', color: '#A6B3C8', font: { size: 10 } },
+        }
+      },
+      plugins: { legend: { position: 'bottom', labels: { padding: 14, boxWidth: 10 } } },
+    }
+  });
+}
+
+function renderLevAmortTable(rows) {
+  const tbody = document.querySelector('#lev-amort-table tbody');
+  if (!tbody || !rows?.length) return;
+  const fmt = n => n != null && Number.isFinite(n) ? n.toLocaleString('es-MX', {maximumFractionDigits:0}) : '—';
+  tbody.innerHTML = rows.map(row => {
+    const dscr = row.dscr != null ? row.dscr.toFixed(2) : '—';
+    const dscr_ok = row.dscr == null || row.dscr >= 1.2;
+    return `<tr>
+      <td>${row.year}</td>
+      <td>$${fmt(row.balance_start)}</td>
+      <td>$${fmt(row.interest)}</td>
+      <td>$${fmt(row.principal)}</td>
+      <td>$${fmt(row.balance_end)}</td>
+      <td style="color:${dscr_ok ? 'var(--green)' : '#f87171'}">${dscr}x</td>
+      <td style="color:${row.equity_cf >= 0 ? 'var(--green)' : '#f87171'}">${row.equity_cf >= 0 ? '+' : '−'}$${fmt(row.equity_cf)}</td>
+      <td style="color:${row.cum_equity_cf >= 0 ? 'var(--green)' : '#f87171'}">${row.cum_equity_cf >= 0 ? '+' : '−'}$${fmt(row.cum_equity_cf)}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ─── EXPORT CENTER ───────────────────────────────────────────────────────────

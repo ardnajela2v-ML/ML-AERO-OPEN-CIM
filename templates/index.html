@@ -2977,7 +2977,11 @@
     <button class="tab-btn active" data-te-scenario="real">Sin predicción</button>
     <button class="tab-btn" data-te-scenario="ml">Con predicción ML</button>
     <button class="tab-btn" data-te-scenario="corrected">Viento corregido + predicción</button>
+    <button class="tab-btn" data-te-scenario="financing">Financiamiento</button>
   </div>
+
+  <!-- Panel principal (escenarios de viento) -->
+  <div id="te-main-content">
 
   <div class="grid-2 mt-2">
     <div class="card">
@@ -3231,6 +3235,97 @@
       </div>
     </div>
   </div>
+
+  </div><!-- /te-main-content -->
+
+  <!-- ══ Panel de Financiamiento ══ -->
+  <div id="te-financing-content" style="display:none">
+
+    <div class="grid-2 mt-2">
+      <!-- Parámetros de deuda -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Parámetros de financiamiento</span></div>
+        <div class="card-body">
+          <p class="text-muted" style="font-size:.78rem;margin-bottom:.75rem">
+            Selecciona el escenario base calculado para obtener CAPEX, ingresos y OPEX de referencia.
+          </p>
+          <div class="form-grid-2">
+            <div>
+              <label class="form-label">Escenario base</label>
+              <select class="form-select" id="lev-base-scenario">
+                <option value="real">Sin predicción (viento real)</option>
+                <option value="ml">Con predicción ML</option>
+                <option value="corrected">Viento corregido + predicción</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Razón de deuda (% del CAPEX)</label>
+              <input type="number" class="form-input" id="lev-debt-ratio" value="70" min="0" max="100" step="5">
+            </div>
+            <div>
+              <label class="form-label">Tasa de interés deuda (% anual)</label>
+              <input type="number" class="form-input" id="lev-interest-rate" value="8" min="0" step="0.25">
+            </div>
+            <div>
+              <label class="form-label">Plazo del crédito (años)</label>
+              <input type="number" class="form-input" id="lev-loan-years" value="15" min="1" max="30">
+            </div>
+            <div>
+              <label class="form-label">Tasa retorno equity (% anual)</label>
+              <input type="number" class="form-input" id="lev-equity-rate" value="12" min="0" step="0.5">
+            </div>
+          </div>
+          <div id="lev-base-info" class="info-box" style="margin-top:.75rem;display:none;font-size:.78rem"></div>
+          <button class="btn-primary mt-2" id="btn-calc-leveraged" style="width:100%">Calcular análisis apalancado</button>
+        </div>
+      </div>
+
+      <!-- KPIs apalancados -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">KPIs financieros apalancados</span>
+          <span class="badge badge--info" id="lev-viable-badge" style="display:none">—</span>
+        </div>
+        <div class="card-body" id="lev-kpi-grid">
+          <p class="text-muted" style="font-size:.8rem">Calcula un escenario base y ejecuta el análisis apalancado.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2 mt-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">Estructura de capital</span></div>
+        <div class="chart-box"><canvas id="chart-lev-structure"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Flujo de caja equity vs servicio de deuda</span></div>
+        <div class="chart-box"><canvas id="chart-lev-cashflow"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card mt-2">
+      <div class="card-header"><span class="card-title">Tabla de amortización y flujos equity</span></div>
+      <div class="card-body" style="overflow-x:auto;max-height:320px">
+        <table class="data-table" id="lev-amort-table">
+          <thead>
+            <tr>
+              <th>Año</th>
+              <th>Saldo inicial (USD)</th>
+              <th>Interés (USD)</th>
+              <th>Principal (USD)</th>
+              <th>Saldo final (USD)</th>
+              <th>DSCR</th>
+              <th>FC Equity (USD)</th>
+              <th>FC Equity acum. (USD)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /te-financing-content -->
+
 </section>
 
 <!-- ╔══════════════════ EXPORTAR ══════════════════╗ -->
