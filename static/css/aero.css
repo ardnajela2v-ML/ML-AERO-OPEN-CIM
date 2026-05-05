@@ -336,6 +336,11 @@ html, body {
   transition: all var(--transition);
 }
 .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+.ing-topbar-btn {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
 
 /* ─── MAIN CONTENT ─── */
 .main-content {
@@ -1250,30 +1255,6 @@ body.light .btn-sm:hover { background:#e8f4ef; color:#1a6b4a; border-color:#a8df
   pointer-events: auto;
 }
 
-/* Floating action button */
-.ing-fab {
-  position: fixed;
-  bottom: 38px;
-  right: 22px;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: linear-gradient(135deg, var(--accent) 0%, var(--accent2) 100%);
-  color: #fff;
-  cursor: pointer;
-  box-shadow: 0 6px 22px rgba(0,0,0,.38);
-  z-index: 880;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform .18s ease, box-shadow .18s ease;
-}
-.ing-fab:hover {
-  transform: translateY(-2px) scale(1.04);
-  box-shadow: 0 10px 30px rgba(0,0,0,.5);
-}
-
 /* Subtle inline ƒ buttons next to KPIs / chart titles */
 .btn-formula {
   display: inline-flex;
@@ -1307,10 +1288,6 @@ body.light .ing-backdrop { background: rgba(12,17,23,.25); }
 body.light .ing-f {
   background: linear-gradient(135deg, var(--acc) 0%, var(--acc2) 100%);
 }
-body.light .ing-fab {
-  background: linear-gradient(135deg, var(--acc) 0%, var(--acc2) 100%);
-}
-
 /* ── Hourly Chart Navigation Toolbar ─────────────────────────────────────── */
 .hourly-nav-toolbar {
   position: absolute;

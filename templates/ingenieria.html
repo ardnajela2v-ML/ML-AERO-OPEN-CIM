@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AERO by OPEN CIM — Ingeniería Eólica: WAsP · PyWAsP · PyWake</title>
+<title>AERO OPEN CIM — Ingeniería Eólica: WAsP · PyWAsP · PyWake</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap');
 
@@ -566,7 +566,7 @@
         <line x1="55" y1="55" x2="96" y2="26" stroke="#0F6E56" stroke-width="2.5" stroke-linecap="round"/>
         <circle cx="55" cy="55" r="4" fill="#1D9E75"/>
       </svg>
-      <span class="aero-brand-name">AERO <span class="aero-brand-sub">by OPEN CIM</span></span>
+      <span class="aero-brand-name">AERO <span class="aero-brand-sub">OPEN CIM</span></span>
     </a>
   </div>
   <div class="aero-topbar-right">
@@ -583,10 +583,10 @@
   <div class="hero-glow"></div>
   <div class="hero-glow2"></div>
   <div class="container" style="position:relative">
-    <div class="tag">AERO by OPEN CIM · Manual de Ingeniería Completo</div>
+    <div class="tag">AERO OPEN CIM · Manual de Ingeniería Completo</div>
     <h1><span class="accent">AERO</span> · Manual de<br><span class="accent2">Ingeniería &amp; Replicación</span></h1>
     <p class="hero-sub">
-      Física, matemática, código, ML y diseño detrás de cada módulo de la plataforma <strong>AERO by OPEN CIM</strong> —
+      Física, matemática, código, ML y diseño detrás de cada módulo de la plataforma <strong>AERO OPEN CIM</strong> —
       manual completo y científicamente fundamentado para replicar el sistema desde sus fundamentos físicos.
     </p>
     <div class="meta-bar">
@@ -627,13 +627,13 @@
       <li><a href="#s16">Kriging geoestadístico — interpolación espacial</a></li>
       <li><a href="#s17">Layout de parque eólico y optimización de micrositing</a></li>
       <li><a href="#s18">Sistema híbrido: viento + solar + almacenamiento</a></li>
-      <li><a href="#s19">Model Arena — ML para recurso y generación</a></li>
+      <li><a href="#s19">Centro de modelaje — ML para recurso y generación</a></li>
       <li><a href="#s20">Forecast Studio — pronóstico de corto plazo</a></li>
       <li><a href="#s21">Demanda eléctrica a largo plazo (25 años)</a></li>
       <li><a href="#s22">Precios PML — modelo estocástico 25 años</a></li>
       <li><a href="#s23">Energy Lab — balance energético y métricas</a></li>
-      <li><a href="#s24">Análisis Tecno-Económico completo</a></li>
-      <li><a href="#s25">Validation Center — métricas y benchmarking</a></li>
+      <li><a href="#s24">Análisis Tecnoeconómico completo</a></li>
+      <li><a href="#s25">Validación y exportación — métricas y benchmarking</a></li>
       <li><a href="#s26">Arquitectura de software AERO</a></li>
       <li><a href="#s27">API REST — contratos y endpoints</a></li>
       <li><a href="#s28">Guía de replicación completa paso a paso</a></li>
@@ -2115,14 +2115,14 @@ E_cap = capacidad nominal (MWh)
 </section>
 
 <!-- ══════════════════════════════════════
-     S19 — MODEL ARENA ML
+     S19 — CENTRO DE MODELAJE ML
 ══════════════════════════════════════ -->
 <section id="s19">
   <div class="section-label">19 · Machine Learning</div>
-  <h2>Model Arena — ML para recurso y generación</h2>
+  <h2>Centro de modelaje — ML para recurso y generación</h2>
 
   <p>
-    El módulo <em>Model Arena</em> permite entrenar, comparar y desplegar modelos de aprendizaje automático para predecir velocidad de viento, potencia generada o variables derivadas a partir de reanálisis y datos de torre. Implementa un pipeline ML reproducible con validación rigurosa.
+    El módulo <em>Centro de modelaje</em> permite entrenar, comparar y desplegar modelos de aprendizaje automático para predecir velocidad de viento, potencia generada o variables derivadas a partir de reanálisis y datos de torre. Implementa un pipeline ML reproducible con validación rigurosa.
   </p>
 
   <h3>Pipeline ML en AERO</h3>
@@ -2256,7 +2256,7 @@ conf_int = result.<span class="py-fn">get_forecast</span>(<span class="py-num">7
   <h2>Demanda eléctrica a largo plazo (25 años)</h2>
 
   <p>
-    La proyección de demanda eléctrica a 25 años es insumo fundamental del análisis tecno-económico. AERO implementa tres enfoques complementarios: regresión econométrica, modelos de elasticidad y simulación de Monte Carlo para capturar la incertidumbre estructural.
+    La proyección de demanda eléctrica a 25 años es insumo fundamental del análisis tecnoeconómico. AERO implementa tres enfoques complementarios: regresión econométrica, modelos de elasticidad y simulación de Monte Carlo para capturar la incertidumbre estructural.
   </p>
 
   <h3>Modelo de regresión con variables macro</h3>
@@ -2434,14 +2434,14 @@ FLH = AEP / P_rated   <span class="py-cm"># horas equivalentes a potencia nomina
 </section>
 
 <!-- ══════════════════════════════════════
-     S24 — ANÁLISIS TECNO-ECONÓMICO
+     S24 — ANÁLISIS TECNOECONÓMICO
 ══════════════════════════════════════ -->
 <section id="s24">
   <div class="section-label">24 · Economía del proyecto</div>
-  <h2>Análisis Tecno-Económico completo</h2>
+  <h2>Análisis Tecnoeconómico completo</h2>
 
   <p>
-    El módulo <em>Tecno-Económico</em> de AERO calcula la viabilidad financiera del proyecto a través de los indicadores estándar de la industria: LCOE, VAN, TIR, Payback, y análisis de sensibilidad. Integra proyecciones de demanda, precios PML, AEP neto y estructura de costos del proyecto.
+    El módulo <em>Análisis Tecnoeconómico</em> de AERO calcula la viabilidad financiera del proyecto a través de los indicadores estándar de la industria: LCOE, VAN, TIR, Payback, y análisis de sensibilidad. Integra proyecciones de demanda, precios PML, AEP neto y estructura de costos del proyecto.
   </p>
 
   <h3>Estructura de costos CAPEX / OPEX</h3>
@@ -2521,14 +2521,14 @@ Payback descontado: primer año t* donde VAN acumulado ≥ 0
 </section>
 
 <!-- ══════════════════════════════════════
-     S25 — VALIDATION CENTER
+     S25 — VALIDACIÓN Y EXPORTACIÓN
 ══════════════════════════════════════ -->
 <section id="s25">
   <div class="section-label">25 · Validación de modelos</div>
-  <h2>Validation Center — métricas y benchmarking</h2>
+  <h2>Validación y exportación — métricas y benchmarking</h2>
 
   <p>
-    La validación cuantitativa es obligatoria antes de usar los resultados del modelo en decisiones de inversión. El <em>Validation Center</em> de AERO compara predicciones de reanálisis y modelos ML contra observaciones de torre anemométrica, SCADA de parque o estaciones meteorológicas certificadas.
+    La validación cuantitativa es obligatoria antes de usar los resultados del modelo en decisiones de inversión. El módulo <em>Validación y exportación</em> de AERO compara predicciones de reanálisis y modelos ML contra observaciones de torre anemométrica, SCADA de parque o estaciones meteorológicas certificadas.
   </p>
 
   <h3>Métricas de validación</h3>
@@ -2572,7 +2572,7 @@ Payback descontado: primer año t* donde VAN acumulado ≥ 0
   <h2>Arquitectura de software AERO</h2>
 
   <p>
-    AERO es una Single-Page Application (SPA) con un backend Python y un frontend JavaScript vanilla. La arquitectura sigue el patrón <strong>módulos desacoplados</strong>: cada módulo (Data Hub, Model Arena, etc.) es un componente independiente con su propio estado, lógica y vista. La comunicación entre frontend y backend se hace mediante una API REST.
+    AERO es una Single-Page Application (SPA) con un backend Python y un frontend JavaScript vanilla. La arquitectura sigue el patrón <strong>módulos desacoplados</strong>: cada módulo (Data Hub, Centro de modelaje, etc.) es un componente independiente con su propio estado, lógica y vista. La comunicación entre frontend y backend se hace mediante una API REST.
   </p>
 
   <h3>Stack tecnológico</h3>
@@ -2676,7 +2676,7 @@ POST   /api/demand/forecast        <span class="py-cm"># Proyección demanda 25 
 POST   /api/pml/simulate           <span class="py-cm"># Simulación PML 25 años (OU model)</span>
 POST   /api/pml/calibrate          <span class="py-cm"># Calibra kappa, mu, sigma con histórico</span>
 
-<span class="py-cm">## ── TECNO-ECONÓMICO ───────────────────────────────────────────────</span>
+<span class="py-cm">## ── TECNOECONÓMICO ───────────────────────────────────────────────</span>
 POST   /api/techno/lcoe            <span class="py-cm"># Calcula LCOE dado CAPEX, OPEX, AEP, WACC</span>
 POST   /api/techno/npv_irr         <span class="py-cm"># VAN, TIR, Payback, flujos de caja</span>
 POST   /api/techno/sensitivity     <span class="py-cm"># Análisis de sensibilidad multivariable</span>
@@ -2929,7 +2929,7 @@ services:
 
 <footer>
   <p>
-    <span>AERO by OPEN CIM</span> · Módulo de Ingeniería Eólica ·
+    <span>AERO OPEN CIM</span> · Módulo de Ingeniería Eólica ·
     José Antonio Rojas Escobar · CIIDIR Oaxaca / IPN · DoCiTTE · <span>2026</span>
   </p>
   <p style="margin-top:0.5rem; font-size:0.6rem; opacity:0.5;">

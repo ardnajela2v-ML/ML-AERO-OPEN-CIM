@@ -577,7 +577,7 @@ def create_app():
 
     @app.route('/api/version')
     def version():
-        return jsonify({'version': '1.0', 'name': 'AERO by OPEN CIM'}), 200
+        return jsonify({'version': '1.0', 'name': 'AERO OPEN CIM'}), 200
 
     @app.route('/api/cost_model/defaults', methods=['GET'])
     def cost_model_defaults():
@@ -2001,6 +2001,16 @@ def create_app():
         base_escal = float(fin_cfg.get('price_escalation_pct', 0.0))
         cost_mdl   = CostModel.from_dict(fin_cfg.get('cost_model'))
 
+        # Optional leveraged config — when present, the heatmap/tornado return
+        # equity NPV (apalancado) instead of project NPV, and the rate axis
+        # represents the equity discount rate.
+        lev_cfg = body.get('leveraged') or None
+        if lev_cfg:
+            base_rate     = float(lev_cfg.get('equity_discount_rate_pct', base_rate))
+            lev_debt      = float(lev_cfg.get('debt_ratio_pct', 70)) / 100.0
+            lev_interest  = float(lev_cfg.get('interest_rate_pct', 8)) / 100.0
+            lev_loan_yrs  = int(lev_cfg.get('loan_years', 15))
+
         if base_kwh <= 0:
             return _err('base_annual_kwh must be > 0')
 
@@ -2030,10 +2040,15 @@ def create_app():
             if e and e != 0:
                 price_series = [p * ((1 + e/100) ** yr) for yr in range(base_years)]
 
+            # Para modo apalancado, el VAN proyecto se descuenta a la tasa
+            # del proyecto base (no al equity rate del eje r). Para modo
+            # no apalancado el descuento sí es r.
+            project_disc = float(fin_cfg.get('discount_rate_pct', 8.0)) if lev_cfg else r
+
             res = tea.analyze(
                 turbine, n_turb, kwh,
                 energy_price_usd_kwh=p,
-                discount_rate_pct=r,
+                discount_rate_pct=project_disc,
                 project_years=base_years,
                 usd_to_mxn=base_fx,
                 energy_price_series_usd_kwh=price_series,
@@ -2042,11 +2057,38 @@ def create_app():
             lcoe    = float(res.get('lcoe_usd_kwh', 0) or 0)
             payback = res.get('payback_years')
             payback = float(payback) if payback is not None and np.isfinite(float(payback)) else base_years * 2
-            # Correct for capex multiplier in CAPEX total
-            if capex_mult != 1.0:
-                capex_base = float(res.get('capex_total_usd', 0) or 0)
+
+            capex_total = float((res.get('capex') or {}).get('total_capex_usd', 0) or 0)
+            capex_total *= capex_mult
+            annual_revenue = float(res.get('annual_revenue_usd', 0) or 0)
+            annual_opex    = float(res.get('annual_opex_usd', 0) or 0)
+
+            # Correct for capex multiplier in project NPV (no apalancado)
+            if capex_mult != 1.0 and not lev_cfg:
+                capex_base = float((res.get('capex') or {}).get('total_capex_usd', 0) or 0)
                 delta_capex = capex_base * (capex_mult - 1.0)
                 npv -= delta_capex  # higher capex ↓ NPV
+
+            # ── Modo apalancado: reemplazar npv por VAN equity ───────────
+            if lev_cfg and capex_total > 0:
+                eq_rate = r / 100.0
+                equity  = capex_total * (1.0 - lev_debt)
+                debt    = capex_total * lev_debt
+                if debt > 0 and lev_interest > 0:
+                    pmt = debt * lev_interest / (1.0 - (1.0 + lev_interest) ** (-lev_loan_yrs))
+                elif debt > 0:
+                    pmt = debt / lev_loan_yrs
+                else:
+                    pmt = 0.0
+                ecfs = [-equity]
+                for yr in range(1, base_years + 1):
+                    yr_price = price_series[yr - 1] if price_series else p
+                    yr_revenue = (annual_revenue / p) * yr_price if p > 0 else annual_revenue
+                    yr_cf = yr_revenue - annual_opex - (pmt if (yr <= lev_loan_yrs and debt > 0) else 0.0)
+                    ecfs.append(yr_cf)
+                lev_npv = sum(cf / (1.0 + eq_rate) ** t for t, cf in enumerate(ecfs))
+                npv = lev_npv
+
             return npv, lcoe, payback
 
         base_npv, base_lcoe, base_pb = _run()
@@ -2867,7 +2909,7 @@ def create_app():
                 {
                     'role': 'system',
                     'content': (
-                        'Eres un asistente tecnico de energia eolica en AERO by OPEN CIM. '
+                        'Eres un asistente tecnico de energia eolica en AERO OPEN CIM. '
                         'Responde en espanol, claro y breve. Si faltan datos, dilo.'
                     ),
                 },

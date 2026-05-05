@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════
-   AERO by OPEN CIM — Frontend application logic
+   AERO OPEN CIM — Frontend application logic
 ═══════════════════════════════════════════════════ */
 
 'use strict';
@@ -164,6 +164,19 @@ async function initSession() {
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function bindNavigation() {
+  const moduleGroups = {
+    models: ['models', 'forecast'],
+    forecast: ['models', 'forecast'],
+    kriging: ['kriging', 'parque'],
+    parque: ['kriging', 'parque'],
+    validation: ['validation', 'export'],
+    export: ['validation', 'export']
+  };
+  const primaryModule = {
+    forecast: 'models',
+    parque: 'kriging',
+    export: 'validation'
+  };
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const mod = btn.dataset.module;
@@ -174,9 +187,19 @@ function bindNavigation() {
       }
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
-      btn.classList.add('active');
-      const target = document.getElementById(`mod-${mod}`);
-      if (target) target.classList.add('active');
+      const activeMod = primaryModule[mod] || mod;
+      const activeBtn = document.querySelector(`.nav-btn[data-module="${activeMod}"]`) || btn;
+      activeBtn.classList.add('active');
+      (moduleGroups[mod] || [mod]).forEach(moduleName => {
+        const target = document.getElementById(`mod-${moduleName}`);
+        if (target) target.classList.add('active');
+      });
+      if ((moduleGroups[mod] || [mod]).includes('parque') && typeof parqueActivate === 'function') {
+        requestAnimationFrame(parqueActivate);
+      }
+      if ((moduleGroups[mod] || [mod]).includes('export') && typeof updateExportSessionInfo === 'function') {
+        updateExportSessionInfo();
+      }
     });
   });
 }
@@ -566,7 +589,7 @@ async function buildFeatures() {
   }
 }
 
-// ─── MODEL ARENA ─────────────────────────────────────────────────────────────
+// ─── CENTRO DE MODELAJE ──────────────────────────────────────────────────────
 const FAST_MODELS = ['persistence','climatology','ridge','lightgbm','random_forest'];
 const ML_MODELS   = ['random_forest','xgboost','lightgbm','ridge','mlp','svr'];
 
@@ -2646,7 +2669,7 @@ function renderMonthlyWS(c) {
   });
 }
 
-// ─── TECNO-ECONÓMICO MODULE ───────────────────────────────────────────────────
+// ─── TECNOECONÓMICO MODULE ────────────────────────────────────────────────────
 function bindTechno() {
   document.getElementById('btn-calc-techno').addEventListener('click', calcTechnoEconomic);
   document.querySelectorAll('[data-te-scenario]').forEach(btn => {
@@ -2950,7 +2973,7 @@ function technoCurrentScenario() {
 }
 
 function technoCollectCostModel() {
-  // Modelo económico central WindPro — % se ingresan como porcentajes (0–100), se convierten a fracción
+  // Modelo económico central AERO OPEN CIM — % se ingresan como porcentajes (0–100), se convierten a fracción
   const pct = id => (parseFloat(document.getElementById(id)?.value) || 0) / 100.0;
   return {
     turbine_usd_per_kw: parseFloat(document.getElementById('cm-turbine-usd-kw')?.value) || 1800,
@@ -3165,7 +3188,7 @@ function technoUpdateModeHints() {
     }
     const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 20, fxScalar);
     if (!built.series) {
-      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos de Model Arena para ${c.key.toUpperCase()}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
+      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos del Centro de modelaje para ${c.key.toUpperCase()}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
       return;
     }
     const hAvg = built.series.length > 1
@@ -3173,7 +3196,7 @@ function technoUpdateModeHints() {
       : built.baseline;
     const tag = scenarioKey === 'ml'
       ? `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (${built.hourly ? '8760 horario' : 'media hist.'}) · Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> (proy. ML)`
-      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Model Arena)`;
+      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Centro de modelaje)`;
     el.innerHTML = tag;
   });
 }
@@ -3349,7 +3372,7 @@ function renderTechnoLayoutPreview() {
 async function calcTechnoEconomic() {
   if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
   const scenarioKey = WP.technoActiveScenario;
-  setStatus('Calculando análisis tecno-económico…');
+  setStatus('Calculando análisis tecnoeconómico…');
   try {
     const inputs = technoCollectInputs();
     // For ML scenario: send full 25-year annual series so backend uses per-year AEP.
@@ -3372,7 +3395,7 @@ async function calcTechnoEconomic() {
     if (inputs.rateMode  === 'arena' && !builtRate.series)  missing.push('tasa (interés)');
     if (inputs.fxMode    === 'arena' && !builtFx.series)    missing.push('FX');
     if (missing.length) {
-      toast(`Modo 8760 sin datos para: ${missing.join(', ')}. Carga Forecast Studio o usa Fijo.`, 'warn');
+      toast(`Modo 8760 sin datos para: ${missing.join(', ')}. Carga el Centro de modelaje o usa Fijo.`, 'warn');
     }
 
     const body = {
@@ -3412,12 +3435,12 @@ async function calcTechnoEconomic() {
       toast(`Demanda requiere ${r.n_turbines_needed} aerogeneradores`, 'info');
     }
     toast('Análisis completado', 'success');
-    setStatus('Análisis tecno-económico completado.');
+    setStatus('Análisis tecnoeconómico completado.');
     // Auto-trigger risk analysis after TE completes
     setTimeout(() => calcSensitivity(), 400);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
-    setStatus('Error en análisis tecno-económico.');
+    setStatus('Error en análisis tecnoeconómico.');
   }
 }
 
@@ -4346,21 +4369,23 @@ function renderLevAmortTable(rows) {
 }
 
 // ─── EXPORT CENTER ───────────────────────────────────────────────────────────
+function updateExportSessionInfo() {
+  const info = document.getElementById('export-session-info');
+  if (!info) return;
+  if (WP.sessionId) {
+    info.className = 'info-box green';
+    info.textContent = 'Sesión activa. Las exportaciones usarán los resultados disponibles.';
+  } else {
+    info.className = 'info-box amber';
+    info.textContent = 'Carga un archivo de datos y ejecuta los módulos para habilitar las exportaciones.';
+  }
+}
+
 function bindExport() {
   // Update info box whenever the export tab becomes visible
   document.querySelectorAll('.nav-btn').forEach(btn => {
     if (btn.dataset.module === 'export') {
-      btn.addEventListener('click', () => {
-        const info = document.getElementById('export-session-info');
-        if (!info) return;
-        if (WP.sessionId) {
-          info.className = 'info-box green';
-          info.textContent = `✓ Sesión activa: ${WP.sessionId} — selecciona un archivo para descargar.`;
-        } else {
-          info.className = 'info-box amber';
-          info.textContent = 'Carga un archivo de datos y ejecuta los módulos para habilitar las exportaciones.';
-        }
-      });
+      btn.addEventListener('click', updateExportSessionInfo);
     }
   });
   const txtBtn = document.getElementById('btn-export-table-txt');
@@ -4431,7 +4456,7 @@ async function exportReport() {
     const now = new Date().toISOString().slice(0,10);
     const lines = [
       '══════════════════════════════════════════════════════',
-      ' AERO by OPEN CIM — Reporte Técnico',
+      ' AERO OPEN CIM — Reporte Técnico',
       `══════════════════════════════════════════════════════`,
       `Generado: ${now}  |  Sesión: ${WP.sessionId}`,
       '',
@@ -4443,8 +4468,8 @@ async function exportReport() {
       ov ? `Horas ≥15 m/s:        ${ov.h_above_15ms} h  (${ov.pct_above_15ms}%)` : '',
       ov ? `Registros:            ${ov.n_obs}  [${ov.date_start} → ${ov.date_end}]` : '',
       '',
-      '── ANÁLISIS TECNO-ECONÓMICO ───────────────────────────',
-      te ? `VAN/NPV:       $ ${te.analysis?.npv_usd?.toLocaleString?.() ?? '—'} USD` : 'Ejecutar módulo Tecno-Económico',
+      '── ANÁLISIS TECNOECONÓMICO ───────────────────────────',
+      te ? `VAN/NPV:       $ ${te.analysis?.npv_usd?.toLocaleString?.() ?? '—'} USD` : 'Ejecutar módulo Tecnoeconómico',
       te ? `LCOE:          $ ${te.analysis?.lcoe_usd_kwh} USD/kWh` : '',
       te ? `CF:            ${te.analysis?.capacity_factor_pct} %` : '',
       te ? `CAPEX total:   $ ${te.analysis?.capex?.total_capex_usd?.toLocaleString?.() ?? '—'} USD` : '',
@@ -4467,7 +4492,7 @@ async function exportReport() {
       '· VAN sensible a tasa de descuento y precio de energía asumidos',
       '',
       '══════════════════════════════════════════════════════',
-      ' AERO by OPEN CIM · v2.0 · Flask + scikit-learn + LightGBM',
+      ' AERO OPEN CIM · v2.0 · Flask + scikit-learn + LightGBM',
       '══════════════════════════════════════════════════════',
     ];
     downloadText(lines.join('\n'), 'aero_report.txt');
@@ -4605,7 +4630,7 @@ function buildClimatologyCsv(c) {
 
 function buildWindStatsCsv(r) {
   if (!r) return '';
-  const rows = ['# AERO by OPEN CIM — Wind Statistics Export'];
+  const rows = ['# AERO OPEN CIM — Wind Statistics Export'];
   if (r.rose) {
     rows.push('\n# Rosa de vientos');
     rows.push('sector,frecuencia_pct,vel_media_ms');
@@ -7276,7 +7301,7 @@ function mcdaRenderRanking(r) {
       <td>${Math.round(a.capex_usd).toLocaleString()}</td>
     </tr>`;
   }).join('');
-  // Propagate winner to Parque and Tecno-Económico
+  // Propagate winner to Parque and Tecnoeconómico
   syncTopsisWinnerToModules();
 }
 
@@ -7303,7 +7328,7 @@ function syncTopsisWinnerToModules() {
     parquePopulateTopsisRanking();
   }
 
-  // ── 2. Tecno-Económico: set #te-turbine to winner ─────────────────────
+  // ── 2. Tecnoeconómico: set #te-turbine to winner ─────────────────────
   const teSelect = document.getElementById('te-turbine');
   if (!teSelect) return;
 
@@ -8002,7 +8027,7 @@ function parquePopulateTopsisRanking() {
     : [];
 
   if (!ranking.length) {
-    listEl.innerHTML = '<div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">Ejecuta TOPSIS en Kriging Clásico para ver la lista ranqueada.</div>';
+    listEl.innerHTML = '<div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">Ejecuta TOPSIS en la sección de diseño para ver la lista ranqueada.</div>';
     if (badgeEl) badgeEl.textContent = 'Sin TOPSIS';
     return;
   }
@@ -8097,7 +8122,7 @@ async function parqueOptimize() {
   else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) polygon = KRIG.parkPoints;
 
   if (!polygon || polygon.length < 3) {
-    toast('Dibuja y cierra el polígono del parque en la sección Mapa o Kriging Clásico primero.', 'warning');
+    toast('Dibuja y cierra el polígono del parque en la sección de diseño primero.', 'warning');
     return;
   }
   const turbineKey = document.getElementById('parque-turbine')?.value;
@@ -9019,7 +9044,7 @@ async function runDemandArenaHourly() {
     WP.arenaCache.demand = annualFc;
     renderForecastFutureChart('demand');
     renderForecastFutureChart('demand_hourly');
-    toast('Perfil horario ajustado. Ve al Forecast Studio.', 'success');
+    toast('Perfil horario ajustado. Revisa el Centro de modelaje.', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
@@ -9269,7 +9294,7 @@ async function runPmlArenaHourly() {
     WP.arenaCache.pml = annualFc;
     renderForecastFutureChart('pml');
     renderForecastFutureChart('pml_hourly');
-    toast('Perfil horario de PML ajustado. Ve al Forecast Studio.', 'success');
+    toast('Perfil horario de PML ajustado. Revisa el Centro de modelaje.', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
@@ -10632,7 +10657,7 @@ function _renderMarketResult(category, r) {
     ).join('');
   }
 
-  // Store in WP for later use by Model Arena / Forecast Studio
+  // Store in WP for later use by Centro de modelaje / Forecast Studio
   WP.arenaCache[`market_${category}`] = r;
 }
 
@@ -11760,8 +11785,8 @@ async function quickDesignContinueAfterParque(optResult) {
   const banner = document.getElementById('qd-parque-banner');
   if (banner) banner.style.display = 'none';
 
-  // Step 5: Tecno-Económico
-  qdSetStep(5, 'Tecno-Económico…');
+  // Step 5: Tecnoeconómico
+  qdSetStep(5, 'Tecnoeconómico…');
   qdMsg('Calculando VAN, LCOE, TIR, payback…');
   try {
     await calcTechnoEconomic();
@@ -11869,7 +11894,7 @@ function quickDesignGenerateReport() {
 
   const html = `<!DOCTYPE html><html lang="es"><head>
 <meta charset="UTF-8">
-<title>Informe de Factibilidad Eólica — AERO by OPEN CIM</title>
+<title>Informe de Factibilidad Eólica — AERO OPEN CIM</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0b1220; color: #e2e8f0; }
@@ -11895,7 +11920,7 @@ function quickDesignGenerateReport() {
 
   <!-- COVER -->
   <div class="cover">
-    <div style="font-size:.7rem;letter-spacing:.15em;text-transform:uppercase;color:#38bdf8;margin-bottom:.5rem">AERO by OPEN CIM — Informe de factibilidad eólica</div>
+    <div style="font-size:.7rem;letter-spacing:.15em;text-transform:uppercase;color:#38bdf8;margin-bottom:.5rem">AERO OPEN CIM — Informe de factibilidad eólica</div>
     <h1>Parque Eólico<br><span style="color:#38bdf8">${stationId}</span></h1>
     <h2>Estación meteorológica: ${stationId} &nbsp;·&nbsp; Altura de referencia: ${refH} m</h2>
     <div class="badge">Generado: ${dateStr}</div>
@@ -11975,7 +12000,7 @@ function quickDesignGenerateReport() {
       El LCOE de <strong>${lcoe} USD/kWh</strong> y VAN de <strong>${npv} USD</strong>
       ${an.npv_usd > 0 ? 'indican un <strong style="color:#22c55e">proyecto viable</strong>.' : 'requieren revisión de parámetros financieros.'}
       <br><br>
-      <em>Informe generado automáticamente por AERO by OPEN CIM — ${dateStr}. 
+      <em>Informe generado automáticamente por AERO OPEN CIM — ${dateStr}. 
       Resultados sujetos a verificación con datos de campo y estudio de micrositing detallado.</em>
     </div>
   `)}
@@ -12501,13 +12526,13 @@ function bindResumenUnified() {
     if (!WP.sessionId) { toast('No hay sesión activa', 'warning'); return; }
     runResumenPipeline();
   });
-  // CTA → Model Arena
+  // CTA → Centro de modelaje
   document.getElementById('btn-go-to-arena')?.addEventListener('click', () => {
     const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
     arenaBtn?.click();
   });
   // Mover cada selector de archivo del panel de mercado a su sub-tab
-  // correspondiente dentro de Model Arena, así no necesitamos una tab
+  // correspondiente dentro del Centro de modelaje, así no necesitamos una tab
   // "Datos" extra ni el panel agregado. Además creamos preview + stats
   // por sub-tab para que el resultado de cargar el archivo se vea.
   const movements = [
@@ -12552,8 +12577,8 @@ function bindResumenUnified() {
   document.getElementById('arena-data-tab')?.remove();
   document.querySelector('#mod-models .tab-btn[data-tab="arena-data"]')?.remove();
 
-  // Al entrar a Kriging Clásico: encuadre ~35 km al sitio del Globe +
-  // estación maestra fija + parámetros desde Model Arena. Solo se aplica la
+  // Al entrar a Diseño y optimización: encuadre ~35 km al sitio del Globe +
+  // estación maestra fija + parámetros desde Centro de modelaje. Solo se aplica la
   // primera vez por POI; entradas posteriores conservan el estado del usuario.
   document.querySelector('.nav-btn[data-module="kriging"]')?.addEventListener('click', () => {
     setTimeout(() => krig3AutoFitFromGlobe(), 80);
@@ -12586,7 +12611,7 @@ async function krig3AutoFitFromGlobe() {
     return;
   }
 
-  // Pull parámetros económicos del cache de Model Arena (solo en primera aplicación
+  // Pull parámetros económicos del cache de Centro de modelaje (solo en primera aplicación
   // de este POI; preserva ediciones manuales posteriores del usuario).
   krig3PullParamsFromArena();
 
@@ -12617,7 +12642,7 @@ async function krig3AutoFitFromGlobe() {
   KRIG._appliedGlobePoi = poiKey;
 }
 
-// Llena los inputs de parámetros del Kriging Clásico desde Model Arena cache
+// Llena los inputs de parámetros del diseño desde el cache de Centro de modelaje
 function krig3PullParamsFromArena() {
   if (typeof WP === 'undefined' || !WP.arenaCache) return;
   const cache = WP.arenaCache;

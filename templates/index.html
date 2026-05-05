@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AERO by OPEN CIM — Inteligencia Climática para Decisiones Energéticas</title>
-<meta name="description" content="AERO — Análisis Energético y de Recursos Observacionales. Plataforma de inteligencia eólica, solar e hídrica para proyectos renovables en México y Latam.">
+<title>AERO OPEN CIM — Inteligencia Climática para Decisiones Energéticas</title>
+<meta name="description" content="AERO OPEN CIM — Análisis Energético y de Recursos Observacionales. Plataforma de inteligencia eólica, solar e hídrica para proyectos renovables en México y Latam.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=DM+Mono:wght@300;400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/aero.css">
@@ -34,7 +34,7 @@
       <line x1="55" y1="55" x2="96" y2="26" stroke="#0F6E56" stroke-width="2.5" stroke-linecap="round"/>
       <circle cx="55" cy="55" r="4" fill="#1D9E75"/>
     </svg>
-    <span class="brand-name">AERO <span class="brand-sub">by OPEN CIM</span></span>
+    <span class="brand-name">AERO <span class="brand-sub">OPEN CIM</span></span>
   </div>
   <nav class="topbar-nav">
     <button class="nav-btn nav-btn--globe" id="btn-back-to-globe" type="button" title="Volver al Globe (selección de sitio)">
@@ -46,16 +46,16 @@
       Globe
     </button>
     <button class="nav-btn active" data-module="resumen">Resumen Eólico</button>
-    <button class="nav-btn" data-module="models">Model Arena</button>
-    <button class="nav-btn" data-module="forecast">Forecast Studio</button>
-    <button class="nav-btn" data-module="kriging">Kriging Clásico</button>
-    <button class="nav-btn" data-module="parque">Parque</button>
-    <button class="nav-btn" data-module="techno">Tecno-Económico</button>
+    <button class="nav-btn" data-module="models">Centro de modelaje</button>
+    <button class="nav-btn" data-module="forecast" style="display:none" hidden>Forecast Studio</button>
+    <button class="nav-btn" data-module="kriging">Diseño y optimización del parque eólico</button>
+    <button class="nav-btn" data-module="parque" style="display:none" hidden>Parque</button>
+    <button class="nav-btn" data-module="techno">Análisis Tecnoeconómico</button>
     <button class="nav-btn" data-module="mapa" style="display:none" hidden>Mapa & Kriging</button>
     <button class="nav-btn" data-module="hybrid" style="display:none" hidden>Sistema Híbrido</button>
     <button class="nav-btn" data-module="energy" style="display:none" hidden>Energy Lab</button>
-    <button class="nav-btn" data-module="validation">Validation</button>
-    <button class="nav-btn" data-module="export">Exportar</button>
+    <button class="nav-btn" data-module="validation">Validación y exportación</button>
+    <button class="nav-btn" data-module="export" style="display:none" hidden>Exportar</button>
     <button class="nav-btn" data-module="ai">AI Assistant</button>
   </nav>
   <div class="topbar-actions">
@@ -63,6 +63,14 @@
       <span class="dot" id="session-dot"></span>
       <span id="session-label">No session</span>
     </div>
+    <button class="btn-icon ing-topbar-btn" id="ing-fab" title="Ingeniería &amp; Réplica — AERO OPEN CIM" aria-label="Abrir Ingeniería y Réplica">
+      <svg width="16" height="16" viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="55" cy="55" r="50" stroke="currentColor" stroke-width="7"/>
+        <circle cx="55" cy="55" r="28" stroke="currentColor" stroke-width="5" opacity="0.55"/>
+        <line x1="55" y1="55" x2="94" y2="28" stroke="currentColor" stroke-width="8" stroke-linecap="round"/>
+        <circle cx="55" cy="55" r="7" fill="currentColor"/>
+      </svg>
+    </button>
     <button class="btn-icon" id="theme-toggle" title="Toggle theme">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>
@@ -90,7 +98,7 @@
         </svg>
       </div>
     </div>
-    <div class="globe-loader__hint">WINDPRO · CARGANDO MUNDO</div>
+    <div class="globe-loader__hint">AERO OPEN CIM · CARGANDO MUNDO</div>
   </div>
 
   <!-- Main globe phase -->
@@ -114,7 +122,7 @@
 
     <!-- Top-left brand -->
     <div class="globe-brand">
-      <div class="globe-brand__kicker">WINDPRO · GLOBE</div>
+      <div class="globe-brand__kicker">AERO OPEN CIM · GLOBE</div>
       <div class="globe-brand__title">Selecciona un sitio para iniciar el estudio</div>
       <div class="globe-brand__hint">Arrastra para rotar · Rueda para acercar · Click en estación para cargar</div>
     </div>
@@ -258,7 +266,7 @@
     <div class="qd-dot" data-step="2" title="Kriging"></div>
     <div class="qd-dot" data-step="3" title="TOPSIS"></div>
     <div class="qd-dot" data-step="4" title="Parque"></div>
-    <div class="qd-dot" data-step="5" title="Tecno-económico"></div>
+    <div class="qd-dot" data-step="5" title="Tecnoeconómico"></div>
     <div class="qd-dot" data-step="6" title="Informe"></div>
   </div>
   <div id="qd-progress-bar" style="height:3px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-bottom:.5rem">
@@ -579,7 +587,7 @@
       <span class="badge badge--info" id="market-file-count">Cargando…</span>
     </div>
     <div class="card-body">
-      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable de mercado. Se usarán como datos reales en Model Arena y Forecast Studio.</p>
+      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable de mercado. Se usarán como datos reales en el Centro de modelaje.</p>
 
       <!-- DEMANDA -->
       <div class="market-data-row mb-3" style="border-left:3px solid var(--accent);padding-left:12px;">
@@ -704,8 +712,8 @@
 <!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
 <section class="module" id="mod-models">
   <div class="module-header">
-    <h1 class="module-title">Model Arena</h1>
-    <p class="module-desc">Entrena y compara modelos de pronóstico. Predicción de viento (ML), demanda eléctrica y precios PML a largo plazo.</p>
+    <h1 class="module-title">Centro de modelaje</h1>
+    <p class="module-desc">Centro de modelaje, entrenamiento y predicción de variables de interes.</p>
   </div>
 
   <!-- Model Arena Tabs -->
@@ -1172,7 +1180,7 @@
 <!-- ╔══════════════════ FORECAST STUDIO ══════════════════╗ -->
 <section class="module" id="mod-forecast">
   <div class="module-header">
-    <h1 class="module-title">Forecast Studio</h1>
+    <h2 class="module-title" style="font-size:1.2rem">Forecast Studio</h2>
     <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
   </div>
 
@@ -1873,8 +1881,8 @@
 <!-- ╔══════════════════ VALIDATION ══════════════════╗ -->
 <section class="module" id="mod-validation">
   <div class="module-header">
-    <h1 class="module-title">Validation Center</h1>
-    <p class="module-desc">Análisis científico riguroso: métricas, calibración de intervalos, homoscedasticidad, autocorrelación residual.</p>
+    <h1 class="module-title">Validación y exportación</h1>
+    <p class="module-desc">Análisis científico riguroso, métricas de validación, descargas y reporte técnico de la sesión activa.</p>
   </div>
 
   <div class="grid-3">
@@ -1951,9 +1959,9 @@
   <div class="ai-container">
     <div class="ai-chat-window" id="ai-chat-window">
       <div class="ai-msg ai-msg--system">
-        <div class="ai-avatar">WP</div>
+        <div class="ai-avatar">AO</div>
         <div class="ai-bubble">
-          Hola. Soy el asistente de AERO by OPEN CIM. Mis respuestas se basan en los datos y resultados de tu sesión actual.
+          Hola. Soy el asistente de AERO OPEN CIM. Mis respuestas se basan en los datos y resultados de tu sesión actual.
           Puedes preguntarme sobre: calidad de datos, distribución Weibull, modelos y métricas, energía y factor de capacidad, validación científica, horizontes de pronóstico.
         </div>
       </div>
@@ -1989,7 +1997,7 @@
       <div class="resumen-verdict__value" id="resumen-verdict-value">—</div>
       <div class="resumen-verdict__sub" id="resumen-verdict-sub">Calcula el análisis para ver la evaluación del recurso</div>
       <button class="resumen-verdict__cta" id="btn-go-to-arena" type="button" disabled>
-        Continuar a Model Arena →
+        Continuar al Centro de modelaje →
       </button>
     </div>
   </div>
@@ -2299,8 +2307,8 @@
 <!-- ╔══════════════════ MAPA & KRIGING ══════════════════╗ -->
 <section class="module" id="mod-kriging">
   <div class="module-header">
-    <h1 class="module-title">Kriging — mapas clásicos</h1>
-    <p class="module-desc">Réplica exacta del script <code>ajuste_aerogeneradores.py</code>: genera mapas Kriging de <b>Velocidad promedio</b>, <b>Ráfagas</b>, <b>Densidad de potencia</b>, <b>Inversión inicial</b> y <b>VAN</b> a partir de todos los sitios MERRA-2 / ERA5 y del catálogo de aerogeneradores.</p>
+    <h1 class="module-title">Diseño y optimización del parque eólico</h1>
+    <p class="module-desc">Kriging clásico, selección multicriterio y diseño optimizado del parque eólico con layout, estelas y AEP.</p>
   </div>
 
   <div class="card">
@@ -2637,12 +2645,12 @@
 <!-- ╔══════════════════ PARQUE EÓLICO ══════════════════╗ -->
 <section class="module" id="mod-parque">
   <div class="module-header">
-    <h1 class="module-title">Parque eólico — Diseño optimizado</h1>
+    <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
     <p class="module-desc">
-      Layout optimizado con <b>Colocación Secuencial Voraz</b> (Feng &amp; Shen, 2015) sobre el área definida en Kriging Clásico.
+      Layout optimizado con <b>Colocación Secuencial Voraz</b> (Feng &amp; Shen, 2015) sobre el área definida en Diseño y optimización del parque eólico.
       El campo de viento interpolado por Kriging Ordinario orienta la ubicación de turbinas para maximizar AEP
       considerando el déficit de estela NOJ (Jensen, 1983) con superposición de Katic et al. (1986).
-      La turbina recomendada se obtiene del ranking TOPSIS de la sección Kriging Clásico.
+      La turbina recomendada se obtiene del ranking TOPSIS de la sección de diseño.
     </p>
   </div>
 
@@ -2686,7 +2694,7 @@
         <div id="parque-map" style="height:440px;border-radius:0 0 8px 8px"></div>
         <div id="parque-map-legend" style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:.7rem;padding:.3rem .5rem;border-radius:4px;pointer-events:none;display:none"></div>
         <div id="parque-map-hint" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:.72rem;padding:.25rem .6rem;border-radius:12px;pointer-events:none;white-space:nowrap">
-          Dibuja el polígono del parque en la sección Kriging Clásico primero
+          Dibuja el polígono del parque en la sección de diseño primero
         </div>
       </div>
     </div>
@@ -2705,7 +2713,7 @@
                style="max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;
                       background:var(--bg-secondary);margin-bottom:.5rem">
             <div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">
-              Ejecuta TOPSIS en Kriging Clásico para ver la lista ranqueada.
+              Ejecuta TOPSIS en la sección de diseño para ver la lista ranqueada.
             </div>
           </div>
           <label class="form-label">Turbina activa</label>
@@ -3199,7 +3207,7 @@
 <!-- ╔══════════════════ TECNO-ECONÓMICO ══════════════════╗ -->
 <section class="module" id="mod-techno">
   <div class="module-header">
-    <h1 class="module-title">Análisis Tecno-Económico</h1>
+    <h1 class="module-title">Análisis Tecnoeconómico</h1>
     <p class="module-desc">Escenarios independientes: viento real · predicción ML 25 años · predicción corregida con Kriging/Parque.</p>
   </div>
 
@@ -3255,7 +3263,7 @@
           <div>
             <label class="form-label">Precio energía (USD/kWh)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa los datos horarios cargados en Model Arena (PML)">
+              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa los datos horarios cargados en el Centro de modelaje (PML)">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3271,7 +3279,7 @@
           <div>
             <label class="form-label">Tasa de descuento (%)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico de Model Arena (Tasa) + proyección ML">
+              <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico del Centro de modelaje (Tasa) + proyección ML">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3286,7 +3294,7 @@
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-fx-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico de Model Arena (FX) + proyección ML">
+              <select class="form-input" id="te-fx-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico del Centro de modelaje (FX) + proyección ML">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3298,7 +3306,7 @@
 
         <details class="mt-2" open style="border:1px solid var(--border);border-radius:10px;padding:.6rem .8rem">
           <summary style="cursor:pointer;font-weight:600;font-size:.85rem">Modelo económico (CAPEX & OPEX) — editable</summary>
-          <p class="text-muted" style="font-size:.72rem;margin:.4rem 0 .6rem">Todos los valores en USD. Defaults del estudio WindPro. Los rangos se usarán en análisis de sensibilidad.</p>
+          <p class="text-muted" style="font-size:.72rem;margin:.4rem 0 .6rem">Todos los valores en USD. Defaults del estudio AERO OPEN CIM. Los rangos se usarán en análisis de sensibilidad.</p>
 
           <div class="form-grid-2">
             <div>
@@ -3342,7 +3350,7 @@
           <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
         </details>
 
-        <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular Análisis Tecno-Económico</button>
+        <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular Análisis Tecnoeconómico</button>
       </div>
     </div>
 
@@ -3379,7 +3387,7 @@
 
         <!-- Heatmap: VAN (M USD) vs precio × tasa -->
         <div style="margin-bottom:1.2rem">
-          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+          <div id="risk-heatmap-title" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
             Mapa de correlación — VAN (MUSD) · Precio energía × Tasa de descuento
           </div>
           <div id="risk-heatmap-container" style="overflow-x:auto">
@@ -3645,7 +3653,7 @@
 <!-- ╔══════════════════ EXPORTAR ══════════════════╗ -->
 <section class="module" id="mod-export">
   <div class="module-header">
-    <h1 class="module-title">Centro de Exportación</h1>
+    <h2 class="module-title" style="font-size:1.2rem">Centro de Exportación</h2>
     <p class="module-desc">Descarga datos, predicciones, métricas y reporte técnico de la sesión activa.</p>
   </div>
 
@@ -3666,21 +3674,21 @@
       </svg>
     </div>
     <div class="sci-report-banner__body">
-      <div class="sci-report-banner__kicker">DOCUMENTO TÉCNICO · WINDPRO PLATFORM</div>
+      <div class="sci-report-banner__kicker">DOCUMENTO TÉCNICO · AERO OPEN CIM</div>
       <h2 class="sci-report-banner__title">Reporte Profesional Científico-Técnico</h2>
       <p class="sci-report-banner__desc">
         Documento integral de los resultados de simulación de cada módulo activo:
         recurso eólico, modelado predictivo, forecast, kriging, optimización de parque,
-        análisis tecno-económico apalancado y validación. Incluye metodología,
+        análisis tecnoeconómico apalancado y validación. Incluye metodología,
         métricas, tablas y figuras listo para imprimir o exportar a PDF.
       </p>
       <div class="sci-report-banner__chips">
         <span class="sci-chip">Recurso eólico</span>
-        <span class="sci-chip">Model Arena</span>
-        <span class="sci-chip">Forecast</span>
+        <span class="sci-chip">Centro de modelaje</span>
+        <span class="sci-chip">Forecast Studio</span>
         <span class="sci-chip">Kriging</span>
         <span class="sci-chip">Parque</span>
-        <span class="sci-chip">Tecno-Económico</span>
+        <span class="sci-chip">Tecnoeconómico</span>
         <span class="sci-chip">Validación</span>
       </div>
       <div class="sci-report-banner__actions">
@@ -3729,7 +3737,7 @@
     </div>
     <div class="export-card">
       <div class="export-icon">&#128196;</div>
-      <h4>Análisis tecno-económico</h4>
+      <h4>Análisis tecnoeconómico</h4>
       <p>VAN, LCOE, VAE, CAPEX detallado y flujo de caja anual del proyecto.</p>
       <button class="btn-primary" style="width:100%" onclick="exportData('techno')">&#8595; techno_economic.csv</button>
     </div>
@@ -3758,7 +3766,7 @@
         <option value="sector-tbl">Análisis sectorial</option>
         <option value="return-tbl">Períodos de retorno</option>
         <option value="mcda-rank-tbl">Ranking multicriterio</option>
-        <option value="te-cashflow-table">Flujos anuales tecno-económicos</option>
+        <option value="te-cashflow-table">Flujos anuales tecnoeconómicos</option>
         <option value="hyb-capex-tbl">Desglose CAPEX híbrido</option>
       </select>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem">
@@ -3793,7 +3801,7 @@
       </span>
       <div>
         <div style="font-weight:700">Ingeniería &amp; Réplica</div>
-        <div class="ing-sub">AERO by OPEN CIM — fundamentos matemáticos</div>
+        <div class="ing-sub">AERO OPEN CIM — fundamentos matemáticos</div>
       </div>
     </div>
     <div class="ing-drawer-actions">
@@ -3801,22 +3809,9 @@
       <button class="btn-icon" id="ing-close" title="Cerrar">✕</button>
     </div>
   </div>
-  <iframe id="ing-frame" src="about:blank" title="Ingeniería AERO by OPEN CIM"></iframe>
+  <iframe id="ing-frame" src="about:blank" title="Ingeniería AERO OPEN CIM"></iframe>
 </div>
 <div class="ing-backdrop" id="ing-backdrop"></div>
-
-<!-- Floating action button: open Ingeniería from anywhere -->
-<button class="ing-fab" id="ing-fab" title="Ingeniería &amp; Réplica — AERO by OPEN CIM">
-  <svg width="26" height="26" viewBox="0 0 110 110" fill="none" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="55" cy="55" r="50" stroke="rgba(255,255,255,0.9)" stroke-width="3"/>
-    <circle cx="55" cy="55" r="34" stroke="rgba(255,255,255,0.55)" stroke-width="2"/>
-    <circle cx="55" cy="55" r="18" stroke="rgba(255,255,255,0.3)" stroke-width="1.5"/>
-    <line x1="55" y1="5" x2="55" y2="105" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
-    <line x1="5" y1="55" x2="105" y2="55" stroke="rgba(255,255,255,0.2)" stroke-width="1"/>
-    <line x1="55" y1="55" x2="94" y2="28" stroke="white" stroke-width="3.5" stroke-linecap="round"/>
-    <circle cx="55" cy="55" r="5" fill="white"/>
-  </svg>
-</button>
 
 <!-- ─── STATUS BAR ──────────────────────────────────── -->
 <div class="statusbar" id="statusbar">
