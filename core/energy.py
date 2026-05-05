@@ -651,7 +651,8 @@ class TechnoEconomicAnalyzer:
                 energy_price_series_usd_kwh: list = None,
                 discount_rate_series_pct: list = None,
                 usd_to_mxn_series: list = None,
-                year1_revenue_override_usd: float = None) -> dict:
+                year1_revenue_override_usd: float = None,
+                annual_inflation_pct: float = 0.0) -> dict:
         """
         Full techno-economic analysis.
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
@@ -681,6 +682,8 @@ class TechnoEconomicAnalyzer:
         capex = self.capex_breakdown(turbine, n_turbines)
         total_capex = capex['total_capex_usd']
         investment_cost = total_capex * usd_to_mxn
+        annual_inflation_pct = float(annual_inflation_pct or 0.0)
+        inflation = annual_inflation_pct / 100.0
 
         # OPEX anual = % del CAPEX total (modelo central WindPro)
         annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
@@ -700,6 +703,7 @@ class TechnoEconomicAnalyzer:
         rates_used = []
         prices_used = []
         fx_used = []
+        opex_used = []
 
         for yr in range(1, project_years + 1):
             if annual_energy_kwh_series and yr <= len(annual_energy_kwh_series):
@@ -713,12 +717,14 @@ class TechnoEconomicAnalyzer:
             prices_used.append(yr_price)
             rates_used.append(yr_rate)
             fx_used.append(yr_fx)
+            yr_opex = annual_opex * ((1.0 + inflation) ** (yr - 1))
+            opex_used.append(yr_opex)
 
             if yr == 1 and year1_revenue_override_usd is not None:
                 yr_revenue = float(year1_revenue_override_usd) * yr_fx
             else:
                 yr_revenue = yr_energy_kwh * yr_price * yr_fx
-            yr_cashflow = yr_revenue - annual_opex
+            yr_cashflow = yr_revenue - yr_opex
             discount_factor *= (1 + r_y)
             pv = yr_cashflow / discount_factor if discount_factor > 0 else yr_cashflow
             npv += pv
@@ -735,6 +741,7 @@ class TechnoEconomicAnalyzer:
                 'price_usd_kwh': round(yr_price, 5),
                 'discount_rate_pct': round(yr_rate, 3),
                 'fx_mxn_per_usd': round(yr_fx, 4),
+                'opex':        round(yr_opex),
                 'cashflow':    round(yr_cashflow),
                 'pv_cashflow': round(pv),
                 'cumulative':  round(cumulative),
@@ -747,7 +754,8 @@ class TechnoEconomicAnalyzer:
                if r_mean > 0 else npv / project_years)
 
         # LCOE uses actual total energy across project life
-        total_costs_usd = total_capex + annual_maintenance * project_years
+        total_opex_project_usd = sum(opex_used) if opex_used else annual_maintenance * project_years
+        total_costs_usd = total_capex + total_opex_project_usd
         lcoe_usd_kwh = total_costs_usd / total_energy_kwh if total_energy_kwh > 0 else 0
 
         capacity_factor = (annual_energy_kwh /
@@ -759,7 +767,8 @@ class TechnoEconomicAnalyzer:
             (energy_price_series_usd_kwh and len(energy_price_series_usd_kwh) > 0) or
             (discount_rate_series_pct and len(discount_rate_series_pct) > 0) or
             (usd_to_mxn_series and len(usd_to_mxn_series) > 0) or
-            (year1_revenue_override_usd is not None)
+            (year1_revenue_override_usd is not None) or
+            (annual_inflation_pct != 0)
         )
 
         return {
@@ -768,6 +777,7 @@ class TechnoEconomicAnalyzer:
             'annual_energy_mwh':    round(annual_energy_kwh / 1000, 1),
             'annual_revenue_usd':   round(annual_revenue),
             'annual_opex_usd':      round(annual_opex),
+            'total_opex_project_usd': round(total_opex_project_usd),
             'annual_cashflow_usd':  round(annual_cashflow),
             'npv_usd':              round(npv),
             'vae_usd':              round(vae),
@@ -776,6 +786,7 @@ class TechnoEconomicAnalyzer:
             'project_years':        project_years,
             'discount_rate_pct':    discount_rate_pct,
             'discount_rate_mean_pct': round(r_mean * 100, 3),
+            'annual_inflation_pct': round(annual_inflation_pct, 3),
             'energy_price_usd_kwh': energy_price_usd_kwh,
             'capacity_factor_pct':  round(capacity_factor * 100, 2),
             'cashflow_table':       cashflow_table,

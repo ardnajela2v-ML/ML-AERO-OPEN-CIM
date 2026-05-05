@@ -3277,6 +3277,11 @@
             <small class="text-muted" style="font-size:.7rem">Crecimiento anual del precio/ingresos. 0 = constante. Aplica al flujo del proyecto.</small>
           </div>
           <div>
+            <label class="form-label">Inflación OPEX (% anual)</label>
+            <input type="number" class="form-input" id="te-inflation" value="0" step="0.25" min="0" max="20" placeholder="0">
+            <small class="text-muted" style="font-size:.7rem">Escala costos operativos anuales en el flujo de caja y LCOE. 0 = OPEX constante.</small>
+          </div>
+          <div>
             <label class="form-label">Tasa de descuento (%)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
               <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico del Centro de modelaje (Tasa) + proyección ML">

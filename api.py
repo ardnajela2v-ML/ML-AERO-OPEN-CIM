@@ -1712,6 +1712,7 @@ def create_app():
                 discount_rate_series_pct=_rate_series,
                 usd_to_mxn_series=None,  # FX series only affects MXN display, not USD analysis
                 year1_revenue_override_usd=_year1_rev_override,
+                annual_inflation_pct=float(fin_cfg.get('annual_inflation_pct', 0.0)),
             )
             analysis['fx_mxn_per_usd'] = fx_mxn_per_usd
             # Expose mean FX series for display (frontend may want average over years)
@@ -1999,6 +2000,7 @@ def create_app():
         base_years = int(fin_cfg.get('project_years', 20))
         base_fx    = float(fin_cfg.get('usd_to_mxn', 1.0))
         base_escal = float(fin_cfg.get('price_escalation_pct', 0.0))
+        base_infl  = float(fin_cfg.get('annual_inflation_pct', 0.0))
         cost_mdl   = CostModel.from_dict(fin_cfg.get('cost_model'))
 
         # Optional leveraged config — when present, the heatmap/tornado return
@@ -2052,6 +2054,7 @@ def create_app():
                 project_years=base_years,
                 usd_to_mxn=base_fx,
                 energy_price_series_usd_kwh=price_series,
+                annual_inflation_pct=base_infl,
             )
             npv     = float(res.get('npv_usd', 0) or 0)
             lcoe    = float(res.get('lcoe_usd_kwh', 0) or 0)

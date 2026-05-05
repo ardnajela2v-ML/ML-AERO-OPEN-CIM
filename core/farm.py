@@ -267,6 +267,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     else:
         dt_h = 1.0
     total_hours = n_samples * dt_h
+    annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
 
     sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
 
@@ -281,6 +282,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                 'aep_mwh': 0, 'aep_no_wake_mwh': 0, 'wake_loss_pct': 0,
                 'cf_pct': 0, 'flh': 0, 'dominant_dir_deg': 0,
                 'hours': round(total_hours, 1), 'dt_h': round(dt_h, 4), 'rho_mean': round(rho_mean, 4),
+                'years_in_record': round(total_hours / 8760.0, 4) if total_hours > 0 else 0,
+                'annualization_factor': round(annualization_factor, 6),
                 'turbines': [{'i': i, 'x_m': float(layout_xy[i][0]), 'y_m': float(layout_xy[i][1]),
                                'aep_mwh': 0, 'aep_no_wake_mwh': 0, 'wake_loss_pct': 0, 'cf_pct': 0}
                               for i in range(n)]}
@@ -338,17 +341,19 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     survival = float(availability) * (1.0 - float(electrical_losses))
     e_per_turbine_kwh *= survival
     e_total_kwh = float(e_per_turbine_kwh.sum())
+    e_per_turbine_annual_kwh = e_per_turbine_kwh * annualization_factor
+    e_total_annual_kwh = float(e_per_turbine_annual_kwh.sum())
 
     rated_kw = float(turbine.rated_power_kw)
     installed_kw = rated_kw * n
-    cf = e_total_kwh / (installed_kw * total_hours) if installed_kw > 0 else 0.0
+    cf = e_total_annual_kwh / (installed_kw * 8760.0) if installed_kw > 0 else 0.0
     dom_dir = dominant_direction(wd, n_sectors)
 
     # Per-turbine free-stream comparison (no-wake AEP per turbine)
-    e_no_wake_per_turbine = e_free_per_turbine_kwh * survival
+    e_no_wake_per_turbine = e_free_per_turbine_kwh * survival * annualization_factor
     per_turbine = []
     for i, (x, y) in enumerate(layout_xy):
-        e_i = float(e_per_turbine_kwh[i])
+        e_i = float(e_per_turbine_annual_kwh[i])
         per_turbine.append({
             'i': i,
             'x_m': float(x),
@@ -359,7 +364,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                 100.0 * (1 - e_i / e_no_wake_per_turbine[i]) if e_no_wake_per_turbine[i] > 0 else 0.0,
                 2),
             'cf_pct': round(
-                100.0 * e_i / (rated_kw * total_hours) if rated_kw > 0 else 0.0,
+                100.0 * e_i / (rated_kw * 8760.0) if rated_kw > 0 else 0.0,
                 2),
         })
 
@@ -368,14 +373,18 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'rotor_d_m':      rotor_d,
         'rated_kw':       rated_kw,
         'installed_mw':   round(installed_kw / 1000.0, 3),
-        'aep_mwh':        round(e_total_kwh / 1000.0, 2),
-        'aep_no_wake_mwh': round(e_free_total_kwh * survival / 1000.0, 2),
+        'aep_mwh':        round(e_total_annual_kwh / 1000.0, 2),
+        'aep_no_wake_mwh': round(e_free_total_kwh * survival * annualization_factor / 1000.0, 2),
+        'record_energy_mwh': round(e_total_kwh / 1000.0, 2),
+        'record_energy_no_wake_mwh': round(e_free_total_kwh * survival / 1000.0, 2),
         'wake_loss_pct':  round(100.0 * wake_loss, 2),
         'cf_pct':         round(100.0 * cf, 2),
-        'flh':            round(e_total_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
+        'flh':            round(e_total_annual_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
         'dominant_dir_deg': round(dom_dir, 1),
         'hours':          round(total_hours, 1),
         'dt_h':           round(dt_h, 4),
+        'years_in_record': round(total_hours / 8760.0, 4) if total_hours > 0 else 0,
+        'annualization_factor': round(annualization_factor, 6),
         'rho_mean':       round(rho_mean, 4),
         'turbines':       per_turbine,
     }

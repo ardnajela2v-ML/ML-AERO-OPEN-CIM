@@ -2725,14 +2725,16 @@ function bindTechno() {
   }
 
   // Escalamiento de exportación — re-render proyecto al cambiar (no requiere API)
-  const escEl = document.getElementById('te-price-escalation');
-  if (escEl) {
-    escEl.addEventListener('input', () => {
-      // Re-renderiza KPIs/flujos del proyecto. Leveraged se mantiene con NOI
-      // del año 1 (asunción conservadora — el escalamiento aplica al proyecto).
-      if (technoCurrentScenario()?.result) renderTechnoScenarioResult();
-    });
-  }
+  ['te-price-escalation', 'te-inflation'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('input', () => {
+        // Re-renderiza KPIs/flujos del proyecto. Leveraged se mantiene con NOI
+        // del año 1 (asunción conservadora — el escalamiento aplica al proyecto).
+        if (technoCurrentScenario()?.result) renderTechnoScenarioResult();
+      });
+    }
+  });
 
   // Selectores de modo (Fijo / 8760) — actualizar hints en tiempo real
   ['te-price-mode', 'te-rate-mode', 'te-fx-mode'].forEach(id => {
@@ -2881,10 +2883,14 @@ function technoAdjustedAnalysis(a) {
   const ls      = WP.technoFinalLoss;
   const lossPct = ls?.enabled ? Math.max(0, Number(ls.pct) || 0) : 0;
   const escPct  = parseFloat(document.getElementById('te-price-escalation')?.value) || 0;
-  if (lossPct <= 0 && escPct <= 0) return a;
+  const inflInput = parseFloat(document.getElementById('te-inflation')?.value);
+  const inflPct = Number.isFinite(inflInput) ? Math.max(0, inflInput) : (Number(a.annual_inflation_pct) || 0);
+  const baseInflPct = Number(a.annual_inflation_pct) || 0;
+  if (lossPct <= 0 && escPct <= 0 && Math.abs(inflPct - baseInflPct) < 1e-9) return a;
 
   const factor     = 1 - lossPct / 100;
   const esc        = escPct / 100;
+  const infl       = inflPct / 100;
   const N          = a.project_years || 20;
   const capexTotal = a.capex?.total_capex_usd || 0;
   const opex       = a.annual_opex_usd || 0;
@@ -2909,14 +2915,17 @@ function technoAdjustedAnalysis(a) {
   let cumDF = 1;  // cumulative discount factor when rate series available
   for (let yr = 1; yr <= N; yr++) {
     let cfT;
+    let opexT = opex * Math.pow(1 + infl, yr - 1);
     if (useExisting) {
       const baseRow = a.cashflow_table[yr - 1] || {};
-      const baseRevYr = (Number(baseRow.cashflow) || 0) + opex;  // recover revenue from cashflow + opex
+      const baseOpexYr = Number.isFinite(Number(baseRow.opex)) ? Number(baseRow.opex) : opexT;
+      opexT = opex * Math.pow(1 + infl, yr - 1);
+      const baseRevYr = (Number(baseRow.cashflow) || 0) + baseOpexYr;  // recover revenue from cashflow + opex
       const revT = baseRevYr * factor * Math.pow(1 + esc, yr - 1);
-      cfT = revT - opex;
+      cfT = revT - opexT;
     } else {
       const revT = baseRev * Math.pow(1 + esc, yr - 1);
-      cfT = revT - opex;
+      cfT = revT - opexT;
     }
     // Discount: variable rate per year if series provided
     let pvT;
@@ -2941,6 +2950,7 @@ function technoAdjustedAnalysis(a) {
       price_usd_kwh:     baseRow.price_usd_kwh,
       discount_rate_pct: baseRow.discount_rate_pct,
       fx_mxn_per_usd:    baseRow.fx_mxn_per_usd,
+      opex:              Math.round(opexT),
       cashflow:          Math.round(cfT),
       pv_cashflow:       Math.round(pvT),
       cumulative:        Math.round(cum),
@@ -2958,13 +2968,16 @@ function technoAdjustedAnalysis(a) {
 
   // LCOE — métrica de costo, no se afecta por escalamiento; solo por pérdidas (vía energía)
   const totalEnergyKwh = adj.annual_energy_kwh * N;
-  const totalCostsUsd  = capexTotal + opex * N;
+  const totalOpexUsd   = adj.cashflow_table.reduce((s, row) => s + (Number(row.opex) || 0), 0);
+  const totalCostsUsd  = capexTotal + totalOpexUsd;
   adj.lcoe_usd_kwh = totalEnergyKwh > 0
     ? Math.round((totalCostsUsd / totalEnergyKwh) * 10000) / 10000 : 0;
 
   adj.is_viable = adj.npv_usd > 0;
   adj._final_loss_applied_pct = lossPct;
   adj._price_escalation_pct   = escPct;
+  adj.annual_inflation_pct    = Math.round(inflPct * 1000) / 1000;
+  adj.total_opex_project_usd  = Math.round(totalOpexUsd);
   return adj;
 }
 
@@ -3020,6 +3033,7 @@ function technoCollectInputs() {
     demand: parseFloat(document.getElementById('te-demand')?.value) || 0,
     price: parseFloat(document.getElementById('te-price')?.value) || 0.07,
     priceEscalation: parseFloat(document.getElementById('te-price-escalation')?.value) || 0,
+    inflation: parseFloat(document.getElementById('te-inflation')?.value) || 0,
     rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
     years: parseInt(document.getElementById('te-years')?.value) || 20,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
@@ -3038,6 +3052,7 @@ function technoApplyInputs(inputs) {
   set('te-demand', inputs.demand);
   set('te-price', inputs.price);
   set('te-price-escalation', inputs.priceEscalation ?? 0);
+  set('te-inflation', inputs.inflation ?? 0);
   set('te-rate', inputs.rate);
   set('te-years', inputs.years);
   set('te-fx', inputs.fx);
@@ -3300,6 +3315,8 @@ function renderTechnoScenarioResult() {
     }
     const escVal = parseFloat(document.getElementById('te-price-escalation')?.value) || 0;
     if (escVal > 0) parts.push(`+${escVal}%/año esc.`);
+    const inflVal = parseFloat(document.getElementById('te-inflation')?.value) || 0;
+    if (inflVal > 0) parts.push(`${inflVal}%/año inflación`);
     if (parts.length) {
       lossBadge.textContent = parts.join(' · ');
       lossBadge.style.display = '';
@@ -3413,6 +3430,7 @@ async function calcTechnoEconomic() {
         discount_rate_pct:    inputs.rate,
         project_years:        inputs.years,
         usd_to_mxn:           inputs.fx,
+        annual_inflation_pct: inputs.inflation,
         cost_model:           inputs.costModel,
         // Series por año (cuando mode='arena')
         energy_price_series_usd_kwh: builtPrice.series || null,
@@ -3463,6 +3481,7 @@ async function calcSensitivity() {
       project_years:           inp.years,
       usd_to_mxn:              inp.fx || 1,
       price_escalation_pct:    inp.priceEscalation || 0,
+      annual_inflation_pct:    inp.inflation || 0,
       cost_model:              technoCollectCostModel(),
     },
   };
@@ -4758,12 +4777,14 @@ function renderCashflowTable(table, leveraged = null) {
   const showPrice  = varies('price_usd_kwh', 1e-5);
   const showRate   = varies('discount_rate_pct', 1e-3);
   const showFx     = varies('fx_mxn_per_usd', 1e-3);
+  const showOpex   = varies('opex', 1);
 
   const headers = ['Año'];
   if (showEnergy) headers.push('Energía (MWh)');
   if (showPrice)  headers.push('Precio (USD/kWh)');
   if (showRate)   headers.push('Tasa (%)');
   if (showFx)     headers.push('FX (MXN/USD)');
+  if (showOpex)   headers.push('OPEX (USD)');
   headers.push('Flujo (USD)', 'VP Flujo', 'Acumulado');
   if (thead) thead.innerHTML = '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
 
@@ -4775,6 +4796,7 @@ function renderCashflowTable(table, leveraged = null) {
     if (showPrice)  cells.push(`<td>${fmtNum(r.price_usd_kwh, 5)}</td>`);
     if (showRate)   cells.push(`<td>${fmtNum(r.discount_rate_pct, 3)}</td>`);
     if (showFx)     cells.push(`<td>${fmtNum(r.fx_mxn_per_usd, 3)}</td>`);
+    if (showOpex)   cells.push(`<td>${usd(r.opex)}</td>`);
     cells.push(`<td>${usd(r.cashflow)}</td>`);
     cells.push(`<td>${usd(r.pv_cashflow)}</td>`);
     cells.push(`<td>${usd(r.cumulative)}</td>`);
