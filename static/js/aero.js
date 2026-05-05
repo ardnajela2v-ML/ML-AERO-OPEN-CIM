@@ -704,15 +704,14 @@ function populateComparisonTable(result, horizonH) {
     .map(([k, v]) => ({ key: k, ...v.metrics, type: v.type }))
     .sort((a, b) => a.rmse - b.rmse);
 
-  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty-msg">Sin resultados</td></tr>'; return; }
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">Sin resultados</td></tr>'; return; }
 
   const bestRmse = rows[0].rmse;
+  const fmtSkill = (s) => s == null
+    ? '—'
+    : `<span style="color:${s > 0 ? 'var(--green)' : 'var(--red)'}">${(s*100).toFixed(1)}%</span>`;
   rows.forEach((row, i) => {
     const isBest = i === 0;
-    const skill = row.skill_vs_persistence;
-    const skillStr = skill != null
-      ? `<span style="color:${skill > 0 ? 'var(--green)' : 'var(--red)'}">${(skill*100).toFixed(1)}%</span>`
-      : '—';
     tbody.innerHTML += `
       <tr class="${isBest ? 'best-row' : ''}">
         <td class="model-name">${isBest ? '★ ' : ''}${row.label}</td>
@@ -722,7 +721,8 @@ function populateComparisonTable(result, horizonH) {
         <td>${row.r2?.toFixed(4)}</td>
         <td>${(row.nrmse * 100)?.toFixed(1)}%</td>
         <td>${row.smape?.toFixed(1)}%</td>
-        <td>${skillStr}</td>
+        <td>${fmtSkill(row.skill_vs_persistence)}</td>
+        <td>${fmtSkill(row.skill_vs_climatology)}</td>
       </tr>`;
   });
 

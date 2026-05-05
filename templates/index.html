@@ -759,10 +759,16 @@
             <label class="form-label">Horizonte de pronóstico</label>
             <select class="form-select" id="train-horizon">
               <option value="1">h = +1h (muy corto plazo)</option>
-              <option value="6">h = +6h (corto plazo)</option>
+              <option value="6" selected>h = +6h (corto plazo) — recomendado</option>
               <option value="24">h = +24h (día siguiente)</option>
               <option value="72">h = +72h (3 días)</option>
             </select>
+            <p class="text-muted" style="font-size:.68rem;line-height:1.45;margin-top:.35rem">
+              En el Istmo la autocorrelación de viento a 1h es &gt; 0.93, por lo que persistencia ya
+              da R² ≈ 0.91–0.95 y ningún ML la supera. Para ver ganancia real en Skill vs Pers usa
+              <strong>h = 6 ó 24h</strong>. Modelos recomendados: <strong>LightGBM, XGBoost, Random
+              Forest</strong>. Evita Ridge/Linear en h ≥ 24h (extrapolan mal).
+            </p>
           </div>
           <div class="model-checklist mt-2">
             <p class="text-muted mb-1">Modelos a entrenar <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
@@ -823,9 +829,19 @@
       </div>
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="comparison-table">
-          <thead><tr><th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th><th>Skill</th></tr></thead>
-          <tbody id="comparison-tbody"><tr><td colspan="8" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
+          <thead><tr>
+            <th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th>
+            <th title="Mejora relativa vs ŷ(t+h)=y(t). 0% = igual que persistencia; &gt;0 = mejor.">Skill vs Pers</th>
+            <th title="Mejora relativa vs media histórica (climatología). Equivale a R² cuando no hay sesgo.">Skill vs Clim</th>
+          </tr></thead>
+          <tbody id="comparison-tbody"><tr><td colspan="9" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
         </table>
+        <p class="text-muted mt-2" style="font-size:.72rem;line-height:1.5">
+          <strong>Skill vs Pers</strong> = 1 − MSE(modelo)/MSE(persistencia). En horizontes cortos (h=1h) la
+          persistencia tiene R² ≈ 0.9–0.95 en el Istmo, por lo que un modelo con R² alto puede tener Skill ≈ 0%
+          (empata persistencia, no es un bug). En h ≥ 6h la persistencia se degrada y el Skill refleja la mejora real.
+          <strong>Skill vs Clim</strong> mide qué tanto mejor eres que predecir la media histórica.
+        </p>
       </div>
     </div>
 
