@@ -910,12 +910,13 @@ function getForecastFutureConfig(key) {
     const fc  = WP.arenaCache.pml;
     const fcH = WP.arenaCache.pml_hourly;
     const { sideKey, sideCache } = getPmlForecastStudioSide(fc);
-    if (!sideCache?.projection && !fcH?.raw_values) return null;
+    const { sideCache: sideCacheH } = getPmlForecastStudioSide(fcH);
+    if (!sideCache?.projection && !sideCacheH?.raw_values) return null;
     const rawValues = (key === 'pml_hourly')
-      ? (fcH?.raw_values || sideCache?.raw_values || null)
+      ? (sideCacheH?.raw_values || sideCache?.raw_values || null)
       : (sideCache?.raw_values || null);
     return {
-      projection: sideCache?.projection || {}, bestModel: sideCache?.best_model || (fcH?.best_model),
+      projection: sideCache?.projection || {}, bestModel: sideCache?.best_model || sideCacheH?.best_model,
       rawValues, annualKind: sideCache?.annual_kind || 'sum',
       ylabel: `PML ($/kWh) — ${sideKey || 'serie'}`, unitLabel: '$/kWh', decimals: 4,
       scaler: v => v, filename: `forecast_studio_${key}_${sideKey || 'series'}_future_25y.csv`,
@@ -3083,9 +3084,11 @@ function _arrMean(arr) {
 function _arenaRawValues(paramKey) {
   const c = WP.arenaCache || {};
   if (paramKey === 'price') {
-    const h = c.pml_hourly?.raw_values;
+    const { sideCache: hourlySide } = getPmlForecastStudioSide(c.pml_hourly);
+    const h = hourlySide?.raw_values || c.pml_hourly?.raw_values;
     if (Array.isArray(h) && h.length) return { values: h, source: 'pml_hourly' };
-    const side = c.pml?.compra || c.pml?.venta || c.pml || null;
+    const { sideCache } = getPmlForecastStudioSide(c.pml);
+    const side = sideCache || c.pml?.compra || c.pml?.venta || c.pml || null;
     const r = side?.raw_values;
     return Array.isArray(r) && r.length ? { values: r, source: 'pml_annual' } : null;
   }
@@ -3203,7 +3206,8 @@ function technoUpdateModeHints() {
     }
     const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 20, fxScalar);
     if (!built.series) {
-      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos del Centro de modelaje para ${c.key.toUpperCase()}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
+      const srcLabel = c.key === 'price' ? 'PML/PRECIO' : c.key.toUpperCase();
+      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos del Centro de modelaje para ${srcLabel}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
       return;
     }
     const hAvg = built.series.length > 1
@@ -3352,6 +3356,10 @@ function renderTechnoScenarioResult() {
   renderTechnoLeveraged(scenario.leveraged);
   renderTechnoSummaryCard(adjR.analysis, scenario.leveraged);
   renderTechnoEnergyLab(r.energy_lab);
+  const kTable = scenario.leveraged?.cashflow_table?.length
+    ? scenario.leveraged.cashflow_table
+    : adjR.analysis?.cashflow_table;
+  renderKmeansLifecycle(kTable);
 }
 
 function renderTechnoLayoutPreview() {
@@ -3466,25 +3474,34 @@ async function calcTechnoEconomic() {
 let _riskData = null;
 
 async function calcSensitivity() {
-  const r = WP.technoScenarios[WP.technoActiveScenario]?.result;
+  const sc = WP.technoScenarios[WP.technoActiveScenario];
+  const r  = sc?.result;
   if (!r?.analysis || !WP.sessionId) return;
   const a   = r.analysis;
-  const inp = technoCollectInputs();
+  // Prefer stored scenario inputs (consistent with the executed analysis).
+  // Fall back to current form values only when no stored inputs exist.
+  const stored = sc.inputs || {};
+  const inp    = technoCollectInputs();
+  const price  = stored.price || inp.price;
+  const rate   = stored.rate  || inp.rate;
   const body = {
     session_id: WP.sessionId,
-    turbine:    { builtin_model: inp.turbine },
-    n_turbines: inp.nTurbines,
+    turbine:    { builtin_model: stored.turbine || inp.turbine },
+    n_turbines: stored.nTurbines || inp.nTurbines,
     base_annual_kwh: a.annual_energy_kwh || 0,
     financial: {
-      energy_price_usd_kwh:    inp.price,
-      discount_rate_pct:       inp.rate,
-      project_years:           inp.years,
-      usd_to_mxn:              inp.fx || 1,
-      price_escalation_pct:    inp.priceEscalation || 0,
-      annual_inflation_pct:    inp.inflation || 0,
-      cost_model:              technoCollectCostModel(),
+      energy_price_usd_kwh:    price,
+      discount_rate_pct:       rate,
+      project_years:           stored.years || inp.years,
+      usd_to_mxn:              stored.fx    || inp.fx || 1,
+      price_escalation_pct:    stored.priceEscalation ?? inp.priceEscalation ?? 0,
+      annual_inflation_pct:    stored.inflation        ?? inp.inflation        ?? 0,
+      cost_model:              stored.costModel || technoCollectCostModel(),
     },
   };
+  // Si hay financiamiento activo, incluir params de apalancamiento para que
+  // el análisis de riesgo use VAN equity en lugar de VAN proyecto.
+  if (sc?.leveraged) body.leveraged = { ...WP.levParams };
   try {
     setStatus('Calculando análisis de riesgo…');
     const data = await api('/api/energy/sensitivity', 'POST', body);
@@ -3503,8 +3520,10 @@ function renderRiskSection(data) {
   const metric  = document.querySelector('input[name="risk-metric"]:checked')?.value || 'npv';
   const base    = data.base || {};
   const infoEl  = document.getElementById('risk-base-info');
+  const isLev   = !!WP.technoScenarios[WP.technoActiveScenario]?.leveraged;
   if (infoEl) infoEl.textContent =
-    `VAN base: $${Math.round(base.npv_usd||0).toLocaleString()} · LCOE: ${(base.lcoe_usd_kwh||0).toFixed(4)} · Payback: ${(base.payback_years||0).toFixed(1)}a`;
+    `Precio base: ${(base.energy_price_usd_kwh||0).toFixed(4)} USD/kWh · Tasa: ${(base.discount_rate_pct||0).toFixed(2)}% · ` +
+    `VAN${isLev ? ' equity' : ''}: $${Math.round(base.npv_usd||0).toLocaleString()} · LCOE: ${(base.lcoe_usd_kwh||0).toFixed(4)} · Payback: ${(base.payback_years||0).toFixed(1)} a`;
 
   renderTornadoChart(data.tornado || [], metric);
   renderHeatmapCanvas(data.heatmap);
@@ -3570,44 +3589,45 @@ function renderHeatmapCanvas(hm) {
   if (!hm?.data?.length) return;
   const canvas = document.getElementById('risk-heatmap-canvas');
   if (!canvas) return;
-  const rows       = hm.data.length;
-  const cols       = hm.data[0].length;
-  const cellW      = 58;
-  const cellH      = 26;
-  const padL       = 58;
-  const padT       = 22;
-  const padB       = 16;
-  canvas.width     = padL + cols * cellW;
-  canvas.height    = padT + rows * cellH + padB;
-  const ctx        = canvas.getContext('2d');
+  const rows  = hm.data.length;
+  const cols  = hm.data[0].length;
+  const cellW = 62;
+  const cellH = 27;
+  const padL  = 66;
+  const padT  = 24;
+  const padB  = 18;
+  canvas.width  = padL + cols * cellW;
+  canvas.height = padT + rows * cellH + padB;
+  const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Find min/max for colour scale
+  const bri = hm.base_rate_idx  ?? 3;  // base rate column index
+  const bpi = hm.base_price_idx ?? 4;  // base price row index
+
   const flat = hm.data.flat();
   const vMin = Math.min(...flat);
   const vMax = Math.max(...flat);
 
   function cellColor(v) {
     if (vMax === vMin) return 'rgba(100,116,139,.5)';
-    const t = (v - vMin) / (vMax - vMin);  // 0→red, 1→green
-    const r = Math.round(239 + (34 - 239) * t);
-    const g = Math.round(68 + (197 - 68) * t);
-    const b = Math.round(68 + (94 - 68) * t);
-    return `rgba(${r},${g},${b},0.82)`;
+    const t = (v - vMin) / (vMax - vMin);
+    return `rgba(${Math.round(239 + (34-239)*t)},${Math.round(68 + (197-68)*t)},${Math.round(68 + (94-68)*t)},0.82)`;
   }
-
-  ctx.font = '9px Inter, system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#94a3b8';
 
   // Column headers (rate)
   hm.rate_labels.forEach((lbl, ci) => {
-    ctx.fillText(lbl, padL + ci * cellW + cellW / 2, padT - 6);
+    ctx.font = ci === bri ? 'bold 9px Inter,system-ui' : '9px Inter,system-ui';
+    ctx.fillStyle = ci === bri ? '#4DA3FF' : '#94a3b8';
+    ctx.textAlign = 'center';
+    ctx.fillText(lbl, padL + ci * cellW + cellW / 2, padT - 7);
   });
+
   // Row labels (price)
-  ctx.textAlign = 'right';
   hm.price_labels.forEach((lbl, ri) => {
-    ctx.fillText(lbl, padL - 4, padT + ri * cellH + cellH / 2 + 4);
+    ctx.font = ri === bpi ? 'bold 9px Inter,system-ui' : '9px Inter,system-ui';
+    ctx.fillStyle = ri === bpi ? '#4DA3FF' : '#94a3b8';
+    ctx.textAlign = 'right';
+    ctx.fillText(lbl, padL - 5, padT + ri * cellH + cellH / 2 + 3);
   });
 
   // Cells
@@ -3618,11 +3638,28 @@ function renderHeatmapCanvas(hm) {
       const y = padT + ri * cellH;
       ctx.fillStyle = cellColor(val);
       ctx.fillRect(x, y, cellW - 1, cellH - 1);
-      ctx.fillStyle = Math.abs(val) > (Math.abs(vMax) * 0.3) ? '#fff' : '#374151';
-      ctx.font = '8.5px Inter, system-ui';
+      // Base scenario cell — thicker accent border
+      if (ri === bpi && ci === bri) {
+        ctx.strokeStyle = '#4DA3FF';
+        ctx.lineWidth   = 2;
+        ctx.strokeRect(x + 1, y + 1, cellW - 3, cellH - 3);
+        ctx.lineWidth = 1;
+      }
+      ctx.fillStyle = Math.abs(val) > Math.abs(vMax) * 0.3 ? '#fff' : '#374151';
+      ctx.font = (ri === bpi && ci === bri) ? 'bold 8.5px Inter,system-ui' : '8.5px Inter,system-ui';
       ctx.fillText(val.toFixed(2), x + cellW / 2, y + cellH / 2 + 3);
     });
   });
+
+  // Subtitle: base values used
+  if (hm.base_price != null && hm.base_rate != null) {
+    ctx.font = '8px Inter,system-ui';
+    ctx.fillStyle = '#64748b';
+    ctx.textAlign = 'left';
+    ctx.fillText(
+      `Base: ${hm.base_price.toFixed(4)} USD/kWh · ${hm.base_rate.toFixed(2)}%  (celda resaltada)`,
+      padL, padT + rows * cellH + 13);
+  }
 }
 
 function renderRegimeChart(regimes) {
@@ -3781,6 +3818,177 @@ function renderCashflowChart(table) {
         y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'Acumulado USD' } }
       } }
   });
+}
+
+// ─── K-Means ciclo de vida financiero ────────────────────────────────────────
+function _kmeansRun(pts, k, maxIter = 150) {
+  const n = pts.length, dims = pts[0].length;
+  if (n < k) return { labels: pts.map((_, i) => i % k) };
+  const mins = Array(dims).fill(Infinity), maxs = Array(dims).fill(-Infinity);
+  pts.forEach(p => p.forEach((v, d) => { if (v < mins[d]) mins[d] = v; if (v > maxs[d]) maxs[d] = v; }));
+  const norm = pts.map(p => p.map((v, d) => maxs[d] > mins[d] ? (v - mins[d]) / (maxs[d] - mins[d]) : 0));
+  const sorted = [...norm].sort((a, b) => a[0] - b[0]);
+  let centroids = Array.from({ length: k }, (_, ki) => sorted[Math.round(ki * (n - 1) / (k - 1))].slice());
+  const d2 = (a, b) => a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0);
+  let labels = new Array(n).fill(0);
+  for (let iter = 0; iter < maxIter; iter++) {
+    const nl = norm.map(p => { let b = 0, bd = Infinity; centroids.forEach((c, ki) => { const dd = d2(p, c); if (dd < bd) { bd = dd; b = ki; } }); return b; });
+    const changed = nl.some((l, i) => l !== labels[i]);
+    labels = nl;
+    if (!changed) break;
+    centroids = Array.from({ length: k }, (_, ki) => {
+      const m = norm.filter((_, i) => labels[i] === ki);
+      return m.length ? Array.from({ length: dims }, (_, d) => m.reduce((s, p) => s + p[d], 0) / m.length) : centroids[ki];
+    });
+  }
+  return { labels, norm };
+}
+
+function _kmeansSilhouette(norm, labels, k) {
+  const n = norm.length;
+  const edist = (a, b) => Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0));
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const ki = labels[i];
+    const mem = norm.filter((_, j) => labels[j] === ki && j !== i);
+    const a = mem.length ? mem.reduce((s, p) => s + edist(norm[i], p), 0) / mem.length : 0;
+    const b = Math.min(...Array.from({ length: k }, (_, kj) => {
+      if (kj === ki) return Infinity;
+      const oth = norm.filter((_, j) => labels[j] === kj);
+      return oth.length ? oth.reduce((s, p) => s + edist(norm[i], p), 0) / oth.length : Infinity;
+    }));
+    total += (b - a) / Math.max(a, b || 1e-9);
+  }
+  return total / n;
+}
+
+function renderKmeansLifecycle(table) {
+  const fmtUsd = n => '$' + Math.round(n).toLocaleString();
+  const card = document.getElementById('te-kmeans-card');
+  if (!card) return;
+  if (!table?.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const k = 3;
+  const pts = table.map(r => [Number(r.year), Number(r.pv_cashflow), Number(r.cumulative)]);
+  const { labels, norm } = _kmeansRun(pts, k);
+
+  // Remap so cluster 0 = earliest years, 2 = latest
+  const meanYr = Array.from({ length: k }, (_, ki) => {
+    const yrs = pts.filter((_, i) => labels[i] === ki).map(p => p[0]);
+    return yrs.length ? yrs.reduce((s, v) => s + v, 0) / yrs.length : 0;
+  });
+  const order = [0, 1, 2].sort((a, b) => meanYr[a] - meanYr[b]);
+  const remap = new Array(k); order.forEach((orig, ni) => { remap[orig] = ni; });
+  const sl = labels.map(l => remap[l]);
+
+  const sil = _kmeansSilhouette(norm, sl, k);
+
+  const COLORS = ['#4DA3FF', '#22c55e', '#f59e0b'];
+  const PHASES = ['Recuperación de inversión', 'Operación plena', 'Madurez tardía'];
+
+  // Badges
+  const silBadge = document.getElementById('te-kmeans-sil-badge');
+  if (silBadge) {
+    const ok = sil >= 0.5;
+    silBadge.textContent = `Silhouette = ${sil.toFixed(3)}`;
+    silBadge.style.background = ok ? 'rgba(34,197,94,.12)' : 'rgba(245,158,11,.12)';
+    silBadge.style.color     = ok ? '#22c55e' : '#f59e0b';
+    silBadge.style.border    = `1px solid ${ok ? 'rgba(34,197,94,.3)' : 'rgba(245,158,11,.3)'}`;
+  }
+
+  // Bar chart — VP flujo por año, coloreado por clúster
+  destroyChart('kmeans-bar-chart');
+  const barCtx = document.getElementById('kmeans-bar-chart')?.getContext('2d');
+  if (barCtx) {
+    WP.charts['kmeans-bar-chart'] = new Chart(barCtx, {
+      type: 'bar',
+      data: {
+        labels: table.map(r => 'Año ' + r.year),
+        datasets: [{ label: 'VP Flujo (USD)',
+          data: table.map(r => r.pv_cashflow),
+          backgroundColor: sl.map(l => COLORS[l] + '99'),
+          borderColor: sl.map(l => COLORS[l]),
+          borderWidth: 1, borderRadius: 3 }]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: ctx => ` ${fmtUsd(ctx.parsed.y)}` } } },
+        scales: {
+          x: { grid: { color: gridColor() }, ticks: { font: { size: 9 } } },
+          y: { grid: { color: gridColor() }, title: { display: true, text: 'USD (VP)', font: { size: 10 } } }
+        } }
+    });
+  }
+
+  // Scatter — año vs acumulado, por clúster
+  destroyChart('kmeans-scatter-chart');
+  const scCtx = document.getElementById('kmeans-scatter-chart')?.getContext('2d');
+  if (scCtx) {
+    WP.charts['kmeans-scatter-chart'] = new Chart(scCtx, {
+      type: 'scatter',
+      data: { datasets: Array.from({ length: k }, (_, ki) => ({
+        label: PHASES[ki],
+        data: table.filter((_, i) => sl[i] === ki).map(r => ({ x: r.year, y: r.cumulative })),
+        backgroundColor: COLORS[ki] + 'cc', borderColor: COLORS[ki],
+        pointRadius: 6, pointHoverRadius: 8, showLine: false,
+      })) },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: true, position: 'bottom',
+            labels: { font: { size: 10 }, padding: 6 } },
+          tooltip: { callbacks: { label: ctx => `Año ${ctx.parsed.x} · Acum. ${fmtUsd(ctx.parsed.y)}` } } },
+        scales: {
+          x: { grid: { color: gridColor() }, title: { display: true, text: 'Año', font: { size: 10 } } },
+          y: { grid: { color: gridColor() }, title: { display: true, text: 'VP acumulado (USD)', font: { size: 10 } } }
+        } }
+    });
+  }
+
+  // Tabla resumen por clúster
+  const tbody = document.getElementById('te-kmeans-tbody');
+  if (tbody) {
+    tbody.innerHTML = Array.from({ length: k }, (_, ki) => {
+      const mem = table.filter((_, i) => sl[i] === ki);
+      const yrs = mem.map(r => r.year);
+      const meanPV  = mem.reduce((s, r) => s + r.pv_cashflow, 0) / mem.length;
+      const meanCum = mem.reduce((s, r) => s + r.cumulative,  0) / mem.length;
+      const dot = `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${COLORS[ki]};margin-right:5px;vertical-align:middle"></span>`;
+      return `<tr>
+        <td>${dot}${ki + 1}</td>
+        <td>${mem.length}</td>
+        <td>${Math.min(...yrs)}–${Math.max(...yrs)}</td>
+        <td>${fmtUsd(meanPV)}</td>
+        <td>${fmtUsd(meanCum)}</td>
+        <td><span style="font-size:.75rem;color:${COLORS[ki]}">${PHASES[ki]}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  // Métricas de calidad
+  const metricsEl = document.getElementById('te-kmeans-metrics');
+  if (metricsEl) {
+    metricsEl.style.display = 'flex';
+    const chip = (lbl, val) =>
+      `<span style="font-size:.75rem;background:var(--bg-elevated);border:1px solid var(--border);padding:.2rem .65rem;border-radius:12px;color:var(--text-secondary)">` +
+      `<span style="color:var(--text-muted)">${lbl}:</span> <strong style="color:var(--text-primary)">${val}</strong></span>`;
+    metricsEl.innerHTML = [
+      chip('Silhouette', sil.toFixed(3) + (sil >= 0.5 ? ' ✓' : '')),
+      chip('Clusters K', k),
+      chip('Años analizados', table.length),
+      chip('Método', 'K-Means (determinístico)'),
+    ].join('');
+  }
+
+  // Botón recalcular
+  const btn = document.getElementById('btn-calc-kmeans');
+  if (btn && !btn._wired) {
+    btn._wired = true;
+    btn.addEventListener('click', () => {
+      const sc  = technoCurrentScenario();
+      const adj = technoAdjustedAnalysis(sc?.result?.analysis);
+      renderKmeansLifecycle(adj?.cashflow_table);
+    });
+  }
 }
 
 function renderCpChart(cp) {

@@ -50,7 +50,7 @@
     <button class="nav-btn" data-module="forecast" style="display:none" hidden>Forecast Studio</button>
     <button class="nav-btn" data-module="kriging">Diseño y optimización del parque eólico</button>
     <button class="nav-btn" data-module="parque" style="display:none" hidden>Parque</button>
-    <button class="nav-btn" data-module="techno">Análisis Tecnoeconómico</button>
+    <button class="nav-btn" data-module="techno">Evaluación Tecnoeconómica</button>
     <button class="nav-btn" data-module="mapa" style="display:none" hidden>Mapa & Kriging</button>
     <button class="nav-btn" data-module="hybrid" style="display:none" hidden>Sistema Híbrido</button>
     <button class="nav-btn" data-module="energy" style="display:none" hidden>Energy Lab</button>
@@ -3207,7 +3207,7 @@
 <!-- ╔══════════════════ TECNO-ECONÓMICO ══════════════════╗ -->
 <section class="module" id="mod-techno">
   <div class="module-header">
-    <h1 class="module-title">Análisis Tecnoeconómico</h1>
+    <h1 class="module-title">Evaluación Tecnoeconómica</h1>
     <p class="module-desc">Escenarios independientes: viento real · predicción ML 25 años · predicción corregida con Kriging/Parque.</p>
   </div>
 
@@ -3448,6 +3448,59 @@
       <div class="card-body" id="te-kpi-grid">
         <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
       </div>
+    </div>
+  </div>
+
+  <!-- ── ANÁLISIS DE CICLO DE VIDA K-MEANS ── -->
+  <div class="card mt-2" id="te-kmeans-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Análisis de ciclo de vida — Clústeres K-Means</span>
+      <span class="badge badge--info" id="te-kmeans-k-badge" style="font-size:.65rem">K = 3</span>
+      <span class="badge" id="te-kmeans-sil-badge"
+        style="font-size:.65rem;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3)">—</span>
+      <button id="btn-calc-kmeans" class="btn-secondary"
+        style="margin-left:auto;font-size:.75rem;padding:.25rem .8rem">&#x27F3; Recalcular</button>
+    </div>
+    <div class="card-body">
+      <p style="font-size:.78rem;color:var(--text-secondary);margin-bottom:1rem">
+        Segmentación automática de los <strong>años del proyecto</strong> en tres fases de comportamiento financiero
+        mediante K-Means (K = 3) aplicado sobre VP del flujo y acumulado normalizado. Refleja la estructura de
+        recuperación de inversión, operación plena y madurez tardía.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.8rem">
+        <div>
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+            Perfil de VP del flujo por fase
+          </div>
+          <div style="position:relative;height:210px">
+            <canvas id="kmeans-bar-chart"></canvas>
+          </div>
+        </div>
+        <div>
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+            Dispersión — Año vs VP acumulado
+          </div>
+          <div style="position:relative;height:210px">
+            <canvas id="kmeans-scatter-chart"></canvas>
+          </div>
+        </div>
+      </div>
+      <div style="overflow-x:auto;margin-top:1rem">
+        <table class="data-table" id="te-kmeans-table">
+          <thead>
+            <tr>
+              <th>Clúster</th><th>Años</th><th>Rango</th>
+              <th>VP flujo medio (USD)</th><th>VP acumulado medio (USD)</th><th>Fase</th>
+            </tr>
+          </thead>
+          <tbody id="te-kmeans-tbody">
+            <tr><td colspan="6" class="text-muted" style="text-align:center;padding:1rem">
+              Ejecuta el análisis tecnoeconómico para ver la segmentación de ciclo de vida.
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div id="te-kmeans-metrics" style="margin-top:.75rem;display:none;gap:1.2rem;flex-wrap:wrap"></div>
     </div>
   </div>
 
@@ -3826,6 +3879,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260503-globe-fast-mx"></script>
+<script src="/static/js/aero.js?v=20260505-kmeans-fix"></script>
 </body>
 </html>

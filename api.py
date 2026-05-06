@@ -333,6 +333,45 @@ def create_app():
                 break  # first match wins; columns are usually ordered wind_speed, wind_dir
         return best
 
+    def _auto_detect_ws_col(df):
+        """Return the best physical wind-speed column from df, or None."""
+        preferred = ['wind_speed', 'ws', 'windspeed', 'wind speed', 'velocidad_viento', 'vel_viento']
+        excludes = ['dir', 'direction', 'wd', 'pml', 'price', 'precio', 'load', 'demand', 'demanda',
+                    'temperature', 'temp', 'pressure', 'pres', 'humidity', 'humedad', 'power', 'energy']
+        for pref in preferred:
+            for col in df.columns:
+                if col.lower() == pref:
+                    return col
+        for col in df.columns:
+            cl = col.lower()
+            if any(x in cl for x in excludes):
+                continue
+            if not any(k in cl for k in ['wind', 'viento', 'ws', 'speed', 'vel']):
+                continue
+            vals = pd.to_numeric(df[col], errors='coerce').dropna()
+            if len(vals) == 0:
+                continue
+            vmin, vmax, vmean = float(vals.min()), float(vals.max()), float(vals.mean())
+            if vmin >= 0 and 0 < vmean < 40 and vmax <= 80:
+                return col
+        return 'wind_speed' if 'wind_speed' in df.columns else None
+
+    def _energy_ws_col(sess, body=None):
+        """Wind-energy endpoints must not follow arbitrary ML target_col changes."""
+        body = body or {}
+        df = sess.get('df')
+        if df is None:
+            return body.get('ws_col') or sess.get('wind_speed_col') or 'wind_speed'
+        for candidate in [body.get('ws_col'), sess.get('wind_speed_col')]:
+            if candidate in df.columns:
+                return candidate
+        detected = _auto_detect_ws_col(df)
+        if detected:
+            sess['wind_speed_col'] = detected
+            return detected
+        target = sess.get('target_col')
+        return target if target in df.columns else 'wind_speed'
+
     def _farm_wind_from_session(df, ws_col, wd_col, measurement_h, hub_height_m):
         # If requested wd_col is missing, auto-detect from the dataframe
         if wd_col not in df.columns:
@@ -673,6 +712,12 @@ def create_app():
             sess = get_session(sid)
             sess['df']   = df.copy()
             sess['meta'] = meta
+            if 'wind_speed' in sess['df'].columns:
+                sess['wind_speed_col'] = 'wind_speed'
+            else:
+                detected_ws = _auto_detect_ws_col(sess['df'])
+                if detected_ws:
+                    sess['wind_speed_col'] = detected_ws
 
             # ── Height normalization ──────────────────────────────────────────
             target_h  = body.get('target_height_m')
@@ -745,6 +790,12 @@ def create_app():
             sess = get_session(sid)
             sess['df'] = df
             sess['meta'] = meta
+            if 'wind_speed' in df.columns:
+                sess['wind_speed_col'] = 'wind_speed'
+            else:
+                detected_ws = _auto_detect_ws_col(df)
+                if detected_ws:
+                    sess['wind_speed_col'] = detected_ws
             # Auto-detect and store wind direction column for later use
             auto_wd = _auto_detect_wd_col(df)
             if auto_wd:
@@ -1158,7 +1209,7 @@ def create_app():
                 curtailment_losses=curt_losses,
             )
 
-            ws_col = sess.get('target_col', 'wind_speed')
+            ws_col = _energy_ws_col(sess, sim_cfg)
             df_sim, summary = engine.run(
                 sess['df'], ws_col=ws_col,
                 ws_height_m=ws_height_m,
@@ -1250,7 +1301,7 @@ def create_app():
             return jsonify({'error': 'No data loaded.'}), 400
 
         turbine_keys = body.get('turbine_keys', None)
-        ws_col = sess.get('target_col', 'wind_speed')
+        ws_col = _energy_ws_col(sess, body)
         ws_height_m = _sess_ws_h(body, sess)
 
         try:
@@ -1368,7 +1419,7 @@ def create_app():
 
         try:
             df     = sess['df']
-            ws_col = sess.get('target_col', 'wind_speed')
+            ws_col = _energy_ws_col(sess, body)
             ws_h   = _sess_ws_h(body, sess, 'ws_height')
             lat    = float(body.get('lat', 20.0))
 
@@ -1518,7 +1569,7 @@ def create_app():
                     rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
                 )
 
-            ws_col      = sess.get('target_col', 'wind_speed')
+            ws_col      = _energy_ws_col(sess, body)
             ws_height_m = _sess_ws_h(body, sess)
             df          = sess['df']
             requested_n_turbines = int(body.get('n_turbines') or 1)
@@ -2199,17 +2250,27 @@ def create_app():
         except Exception as _re:
             logger.debug('Regime ML error: %s', _re)
 
+        base_price_idx = next(
+            (i for i, p in enumerate(price_steps) if abs(p - base_price) < 1e-6), 4)
+        base_rate_idx  = next(
+            (i for i, r in enumerate(rate_steps)  if abs(r - base_rate)  < 1e-4), 3)
         return jsonify({
             'tornado': tornado,
             'heatmap': {
-                'data':         heatmap,
-                'price_labels': [str(p) for p in price_steps],
-                'rate_labels':  [f'{r:.1f}%' for r in rate_steps],
+                'data':          heatmap,
+                'price_labels':  [str(round(p, 4)) for p in price_steps],
+                'rate_labels':   [f'{r:.2f}%' for r in rate_steps],
+                'base_price':    round(base_price, 4),
+                'base_rate':     round(base_rate, 2),
+                'base_price_idx': base_price_idx,
+                'base_rate_idx':  base_rate_idx,
             },
             'base': {
-                'npv_usd':      round(base_npv, 0),
-                'lcoe_usd_kwh': round(base_lcoe, 5),
-                'payback_years':round(base_pb, 1),
+                'npv_usd':               round(base_npv, 0),
+                'lcoe_usd_kwh':          round(base_lcoe, 5),
+                'payback_years':         round(base_pb, 1),
+                'energy_price_usd_kwh':  round(base_price, 4),
+                'discount_rate_pct':     round(base_rate, 2),
             },
             'regimes': regimes,
         })
@@ -2267,7 +2328,7 @@ def create_app():
                 )
 
             df = sess['df']
-            ws_col = sess.get('target_col', 'wind_speed')
+            ws_col = _energy_ws_col(sess, body)
             wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
             ws_h = _sess_ws_h(body, sess)
             ws_hub, wd, temperature_c, pressure_pa, _, wind_info = _farm_wind_from_session(
@@ -2668,7 +2729,7 @@ def create_app():
             if sid:
                 if 'df' in sess:
                     df     = sess['df']
-                    ws_col = sess.get('target_col', 'wind_speed')
+                    ws_col = _energy_ws_col(sess, body)
                     wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
                     ws_hub, wd, temp_c, pres_p, reference_wind_mean, wind_info = _farm_wind_from_session(
                         df, ws_col, wd_col, measurement_h, turbine.hub_height_m
