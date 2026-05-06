@@ -531,8 +531,9 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     inv   = ctot                                # inversión inicial = CAPEX
 
     ekwh = pan / 1e3
-    vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
-    flux = vtas - cm                # flujo neto anual = ventas − O&M anual
+    vtas_mxn = ekwh * (price_usd_kwh * price_mxn_per_usd)  # MXN/año (solo para display)
+    vtas = ekwh * price_usd_kwh                              # USD/año (para cálculos financieros)
+    flux = vtas - cm                # flujo neto anual = ventas − O&M anual (USD)
     if tasa > 0:
         VAN = (flux * ((1 - (1 + tasa) ** -anios) / tasa)) - inv
         VAE = (VAN * tasa / (1 - (1 + tasa) ** -anios))
@@ -557,7 +558,7 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
         'capex_usd':            float(ctot),
         'opex_usd_anual':       float(cm),
         'inversion_total_usd':  float(inv),
-        'ventas_mxn_anuales':   float(vtas),
+        'ventas_mxn_anuales':   float(vtas_mxn),
         'flujo_neto_anual':     float(flux),
         'van_usd':              float(VAN),
         'vae_usd':              float(VAE),
@@ -767,7 +768,7 @@ def _legacy_prefit_economics(mean_speed, k, rho_mean, power_interp, p_max_curve,
     cm   = cm_model.opex_annual_usd(ctot)
     inv  = ctot
     ekwh = pan / 1e3
-    vtas = ekwh * (price_usd_kwh * price_mxn_per_usd)
+    vtas = ekwh * price_usd_kwh  # USD/año
     flux = vtas - cm
     if tasa > 0:
         van = (flux * ((1 - (1 + tasa) ** -anios) / tasa)) - inv
