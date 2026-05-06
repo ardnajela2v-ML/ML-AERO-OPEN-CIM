@@ -1573,9 +1573,13 @@ def create_app():
             ws_height_m = _sess_ws_h(body, sess)
             df          = sess['df']
             requested_n_turbines = int(body.get('n_turbines') or 1)
-            annual_energy_override_mwh = body.get('annual_energy_mwh')
-            annual_wind_mean_ms = body.get('annual_wind_mean_ms')
-            annual_wind_series_ms = body.get('annual_wind_series_ms')
+            _scenario = str(body.get('scenario', '')).lower()
+            # "real" (sin predicción) must always use the station time series directly.
+            # Ignore any ML/Arena wind params the client may have sent.
+            _station_only = (_scenario == 'real')
+            annual_energy_override_mwh = None if _station_only else body.get('annual_energy_mwh')
+            annual_wind_mean_ms  = None if _station_only else body.get('annual_wind_mean_ms')
+            annual_wind_series_ms = None if _station_only else body.get('annual_wind_series_ms')
             _wind_series = None
             if annual_wind_series_ms and isinstance(annual_wind_series_ms, list):
                 _clean = []
@@ -1590,7 +1594,7 @@ def create_app():
                     _wind_series = _clean
 
             dt_h = _infer_dt_h(df.index)
-            wind_info = {'source': 'session'}
+            wind_info = {'source': 'session', 'scenario': _scenario}
             dispatch_index = df.index
 
             if _wind_series:

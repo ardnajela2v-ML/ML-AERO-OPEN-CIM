@@ -3356,6 +3356,22 @@ function renderTechnoScenarioResult() {
   renderTechnoLeveraged(scenario.leveraged);
   renderTechnoSummaryCard(adjR.analysis, scenario.leveraged);
   renderTechnoEnergyLab(r.energy_lab);
+
+  // Badge de viento de estación — solo visible en escenario "real" (sin predicción)
+  const windBadge = document.getElementById('te-wind-station-badge');
+  if (windBadge) {
+    const ws = r.wind_source;
+    if (WP.technoActiveScenario === 'real' && ws?.source === 'session') {
+      const rawM  = ws.raw_mean_ms  != null ? ws.raw_mean_ms.toFixed(2)  + ' m/s' : '—';
+      const hubM  = ws.hub_mean_ms  != null ? ws.hub_mean_ms.toFixed(2)  + ' m/s' : '—';
+      const nRec  = ws.n_rows       != null ? ws.n_rows.toLocaleString() + ' reg.' : '';
+      windBadge.textContent = `⬢ Estación · med. medición: ${rawM} · med. hub: ${hubM}${nRec ? ' · ' + nRec : ''}`;
+      windBadge.style.display = '';
+    } else {
+      windBadge.style.display = 'none';
+    }
+  }
+
   const kTable = scenario.leveraged?.cashflow_table?.length
     ? scenario.leveraged.cashflow_table
     : adjR.analysis?.cashflow_table;
@@ -4392,6 +4408,8 @@ function renderTechnoLeveraged(r) {
     if (cfTitle) cfTitle.textContent = 'Tabla de flujos anuales';
     if (cfBadge) cfBadge.style.display = 'none';
     if (clearBtn) clearBtn.style.display = 'none';
+    const _cb = document.getElementById('te-lev-compare-tbody');
+    if (_cb) _cb.innerHTML = '<tr><td colspan="4" class="text-muted" style="text-align:center;padding:1rem">Activa financiamiento para ver comparativa.</td></tr>';
     // Revert main KPI grid to unlevered values
     const _sc0 = technoCurrentScenario();
     if (_sc0?.result?.analysis) {
@@ -4461,6 +4479,59 @@ function renderTechnoLeveraged(r) {
   const _sc = technoCurrentScenario();
   if (_sc?.result?.analysis) {
     renderTechnoKPIs({ ..._sc.result, analysis: technoAdjustedAnalysis(_sc.result.analysis) }, r);
+  }
+
+  // ── Tabla comparativa post-apalancamiento ─────────────────────────────────
+  const compareBody = document.getElementById('te-lev-compare-tbody');
+  if (compareBody && _sc?.result?.analysis) {
+    const adjA   = technoAdjustedAnalysis(_sc.result.analysis);
+    const nYrs   = adjA.project_years || (_sc.inputs?.years) || 20;
+    const rProj  = ((adjA.discount_rate_pct  ?? (_sc.inputs?.rate ?? 8)) / 100);
+    const rEq    = (r.inputs?.equity_discount_rate_pct ?? WP.levParams.equity_discount_rate_pct ?? 12) / 100;
+    const infl   = ((_sc.inputs?.inflation ?? 0) / 100);
+
+    // VAE = VAN × r(1+r)^n / ((1+r)^n − 1)
+    const annuityFactor = (rate, n) => {
+      if (rate <= 0 || n <= 0) return n > 0 ? 1/n : 1;
+      return (rate * Math.pow(1+rate, n)) / (Math.pow(1+rate, n) - 1);
+    };
+    const vaeProj  = Number.isFinite(adjA.npv_usd)             ? adjA.npv_usd            * annuityFactor(rProj, nYrs) : null;
+    const vaeEq    = Number.isFinite(r.leveraged_npv_usd)      ? r.leveraged_npv_usd     * annuityFactor(rEq,   nYrs) : null;
+    // VAN real = VAN nominal / (1+infl)^n  (deflación al período medio)
+    const vanRealProj = adjA.npv_usd        != null && infl > 0 ? adjA.npv_usd        / Math.pow(1+infl, nYrs/2) : adjA.npv_usd;
+    const vanRealEq   = r.leveraged_npv_usd != null && infl > 0 ? r.leveraged_npv_usd / Math.pow(1+infl, nYrs/2) : r.leveraged_npv_usd;
+
+    const fmtC = n => n != null && Number.isFinite(n) ? (n >= 0 ? '+' : '−') + ' $' + Math.abs(Math.round(n)).toLocaleString('es-MX') : '—';
+    const fmtP = n => n != null && Number.isFinite(n) ? (n >= 0 ? '+' : '') + n.toFixed(1) + '%' : '—';
+    const fmtY = n => n != null && Number.isFinite(n) ? Number(n).toFixed(1) + ' a' : '> proyecto';
+    const delta = (a, b) => {
+      if (a == null || b == null || !Number.isFinite(a) || !Number.isFinite(b)) return '—';
+      const d = b - a, pct = a !== 0 ? (d / Math.abs(a) * 100) : null;
+      const col = d >= 0 ? '#22c55e' : '#ef4444';
+      return `<span style="color:${col}">${d >= 0 ? '+' : ''}$${Math.abs(Math.round(d)).toLocaleString('es-MX')}${pct != null ? ` (${pct >= 0 ? '+' : ''}${pct.toFixed(0)}%)` : ''}</span>`;
+    };
+    const deltaP = (a, b) => {
+      if (a == null || b == null || !Number.isFinite(+a) || !Number.isFinite(+b)) return '—';
+      const d = parseFloat(b) - parseFloat(a);
+      return `<span style="color:${d >= 0 ? '#22c55e' : '#ef4444'}">${d >= 0 ? '+' : ''}${d.toFixed(2)}pp</span>`;
+    };
+    const rows = [
+      ['VAN / VPN',   fmtC(adjA.npv_usd),        fmtC(r.leveraged_npv_usd),   delta(adjA.npv_usd, r.leveraged_npv_usd)],
+      ['VAN real' + (infl > 0 ? ` (−${(_sc.inputs?.inflation||0).toFixed(1)}% infl.)` : ' (nominal)'),
+                      fmtC(vanRealProj),           fmtC(vanRealEq),             delta(vanRealProj, vanRealEq)],
+      ['VAE (USD/a)', fmtC(adjA.vae_usd ?? vaeProj), fmtC(vaeEq),             delta(adjA.vae_usd ?? vaeProj, vaeEq)],
+      ['TIR',         fmtP(adjA.irr_pct),          fmtP(r.leveraged_irr_pct),  deltaP(adjA.irr_pct, r.leveraged_irr_pct)],
+      ['Payback',     fmtY(adjA.payback_years),    fmtY(r.equity_payback_years), ''],
+      ['WACC',        fmtP(rProj*100),             r.wacc_pct != null ? r.wacc_pct + '%' : '—', ''],
+    ];
+    compareBody.innerHTML = rows.map(([lbl, proj, eq, dlt]) =>
+      `<tr>
+        <td style="font-weight:500">${lbl}</td>
+        <td style="font-family:var(--font-mono,monospace);font-size:.8rem">${proj}</td>
+        <td style="font-family:var(--font-mono,monospace);font-size:.8rem">${eq}</td>
+        <td style="font-size:.78rem">${dlt}</td>
+      </tr>`
+    ).join('');
   }
 }
 

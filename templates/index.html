@@ -3425,6 +3425,8 @@
           style="display:none;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3);font-size:.65rem">⚡ Apalancado</span>
         <span class="badge" id="te-height-badge"
           style="display:none;background:rgba(100,116,139,.1);border:1px solid rgba(100,116,139,.25);font-size:.65rem">—</span>
+        <span class="badge" id="te-wind-station-badge"
+          style="display:none;background:rgba(34,197,94,.1);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
         <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
           <label id="te-loss-toggle-wrap"
             title="Aplica un % de pérdidas eléctricas finales al AEP. Re-escala VAN, LCOE, flujos y financiamiento sin re-ejecutar la simulación."
@@ -3704,6 +3706,29 @@
       </div>
     </div>
 
+    <!-- Comparativa VAN/VAE proyecto vs equity post-apalancamiento -->
+    <div class="card mt-2" id="te-lev-compare-card">
+      <div class="card-header">
+        <span class="card-title">Indicadores post-apalancamiento — Proyecto vs Equity</span>
+        <span class="badge badge--info" style="font-size:.65rem">Resultados financieros reales tras financiamiento</span>
+      </div>
+      <div class="card-body" style="overflow-x:auto">
+        <table class="data-table" id="te-lev-compare-table">
+          <thead>
+            <tr>
+              <th>Indicador</th>
+              <th>Proyecto (sin apalancar)</th>
+              <th>Equity (apalancado)</th>
+              <th>Variación</th>
+            </tr>
+          </thead>
+          <tbody id="te-lev-compare-tbody">
+            <tr><td colspan="4" class="text-muted" style="text-align:center;padding:1rem">Activa financiamiento para ver comparativa.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div><!-- /te-lev-section -->
 
 </section>
@@ -3879,6 +3904,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260505-kmeans-fix"></script>
+<script src="/static/js/aero.js?v=20260505-sinpred-lev"></script>
 </body>
 </html>
