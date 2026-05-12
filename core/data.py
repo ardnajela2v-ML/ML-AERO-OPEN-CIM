@@ -741,7 +741,7 @@ class FeatureEngineer:
 
             X = base_features.loc[valid].values.astype(np.float32)
             y = target_shifted.loc[valid].values.astype(np.float32)
-            result[h] = (X, y, feature_cols, base.index[valid])
+            result[h] = (X, y, feature_cols, base.index[valid] + pd.Timedelta(hours=h))
 
         return result
 
