@@ -58,9 +58,32 @@ Chart.defaults.plugins.tooltip.backgroundColor = '#1B2230';
 Chart.defaults.plugins.tooltip.borderColor = '#2A3346';
 Chart.defaults.plugins.tooltip.borderWidth = 1;
 Chart.defaults.plugins.tooltip.padding = 10;
+Chart.register({
+  id: 'chartAreaBorder',
+  beforeDraw(chart, args, opts) {
+    if (opts?.display === false) return;
+    const { ctx, chartArea } = chart;
+    if (!chartArea) return;
+    ctx.save();
+    ctx.strokeStyle = opts?.color || chartAxisColor();
+    ctx.lineWidth = opts?.width || 1.8;
+    ctx.strokeRect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+    ctx.restore();
+  }
+});
+Chart.defaults.plugins.chartAreaBorder = { width: 1.8 };
 
 function gridColor() {
-  return document.body.classList.contains('light') ? 'rgba(11,18,32,0.07)' : 'rgba(58,70,93,0.35)';
+  return document.body.classList.contains('light') ? 'rgba(11,18,32,0.16)' : 'rgba(76,96,132,0.55)';
+}
+function chartAxisColor() {
+  return document.body.classList.contains('light') ? 'rgba(11,18,32,0.34)' : 'rgba(166,179,200,0.45)';
+}
+function chartGridOptions(display = true) {
+  return { display, color: gridColor(), lineWidth: display ? 1.15 : 0 };
+}
+function chartBorderOptions() {
+  return { display: true, color: chartAxisColor(), width: 1.8 };
 }
 /* Theme-aware chart accent colors — engineering palette (dark = tech blue/violet/amber, light = deep navy) */
 // OJO: NO usar `L` como nombre — colisiona con Leaflet (`window.L`) y rompe
@@ -81,6 +104,7 @@ function updateChartDefaults() {
   Chart.defaults.plugins.tooltip.borderColor     = isLight ? '#D6DEE9' : '#2A3346';
   Chart.defaults.plugins.tooltip.titleColor      = isLight ? '#0B1220' : '#F4F7FB';
   Chart.defaults.plugins.tooltip.bodyColor       = isLight ? '#3D4A5C' : '#A6B3C8';
+  Chart.defaults.plugins.chartAreaBorder.color   = chartAxisColor();
 }
 
 function destroyChart(key) {
@@ -1152,18 +1176,18 @@ function renderForecastMainChart(r, prefix='fs-wind') {
   };
   const datasets = [
     { label: 'Observado', data: r.y_true, borderColor: ink(),
-      borderWidth: 1.5, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
+      borderWidth: 2.2, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
     { label: 'Predicho', data: r.y_pred, borderColor: acc(),
-      borderWidth: 1.5, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
+      borderWidth: 2.2, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
     ...(r.persistence ? [{ label: 'Persistencia', data: r.persistence,
-      borderColor: acc2(), borderWidth: 1, borderDash: [4,3], fill: false,
+      borderColor: acc2(), borderWidth: 1.6, borderDash: [4,3], fill: false,
       pointHoverBackgroundColor: acc2(), ...hoverCommon }] : []),
   ];
   if (r.q10 && r.q90) {
     datasets.push({ label: 'Q10', data: r.q10, borderColor: acc3()+'44',
-      borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, fill: false });
+      borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 0, fill: false });
     datasets.push({ label: 'Q90', data: r.q90, borderColor: acc3()+'44',
-      borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'12' });
+      borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'18' });
   }
   WP.charts[`${prefix}-main`] = new Chart(ctx, {
     type: 'line',
@@ -1198,8 +1222,8 @@ function renderForecastMainChart(r, prefix='fs-wind') {
         },
       },
       scales: {
-        x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 14, font:{size:9} } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: r.unit || 'm/s' }, ticks:{font:{size:9}} }
+        x: { grid: chartGridOptions(), border: chartBorderOptions(), ticks: { maxTicksLimit: 14, font:{size:9, weight:'600'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: r.unit || 'm/s', font:{weight:'700'} }, ticks:{font:{size:9, weight:'600'}} }
       }
     }
   });
@@ -1222,19 +1246,19 @@ function renderScatterChart(r, prefix='fs-wind') {
     type: 'scatter',
     data: {
       datasets: [
-        { label: 'Obs vs Pred', data: pts, backgroundColor: acc()+'30',
-          borderColor: acc()+'55', borderWidth: 1, pointRadius: 2 },
+        { label: 'Obs vs Pred', data: pts, backgroundColor: acc()+'38',
+          borderColor: acc()+'80', borderWidth: 1.4, pointRadius: 2.2 },
         { label: '1:1', data: [{x:0,y:0},{x:maxVal,y:maxVal}],
           type: 'line', borderColor: acc2()+'80',
-          borderWidth: 1.5, borderDash: [5,3], pointRadius: 0, fill: false }
+          borderWidth: 2, borderDash: [5,3], pointRadius: 0, fill: false }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: `Observado (${r.unit || 'm/s'})` } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: `Predicho (${r.unit || 'm/s'})` } }
+        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Observado (${r.unit || 'm/s'})`, font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Predicho (${r.unit || 'm/s'})`, font:{weight:'700'} } }
       }
     }
   });
@@ -1263,14 +1287,14 @@ function renderResidualHistogram(r, prefix='fs-wind') {
     data: {
       labels: bins.map(b => b.x.toFixed(2)),
       datasets: [{ label: 'Frecuencia', data: bins.map(b => b.count),
-        backgroundColor: acc3()+'50', borderColor: acc3(), borderWidth: 1, borderRadius:2 }]
+        backgroundColor: acc3()+'58', borderColor: acc3(), borderWidth: 1.6, borderRadius:2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { display: false }, title: { display: true, text: `Residuo (${r.unit || 'm/s'})` } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'Frecuencia' } }
+        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: `Residuo (${r.unit || 'm/s'})`, font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Frecuencia', font:{weight:'700'} } }
       }
     }
   });
@@ -1286,17 +1310,17 @@ function renderStabilityChart(stability, prefix='fs-wind') {
       labels: stability.map(s => s.period.substring(0,7)),
       datasets: [
         { label: 'RMSE (m/s)', data: stability.map(s => s.rmse),
-          backgroundColor: acc()+'40', borderColor: acc(), borderWidth: 1.5, borderRadius:3 },
+          backgroundColor: acc()+'48', borderColor: acc(), borderWidth: 1.8, borderRadius:3 },
         { label: 'MAE (m/s)',  data: stability.map(s => s.mae),
-          backgroundColor: acc3()+'40', borderColor: acc3(), borderWidth: 1.5, borderRadius:3 }
+          backgroundColor: acc3()+'48', borderColor: acc3(), borderWidth: 1.8, borderRadius:3 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { position: 'top' } },
       scales: {
-        x: { grid: { display: false } },
-        y: { grid: { color: gridColor() } }
+        x: { grid: chartGridOptions(false), border: chartBorderOptions() },
+        y: { grid: chartGridOptions(), border: chartBorderOptions() }
       }
     }
   });
