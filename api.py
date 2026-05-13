@@ -3376,7 +3376,12 @@ def create_app():
                     grid_bounds=grid_bounds,
                     cost_model=CostModel.from_dict(body.get('cost_model')),
                     z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
-                    include_sectorial=bool(body.get('include_sectorial', False)),
+                    # Cuando el usuario activa la corrección física queremos
+                    # **recomputar** las capas sectoriales e inversión/VAN con
+                    # el viento corregido (restaura comportamiento pre-f138856
+                    # antes del refactor que las hizo opt-in).
+                    include_sectorial=bool(body.get('include_sectorial', body.get('physical', False))),
+                    include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
                     progress_callback=cb,
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
