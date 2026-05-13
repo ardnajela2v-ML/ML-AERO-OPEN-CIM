@@ -950,6 +950,7 @@ def create_app():
         sid    = _require_sid(body)
         horizon_h = int(body.get('horizon_h', 1))
         enabled_models = body.get('models', None)  # None = train all
+        include_quantiles = bool(body.get('include_quantiles', False))
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Starting...', 'result': None}
@@ -974,6 +975,7 @@ def create_app():
                     int(horizon_h),
                     float(test_frac),
                     tuple(sorted(enabled_models)) if enabled_models else 'all',
+                    bool(include_quantiles),
                 )
                 cached_results = cache_get('model_results', *train_parts)
                 if cached_results is not None:
@@ -1011,7 +1013,8 @@ def create_app():
                                           idx_te, feat_names,
                                           horizon_h=horizon_h,
                                           progress_callback=cb,
-                                          enabled_models=enabled_models)
+                                          enabled_models=enabled_models,
+                                          include_quantiles=include_quantiles)
                 arena_store[sid] = arena
                 sess[f'results_h{horizon_h}'] = results
                 cache_set('model_results', results, *train_parts)
@@ -4612,6 +4615,7 @@ def create_app():
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
         hist_y  = int(body.get('history_years', Config.FORECAST_HISTORY_YEARS))
         models  = body.get('models')
+        include_raw = bool(body.get('include_raw', True))
 
         sess = get_session(sid)
         if 'df' not in sess:
@@ -4695,7 +4699,7 @@ def create_app():
                 'used_real_annual': bool(use_real),
             }
 
-            raw_values = [float(x) for x in series.values]
+            raw_values = [float(x) for x in series.values] if include_raw else []
             return jsonify(numpy_to_python({
                 'horizon_years': horizon,
                 'growth_seed':   growth,
@@ -4707,7 +4711,7 @@ def create_app():
                 'stats': stats_summary,
                 'unit': 'm/s',
                 'raw_values': raw_values,
-                'raw_n': len(raw_values),
+                'raw_n': int(len(series)),
                 'annual_kind': 'mean',
                 'used_real_annual': bool(use_real),
             }))

@@ -631,6 +631,7 @@ function bindModelArena() {
 
   document.getElementById('btn-build-features').addEventListener('click', buildFeatures);
   document.getElementById('btn-train').addEventListener('click', trainModels);
+  document.getElementById('btn-run-wind-annual')?.addEventListener('click', runWindAnnualForecast);
 
   // chip toggle
   document.getElementById('model-tag-list').addEventListener('click', e => {
@@ -721,8 +722,6 @@ async function trainModels() {
           updateTrainBtnLabel();
           populateComparisonTable(s.result, horizonH);
           renderFeatureImportance(s.result);
-          // Proyección anual de viento (predicción + 25 años)
-          runWindAnnualForecast();
           toast(`Entrenamiento completo (${selectedModels.length} modelos)`, 'success');
           setStatus(`Modelos entrenados para h=+${horizonH}h`);
         } else if (s.status === 'error') {
@@ -757,9 +756,9 @@ function populateComparisonTable(result, horizonH) {
   const fmtSkill = (s) => s == null
     ? '—'
     : `<span style="color:${s > 0 ? 'var(--green)' : 'var(--red)'}">${(s*100).toFixed(1)}%</span>`;
-  rows.forEach((row, i) => {
+  tbody.innerHTML = rows.map((row, i) => {
     const isBest = i === 0;
-    tbody.innerHTML += `
+    return `
       <tr class="${isBest ? 'best-row' : ''}">
         <td class="model-name">${isBest ? '★ ' : ''}${row.label}</td>
         <td><span class="badge badge--${row.type === 'ml' ? 'info' : 'warn'}">${row.type}</span></td>
@@ -771,7 +770,7 @@ function populateComparisonTable(result, horizonH) {
         <td>${fmtSkill(row.skill_vs_persistence)}</td>
         <td>${fmtSkill(row.skill_vs_climatology)}</td>
       </tr>`;
-  });
+  }).join('');
 
   document.getElementById('best-model-badge').textContent = `Best: ${rows[0].label} — RMSE ${rows[0].rmse?.toFixed(4)}`;
 
@@ -10541,9 +10540,13 @@ function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, 
 // ─── VIENTO: PROYECCIÓN ANUAL (motor de tendencia, post-entrenamiento ML) ────
 async function runWindAnnualForecast() {
   if (!WP.sessionId) return;
+  const btn = document.getElementById('btn-run-wind-annual');
+  if (btn) btn.disabled = true;
+  setStatus('Calculando proyección anual de viento…');
   try {
     const fc = await api('/api/wind/annual_forecast', 'POST', {
       session_id: WP.sessionId, ws_col: 'wind_speed', growth: 0.005, horizon: 25,
+      include_raw: false,
     });
     WP.arenaCache.wind = fc;
     renderForecastFutureChart('wind');
@@ -10559,8 +10562,12 @@ async function runWindAnnualForecast() {
       projection: fc.projection, bestModel: fc.best_model,
       ylabel: 'Velocidad media anual (m/s)', decimals: 2, unitLabel: 'm/s',
     });
+    setStatus('Proyección anual de viento lista.');
   } catch (e) {
     console.warn('wind annual forecast skipped:', e.message);
+    toast(`No se pudo calcular proyección anual: ${e.message}`, 'warn');
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

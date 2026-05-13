@@ -783,13 +783,13 @@
             <div class="model-tags" id="model-tag-list">
               <span class="model-tag active" data-model="persistence">Persistencia</span>
               <span class="model-tag active" data-model="climatology">Climatología</span>
-              <span class="model-tag active" data-model="arima">ARIMA</span>
+              <span class="model-tag" data-model="arima">ARIMA</span>
               <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag active" data-model="xgboost">XGBoost</span>
+              <span class="model-tag" data-model="xgboost">XGBoost</span>
               <span class="model-tag active" data-model="lightgbm">LightGBM</span>
               <span class="model-tag active" data-model="ridge">Ridge LR</span>
-              <span class="model-tag active" data-model="mlp">MLP</span>
-              <span class="model-tag active" data-model="svr">SVR</span>
+              <span class="model-tag" data-model="mlp">MLP</span>
+              <span class="model-tag" data-model="svr">SVR</span>
             </div>
             <div style="display:flex;gap:.5rem;margin-top:.5rem">
               <button class="btn-sm" id="btn-models-all">Todos</button>
@@ -818,6 +818,7 @@
       <div class="ch">
         <span class="ct">Predicción Anual (Histórico + Proyección)</span>
         <span class="cbadge b" id="wind-prediction-badge">—</span>
+        <button class="btn-secondary" id="btn-run-wind-annual" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Calcular proyección</button>
       </div>
       <div class="cb" style="height:340px"><canvas id="wind-prediction-chart"></canvas></div>
     </div>

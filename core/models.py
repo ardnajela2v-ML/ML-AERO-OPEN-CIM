@@ -290,7 +290,8 @@ class ModelArena:
 
     def train_all(self, X_train, y_train, X_test, y_test,
                   idx_test, feature_names, horizon_h=1,
-                  progress_callback=None, enabled_models=None):
+                  progress_callback=None, enabled_models=None,
+                  include_quantiles=False):
         """
         Returns: results dict with predictions + metrics for each model.
         enabled_models: list of model keys to train; None = train all.
@@ -432,7 +433,7 @@ class ModelArena:
 
         # ── quantile intervals (best ML model) ──
         best_name = self._best_model(results)
-        if best_name and best_name in self.trained:
+        if include_quantiles and best_name and best_name in self.trained:
             try:
                 qgbm = QuantileGBM(quantiles=(0.10, 0.50, 0.90))
                 qgbm.fit(X_train, y_train)
