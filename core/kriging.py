@@ -1047,7 +1047,10 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
                       z0_ref: float = 0.03,
                       grid_bounds: Optional[dict] = None,
                       cost_model: Optional[CostModel] = None,
-                      z_tgt: Optional[float] = None):
+                      z_tgt: Optional[float] = None,
+                      include_sectorial: bool = False,
+                      include_physical_economics: bool = False,
+                      progress_callback=None):
     """
     Reproduce el comportamiento original del script MATLAB/Tk:
     para cada sitio elige el último aerogenerador del catálogo (como el
@@ -1125,6 +1128,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     sector_freqs, sector_speeds, sector_powers, sector_energies = [], [], [], []
 
     paths = [os.path.join(wind_folder, wf) for wf in wind_files]
+    if progress_callback:
+        progress_callback(10, f'Leyendo {len(paths)} archivos meteorológicos…')
     stats_rows = parallel_read_sites(paths, year=year, hub_height_m=z_tgt, max_workers=6)
 
     last_tf = turb_files[-1] if turb_files else None
@@ -1173,6 +1178,9 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     if len(lats) < 3:
         raise ValueError(f'Kriging necesita >= 3 sitios válidos (hay {len(lats)})')
 
+    if progress_callback:
+        progress_callback(45, f'{len(lats)} sitios válidos · generando capas principales…')
+
     def _grid(values, title):
         g = kriging_grid(lons, lats, values, n=n_grid, model=model,
                          bounds=grid_bounds)
@@ -1183,38 +1191,50 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         ]
         return g
 
+    def _sector_grid(values, title):
+        g = kriging_grid(lons, lats, values, n=n_grid, model=model,
+                         bounds=grid_bounds)
+        g['title'] = title
+        return g
+
     base = {
         'wind':            _grid(v_proms, 'Velocidad promedio del viento (m/s)'),
         'gust':            _grid(gusts, 'Ráfagas / extremo anual P99.5 (m/s)'),
         'power_density':   _grid(power_densities, 'Densidad de potencia eólica (W/m²)'),
         'inversion':       _grid(invers,  'Inversión inicial (USD)'),
         'van':             _grid(vans,    'Valor Actual Neto (USD)'),
-        'sectorial': {
-            'n_sectors': SECTOR_COUNT,
-            'labels': SECTOR_LABELS,
-            'frequency_pct': [
-                _grid([row[i] for row in sector_freqs], f'Frecuencia sector {SECTOR_LABELS[i]} (%)')
-                for i in range(SECTOR_COUNT)
-            ],
-            'mean_speed': [
-                _grid([row[i] for row in sector_speeds], f'Velocidad media sector {SECTOR_LABELS[i]} (m/s)')
-                for i in range(SECTOR_COUNT)
-            ],
-            'power_density': [
-                _grid([row[i] for row in sector_powers], f'Densidad potencia sector {SECTOR_LABELS[i]} (W/m²)')
-                for i in range(SECTOR_COUNT)
-            ],
-            'energy_pct': [
-                _grid([row[i] for row in sector_energies], f'Participación energética sector {SECTOR_LABELS[i]} (%)')
-                for i in range(SECTOR_COUNT)
-            ],
-        },
         'n_sites':         len(lats),
         'turbine_curves':  turbine_curves,
         'physical':        False,
     }
 
+    if include_sectorial:
+        if progress_callback:
+            progress_callback(62, 'Generando capas sectoriales…')
+        base['sectorial'] = {
+            'n_sectors': SECTOR_COUNT,
+            'labels': SECTOR_LABELS,
+            'frequency_pct': [
+                _sector_grid([row[i] for row in sector_freqs], f'Frecuencia sector {SECTOR_LABELS[i]} (%)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'mean_speed': [
+                _sector_grid([row[i] for row in sector_speeds], f'Velocidad media sector {SECTOR_LABELS[i]} (m/s)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'power_density': [
+                _sector_grid([row[i] for row in sector_powers], f'Densidad potencia sector {SECTOR_LABELS[i]} (W/m²)')
+                for i in range(SECTOR_COUNT)
+            ],
+            'energy_pct': [
+                _sector_grid([row[i] for row in sector_energies], f'Participación energética sector {SECTOR_LABELS[i]} (%)')
+                for i in range(SECTOR_COUNT)
+            ],
+        }
+
     if not physical:
+        if progress_callback:
+            progress_callback(95, 'Mapas Kriging listos.')
         return base
 
     # ─── Kriging físicamente informado (Fase 3) ──────────────────────────────
@@ -1233,6 +1253,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         {'filename': nm, 'lat': la, 'lon': lo}
         for nm, la, lo in zip(names, lats, lons)
     ]
+    if progress_callback:
+        progress_callback(65, 'Aplicando corrección física de terreno…')
     enriched = enrich_sites(site_records)
     z0_site = [
         float(s['z0']) if s.get('z0') is not None else float(z0_ref)
@@ -1286,13 +1308,22 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
     bounds = g_neutral.get('bounds')
     base_wind_z = base['wind']['z']
-    gust_ratio_grid = _grid([
+    gust_ratio_grid = _sector_grid([
         float(g / v) if v and np.isfinite(v) and v > 1e-9 else 1.6
         for g, v in zip(gusts, v_proms)
     ], 'Relación ráfaga / viento medio')
-    k_grid = _grid(weibull_ks, 'Factor de forma Weibull k')
-    sector_freq_z = [base['sectorial']['frequency_pct'][i]['z'] for i in range(SECTOR_COUNT)]
-    sector_speed_z = [base['sectorial']['mean_speed'][i]['z'] for i in range(SECTOR_COUNT)]
+    k_grid = _sector_grid(weibull_ks, 'Factor de forma Weibull k') if include_physical_economics else None
+    sector_freq_z = None
+    sector_speed_z = None
+    if include_sectorial:
+        sector_freq_z = [
+            _sector_grid([row[i] for row in sector_freqs], f'Frecuencia sector {SECTOR_LABELS[i]} (%)')['z']
+            for i in range(SECTOR_COUNT)
+        ]
+        sector_speed_z = [
+            _sector_grid([row[i] for row in sector_speeds], f'Velocidad media sector {SECTOR_LABELS[i]} (m/s)')['z']
+            for i in range(SECTOR_COUNT)
+        ]
 
     def _wrap_grid(z, title, unit, vmin=None, vmax=None):
         z_min, z_max = _min_max_grid(z)
@@ -1316,7 +1347,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     last_curve = turbine_curves[-1] if turbine_curves else None
     power_interp = None
     p_max_curve = 0.0
-    if last_curve:
+    if include_physical_economics and last_curve:
         x_last = np.asarray(last_curve['x_raw'], dtype=float)
         y_last_kw = np.asarray(last_curve['y_raw_kw'], dtype=float)
         p_nom_kw = float(last_curve['p_nom_kw'])
@@ -1328,12 +1359,15 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         for i in range(nx):
             base_v = float(base_wind_z[j][i]) if j < len(base_wind_z) and i < len(base_wind_z[j]) else 0.0
             physical_ratio = float(v_real[j][i]) / base_v if base_v > 1e-9 else 1.0
-            freqs = [max(0.0, float(sector_freq_z[s][j][i])) for s in range(SECTOR_COUNT)]
-            speeds = [max(0.0, float(sector_speed_z[s][j][i])) for s in range(SECTOR_COUNT)]
-            total_freq = sum(freqs)
-            if total_freq > 0:
-                v_dir_raw = float(np.cbrt(sum((freqs[s] / total_freq) * speeds[s] ** 3
-                                              for s in range(SECTOR_COUNT))))
+            if sector_freq_z is not None and sector_speed_z is not None:
+                freqs = [max(0.0, float(sector_freq_z[s][j][i])) for s in range(SECTOR_COUNT)]
+                speeds = [max(0.0, float(sector_speed_z[s][j][i])) for s in range(SECTOR_COUNT)]
+                total_freq = sum(freqs)
+                if total_freq > 0:
+                    v_dir_raw = float(np.cbrt(sum((freqs[s] / total_freq) * speeds[s] ** 3
+                                                  for s in range(SECTOR_COUNT))))
+                else:
+                    v_dir_raw = base_v
             else:
                 v_dir_raw = base_v
             v_dir = max(0.0, v_dir_raw * physical_ratio)
@@ -1342,7 +1376,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
             gust_corrected[j][i] = max(v_dir, v_dir * max(1.0, gust_ratio))
             rho_local = max(0.0, float(air_density[j][i]))
             power_density_corrected[j][i] = 0.5 * rho_local * (v_dir ** 3)
-            if power_interp is not None and last_curve:
+            if include_physical_economics and power_interp is not None and last_curve:
                 k_local = float(k_grid['z'][j][i]) if j < len(k_grid['z']) and i < len(k_grid['z'][j]) else 2.0
                 capex, van = _legacy_prefit_economics(
                     v_dir, k_local, rho_local, power_interp, p_max_curve,
@@ -1394,4 +1428,6 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     base['z_meas']   = z_meas
     base['z0_ref']   = z0_ref
     base['n_corrected'] = sum(1 for s in enriched if s.get('z0') is not None)
+    if progress_callback:
+        progress_callback(95, 'Mapas Kriging físicos listos.')
     return base

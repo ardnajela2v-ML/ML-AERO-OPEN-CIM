@@ -3354,6 +3354,9 @@ def create_app():
                         'lon_min': min(lon_a, lon_b),
                         'lon_max': max(lon_a, lon_b),
                     }
+                def cb(pct, msg):
+                    tasks[task_id]['progress'] = pct
+                    tasks[task_id]['message'] = msg
                 result = legacy_three_maps(
                     wind_folder=Config.DATA_FOLDER,
                     turbines_folder=Config.TURBINES_FOLDER,
@@ -3373,6 +3376,8 @@ def create_app():
                     grid_bounds=grid_bounds,
                     cost_model=CostModel.from_dict(body.get('cost_model')),
                     z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
+                    include_sectorial=bool(body.get('include_sectorial', False)),
+                    progress_callback=cb,
                 )
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'

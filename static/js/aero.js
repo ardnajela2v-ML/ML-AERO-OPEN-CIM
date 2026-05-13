@@ -6901,6 +6901,10 @@ async function krig3Run() {
     toast('Selecciona al menos 3 sitios en el mapa para Kriging.', 'error');
     return;
   }
+  if (KRIG.task_id) {
+    toast('Ya hay un Kriging ejecutándose. Espera a que termine.', 'warning');
+    return;
+  }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
   const physical = !!document.getElementById('krig3-physical')?.checked;
   const body = {
@@ -6935,6 +6939,8 @@ async function krig3Run() {
   document.getElementById('krig3-progress-wrap').style.display = '';
   document.getElementById('krig3-progress-text').textContent =
     `Procesando ${KRIG.selected.size} sitios seleccionados…`;
+  const runBtn = document.getElementById('btn-krig3-run');
+  if (runBtn) runBtn.disabled = true;
   try {
     const r = await api('/api/kriging/legacy_maps', 'POST', body);
     KRIG.task_id = r.task_id;
@@ -6942,6 +6948,7 @@ async function krig3Run() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
     document.getElementById('krig3-status').textContent = 'Error';
+    if (runBtn) runBtn.disabled = false;
   }
 }
 
@@ -6979,15 +6986,24 @@ async function krig3Poll() {
       const btnReset = document.getElementById('btn-krig3-reset');
       if (btnReset) btnReset.style.display = '';
       document.getElementById('krig3-progress-fill').style.width = '100%';
+      KRIG.task_id = null;
+      const runBtn = document.getElementById('btn-krig3-run');
+      if (runBtn) runBtn.disabled = false;
       toast(physOn ? 'Kriging físico listo' : 'Kriging listo', 'success');
     } else if (r.status === 'error') {
       toast(`Kriging falló: ${r.message}`, 'error');
       document.getElementById('krig3-status').textContent = 'Error';
+      KRIG.task_id = null;
+      const runBtn = document.getElementById('btn-krig3-run');
+      if (runBtn) runBtn.disabled = false;
     } else {
       setTimeout(krig3Poll, 800);
     }
   } catch (e) {
     toast(`Polling: ${e.message}`, 'error');
+    KRIG.task_id = null;
+    const runBtn = document.getElementById('btn-krig3-run');
+    if (runBtn) runBtn.disabled = false;
   }
 }
 
