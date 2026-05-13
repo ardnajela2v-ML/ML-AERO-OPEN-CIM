@@ -346,19 +346,45 @@ def enrich_sites(sites: List[dict], landcover_zoom: int = 11,
     with ThreadPoolExecutor(max_workers=8) as pool:
         landcovers = list(pool.map(_lc_for, range(len(sites))))
 
+    # Fallback z₀ por sitio: si WorldCover no devolvió clase, estimamos
+    # rugosidad desde la pendiente local del DEM en un parche 3×3 de ±0.005°
+    # (~550 m) alrededor del sitio. Esto integra topografía aunque WMTS falle.
+    def _z0_from_local_dem(lat: float, lon: float) -> Optional[float]:
+        if math.isnan(lat) or math.isnan(lon):
+            return None
+        d = 0.005
+        patch_lats = [lat - d, lat, lat + d]
+        patch_lons = [lon - d, lon, lon + d]
+        try:
+            patch_elev = sample_grid_elevation(patch_lats, patch_lons)
+            slope_deg = _slope_grid_deg(patch_elev, patch_lats, patch_lons)
+            return float(_z0_from_slope_deg(slope_deg[1][1]))
+        except Exception:
+            return None
+
     out: List[dict] = []
     for s, ll, el, lc in zip(sites, latlons, elevations, landcovers):
         if math.isnan(ll[0]) or math.isnan(ll[1]):
             out.append({**s, 'elevation_m': None, 'landcover_class': None,
-                        'landcover_label': None, 'z0': None, 'landcover_purity': None})
+                        'landcover_label': None, 'z0': None,
+                        'z0_source': None, 'landcover_purity': None})
             continue
+        z0_lc = lc.get('z0')
+        if z0_lc is not None:
+            z0 = round(float(z0_lc), 4)
+            z0_source = 'worldcover'
+        else:
+            z0_dem = _z0_from_local_dem(ll[0], ll[1])
+            z0 = round(float(z0_dem), 4) if z0_dem is not None else None
+            z0_source = 'dem_slope' if z0_dem is not None else None
         out.append({
             **s,
             'elevation_m': round(float(el), 1) if el is not None else None,
             'landcover_class': lc.get('class'),
             'landcover_label': lc.get('label'),
             'landcover_purity': lc.get('purity'),
-            'z0': round(float(lc['z0']), 4) if lc.get('z0') is not None else None,
+            'z0': z0,
+            'z0_source': z0_source,
         })
     return out
 
@@ -477,10 +503,53 @@ def sample_grid_elevation(lats: List[float], lons: List[float]) -> List[List[flo
     return out
 
 
-def sample_grid_z0(lats: List[float], lons: List[float]) -> List[List[float]]:
-    """Devuelve z₀ (m) por celda usando WorldCover. Pre-descarga los tiles
-    necesarios en paralelo. A z=10 cada tile cubre ~38×38 km, suficiente para
-    grillas de Kriging continentales y mucho más rápido que z=12."""
+def _z0_from_slope_deg(slope_deg: float) -> float:
+    """Mapeo Davenport aproximado a partir de la pendiente del terreno.
+
+    Cuando WorldCover no responde, usamos la rugosidad del DEM como proxy
+    físico de z₀. Terrenos planos → pastizal abierto (~0.03 m), terrenos
+    accidentados → bosque/rugoso (~0.5 m). Es una aproximación pero captura
+    el efecto principal (montañas frenan más que llanuras) y es 100% local.
+    """
+    s = max(0.0, float(slope_deg))
+    # Curva suave: 0° → 0.01, 1° → 0.03, 3° → 0.10, 8° → 0.35, 15°+ → 0.80
+    return 0.01 + 0.79 * (1.0 - math.exp(-s / 5.5))
+
+
+def _slope_grid_deg(elev: List[List[float]], lats: List[float],
+                    lons: List[float]) -> List[List[float]]:
+    """Pendiente en grados por celda mediante diferencias centradas."""
+    ny = len(elev)
+    nx = len(elev[0]) if ny else 0
+    if ny < 2 or nx < 2:
+        return [[0.0] * nx for _ in range(ny)]
+    # Aproximación: 1° lat ≈ 111 km; 1° lon ≈ 111 km · cos(lat)
+    out = [[0.0] * nx for _ in range(ny)]
+    for j in range(ny):
+        lat_c = lats[j] if 0 <= j < len(lats) else 0.0
+        dy_m = 111000.0 * (lats[1] - lats[0]) if len(lats) > 1 else 1.0
+        dx_m = 111000.0 * math.cos(math.radians(lat_c)) * (lons[1] - lons[0]) if len(lons) > 1 else 1.0
+        for i in range(nx):
+            jm = max(0, j - 1); jp = min(ny - 1, j + 1)
+            im = max(0, i - 1); ip = min(nx - 1, i + 1)
+            dz_dy = (elev[jp][i] - elev[jm][i]) / max(1e-6, (jp - jm) * dy_m)
+            dz_dx = (elev[j][ip] - elev[j][im]) / max(1e-6, (ip - im) * dx_m)
+            slope = math.degrees(math.atan(math.sqrt(dz_dx * dz_dx + dz_dy * dz_dy)))
+            out[j][i] = slope
+    return out
+
+
+def sample_grid_z0(lats: List[float], lons: List[float],
+                   elev_grid: Optional[List[List[float]]] = None) -> List[List[float]]:
+    """Devuelve z₀ (m) por celda. Estrategia:
+
+      1) Si WorldCover responde, mapea clase → z₀ (Davenport).
+      2) Para celdas donde el tile WMTS no llegó, usa rugosidad DEM:
+         pendiente local del DEM → z₀ (mapa físico, siempre disponible).
+
+    Esto garantiza que la corrección física **siempre integre rugosidad**
+    aunque Terrascope/WMTS no responda.
+    """
     if not lats or not lons:
         return [[]]
     bounds = (min(lats), min(lons), max(lats), max(lons))
@@ -489,7 +558,18 @@ def sample_grid_z0(lats: List[float], lons: List[float]) -> List[List[float]]:
     tiles = _required_tiles(lats, lons, z)
     _prefetch_tiles(tiles, _fetch_landcover_tile)
 
-    out: List[List[float]] = [[0.05] * len(lons) for _ in lats]
+    # Default por celda — relleno desde DEM si lo tenemos; si no, 0.05 m.
+    if elev_grid is None:
+        elev_grid = sample_grid_elevation(lats, lons)
+    slope_deg = _slope_grid_deg(elev_grid, lats, lons)
+
+    out: List[List[float]] = [
+        [_z0_from_slope_deg(slope_deg[j][i]) for i in range(len(lons))]
+        for j in range(len(lats))
+    ]
+
+    # Si WorldCover sí responde para una celda, **lo preferimos** porque
+    # discrimina cubierta (urbano, agua, bosque…) mejor que la pendiente.
     for j, lat in enumerate(lats):
         for i, lon in enumerate(lons):
             tx, ty, px, py = _latlon_to_tile_pixel(lat, lon, z)
@@ -503,5 +583,7 @@ def sample_grid_z0(lats: List[float], lons: List[float]) -> List[List[float]]:
             cls, dist = _nearest_landcover_class(rgb)
             if dist > 60 or cls is None:
                 continue
-            out[j][i] = float(class_to_z0(cls) or 0.05)
+            z0_lc = class_to_z0(cls)
+            if z0_lc is not None:
+                out[j][i] = float(z0_lc)
     return out

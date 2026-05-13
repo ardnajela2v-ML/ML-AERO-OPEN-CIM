@@ -1335,7 +1335,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     if progress_callback:
         progress_callback(85, 'Muestreando rugosidad WorldCover…')
     z0_grid = _safe_terrain(
-        lambda: sample_grid_z0(grid_lats, grid_lons),
+        lambda: sample_grid_z0(grid_lats, grid_lons, elev_grid=elev_grid),
         timeout=15.0,
         fallback=[[float(z0_ref)] * nx for _ in range(ny)],
         label='sample_grid_z0',
