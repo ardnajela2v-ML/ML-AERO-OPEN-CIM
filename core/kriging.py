@@ -6,7 +6,7 @@ decoupled from tkinter for use in the AERO by OPEN CIM REST API.
 Optimizaciones 2026-04:
   - read_wind_file usa pandas (skiprows automático) en lugar de regex sobre
     el contenido completo → 20-50x más rápido en archivos de 16-18 MB.
-  - _SITE_STATS_CACHE cachea stats por (path, mtime, year) en memoria;
+  - _SITE_STATS_CACHE cachea stats por (path, mtime, year, altura, z0) en memoria;
     la segunda llamada es O(1) sin releer el disco.
   - parallel_read_sites() usa ThreadPoolExecutor para leer N sitios en paralelo.
 """
@@ -124,21 +124,24 @@ def _haversine_pairwise_km(lons1, lats1, lons2, lats2):
 
 
 def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
-    """Simple Kriging interpolation. Returns (z_interp, variance).
+    """Ordinary Kriging interpolation. Returns (z_interp, variance).
 
     Coordenadas (x=lon, y=lat) en grados; las distancias internas se calculan
     con Haversine (km), por lo que `rng` debe interpretarse en KILÓMETROS
     (default 50 km, escala típica de un cluster de sitios MERRA-2/ERA5).
 
-    NOTA: implementa Simple Kriging (asume media conocida = 0 con sill normalizado).
-    Lejos del rango de correlación las predicciones tienden a 0, no a la media de
-    los datos. Para Ordinary Kriging real se requiere ampliar el sistema con un
-    multiplicador de Lagrange que imponga Σwᵢ=1.
+    Implementa Ordinary Kriging ampliando el sistema con un multiplicador de
+    Lagrange para imponer Σwᵢ=1 y evitar sesgo hacia cero fuera del rango local.
     """
-    # Simple Kriging: asume media=0. Para Ordinary Kriging se requiere sistema con Lagrange.
     x = np.asarray(x).ravel()
     y = np.asarray(y).ravel()
     z = np.asarray(z, dtype=float).ravel()
+    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    x = x[valid]
+    y = y[valid]
+    z = z[valid]
+    if len(z) < 3:
+        raise ValueError(f'Kriging requires >= 3 finite sites (got {len(z)}).')
     # Distancias Haversine en km — 1°lat ≠ 1°lon en México (ver _haversine_pairwise_km).
     d  = _haversine_pairwise_km(x, y, x, y)
     dq = _haversine_pairwise_km(x, y, xq.ravel(), yq.ravel())
@@ -149,15 +152,27 @@ def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
     else:
         g = lambda h, a: 1 - np.exp(-h / a)
     # ridge 1e-6 para estabilidad numérica (sobre todo con variograma gaussiano).
-    K = 1 - g(d,  rng) + 1e-6 * np.eye(len(x))
+    C = 1 - g(d, rng) + 1e-6 * np.eye(len(x))
     k = 1 - g(dq, rng)
-    w = np.linalg.solve(K, k)
+    n = len(x)
+    K = np.empty((n + 1, n + 1), dtype=float)
+    K[:n, :n] = C
+    K[:n, n] = 1.0
+    K[n, :n] = 1.0
+    K[n, n] = 0.0
+    rhs = np.vstack([k, np.ones((1, k.shape[1]), dtype=float)])
+    try:
+        sol = np.linalg.solve(K, rhs)
+    except np.linalg.LinAlgError:
+        sol = np.linalg.lstsq(K, rhs, rcond=None)[0]
+    w = sol[:n, :]
+    lagrange = sol[n, :]
     z_hat = (w.T @ z).reshape(xq.shape)
-    var   = (1 - np.sum(w * k, axis=0)).reshape(xq.shape)
+    var   = np.maximum(0.0, 1 - np.sum(w * k, axis=0) - lagrange).reshape(xq.shape)
     return z_hat, var
 
 
-# Aliases honestos: la función actual es Simple Kriging.
+# Aliases de compatibilidad.
 simple_kriging = kriging_interp
 interpolate_wind = kriging_interp
 
@@ -396,7 +411,7 @@ def _compute_site_stats_cached(path: str, year: Optional[int] = None,
                                 z0: Optional[float] = None):
     """
     Versión cacheada de (read_wind_file + site_wind_stats).
-    La clave de caché es (ruta_absoluta, mtime_entero, year).
+    La clave de caché es (ruta_absoluta, mtime_entero, year, altura, z0).
     Si el archivo no ha cambiado (mismo mtime), devuelve el resultado previo
     sin releer el disco — esto hace la segunda llamada instantánea.
 
@@ -407,7 +422,9 @@ def _compute_site_stats_cached(path: str, year: Optional[int] = None,
         mtime = int(os.path.getmtime(abs_path))
     except OSError:
         mtime = 0
-    cache_key = (abs_path, mtime, year)
+    cache_key = (abs_path, mtime, year,
+                 None if hub_height_m is None else round(float(hub_height_m), 6),
+                 None if z0 is None else round(float(z0), 9))
     with _CACHE_LOCK:
         if cache_key in _SITE_STATS_CACHE:
             return _SITE_STATS_CACHE[cache_key]

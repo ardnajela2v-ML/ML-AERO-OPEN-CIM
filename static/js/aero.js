@@ -6835,7 +6835,7 @@ function krig3PopulateCurveSelect() {
   curves.forEach((c, i) => {
     const o = document.createElement('option');
     o.value = String(i);
-    o.textContent = `${c.name}  ·  ${c.p_nom_kw} kW  ·  Ø ${c.rotor_m*2} m`;
+    o.textContent = `${c.name}  ·  ${c.p_nom_kw} kW  ·  Ø ${c.rotor_m} m`;
     sel.appendChild(o);
   });
   sel.value = String(KRIG.curveIdx);
@@ -6851,7 +6851,7 @@ function krig3RenderCurve() {
   const counter = document.getElementById('krig3-curve-counter');
   if (counter) counter.textContent = `${idx + 1} / ${curves.length}`;
   const meta = document.getElementById('krig3-curve-meta');
-  if (meta) meta.textContent = `Pnom ${c.p_nom_kw} kW · rotor Ø ${c.rotor_m*2} m`;
+  if (meta) meta.textContent = `Pnom ${c.p_nom_kw} kW · rotor Ø ${c.rotor_m} m`;
 
   destroyChart('krig3-curve');
   const ctx = document.getElementById('krig3-curve-chart').getContext('2d');
