@@ -66,24 +66,24 @@ Chart.register({
     if (!chartArea) return;
     ctx.save();
     ctx.strokeStyle = opts?.color || chartAxisColor();
-    ctx.lineWidth = opts?.width || 1.8;
+    ctx.lineWidth = opts?.width || 2;
     ctx.strokeRect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
     ctx.restore();
   }
 });
-Chart.defaults.plugins.chartAreaBorder = { width: 1.8 };
+Chart.defaults.plugins.chartAreaBorder = { width: 2 };
 
 function gridColor() {
   return document.body.classList.contains('light') ? 'rgba(11,18,32,0.16)' : 'rgba(76,96,132,0.55)';
 }
 function chartAxisColor() {
-  return document.body.classList.contains('light') ? 'rgba(11,18,32,0.34)' : 'rgba(166,179,200,0.45)';
+  return '#000000';
 }
 function chartGridOptions(display = true) {
-  return { display, color: gridColor(), lineWidth: display ? 1.15 : 0 };
+  return { display, color: gridColor(), lineWidth: display ? 1 : 0 };
 }
 function chartBorderOptions() {
-  return { display: true, color: chartAxisColor(), width: 1.8 };
+  return { display: true, color: chartAxisColor(), width: 2 };
 }
 /* Theme-aware chart accent colors — engineering palette (dark = tech blue/violet/amber, light = deep navy) */
 // OJO: NO usar `L` como nombre — colisiona con Leaflet (`window.L`) y rompe
@@ -804,19 +804,22 @@ function renderFeatureImportance(result) {
     data: {
       labels: fi.map(d => d.feature),
       datasets: [{
-        label: 'Importancia (%)',
+        label: 'Importancia relativa de variable (%)',
         data: fi.map(d => d.importance),
         backgroundColor: fi.map((_, i) => i===0 ? acc()+'cc' : acc3()+(55+i).toString(16)),
-        borderWidth: 0, borderRadius: 4,
+        borderColor: chartAxisColor(), borderWidth: 0.8, borderRadius: 4,
       }]
     },
     options: {
       indexAxis: 'y',
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        title: { display: true, text: 'Importancia de variables del modelo predictivo', font: { weight: '700', size: 12 } },
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10, weight: '600' } } },
+      },
       scales: {
-        x: { grid: { color: gridColor() }, ticks: { font:{size:9}, callback: v => `${v}%` } },
-        y: { grid: { display: false }, ticks: { font: { size: 9 } } }
+        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Contribución relativa al modelo (%)', font:{weight:'700'} }, ticks: { font:{size:9, weight:'600'}, callback: v => `${v}%` } },
+        y: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: 'Variable explicativa / predictor', font:{weight:'700'} }, ticks: { font: { size: 9, weight:'600' } } }
       }
     }
   });
@@ -1168,6 +1171,9 @@ function renderForecastMainChart(r, prefix='fs-wind') {
   destroyChart(`${prefix}-main`);
   const ctx = document.getElementById(`${prefix}-main-chart`).getContext('2d');
   const resetBtn = document.getElementById(`btn-reset-zoom-${prefix}`);
+  const unit = r.unit || 'm/s';
+  const horizon = r.horizon_h != null ? `h+${r.horizon_h}` : 'horizonte seleccionado';
+  const modelLabel = r.model ? r.model.replace(/_/g, ' ') : 'modelo seleccionado';
   const hoverCommon = {
     pointRadius: 0,
     pointHoverRadius: 5,
@@ -1175,19 +1181,19 @@ function renderForecastMainChart(r, prefix='fs-wind') {
     pointHoverBorderWidth: 2,
   };
   const datasets = [
-    { label: 'Observado', data: r.y_true, borderColor: ink(),
-      borderWidth: 2.2, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
-    { label: 'Predicho', data: r.y_pred, borderColor: acc(),
-      borderWidth: 2.2, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
-    ...(r.persistence ? [{ label: 'Persistencia', data: r.persistence,
-      borderColor: acc2(), borderWidth: 1.6, borderDash: [4,3], fill: false,
+    { label: `Observado y(t) [${unit}]`, data: r.y_true, borderColor: ink(),
+      borderWidth: 1.8, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
+    { label: `Predicho ŷ(t|t-${r.horizon_h || 1}h) [${unit}]`, data: r.y_pred, borderColor: acc(),
+      borderWidth: 1.8, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
+    ...(r.persistence ? [{ label: `Persistencia y(t-${r.horizon_h || 1}h) [${unit}]`, data: r.persistence,
+      borderColor: acc2(), borderWidth: 1.25, borderDash: [4,3], fill: false,
       pointHoverBackgroundColor: acc2(), ...hoverCommon }] : []),
   ];
   if (r.q10 && r.q90) {
-    datasets.push({ label: 'Q10', data: r.q10, borderColor: acc3()+'44',
-      borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 0, fill: false });
-    datasets.push({ label: 'Q90', data: r.q90, borderColor: acc3()+'44',
-      borderWidth: 1.6, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'18' });
+    datasets.push({ label: `Q10 percentil inferior [${unit}]`, data: r.q10, borderColor: acc3()+'44',
+      borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 0, fill: false });
+    datasets.push({ label: `Q90 percentil superior [${unit}]`, data: r.q90, borderColor: acc3()+'44',
+      borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'18' });
   }
   WP.charts[`${prefix}-main`] = new Chart(ctx, {
     type: 'line',
@@ -1196,7 +1202,13 @@ function renderForecastMainChart(r, prefix='fs-wind') {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { position: 'top' },
+        title: {
+          display: true,
+          text: `Pronóstico de velocidad del viento · ${modelLabel} · ${horizon}`,
+          font: { weight: '700', size: 12 },
+          padding: { bottom: 8 },
+        },
+        legend: { position: 'top', labels: { boxWidth: 14, font: { size: 10, weight: '600' } } },
         tooltip: {
           enabled: true,
           backgroundColor: isLight() ? '#fff' : '#1B2230',
@@ -1207,7 +1219,7 @@ function renderForecastMainChart(r, prefix='fs-wind') {
           padding: 10,
           callbacks: {
             title: (items) => items[0] ? `📅 ${items[0].label}` : '',
-            label: (item) => `${item.dataset.label}: ${item.formattedValue} ${r.unit || 'm/s'}`,
+            label: (item) => `${item.dataset.label}: ${item.formattedValue}`,
           }
         },
         zoom: {
@@ -1222,8 +1234,8 @@ function renderForecastMainChart(r, prefix='fs-wind') {
         },
       },
       scales: {
-        x: { grid: chartGridOptions(), border: chartBorderOptions(), ticks: { maxTicksLimit: 14, font:{size:9, weight:'600'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: r.unit || 'm/s', font:{weight:'700'} }, ticks:{font:{size:9, weight:'600'}} }
+        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Fecha y hora del objetivo pronosticado', font:{weight:'700'} }, ticks: { maxTicksLimit: 14, font:{size:9, weight:'600'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Velocidad del viento v (${unit})`, font:{weight:'700'} }, ticks:{font:{size:9, weight:'600'}} }
       }
     }
   });
@@ -1246,19 +1258,22 @@ function renderScatterChart(r, prefix='fs-wind') {
     type: 'scatter',
     data: {
       datasets: [
-        { label: 'Obs vs Pred', data: pts, backgroundColor: acc()+'38',
-          borderColor: acc()+'80', borderWidth: 1.4, pointRadius: 2.2 },
-        { label: '1:1', data: [{x:0,y:0},{x:maxVal,y:maxVal}],
+        { label: `Pares observado-predicho (${r.unit || 'm/s'})`, data: pts, backgroundColor: acc()+'38',
+          borderColor: acc()+'80', borderWidth: 1.1, pointRadius: 2 },
+        { label: 'Referencia 1:1 — predicción perfecta', data: [{x:0,y:0},{x:maxVal,y:maxVal}],
           type: 'line', borderColor: acc2()+'80',
-          borderWidth: 2, borderDash: [5,3], pointRadius: 0, fill: false }
+          borderWidth: 1.6, borderDash: [5,3], pointRadius: 0, fill: false }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        title: { display: true, text: 'Dispersión observado vs predicho', font: { weight: '700', size: 12 } },
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10, weight: '600' } } },
+      },
       scales: {
-        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Observado (${r.unit || 'm/s'})`, font:{weight:'700'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Predicho (${r.unit || 'm/s'})`, font:{weight:'700'} } }
+        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Valor observado y(t) (${r.unit || 'm/s'})`, font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Valor predicho ŷ(t) (${r.unit || 'm/s'})`, font:{weight:'700'} } }
       }
     }
   });
@@ -1286,15 +1301,18 @@ function renderResidualHistogram(r, prefix='fs-wind') {
     type: 'bar',
     data: {
       labels: bins.map(b => b.x.toFixed(2)),
-      datasets: [{ label: 'Frecuencia', data: bins.map(b => b.count),
-        backgroundColor: acc3()+'58', borderColor: acc3(), borderWidth: 1.6, borderRadius:2 }]
+      datasets: [{ label: 'Frecuencia de residuos ε = ŷ − y', data: bins.map(b => b.count),
+        backgroundColor: acc3()+'58', borderColor: acc3(), borderWidth: 1.3, borderRadius:2 }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
+      plugins: {
+        title: { display: true, text: 'Histograma de residuos del pronóstico', font: { weight: '700', size: 12 } },
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10, weight: '600' } } },
+      },
       scales: {
-        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: `Residuo (${r.unit || 'm/s'})`, font:{weight:'700'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Frecuencia', font:{weight:'700'} } }
+        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: `Residuo ε = ŷ(t) − y(t) (${r.unit || 'm/s'})`, font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Número de muestras por intervalo', font:{weight:'700'} } }
       }
     }
   });
@@ -1309,18 +1327,21 @@ function renderStabilityChart(stability, prefix='fs-wind') {
     data: {
       labels: stability.map(s => s.period.substring(0,7)),
       datasets: [
-        { label: 'RMSE (m/s)', data: stability.map(s => s.rmse),
-          backgroundColor: acc()+'48', borderColor: acc(), borderWidth: 1.8, borderRadius:3 },
-        { label: 'MAE (m/s)',  data: stability.map(s => s.mae),
-          backgroundColor: acc3()+'48', borderColor: acc3(), borderWidth: 1.8, borderRadius:3 }
+        { label: 'RMSE — raíz del error cuadrático medio (m/s)', data: stability.map(s => s.rmse),
+          backgroundColor: acc()+'48', borderColor: acc(), borderWidth: 1.4, borderRadius:3 },
+        { label: 'MAE — error absoluto medio (m/s)',  data: stability.map(s => s.mae),
+          backgroundColor: acc3()+'48', borderColor: acc3(), borderWidth: 1.4, borderRadius:3 }
       ]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top' } },
+      plugins: {
+        title: { display: true, text: 'Estabilidad temporal del error por periodo', font: { weight: '700', size: 12 } },
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10, weight: '600' } } },
+      },
       scales: {
-        x: { grid: chartGridOptions(false), border: chartBorderOptions() },
-        y: { grid: chartGridOptions(), border: chartBorderOptions() }
+        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: 'Periodo de evaluación (año-mes)', font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Error del pronóstico (m/s)', font:{weight:'700'} } }
       }
     }
   });
@@ -1377,7 +1398,7 @@ function renderBinnedBiasChart(r, prefix='fs-wind') {
 
   const unit = r.unit || (prefix === 'fs-wind' ? 'm/s' : '');
   const xTitle = prefix === 'fs-wind'
-    ? 'Velocidad observada (m/s)'
+    ? 'Velocidad observada y(t) (m/s)'
     : `Valor observado${unit ? ` (${unit})` : ''}`;
 
   const ctx = canvas.getContext('2d');
@@ -1386,16 +1407,18 @@ function renderBinnedBiasChart(r, prefix='fs-wind') {
     data: {
       labels: binnedBias.map(b => fcFormatNumber(b.ws_center, 2)),
       datasets: [{
-        label: `Sesgo medio${unit ? ` (${unit})` : ''}`,
+        label: `Sesgo medio ε̄ = promedio(ŷ − y)${unit ? ` (${unit})` : ''}`,
         data: binnedBias.map(b => b.bias),
         backgroundColor: binnedBias.map(b => b.bias >= 0 ? acc()+'60' : acc2()+'60'),
-        borderWidth: 0, borderRadius:2,
+        borderColor: binnedBias.map(b => b.bias >= 0 ? acc() : acc2()),
+        borderWidth: 1.2, borderRadius:2,
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { display: false },
+        title: { display: true, text: 'Sesgo medio por rango de velocidad observada', font: { weight: '700', size: 12 } },
+        legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10, weight: '600' } } },
         tooltip: {
           callbacks: {
             label: item => {
@@ -1408,8 +1431,8 @@ function renderBinnedBiasChart(r, prefix='fs-wind') {
         }
       },
       scales: {
-        x: { grid: { display: false }, title: { display: true, text: xTitle } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: `Sesgo${unit ? ` (${unit})` : ''}` } }
+        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: xTitle, font:{weight:'700'} } },
+        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Sesgo ε = ŷ(t) − y(t)${unit ? ` (${unit})` : ''}`, font:{weight:'700'} } }
       }
     }
   });
