@@ -1272,7 +1272,27 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     ]
     if progress_callback:
         progress_callback(65, 'Aplicando corrección física de terreno…')
-    enriched = enrich_sites(site_records)
+    # Las llamadas a terreno dependen de servicios externos (DEM/WorldCover).
+    # Las envolvemos en futures con timeout para que la tarea NUNCA se quede
+    # bloqueada esperando red: si los servicios no responden, usamos defaults
+    # razonables (z0_ref, elevación 0 m) y seguimos.
+    from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _FTOut
+    _terrain_pool = _TPE(max_workers=3)
+
+    def _safe_terrain(call, timeout, fallback, label):
+        fut = _terrain_pool.submit(call)
+        try:
+            return fut.result(timeout=timeout)
+        except (_FTOut, Exception) as exc:
+            log.warning('legacy_three_maps: %s falló/timeout (%s); usando defaults', label, exc)
+            return fallback
+
+    enriched = _safe_terrain(
+        lambda: enrich_sites(site_records),
+        timeout=20.0,
+        fallback=[{**s, 'elevation_m': None, 'z0': None} for s in site_records],
+        label='enrich_sites',
+    )
     z0_site = [
         float(s['z0']) if s.get('z0') is not None else float(z0_ref)
         for s in enriched
@@ -1291,6 +1311,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
     v_neutral = [v * _alpha(z0i) for v, z0i in zip(v_proms, z0_site)]
 
+    if progress_callback:
+        progress_callback(75, 'Krigeando campo neutralizado…')
     # Krigeamos el campo neutralizado.
     g_neutral = kriging_grid(lons, lats, v_neutral, n=n_grid, model=model,
                              bounds=grid_bounds)
@@ -1302,9 +1324,26 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     grid_lons = [b['lon_min'] + (b['lon_max'] - b['lon_min']) * i / (nx - 1)
                  for i in range(nx)] if nx > 1 else [b['lon_min']]
 
-    elev_grid = sample_grid_elevation(grid_lats, grid_lons)
-    z0_grid   = sample_grid_z0(grid_lats, grid_lons)
+    if progress_callback:
+        progress_callback(80, 'Muestreando altitud DEM…')
+    elev_grid = _safe_terrain(
+        lambda: sample_grid_elevation(grid_lats, grid_lons),
+        timeout=15.0,
+        fallback=[[0.0] * nx for _ in range(ny)],
+        label='sample_grid_elevation',
+    )
+    if progress_callback:
+        progress_callback(85, 'Muestreando rugosidad WorldCover…')
+    z0_grid = _safe_terrain(
+        lambda: sample_grid_z0(grid_lats, grid_lons),
+        timeout=15.0,
+        fallback=[[float(z0_ref)] * nx for _ in range(ny)],
+        label='sample_grid_z0',
+    )
+    _terrain_pool.shutdown(wait=False)
 
+    if progress_callback:
+        progress_callback(90, 'Aplicando corrección log-altura por píxel…')
     # Corrección por pixel: V_real = V_neutral / alpha_local
     z_neutral = g_neutral['z']
     ny = len(z_neutral); nx = len(z_neutral[0]) if ny else 0
