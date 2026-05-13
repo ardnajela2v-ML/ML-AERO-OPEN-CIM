@@ -10546,7 +10546,6 @@ async function runWindAnnualForecast() {
   try {
     const fc = await api('/api/wind/annual_forecast', 'POST', {
       session_id: WP.sessionId, ws_col: 'wind_speed', growth: 0.005, horizon: 25,
-      include_raw: false,
     });
     WP.arenaCache.wind = fc;
     renderForecastFutureChart('wind');
