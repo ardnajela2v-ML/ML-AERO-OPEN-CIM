@@ -119,7 +119,7 @@ _OPEN_ELEVATION_URL = 'https://api.open-elevation.com/api/v1/lookup'
 
 
 def get_elevations_batch(latlons: Iterable[Tuple[float, float]],
-                         timeout: int = 25) -> List[Optional[float]]:
+                         timeout: int = 8) -> List[Optional[float]]:
     """Devuelve una lista paralela a latlons con altitudes en metros (None si falla)."""
     latlons = list(latlons)
     out: List[Optional[float]] = [None] * len(latlons)
@@ -218,7 +218,7 @@ def _latlon_to_tile_pixel(lat: float, lon: float, z: int) -> Tuple[int, int, int
     return tx, ty, px, py
 
 
-def _fetch_landcover_tile(z: int, x: int, y: int, timeout: int = 12):
+def _fetch_landcover_tile(z: int, x: int, y: int, timeout: int = 4):
     if not _PIL_OK:
         return None
     key = (z, x, y)
@@ -226,12 +226,13 @@ def _fetch_landcover_tile(z: int, x: int, y: int, timeout: int = 12):
         if key in _TILE_CACHE:
             return _TILE_CACHE[key]
     url = _WMTS_TEMPLATE.format(z=z, x=x, y=y)
+    img = None
     try:
         r = requests.get(url, timeout=timeout)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert('RGB')
     except Exception:
-        return None
+        img = None
     with _TILE_LOCK:
         _TILE_CACHE[key] = img
         if len(_TILE_CACHE) > _TILE_CACHE_MAX:
@@ -374,7 +375,7 @@ _DEM_TILE_LOCK = threading.Lock()
 _DEM_TILE_MAX = 200
 
 
-def _fetch_dem_tile(z: int, x: int, y: int, timeout: int = 12):
+def _fetch_dem_tile(z: int, x: int, y: int, timeout: int = 4):
     if not _PIL_OK:
         return None
     key = (z, x, y)
@@ -382,12 +383,13 @@ def _fetch_dem_tile(z: int, x: int, y: int, timeout: int = 12):
         if key in _DEM_TILE_CACHE:
             return _DEM_TILE_CACHE[key]
     url = _TERRARIUM_TEMPLATE.format(z=z, x=x, y=y)
+    img = None
     try:
         r = requests.get(url, timeout=timeout)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert('RGB')
     except Exception:
-        return None
+        img = None
     with _DEM_TILE_LOCK:
         _DEM_TILE_CACHE[key] = img
         if len(_DEM_TILE_CACHE) > _DEM_TILE_MAX:
@@ -434,6 +436,13 @@ def _required_tiles(lats: List[float], lons: List[float], z: int):
     return tiles
 
 
+def _cap_zoom_for_tile_budget(lats: List[float], lons: List[float], z: int,
+                              max_tiles: int = 96) -> int:
+    while z > 4 and len(_required_tiles(lats, lons, z)) > max_tiles:
+        z -= 1
+    return z
+
+
 def _prefetch_tiles(tiles, fetcher, max_workers: int = 12):
     """Descarga en paralelo todos los tiles requeridos (todos van a caché)."""
     if not tiles:
@@ -451,7 +460,7 @@ def sample_grid_elevation(lats: List[float], lons: List[float]) -> List[List[flo
     bounds = (min(lats), min(lons), max(lats), max(lons))
     # Para DEM no necesitamos resolución súper fina; cap a z=10 reduce
     # drásticamente tiles a descargar sin perder señal a escala kriging.
-    z = min(_zoom_for_resolution(bounds, len(lons), len(lats)), 10)
+    z = _cap_zoom_for_tile_budget(lats, lons, min(_zoom_for_resolution(bounds, len(lons), len(lats)), 10))
 
     tiles = _required_tiles(lats, lons, z)
     _prefetch_tiles(tiles, _fetch_dem_tile)
@@ -475,7 +484,7 @@ def sample_grid_z0(lats: List[float], lons: List[float]) -> List[List[float]]:
     if not lats or not lons:
         return [[]]
     bounds = (min(lats), min(lons), max(lats), max(lons))
-    z = max(8, min(_zoom_for_resolution(bounds, len(lons), len(lats)), 11))
+    z = _cap_zoom_for_tile_budget(lats, lons, min(_zoom_for_resolution(bounds, len(lons), len(lats)), 10))
 
     tiles = _required_tiles(lats, lons, z)
     _prefetch_tiles(tiles, _fetch_landcover_tile)
