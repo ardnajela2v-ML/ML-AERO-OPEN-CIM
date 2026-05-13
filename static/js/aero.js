@@ -8643,8 +8643,9 @@ function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
       <td>${fmt(lat, 5)}</td><td>${fmt(lon, 5)}</td>
       <td>${xy ? fmt(xy[0], 0) : '—'}</td><td>${xy ? fmt(xy[1], 0) : '—'}</td>
       <td>${v}</td>
-      <td>${sim ? fmt(sim.aep_mwh, 1) : '—'}</td>
+      <td>${sim ? fmt(sim.aep_gross_mwh, 1) : '—'}</td>
       <td>${sim ? fmt(sim.aep_no_wake_mwh, 1) : '—'}</td>
+      <td>${sim ? fmt(sim.aep_mwh, 1) : '—'}</td>
       <td>${sim ? fmt(sim.wake_loss_pct, 2) : '—'}</td>
       <td>${sim ? fmt(sim.cf_pct, 2) : '—'}</td>
     </tr>`;
@@ -12308,7 +12309,8 @@ function quickDesignGenerateReport() {
       ${section('3. Modelo de energía del parque', table(
         row('N° aerogeneradores', nTurb) +
         row('Capacidad instalada', instMW, 'MW') +
-        row('AEP bruto', sim.aep_no_wake_mwh ? (Number(sim.aep_no_wake_mwh)/1000).toFixed(3) : '—', 'GWh/año') +
+        row('AEP bruto (sin pérdidas, sin estela)', sim.aep_gross_mwh ? (Number(sim.aep_gross_mwh)/1000).toFixed(3) : '—', 'GWh/año') +
+        row('AEP s/estela (con disp. + pérd. eléc.)', sim.aep_no_wake_mwh ? (Number(sim.aep_no_wake_mwh)/1000).toFixed(3) : '—', 'GWh/año') +
         row('AEP neto (con estela)', aepGWh, 'GWh/año') +
         row('Pérdida por estela (wake)', wakeLoss) +
         row('Factor de capacidad', cf) +

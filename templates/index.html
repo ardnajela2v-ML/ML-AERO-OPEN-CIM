@@ -2898,8 +2898,11 @@
       <table class="tbl" id="parque-tbl">
         <thead><tr>
           <th>#</th><th>Lat</th><th>Lon</th><th>X (m)</th><th>Y (m)</th>
-          <th>v̄ kriging (m/s)</th><th>AEP (MWh)</th><th>AEP s/estela</th>
-          <th>Pérdida %</th><th>CF %</th>
+          <th>v̄ kriging (m/s)</th>
+          <th title="AEP bruto: sin pérdidas, sin estela (referencia teórica)">AEP bruto (MWh)</th>
+          <th title="AEP sin estela, con disponibilidad y pérdidas eléctricas">AEP s/estela (MWh)</th>
+          <th title="AEP neto: con disponibilidad, pérdidas eléctricas y estela">AEP neto (MWh)</th>
+          <th>Pérdida estela %</th><th>CF %</th>
         </tr></thead>
         <tbody id="parque-tbl-body"></tbody>
       </table>
