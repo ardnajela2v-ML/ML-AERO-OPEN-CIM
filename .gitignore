@@ -27,6 +27,7 @@ Thumbs.db
 # Datos y exports (no versionar)
 exports/*.csv
 uploads/*
+runs/
 saved_models/*
 .cache/
 !uploads/.gitkeep

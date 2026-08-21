@@ -1,12 +1,13 @@
 """
-Genera series históricas macroeconómicas de México (1993–2025):
+Genera escenarios históricos interpolados de México (1993–2025):
   - TIIE 28 días (tasa de interés de referencia)
   - Tipo de cambio USD/MXN (FIX Banxico)
   - Inflación interanual INPC (%)
 
-Fuentes de referencia: Banxico SIE, INEGI, FRED.
-Los datos se generan con valores históricos realistas interpolados
-para tener cobertura diaria completa (~12,000 registros por serie).
+Fuentes usadas sólo como referencia de anclas: Banxico SIE, INEGI, FRED.
+Estos archivos NO son observaciones diarias oficiales: interpolan puntos de
+control y añaden ruido para pruebas. Una evaluación oficial debe sustituirlos
+por exportaciones trazables de las fuentes primarias.
 """
 import os, sys
 import numpy as np

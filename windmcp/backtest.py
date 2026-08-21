@@ -1,0 +1,260 @@
+"""Walk-forward multi-year backtesting for MCP and ML methods."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from .mcp import DEFAULT_METHODS, metrics, validate_direction
+from .ml import DEFAULT_ML_METHODS, validate_ml_direction
+
+
+def _available_years(aligned: pd.DataFrame) -> set[int]:
+    return {int(year) for year in pd.DatetimeIndex(aligned.index).year.unique()}
+
+
+def _pooled_metrics(predictions: List[pd.DataFrame]) -> Dict[str, object]:
+    if not predictions:
+        return {"N": 0, "RMSE": None, "MAE": None, "Bias": None, "R2": None}
+    observed = np.concatenate([frame["observed_wind_speed"].to_numpy(dtype=float) for frame in predictions])
+    predicted = np.concatenate([frame["predicted_wind_speed"].to_numpy(dtype=float) for frame in predictions])
+    return metrics(observed, predicted)
+
+
+def _summary_rows(fold_rows: List[Dict[str, Any]]) -> List[Dict[str, object]]:
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for row in fold_rows:
+        if row["status"] == "ok":
+            grouped.setdefault((str(row["family"]), str(row["method"])), []).append(row)
+    summary: List[Dict[str, object]] = []
+    for (family, method), rows in grouped.items():
+        pooled = _pooled_metrics([row["predictions"] for row in rows])
+        errors = np.concatenate([
+            row["predictions"]["predicted_wind_speed"].to_numpy(dtype=float)
+            - row["predictions"]["observed_wind_speed"].to_numpy(dtype=float)
+            for row in rows
+        ])
+        summary.append({
+            "family": family,
+            "method": method,
+            "status": "ok",
+            "folds_passed": int(len(rows)),
+            "folds_available": int(len({(row["train_year"], row["test_year"]) for row in rows})),
+            "train_test_pairs": [f"{row['train_year']}->{row['test_year']}" for row in rows],
+            "N": pooled.get("N"),
+            "R": pooled.get("R"),
+            "R2": pooled.get("R2"),
+            "RMSE": pooled.get("RMSE"),
+            "MAE": pooled.get("MAE"),
+            "Bias": pooled.get("Bias"),
+            "KS": pooled.get("KS"),
+            "observed_mean": pooled.get("observed_mean"),
+            "predicted_mean": pooled.get("predicted_mean"),
+            "delta_mean": pooled.get("delta_mean"),
+            "delta_mean_pct": pooled.get("delta_mean_pct"),
+            "observed_weibull_k": pooled.get("observed_weibull_k"),
+            "predicted_weibull_k": pooled.get("predicted_weibull_k"),
+            "delta_weibull_k": pooled.get("delta_weibull_k"),
+            "observed_weibull_lambda": pooled.get("observed_weibull_lambda"),
+            "predicted_weibull_lambda": pooled.get("predicted_weibull_lambda"),
+            "delta_weibull_lambda": pooled.get("delta_weibull_lambda"),
+            "weibull_fit_method": pooled.get("weibull_fit_method"),
+            "error_p05": float(np.percentile(errors, 5)),
+            "error_p95": float(np.percentile(errors, 95)),
+            "error_std": float(np.std(errors, ddof=1)) if len(errors) > 1 else 0.0,
+            "interval_level": "empirical 90% global residual interval",
+        })
+    summary.sort(key=lambda row: (row.get("RMSE") if row.get("RMSE") is not None else np.inf, row.get("MAE") if row.get("MAE") is not None else np.inf))
+    return summary
+
+
+def select_speed_reconstruction_method(
+    summary: List[Dict[str, object]],
+    max_abs_bias_ms: float = 0.20,
+    max_abs_delta_weibull_k: float = 0.10,
+    max_abs_delta_weibull_lambda_ms: float = 0.20,
+    max_ks: float = 0.08,
+    preferred_method: str | None = None,
+) -> Dict[str, object]:
+    """Choose a speed model without allowing rose sectors to force the result.
+
+    Models first have to preserve the out-of-sample speed distribution.  The
+    lowest-RMSE model among those that pass is selected. Sector quantile models
+    remain visible as diagnostics, but are excluded because the 16-sector
+    model is reserved for direction and wind-rose reconstruction.
+    """
+
+    thresholds = {
+        "max_abs_bias_ms": float(max_abs_bias_ms),
+        "max_abs_delta_weibull_k": float(max_abs_delta_weibull_k),
+        "max_abs_delta_weibull_lambda_ms": float(max_abs_delta_weibull_lambda_ms),
+        "max_ks": float(max_ks),
+    }
+    eligible: List[Dict[str, object]] = []
+    for row in summary:
+        method = str(row.get("method", ""))
+        if method.startswith("sector_qm_"):
+            row["speed_selection_eligible"] = False
+            row["speed_selection_status"] = "directional_diagnostic_only"
+            continue
+        values = {
+            "Bias": row.get("Bias"),
+            "delta_weibull_k": row.get("delta_weibull_k"),
+            "delta_weibull_lambda": row.get("delta_weibull_lambda"),
+            "KS": row.get("KS"),
+        }
+        finite = all(value is not None and np.isfinite(float(value)) for value in values.values())
+        qualified = bool(finite and (
+            abs(float(values["Bias"])) <= max_abs_bias_ms
+            and abs(float(values["delta_weibull_k"])) <= max_abs_delta_weibull_k
+            and abs(float(values["delta_weibull_lambda"])) <= max_abs_delta_weibull_lambda_ms
+            and float(values["KS"]) <= max_ks
+        ))
+        row["speed_selection_eligible"] = True
+        row["distribution_qualified"] = qualified
+        row["speed_selection_status"] = "qualified" if qualified else "distribution_rejected"
+        penalty = np.inf
+        if finite:
+            penalty = (
+                abs(float(values["Bias"])) / max_abs_bias_ms
+                + abs(float(values["delta_weibull_k"])) / max_abs_delta_weibull_k
+                + abs(float(values["delta_weibull_lambda"])) / max_abs_delta_weibull_lambda_ms
+                + float(values["KS"]) / max_ks
+            )
+        row["distribution_penalty"] = None if not np.isfinite(penalty) else float(penalty)
+        eligible.append(row)
+    if not eligible:
+        raise ValueError("No non-sectoral speed model is available for reconstruction")
+    qualified_rows = [row for row in eligible if row.get("distribution_qualified")]
+    preferred = next(
+        (row for row in qualified_rows if str(row.get("method")) == str(preferred_method)),
+        None,
+    )
+    if preferred is not None:
+        candidates = [preferred]
+        policy = "seasonal_distribution_constraints_then_required_2018_monthly_mapping"
+        fallback_used = False
+    elif qualified_rows:
+        candidates = qualified_rows
+        policy = "distribution_constraints_then_out_of_sample_rmse"
+        fallback_used = False
+    else:
+        candidates = eligible
+        policy = "minimum_distribution_penalty_then_out_of_sample_rmse_fallback"
+        fallback_used = True
+    candidates.sort(key=lambda row: (
+        row.get("RMSE") if row.get("RMSE") is not None else np.inf,
+        row.get("MAE") if row.get("MAE") is not None else np.inf,
+    ) if not fallback_used else (
+        row.get("distribution_penalty") if row.get("distribution_penalty") is not None else np.inf,
+        row.get("RMSE") if row.get("RMSE") is not None else np.inf,
+    ))
+    selected = candidates[0]
+    selected["speed_selection_status"] = "selected"
+    rmse_winner = min(eligible, key=lambda row: (
+        row.get("RMSE") if row.get("RMSE") is not None else np.inf,
+        row.get("MAE") if row.get("MAE") is not None else np.inf,
+    ))
+    return {
+        "selected_method": selected["method"],
+        "selected_family": selected["family"],
+        "selection": policy,
+        "fallback_used": fallback_used,
+        "thresholds": thresholds,
+        "rmse_only_winner": rmse_winner["method"],
+        "preferred_method": preferred_method,
+        "preferred_method_applied": bool(
+            preferred_method is not None and str(selected.get("method")) == str(preferred_method)
+        ),
+        "selected_metrics": {
+            key: selected.get(key)
+            for key in ("N", "R", "R2", "RMSE", "MAE", "Bias", "KS", "delta_weibull_k", "delta_weibull_lambda")
+        },
+        "excluded_speed_methods": [
+            str(row.get("method")) for row in summary if not row.get("speed_selection_eligible", False)
+        ],
+        "direction_model_policy": "independent_16_sector_month_conditioned_circular_model_for_wind_rose_only",
+    }
+
+
+def run_walk_forward_backtest(
+    aligned: pd.DataFrame,
+    folds: Iterable[Tuple[int, int]],
+    mcp_methods: Sequence[str] = DEFAULT_METHODS,
+    ml_methods: Sequence[str] = DEFAULT_ML_METHODS,
+) -> Dict[str, object]:
+    """Evaluate methods on chronological train/test folds.
+
+    The target year is never used for fitting. Pooled metrics are calculated
+    from concatenated out-of-sample predictions across all available folds.
+    """
+
+    available = _available_years(aligned)
+    requested_folds = [(int(train), int(test)) for train, test in folds]
+    valid_folds = [(train, test) for train, test in requested_folds if train in available and test in available and train < test]
+    skipped_folds = [{"train_year": train, "test_year": test, "reason": "year_not_available_or_not_chronological"} for train, test in requested_folds if (train, test) not in valid_folds]
+    if not valid_folds:
+        raise ValueError("No valid chronological folds available for multi-year backtesting")
+
+    fold_rows: List[Dict[str, Any]] = []
+    for train_year, test_year in valid_folds:
+        for method in mcp_methods:
+            try:
+                validation = validate_direction(aligned, train_year, test_year, method=method)
+                fold_rows.append({
+                    "family": "mcp",
+                    "method": method,
+                    "train_year": train_year,
+                    "test_year": test_year,
+                    "status": "ok",
+                    "metrics": validation["metrics"],
+                    "predictions": validation["predictions"],
+                })
+            except (ValueError, KeyError) as error:
+                fold_rows.append({
+                    "family": "mcp",
+                    "method": method,
+                    "train_year": train_year,
+                    "test_year": test_year,
+                    "status": "error",
+                    "error": str(error),
+                })
+        for method in ml_methods:
+            try:
+                validation = validate_ml_direction(aligned, train_year, test_year, method="ml_" + method)
+                fold_rows.append({
+                    "family": "ml",
+                    "method": "ml_" + method,
+                    "train_year": train_year,
+                    "test_year": test_year,
+                    "status": "ok",
+                    "metrics": validation["metrics"],
+                    "predictions": validation["predictions"],
+                })
+            except (ValueError, KeyError) as error:
+                fold_rows.append({
+                    "family": "ml",
+                    "method": "ml_" + method,
+                    "train_year": train_year,
+                    "test_year": test_year,
+                    "status": "error",
+                    "error": str(error),
+                })
+
+    summary = _summary_rows(fold_rows)
+    selected = summary[0] if summary else None
+    return {
+        "selection": "pooled_out_of_sample_rmse_then_mae",
+        "requested_folds": [{"train_year": train, "test_year": test} for train, test in requested_folds],
+        "valid_folds": [{"train_year": train, "test_year": test} for train, test in valid_folds],
+        "skipped_folds": skipped_folds,
+        "selected_method": selected["method"] if selected else None,
+        "selected_family": selected["family"] if selected else None,
+        "summary": summary,
+        "folds": [
+            {key: value for key, value in row.items() if key != "predictions"}
+            for row in fold_rows
+        ],
+    }

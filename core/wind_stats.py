@@ -123,6 +123,10 @@ def compute_wind_rose(df, ws_col='wind_speed', wd_col='wind_dir',
         'wd_mean_circular':    round(circular_mean(wd), 2),
         'wd_std_circular':     round(circular_std(wd), 2),
         'n_obs':               n_total,
+        'n_sectors':           n_sectors,
+        'sector_width_deg':    sector_deg,
+        'direction_convention': 'meteorological_from_north_clockwise',
+        'sector_alignment':    'centred_on_label',
     }
 
 
@@ -502,27 +506,18 @@ def compute_wind_speed_variability(df, ws_col='wind_speed', ws_bins=None):
     ws_clip    = ws.clip(lower=0.5)
     ti_overall = float((rolling_std / ws_clip).replace([np.inf, -np.inf], np.nan).dropna().mean())
 
-    # Clase IEC proxy — asignada por umbral sobre ti_15ms (IEC 61400-1 Ed.4)
-    # ADVERTENCIA: dato horario reanálisis ≠ TI IEC (requiere 1 Hz / 10-min).
-    # Úsese solo como referencia indicativa con los umbrales normativos.
-    if ti_15 is not None:
-        if   ti_15 <= 0.12: iec_class_proxy = 'C'
-        elif ti_15 <= 0.14: iec_class_proxy = 'B'
-        elif ti_15 <= 0.16: iec_class_proxy = 'A'
-        else:               iec_class_proxy = 'S'   # por encima de clase A
-    else:
-        iec_class_proxy = None
-
     return {
         'bins':             bins_out,
         'ti_15ms':          round(ti_15, 4) if ti_15 else None,
         'ti_overall':       round(ti_overall, 4),
-        'iec_class':        iec_class_proxy,
+        # A rolling hourly statistic cannot be mapped to an IEC turbulence
+        # class.  Keep the keys for older clients, but never assign a class.
+        'iec_class':        None,
         'iec_is_proxy':     True,
         'note':             (
             'Proxy de variabilidad inter-horaria (rolling σ 6 h / V̄). '
-            'NO equivale a TI IEC 61400-1 (requiere ≥1 Hz, ventanas 10 min). '
-            'Clase IEC indicativa — supuesto sobre umbrales normativos.'
+            'NO equivale a TI IEC 61400-1 ni permite asignar una clase. '
+            'La TI medida se calcula por separado con σ y media de la misma ventana nativa de 10 min.'
         ),
     }
 

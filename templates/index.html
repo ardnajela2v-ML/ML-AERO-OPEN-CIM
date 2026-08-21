@@ -45,8 +45,9 @@
       </svg>
       Globe
     </button>
-    <button class="nav-btn active" data-module="resumen">Resumen Eólico</button>
-    <button class="nav-btn" data-module="models">Centro de modelaje</button>
+    <button class="nav-btn" data-module="mcp">MCP Lab</button>
+    <button class="nav-btn active" data-module="resumen">Recurso Eólico</button>
+    <button class="nav-btn" data-module="models">Configuración del parque</button>
     <button class="nav-btn" data-module="forecast" style="display:none" hidden>Forecast Studio</button>
     <button class="nav-btn" data-module="kriging">Diseño y optimización del parque eólico</button>
     <button class="nav-btn" data-module="parque" style="display:none" hidden>Parque</button>
@@ -124,7 +125,7 @@
     <div class="globe-brand">
       <div class="globe-brand__kicker">AERO OPEN CIM · GLOBE</div>
       <div class="globe-brand__title">Selecciona un sitio para iniciar el estudio</div>
-      <div class="globe-brand__hint">Arrastra para rotar · Rueda para acercar · Click en estación para cargar</div>
+      <div class="globe-brand__hint">Arrastra para rotar · Rueda para acercar · Selecciona observación y referencias</div>
     </div>
 
     <!-- Search bar -->
@@ -162,13 +163,17 @@
         <div class="globe-panel__title" id="globe-panel-title">—</div>
       </div>
       <div class="globe-panel__sub" id="globe-panel-sub">
-        Selecciona la estación maestra para cargar sus datos en el Data Hub.
+        Elige una estación observada principal y una o más referencias ERA5/MERRA-2.
       </div>
       <div class="globe-panel__list" id="globe-station-list">
         <div class="globe-panel__empty">Sin estaciones aún. Marca un sitio para listar las cercanas.</div>
       </div>
       <button class="globe-panel__upload" id="btn-globe-open-upload" type="button">
         + Cargar mi propio archivo
+      </button>
+      <button class="btn-primary" id="btn-globe-continue-mcp" type="button" disabled
+              style="margin:10px 14px 14px;width:calc(100% - 28px)">
+        Continuar a MCP Lab →
       </button>
     </aside>
 
@@ -178,8 +183,8 @@
       <div class="globe-modal__card">
         <button class="globe-modal__close" id="btn-globe-modal-close" type="button" aria-label="Cerrar">✕</button>
         <div class="globe-modal__kicker">CARGAR ARCHIVO PROPIO</div>
-        <div class="globe-modal__title">Sube tu reanálisis o serie temporal</div>
-        <div class="globe-modal__desc">CSV · TXT · TSV · MERRA-2 · ERA5 · CONAGUA. Al cargar, el globo se colapsa y entras al Data Hub.</div>
+        <div class="globe-modal__title">Añadir datos al estudio MCP</div>
+        <div class="globe-modal__desc">Declara si el archivo es una observación local o una referencia de reanálisis.</div>
         <div class="globe-modal__zone" id="globe-upload-zone">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
@@ -191,13 +196,16 @@
         <div class="globe-modal__source">
           <label>Fuente</label>
           <select id="globe-source-select">
-            <option value="auto">Auto-detectar</option>
-            <option value="csv">CSV genérico</option>
-            <option value="merra2">MERRA-2</option>
-            <option value="era5">ERA5</option>
-            <option value="conagua">CONAGUA/SMN</option>
+            <option value="observed">Estación observada</option>
+            <option value="merra2">Referencia MERRA-2</option>
+            <option value="era5">Referencia ERA5</option>
           </select>
         </div>
+        <div class="globe-modal__source"><label>Nombre</label><input id="globe-upload-name" type="text" placeholder="Estación propia"></div>
+        <div class="globe-modal__source"><label>Latitud</label><input id="globe-upload-lat" type="number" step="0.0001"></div>
+        <div class="globe-modal__source"><label>Longitud</label><input id="globe-upload-lon" type="number" step="0.0001"></div>
+        <div class="globe-modal__source"><label>Altura (m)</label><input id="globe-upload-height" type="number" value="80" min="1" max="300"></div>
+        <div class="globe-modal__source"><label>Zona horaria</label><input id="globe-upload-timezone" type="text" value="UTC"></div>
       </div>
     </div>
   </div>
@@ -587,13 +595,13 @@
       <span class="badge badge--info" id="market-file-count">Cargando…</span>
     </div>
     <div class="card-body">
-      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable de mercado. Se usarán como datos reales en el Centro de modelaje.</p>
+      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable. Se usarán como insumos trazables en Configuración del parque.</p>
 
       <!-- DEMANDA -->
       <div class="market-data-row mb-3" style="border-left:3px solid var(--accent);padding-left:12px;">
         <div class="form-grid-4" style="align-items:end">
           <div style="grid-column:span 2">
-            <label class="form-label">Demanda Eléctrica (MW)</label>
+            <label class="form-label">Archivo de serie histórica de demanda</label>
             <select class="form-select" id="market-demand-select" style="width:100%">
               <option value="">— Selecciona archivo de demanda —</option>
             </select>
@@ -618,7 +626,7 @@
       <div class="market-data-row mb-3" style="border-left:3px solid #f59e0b;padding-left:12px;">
         <div class="form-grid-4" style="align-items:end">
           <div style="grid-column:span 2">
-            <label class="form-label">PML — Precio Marginal Local ($/kWh)</label>
+            <label class="form-label">Archivo de precio de compra y venta de energía</label>
             <select class="form-select" id="market-pml-select" style="width:100%">
               <option value="">— Selecciona archivo de PML —</option>
             </select>
@@ -712,21 +720,115 @@
 <!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
 <section class="module" id="mod-models">
   <div class="module-header">
-    <h1 class="module-title">Centro de modelaje</h1>
-    <p class="module-desc">Centro de modelaje, entrenamiento y predicción de variables de interes.</p>
+    <h1 class="module-title">Centro de configuración del parque eólico</h1>
+    <p class="module-desc">Define el esquema comercial, los archivos de demanda y precios, y los valores base financieros del proyecto.</p>
   </div>
 
-  <!-- Model Arena Tabs -->
-  <div class="tabs">
-    <button class="tab-btn active" data-tab="arena-wind">Viento</button>
-    <button class="tab-btn" data-tab="arena-demand">Demanda</button>
-    <button class="tab-btn" data-tab="arena-pml">PML</button>
-    <button class="tab-btn" data-tab="arena-interest">Tasa de Interés</button>
-    <button class="tab-btn" data-tab="arena-fx">Tipo de Cambio</button>
+  <!-- ═══ TAB: CONFIGURACIÓN DEL PROYECTO ══════════════════════════════════ -->
+  <div id="arena-project-tab" class="tab-content active">
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">1 · Esquema comercial</span>
+        <span class="badge badge--info" id="park-config-revision">Configuración nueva</span>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:minmax(260px,1fr) minmax(360px,2fr);gap:16px;align-items:start">
+          <div class="form-row" style="margin:0">
+            <label class="form-label" for="park-commercial-mode">Modo de comercialización</label>
+            <select class="form-select" id="park-commercial-mode">
+              <option value="total_sale" selected>Venta total</option>
+              <option value="self_consumption">Autoconsumo</option>
+              <option value="self_consumption_surplus">Autoconsumo con venta de excedentes</option>
+            </select>
+          </div>
+          <div id="park-demand-series-block" hidden style="display:none;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface-2)">
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px">
+              <strong style="font-size:.82rem">Serie histórica de demanda</strong>
+              <span class="cbadge r">OBLIGATORIA</span>
+            </div>
+            <div id="park-demand-file-slot"></div>
+          </div>
+        </div>
+        <input id="park-demand-source" type="hidden" value="none">
+        <input id="park-annual-demand" type="hidden" value="0">
+
+        <div class="form-grid-4 mt-2">
+          <div>
+            <label class="form-label" for="park-sale-scheme">Liquidación de energía vendida</label>
+            <select class="form-select" id="park-sale-scheme">
+              <option value="spot_pml" selected>Mercado · PML nodal</option>
+              <option value="ppa">PPA / contrato bilateral</option>
+              <option value="mixed">Mixto · PPA + PML</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="park-pml-node">NodoP / zona de carga</label>
+            <input class="form-input" id="park-pml-node" type="text" placeholder="Pendiente de seleccionar nodo CENACE">
+          </div>
+        </div>
+        <div id="park-commercial-note" class="features-summary mt-2"></div>
+      </div>
+    </div>
+
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">2 · Parámetros comerciales y financieros</span>
+        <span class="badge badge--warn" id="park-readiness-badge">Pendiente</span>
+      </div>
+      <div class="card-body">
+        <div id="park-pml-file-slot" style="margin-bottom:16px"></div>
+        <div class="form-grid-4">
+          <div>
+            <label class="form-label" for="park-base-fx">Tipo de cambio base (MXN/USD)</label>
+            <input class="form-input" id="park-base-fx" type="number" min="0.01" step="0.01" placeholder="Ej. 20.00" inputmode="decimal">
+          </div>
+          <div>
+            <label class="form-label" for="park-base-interest">Tasa de interés anual base (%)</label>
+            <input class="form-input" id="park-base-interest" type="number" min="0" step="0.01" placeholder="Ej. 10.00" inputmode="decimal">
+          </div>
+          <div>
+            <label class="form-label" for="park-project-horizon">Vida de evaluación (años)</label>
+            <input class="form-input" id="park-project-horizon" type="number" min="5" max="40" value="25">
+          </div>
+          <div>
+            <label class="form-label" for="park-reporting-currency">Moneda de reporte</label>
+            <select class="form-select" id="park-reporting-currency">
+              <option value="USD" selected>USD · dólar</option>
+              <option value="MXN">MXN · peso mexicano</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2" style="display:flex;justify-content:flex-end">
+          <button class="btn-primary" id="btn-save-park-configuration" type="button">Guardar configuración</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">3 · Estado de la configuración</span></div>
+        <div class="card-body"><div id="park-market-readiness" class="val-metric-list"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Criterio regulatorio y de mercado</span></div>
+        <div class="card-body" style="line-height:1.55">
+          <p><strong>Venta total:</strong> toda la generación neta se valora con el archivo de precios cargado.</p>
+          <p class="text-muted mt-2" style="font-size:.75rem"><strong>Autoconsumo:</strong> requiere una serie histórica de demanda para comparar simultáneamente consumo y generación.</p>
+          <p class="text-muted mt-2" style="font-size:.75rem">El tipo de cambio y la tasa son valores base manuales de esta revisión del proyecto.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card--accent mt-3">
+      <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+        <div><strong id="park-config-status-title">Configuración incompleta</strong><div class="text-muted" id="park-config-status-text">Carga el archivo de precios y captura el tipo de cambio y la tasa base.</div></div>
+        <button class="btn-primary" id="btn-park-continue-design" type="button" disabled>Continuar a Diseño y optimización →</button>
+      </div>
+    </div>
   </div>
 
   <!-- ═══ TAB: VIENTO ═══════════════════════════════════════════════════════ -->
-  <div id="arena-wind-tab" class="tab-content active">
+  <div id="arena-wind-tab" class="tab-content">
 
     <div class="card mb-3">
       <div class="card-header"><span class="card-title">Configuración de Features</span></div>
@@ -956,7 +1058,7 @@
   <div id="arena-pml-tab" class="tab-content">
     <div class="grid-2">
       <div class="card">
-        <div class="card-header"><span class="card-title">Configuración</span></div>
+        <div class="card-header"><span class="card-title">PML observado · año base 2018</span></div>
         <div class="card-body">
           <div class="form-row">
             <label class="form-label">Serie de PML</label>
@@ -964,42 +1066,11 @@
               <option value="">Cargando archivos…</option>
             </select>
           </div>
-          <div class="form-row">
-            <label class="form-label">Lado del mercado</label>
-            <select class="form-select" id="pml-side">
-              <option value="venta">Venta (inyección)</option>
-              <option value="compra">Compra (extracción)</option>
-              <option value="both">Ambos lados</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Tasa anual de incremento histórica (nominal)</label>
-            <input type="number" class="form-input" id="pml-growth" step="0.005" min="0" max="0.15" value="0.030">
-            <span class="text-muted" style="font-size:.7rem">Referencia: 3 – 5 % nominal según inflación e índice CRE.</span>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Horizonte de proyección (años)</label>
-            <input type="number" class="form-input" id="pml-horizon" min="5" max="40" value="25">
-          </div>
-          <div class="model-checklist mt-2">
-            <p class="text-muted mb-1">Modelos de tendencia</p>
-            <div class="model-tags" id="pml-model-tags">
-              <span class="model-tag active" data-model="linear">Lineal</span>
-              <span class="model-tag active" data-model="polynomial">Polinómico</span>
-              <span class="model-tag active" data-model="exponential">Exponencial</span>
-              <span class="model-tag active" data-model="logarithmic">Logarítmico</span>
-              <span class="model-tag active" data-model="logistic">Logístico</span>
-              <span class="model-tag active" data-model="holt_winters">Holt-Winters</span>
-              <span class="model-tag active" data-model="arima">ARIMA</span>
-              <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag active" data-model="gradient_boost">Gradient Boost</span>
-              <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
-            </div>
-          </div>
-          <div style="display: flex; gap: 8px; margin-top: 1rem;">
-            <button class="btn-primary" id="btn-pml-train" style="flex: 1;">Cargar y entrenar arena (Anual)</button>
-            <button class="btn-secondary" id="btn-pml-train-hourly" style="flex: 1;">Entrenar Perfil Horario (8760 pts)</button>
-          </div>
+          <button class="btn-primary mt-3 w-full" id="btn-pml-load-fixed">Cargar y usar PML 2018</button>
+          <p class="text-muted mt-2" style="font-size:.72rem;line-height:1.55">
+            El precio no se entrena ni se predice. Se replica el perfil horario observado de venta durante toda la vida del proyecto, sin inflación ni escalamiento del PML.
+          </p>
+          <div class="alert mt-2" id="pml-fixed-status" style="display:none"></div>
         </div>
       </div>
       <div class="card">
@@ -1011,17 +1082,10 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
-        <span class="cbadge b" id="pml-prediction-badge">—</span>
+        <span class="ct">Serie temporal PML · 2018</span>
+        <span class="cbadge b" id="pml-series-badge">Sin cargar</span>
       </div>
-      <div class="cb" style="height:340px"><canvas id="pml-prediction-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Proyección Anual a 25 años</span>
-        <span class="cbadge g" id="pml-best-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="pml-projection-chart"></canvas></div>
+      <div class="cb" style="height:300px"><canvas id="pml-series-chart"></canvas></div>
     </div>
     <div class="grid-2 mt-3">
       <div class="card">
@@ -1031,15 +1095,6 @@
       <div class="card">
         <div class="card-header"><span class="card-title">Curva de duración del precio</span></div>
         <div class="card-body" style="height:260px"><canvas id="pml-duration-chart"></canvas></div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="pml-compare-tbl">
-          <thead><tr><th>Modelo</th><th>Lado</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Precio año final</th></tr></thead>
-          <tbody><tr><td colspan="7" class="ks" style="text-align:center;padding:1.5rem">Carga la serie de PML y entrena la arena.</td></tr></tbody>
-        </table>
       </div>
     </div>
   </div>
@@ -1060,19 +1115,8 @@
             <label class="form-label">Horizonte de proyección (años)</label>
             <input type="number" class="form-input" id="interest-horizon" min="5" max="40" value="25">
           </div>
-          <div class="model-checklist mt-2">
-            <p class="text-muted mb-1">Modelos de tendencia</p>
-            <div class="model-tags" id="interest-model-tags">
-              <span class="model-tag active" data-model="mean_reversion">Reversión a la media (Vasicek)</span>
-              <span class="model-tag active" data-model="logarithmic">Logarítmico</span>
-              <span class="model-tag active" data-model="arima">ARIMA</span>
-              <span class="model-tag active" data-model="holt_winters">Holt-Winters</span>
-              <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag active" data-model="gradient_boost">Gradient Boost</span>
-              <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
-            </div>
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-interest-train">Cargar y entrenar arena</button>
+          <button class="btn-primary mt-3 w-full" id="btn-interest-train">Estimar tasa del proyecto · 25 años</button>
+          <p class="text-muted mt-2" style="font-size:.7rem;line-height:1.45">Selección automática entre reversión a la media, ARIMA y Holt amortiguado usando ventanas recientes de 8, 10 y 15 años.</p>
         </div>
       </div>
       <div class="card">
@@ -1084,24 +1128,17 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
-        <span class="cbadge b" id="interest-best-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="interest-projection-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Proyección Anual a 25 años</span>
+        <span class="ct">Estimación futura del proyecto · 25 años</span>
         <span class="cbadge g" id="interest-25y-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="interest-25y-chart"></canvas></div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
+      <div class="ch"><span class="ct">Hitos de la trayectoria seleccionada</span></div>
       <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="interest-compare-tbl">
-          <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>Tasa Final (%)</th></tr></thead>
-          <tbody><tr><td colspan="5" class="ks" style="text-align:center;padding:1.5rem">Carga la serie y entrena la arena.</td></tr></tbody>
+        <table class="tbl" id="interest-milestone-tbl">
+          <thead><tr><th>Año proyecto</th><th>Año calendario</th><th>Tasa estimada</th><th>Modelo / ventana</th></tr></thead>
+          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1.5rem">Ejecuta la estimación.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1120,28 +1157,11 @@
             </select>
           </div>
           <div class="form-row">
-            <label class="form-label">Tasa de depreciación esperada (%)</label>
-            <input type="number" class="form-input" id="fx-depreciation" step="0.5" min="0" max="15" value="2.5">
-            <span class="text-muted" style="font-size:.7rem">Basado en diferencial de inflación (PPP).</span>
-          </div>
-          <div class="form-row">
             <label class="form-label">Horizonte de proyección (años)</label>
             <input type="number" class="form-input" id="fx-horizon" min="5" max="40" value="25">
           </div>
-          <div class="model-checklist mt-2">
-            <p class="text-muted mb-1">Modelos de tendencia</p>
-            <div class="model-tags" id="fx-model-tags">
-              <span class="model-tag active" data-model="linear">Lineal</span>
-              <span class="model-tag active" data-model="polynomial">Polinómico</span>
-              <span class="model-tag active" data-model="exponential">Exponencial</span>
-              <span class="model-tag active" data-model="arima">ARIMA</span>
-              <span class="model-tag active" data-model="holt_winters">Holt-Winters</span>
-              <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag active" data-model="gradient_boost">Gradient Boost</span>
-              <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
-            </div>
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-fx-train">Cargar y entrenar arena</button>
+          <button class="btn-primary mt-3 w-full" id="btn-fx-train">Estimar USD/MXN del proyecto · 25 años</button>
+          <p class="text-muted mt-2" style="font-size:.7rem;line-height:1.45">Entrenamiento mensual con ventanas recientes de 5, 8 y 10 años. El histórico completo se conserva para consulta, pero los años noventa no gobiernan la proyección.</p>
         </div>
       </div>
       <div class="card">
@@ -1153,24 +1173,17 @@
     </div>
     <div class="card mt-3">
       <div class="ch">
-        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
-        <span class="cbadge b" id="fx-best-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="fx-projection-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Proyección Anual a 25 años</span>
+        <span class="ct">Estimación futura del proyecto · 25 años</span>
         <span class="cbadge g" id="fx-25y-badge">—</span>
       </div>
       <div class="cb" style="height:340px"><canvas id="fx-25y-chart"></canvas></div>
     </div>
     <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
+      <div class="ch"><span class="ct">Hitos de la trayectoria seleccionada</span></div>
       <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="fx-compare-tbl">
-          <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>TC Final (MXN)</th></tr></thead>
-          <tbody><tr><td colspan="5" class="ks" style="text-align:center;padding:1.5rem">Carga la serie y entrena la arena.</td></tr></tbody>
+        <table class="tbl" id="fx-milestone-tbl">
+          <thead><tr><th>Año proyecto</th><th>Año calendario</th><th>USD/MXN</th><th>Modelo / ventana</th></tr></thead>
+          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1.5rem">Ejecuta la estimación.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1179,7 +1192,7 @@
 </section>
 
 <!-- ╔══════════════════ FORECAST STUDIO ══════════════════╗ -->
-<section class="module" id="mod-forecast">
+<section class="module" id="mod-forecast" hidden style="display:none">
   <div class="module-header">
     <h2 class="module-title" style="font-size:1.2rem">Forecast Studio</h2>
     <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
@@ -1984,6 +1997,124 @@
   </div>
 </section>
 
+<!-- ╔══════════════════ MCP LAB ══════════════════╗ -->
+<section class="module" id="mod-mcp">
+  <div class="module-header">
+    <h1 class="module-title">MCP Lab</h1>
+    <p class="module-desc">Measure–Correlate–Predict: observación local, referencias ERA5/MERRA-2, validación cronológica e hindcast.</p>
+  </div>
+
+  <div class="card card--accent">
+    <div class="card-header"><span class="card-title">1 · Estudio recibido desde Globe</span><span class="badge badge--info" id="mcp-study-revision">Sin selección</span></div>
+    <div class="card-body">
+      <div class="mcp-study-grid">
+        <div><div class="form-label">Estación observada</div><div id="mcp-study-observation">—</div></div>
+        <div><div class="form-label">Referencias candidatas</div><div id="mcp-study-references">—</div></div>
+        <div><label class="form-label" for="mcp-target-height">Altura objetivo</label><input class="form-input" id="mcp-target-height" type="number" value="80" min="1" max="300"></div>
+        <div><label class="form-label" for="mcp-train-year">Año entrenamiento · fijo</label><input class="form-input" id="mcp-train-year" type="number" value="2018" readonly></div>
+        <div><label class="form-label" for="mcp-test-year">Año validación · fuera de muestra</label><input class="form-input" id="mcp-test-year" type="number" value="2019" readonly></div>
+        <div><label class="form-label" for="mcp-sector-count">Modelo direccional de la rosa · fijo</label><select class="form-select" id="mcp-sector-count" disabled><option value="16" selected>16 sectores · sólo dirección/rosa</option></select></div>
+      </div>
+      <div class="card-actions" style="margin-top:16px">
+        <button class="btn-secondary" id="btn-mcp-back-globe" type="button">← Cambiar puntos en Globe</button>
+        <button class="btn-primary" id="btn-mcp-run" type="button" disabled>Ejecutar MCP</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">2 · Calidad, sincronización y progreso</span><span class="badge badge--info" id="mcp-run-status">En espera</span></div>
+    <div class="card-body">
+      <div class="mcp-progress"><div id="mcp-progress-fill"></div></div>
+      <p class="text-muted" id="mcp-progress-message">Selecciona el estudio en Globe para comenzar.</p>
+      <div id="mcp-qc-summary" class="mcp-kpis"></div>
+      <div id="mcp-gap-summary" class="table-wrap hidden" style="margin-top:14px">
+        <div class="mcp-chart-title">Trazabilidad de faltantes M04 · observado vs reconstruido</div>
+        <table class="sci-table"><thead><tr><th>Año</th><th>Horas esperadas</th><th>Medidas válidas</th><th>Disponibilidad</th><th>Rellenadas MCP</th><th>Sin resolver</th></tr></thead><tbody id="mcp-gap-body"></tbody></table>
+        <p class="text-muted" id="mcp-gap-note" style="margin-top:8px"></p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">3 · Ranking de referencias</span></div>
+    <div class="card-body table-wrap"><table class="sci-table"><thead><tr><th>Referencia</th><th>Proveedor</th><th>R</th><th>R²</th><th>RMSE</th><th>MAE</th><th>Sesgo</th><th>N</th></tr></thead><tbody id="mcp-ranking-body"><tr><td colspan="8">Sin resultados</td></tr></tbody></table></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">4 · MCP convencional y Machine Learning</span></div>
+    <div class="card-body table-wrap"><table class="sci-table"><thead><tr><th>Familia</th><th>Método</th><th>RMSE</th><th>MAE</th><th>R²</th><th>Sesgo</th><th>Δ Weibull k</th><th>Δ Weibull λ</th><th>Estado</th></tr></thead><tbody id="mcp-models-body"><tr><td colspan="9">Sin resultados</td></tr></tbody></table></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">5 · Validación 2018→2019 / 2019→2018</span></div>
+    <div class="card-body" id="mcp-validation-summary">Sin resultados</div>
+  </div>
+
+  <div class="card" id="mcp-visual-card">
+    <div class="card-header"><span class="card-title">6 · Similitud entre viento medido y estimado</span><span class="badge badge--info" id="mcp-visual-period">Sin resultados</span></div>
+    <div class="card-body">
+      <p class="text-muted" id="mcp-visual-empty">Ejecuta MCP para mostrar las comparaciones gráficas.</p>
+      <div id="mcp-visual-content" class="hidden">
+        <div class="mcp-chart-panel mcp-baseline-panel" id="mcp-certe-baseline">
+          <div class="mcp-chart-title">Control de referencia · CERTE 2018 original antes de convertir a 1 hora</div>
+          <div class="mcp-kpis" id="mcp-certe-baseline-kpis"></div>
+          <div class="mcp-chart-grid mt-3">
+            <div>
+              <div class="mcp-rose-label">Rosa observada · 36 sectores de 10° · 80/78 m</div>
+              <canvas id="mcp-chart-certe-rose"></canvas>
+              <div class="mcp-speed-legend" id="mcp-certe-rose-legend"></div>
+            </div>
+            <div>
+              <div class="mcp-rose-label">Weibull observada · resolución original de 10 minutos</div>
+              <canvas id="mcp-chart-certe-weibull"></canvas>
+            </div>
+          </div>
+          <p class="text-muted mcp-rose-note" id="mcp-certe-baseline-note"></p>
+        </div>
+        <div class="mcp-chart-grid">
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Validación cronológica · medido vs estimado</div><canvas id="mcp-chart-timeseries"></canvas></div>
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Dispersión y línea 1:1</div><canvas id="mcp-chart-scatter"></canvas></div>
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Distribución de velocidades</div><canvas id="mcp-chart-distribution"></canvas></div>
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Distribución del error · estimado − medido</div><canvas id="mcp-chart-residuals"></canvas></div>
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Perfil mensual comparado</div><canvas id="mcp-chart-monthly"></canvas></div>
+          <div class="mcp-chart-panel"><div class="mcp-chart-title">Sensibilidad a duración de campaña</div><canvas id="mcp-chart-campaign"></canvas></div>
+        </div>
+        <div class="mcp-chart-panel mt-3">
+          <div class="mcp-chart-title">Campaña completa M04 2017–2020 · promedio diario medido, estimado y combinado</div>
+          <canvas id="mcp-chart-campaign-full"></canvas>
+        </div>
+        <div class="mcp-chart-panel mt-3">
+          <div class="mcp-chart-title">Rosas de viento · validación</div>
+          <div class="mcp-rose-grid">
+            <div><div class="mcp-rose-label">Medido</div><canvas id="mcp-chart-rose-measured"></canvas></div>
+            <div><div class="mcp-rose-label">Estimado · referencia direccional + estacionalidad 2018</div><canvas id="mcp-chart-rose-estimated"></canvas></div>
+          </div>
+          <p class="text-muted mcp-rose-note" id="mcp-rose-note"></p>
+        </div>
+        <div class="mcp-chart-panel mt-3"><div class="mcp-chart-title">Hindcast anual · observación ≥90% de cobertura, modelo y serie combinada</div><canvas id="mcp-chart-hindcast"></canvas></div>
+        <div class="mcp-chart-panel mt-3"><div class="mcp-chart-title">Hindcast histórico completo · promedio mensual</div><canvas id="mcp-chart-historical-full"></canvas></div>
+        <div class="mcp-chart-panel mt-3">
+          <div class="mcp-chart-title">Escenario climatológico · 25 años posteriores (P05–P50–P95)</div>
+          <canvas id="mcp-chart-future-25y"></canvas>
+          <p class="text-muted mcp-rose-note" id="mcp-future-note"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card card--accent">
+    <div class="card-header"><span class="card-title">7 · Hindcast y publicación</span><span class="badge badge--warn" id="mcp-publish-status">No publicado</span></div>
+    <div class="card-body">
+      <div id="mcp-hindcast-summary" class="mcp-kpis">Sin resultados</div>
+      <div id="mcp-artifacts" class="mcp-artifacts"></div>
+      <div class="card-actions" style="margin-top:16px">
+        <button class="btn-primary" id="btn-mcp-publish" type="button" disabled>Usar en proyecto → Recurso Eólico</button>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- ╔══════════════════ RESUMEN ══════════════════╗ -->
 <section class="module active" id="mod-resumen">
   <!-- Header del módulo unificado -->
@@ -1991,14 +2122,14 @@
     <div>
       <div class="resumen-kicker">SITIO SELECCIONADO</div>
       <h1 class="module-title" id="resumen-site-title">— sin datos —</h1>
-      <p class="resumen-sub" id="resumen-site-sub">Selecciona una estación en el Globe para iniciar el análisis automático.</p>
+      <p class="resumen-sub" id="resumen-site-sub">Publica un hindcast en MCP Lab o usa datos observados en modo manual.</p>
     </div>
     <div class="resumen-verdict" id="resumen-verdict">
       <div class="resumen-verdict__kicker">VEREDICTO</div>
       <div class="resumen-verdict__value" id="resumen-verdict-value">—</div>
       <div class="resumen-verdict__sub" id="resumen-verdict-sub">Calcula el análisis para ver la evaluación del recurso</div>
       <button class="resumen-verdict__cta" id="btn-go-to-arena" type="button" disabled>
-        Continuar al Centro de modelaje →
+        Continuar a Configuración del parque →
       </button>
     </div>
   </div>
@@ -2017,7 +2148,7 @@
   <div class="sh">
     <div>
       <div class="st">Resumen del Sitio</div>
-      <div class="ss">KPIs clave del recurso eólico · Generado automáticamente al seleccionar un sitio</div>
+      <div class="ss">KPIs clave del recurso eólico · Calculados desde la fuente activa del proyecto</div>
     </div>
     <div>
       <button class="btn-primary" id="btn-calc-stats">Calcular Estadísticas</button>
@@ -2178,7 +2309,7 @@
   <div class="resumen-section" data-rsect="avanzado">
   <div class="module-header">
     <h2 class="module-title" style="font-size:1.15rem">Recurso Avanzado</h2>
-    <p class="module-desc">Turbulencia IEC · Cizalladura vertical · Análisis sectorial · Períodos de retorno (Windographer-style)</p>
+    <p class="module-desc">Turbulencia CERTE medida a 10 minutos · Extensión histórica modelada · Cizalladura · Sectores · Extremos</p>
   </div>
 
   <div class="toolbar">
@@ -2201,22 +2332,31 @@
     <button class="btn-primary" id="btn-run-advanced">Calcular análisis avanzado</button>
   </div>
 
+  <div class="card mt-2" id="adv-ti-provenance-card">
+    <div class="cb" style="padding:.8rem 1rem">
+      <strong id="adv-ti-provenance-title">Turbulencia: esperando cálculo</strong>
+      <div class="text-muted" id="adv-ti-provenance" style="margin-top:.3rem;line-height:1.45">
+        La TI medida se obtendrá de la media y desviación estándar CERTE de cada ventana nativa; la serie horaria MCP se mantendrá separada.
+      </div>
+    </div>
+  </div>
+
   <!-- TI / Shear KPIs -->
   <div class="kpi-row mt-2" id="adv-kpi-row" style="display:none">
     <div class="kpi-card kpi--green">
-      <div class="kpi-label">TI Global</div>
+      <div class="kpi-label">TI medida global</div>
       <div class="kpi-value" id="adv-kpi-ti">—</div>
-      <div class="kpi-sub">σ/V̄ promedio</div>
+      <div class="kpi-sub">CERTE nativo · U ≥ 3 m/s</div>
     </div>
     <div class="kpi-card kpi--blue">
-      <div class="kpi-label">TI @ 15 m/s</div>
+      <div class="kpi-label">TI medida @ 15 m/s</div>
       <div class="kpi-value" id="adv-kpi-ti15">—</div>
-      <div class="kpi-sub">Representativo IEC</div>
+      <div class="kpi-sub">Ventana 14.5–15.5 m/s</div>
     </div>
-    <div class="kpi-card kpi--orange" title="Supuesto indicativo — asignado por umbral normativo sobre TI proxy horario. NO equivale a clasificación IEC real (requiere datos ≥1 Hz / 10 min).">
-      <div class="kpi-label">Clase IEC *</div>
-      <div class="kpi-value" id="adv-kpi-iec">—</div>
-      <div class="kpi-sub">supuesto proxy horario</div>
+    <div class="kpi-card kpi--orange" title="Indica la procedencia del producto mostrado; no asigna automáticamente una clase IEC.">
+      <div class="kpi-label">Fuente TI</div>
+      <div class="kpi-value" id="adv-kpi-source" style="font-size:1rem">—</div>
+      <div class="kpi-sub" id="adv-kpi-source-sub">—</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Exponente α</div>
@@ -2273,8 +2413,8 @@
   <div class="grid-2 mt-2">
     <div class="card">
       <div class="ch">
-        <span class="ct">Intensidad de Turbulencia vs Velocidad</span>
-        <span class="cbadge" id="adv-badge-iec">IEC —</span>
+        <span class="ct" id="adv-ti-chart-title">TI medida CERTE vs velocidad</span>
+        <span class="cbadge g" id="adv-badge-ti-source">Fuente —</span>
       </div>
       <div class="cbox t"><canvas id="chart-ti"></canvas></div>
     </div>
@@ -2285,6 +2425,22 @@
         <span class="cbadge" id="adv-badge-z0" style="margin-left:.35rem">z₀ = —</span>
       </div>
       <div class="cbox t" style="height:320px"><canvas id="chart-shear"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="ch">
+        <span class="ct">Turbulencia histórica modelada · climatología mensual</span>
+        <span class="cbadge b" id="adv-badge-ti-model">2018 → histórico</span>
+      </div>
+      <div class="cbox t"><canvas id="chart-ti-historical"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="ch"><span class="ct">Validación y trazabilidad</span></div>
+      <div class="cb" id="adv-ti-model-details" style="line-height:1.55">
+        <span class="text-muted">Publica una corrida MCP para habilitar la extensión histórica de turbulencia.</span>
+      </div>
     </div>
   </div>
 
@@ -3267,7 +3423,7 @@
           <div>
             <label class="form-label">Precio energía (USD/kWh)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa los datos horarios cargados en el Centro de modelaje (PML)">
+              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa el PML publicado en Configuración del parque">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3288,7 +3444,7 @@
           <div>
             <label class="form-label">Tasa de descuento (%)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico del Centro de modelaje (Tasa) + proyección ML">
+              <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa la trayectoria de tasa publicada">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3303,7 +3459,7 @@
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-fx-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: promedio histórico del Centro de modelaje (FX) + proyección ML">
+              <select class="form-input" id="te-fx-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa la trayectoria USD/MXN publicada">
                 <option value="fixed" selected>Fijo</option>
                 <option value="arena">8760</option>
               </select>
@@ -3771,7 +3927,7 @@
       </p>
       <div class="sci-report-banner__chips">
         <span class="sci-chip">Recurso eólico</span>
-        <span class="sci-chip">Centro de modelaje</span>
+        <span class="sci-chip">Configuración del parque</span>
         <span class="sci-chip">Forecast Studio</span>
         <span class="sci-chip">Kriging</span>
         <span class="sci-chip">Parque</span>
@@ -3908,6 +4064,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260505-sinpred-lev"></script>
+<script src="/static/js/aero.js?v=20260821-commercial-controls-v1"></script>
 </body>
 </html>

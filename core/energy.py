@@ -438,8 +438,20 @@ class AEPCalculator:
         if not isinstance(df.index, pd.DatetimeIndex):
             raise ValueError("DatetimeIndex required.")
 
-        # Annual totals
-        annual = df[energy_col].resample('YE').sum() / 1000  # MWh
+        # Annual totals. Partial boundary years are retained for audit, but
+        # excluded from long-term percentiles when at least two complete years
+        # are available; otherwise they would bias P75/P90 downward.
+        energy = pd.to_numeric(df[energy_col], errors='coerce')
+        annual = energy.resample('YE').sum(min_count=1) / 1000  # MWh
+        annual_hours = energy.resample('YE').count()
+        expected_hours = pd.Series(
+            [8784 if timestamp.is_leap_year else 8760 for timestamp in annual.index],
+            index=annual.index,
+            dtype=float,
+        )
+        coverage = annual_hours / expected_hours
+        complete_annual = annual.loc[coverage >= 0.90].dropna()
+        percentile_sample = complete_annual if len(complete_annual) >= 2 else annual.dropna()
 
         if len(annual) < 2:
             # Only one partial year: scale to full year
@@ -455,22 +467,28 @@ class AEPCalculator:
                 'note': 'Scaled from partial record; P75/P90 estimated via ±5/10% rule.',
             }
 
-        # Bootstrap P-values
-        rng = np.random.default_rng(42)
-        annual_vals = annual.dropna().values
-        n_boot = 5000
-        boot_means = rng.choice(annual_vals, size=(n_boot, max(len(annual_vals), 3)),
-                                replace=True).mean(axis=1)
+        # Thesis convention: P50=median annual AEP, P75=25th percentile and
+        # P90=10th percentile of the annual distribution.
+        annual_vals = percentile_sample.values
+        annual_rows = [{
+            'year': int(timestamp.year),
+            'aep_mwh': round(float(value), 1),
+            'hours': int(annual_hours.loc[timestamp]),
+            'coverage_pct': round(float(coverage.loc[timestamp] * 100.0), 2),
+            'used_for_percentiles': bool(timestamp in percentile_sample.index),
+        } for timestamp, value in annual.dropna().items()]
 
         return {
-            'aep_p50_mwh':  round(float(np.percentile(boot_means, 50)), 1),
-            'aep_p75_mwh':  round(float(np.percentile(boot_means, 25)), 1),
-            'aep_p90_mwh':  round(float(np.percentile(boot_means, 10)), 1),
-            'aep_p10_mwh':  round(float(np.percentile(boot_means, 90)), 1),
+            'aep_p50_mwh':  round(float(np.percentile(annual_vals, 50)), 1),
+            'aep_p75_mwh':  round(float(np.percentile(annual_vals, 25)), 1),
+            'aep_p90_mwh':  round(float(np.percentile(annual_vals, 10)), 1),
+            'aep_p10_mwh':  round(float(np.percentile(annual_vals, 90)), 1),
             'aep_mean_mwh': round(float(np.mean(annual_vals)), 1),
             'aep_std_mwh':  round(float(np.std(annual_vals)), 1),
             'n_years': len(annual_vals),
             'annual_values_mwh': [round(v, 1) for v in annual_vals.tolist()],
+            'annual': annual_rows,
+            'percentile_definition': 'P50=percentil 50; P75=percentil 25; P90=percentil 10',
         }
 
     def compute_from_weibull(self, turbine: PowerCurve, weibull_k, weibull_lambda,
@@ -746,6 +764,13 @@ class TechnoEconomicAnalyzer:
                 'pv_cashflow': round(pv),
                 'cumulative':  round(cumulative),
             })
+
+        # TODO (tesis §Metodología tecno-económica): este npv es el VAN del PROYECTO (sin deuda).
+        # El VAN equity apalancado requiere: restar PMT anual (interés + principal al 7%) del
+        # cashflow para obtener FC_equity, descontar FC_equity a la tasa equity (9.5%) y
+        # restar solo el capital_equity (30% CAPEX) como inversión inicial — NO el CAPEX total.
+        # El valor acumulado simple (sum FC_equity - equity_inicial) NO es el VAN; es el
+        # retorno acumulado sin descontar. Ver corrección en chapter_aero.tex tabs kpis/post_apal.
 
         # Mean rate for VAE / LCOE (when variable)
         r_mean = (sum(rates_used) / len(rates_used) / 100.0) if rates_used else (discount_rate_pct / 100.0)

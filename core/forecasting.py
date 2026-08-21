@@ -1,9 +1,9 @@
-"""
-AERO by OPEN CIM — Pronóstico de demanda eléctrica y precios PML a 25 años.
+"""Modelos de planeación para demanda y variables macroeconómicas.
 
-Series horarias (8760 h) usadas como año base; sobre ellas se ajustan modelos
-de tendencia anual y se proyecta el crecimiento agregado a 25 años, preservando
-la firma horaria/estacional del año base.
+El PML no se pronostica en este módulo: el flujo vigente conserva el perfil
+horario de 2018 y lo replica sin escalamiento durante la vida del proyecto.
+USD/MXN y tasa de interés sí se estiman con ventanas históricas recientes y
+validación cronológica.
 """
 import os
 import warnings
@@ -56,10 +56,48 @@ def read_pml(path):
     return {'compra': np.array(compra), 'venta': np.array(venta)}
 
 
-def hourly_to_dataframe(values, start='2024-01-01'):
+def normalize_fixed_hourly_profile(values, expected_hours=8760):
+    """Normaliza un perfil anual sin inventar una tendencia temporal.
+
+    Los archivos PML heredados no incluyen timestamp. Si falta únicamente una
+    hora (caso actual: 8759 registros), se completa con la media anual y se
+    deja constancia explícita. Archivos mucho más incompletos se rechazan para
+    evitar que un perfil parcial se replique como si fuera un año entero.
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) > expected_hours:
+        return values[:expected_hours], {
+            'input_hours': int(len(values)),
+            'output_hours': int(expected_hours),
+            'method': 'truncate_after_expected_year',
+            'filled_hours': 0,
+        }
+    missing = expected_hours - len(values)
+    if missing < 0:
+        missing = 0
+    if missing > 24 or len(values) < expected_hours - 24:
+        raise ValueError(
+            f'El PML base requiere al menos {expected_hours - 24} horas; '
+            f'el archivo contiene {len(values)}')
+    if missing:
+        fill = float(np.nanmean(values))
+        values = np.concatenate([values, np.full(missing, fill)])
+        method = 'annual_mean_fill_without_timestamp'
+    else:
+        method = 'none'
+    return values, {
+        'input_hours': int(expected_hours - missing),
+        'output_hours': int(len(values)),
+        'method': method,
+        'filled_hours': int(missing),
+    }
+
+
+def hourly_to_dataframe(values, start='2018-01-01'):
     """Empaqueta vector horario en un DataFrame indexado en el tiempo."""
     n = len(values)
-    idx = pd.date_range(start=start, periods=n, freq='H')
+    idx = pd.date_range(start=start, periods=n, freq='h')
     return pd.DataFrame({'value': values}, index=idx)
 
 
@@ -82,7 +120,7 @@ def base_year_stats(values):
         'p90':         float(np.percentile(v, 90)),
         'annual_sum':  float(np.sum(v)),
         'load_factor': float(np.mean(v) / np.max(v)) if np.max(v) > 0 else None,
-        'monthly':     [float(x) for x in df.resample('M')['value'].mean().values],
+        'monthly':     [float(x) for x in df.resample('ME')['value'].mean().values],
         'diurnal':     [float(x) for x in df.groupby(df.index.hour)['value'].mean().values],
         'weekly':      [float(x) for x in df.groupby(df.index.dayofweek)['value'].mean().values],
         'duration_curve': [float(x) for x in sorted(v, reverse=True)[::max(1, len(v) // 200)]],
@@ -484,6 +522,12 @@ def fit_all_trend_models(t, y, models=None):
                     'r2':   _r2(y, yhat),
                     'rmse': _rmse(y, yhat),
                     'mape': _mape(y, yhat),
+                    # Desviación de los errores del ajuste, no de la propia
+                    # tendencia. Se reutiliza para las bandas futuras.
+                    'residual_sigma': float(np.std(
+                        np.asarray(y, dtype=float) - np.asarray(yhat, dtype=float),
+                        ddof=1,
+                    )) if len(yhat) > 1 else 0.0,
                 },
                 'fitted_values': [float(x) for x in yhat],
                 '_predict': res['predict'],
@@ -492,6 +536,417 @@ def fit_all_trend_models(t, y, models=None):
         except Exception as e:
             out[k] = {'error': str(e)}
     return out
+
+
+def chronological_trend_validation(t, y, models=None, holdout_fraction=0.20,
+                                   min_train=6, min_test=2):
+    """Valida tendencias sin fuga temporal usando el bloque final como prueba.
+
+    Los modelos se ajustan únicamente con los primeros años y se evalúan sobre
+    los años más recientes. Esta métrica fuera de muestra debe usarse para
+    elegir la trayectoria que después se reajusta con todo el histórico.
+    """
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+    valid = np.isfinite(t) & np.isfinite(y)
+    t, y = t[valid], y[valid]
+    n = len(y)
+    if n < min_train + 1:
+        return {
+            'available': False,
+            'reason': f'Se requieren al menos {min_train + 1} observaciones anuales',
+            'n_total': int(n),
+            'models': {},
+        }
+
+    n_test = max(min_test, int(np.ceil(n * float(holdout_fraction))))
+    n_test = min(n_test, max(1, n - min_train))
+    split = n - n_test
+    train_t, test_t = t[:split], t[split:]
+    train_y, test_y = y[:split], y[split:]
+    keys = list(TREND_FITTERS.keys()) if models is None else list(models)
+    rows = {}
+    scale = max(float(np.mean(np.abs(test_y))), 1e-9)
+
+    for key in keys:
+        fitter = TREND_FITTERS.get(key)
+        if fitter is None:
+            continue
+        try:
+            result = fitter(train_t, train_y)
+            predicted = np.asarray(result['predict'](test_t), dtype=float)
+            if predicted.shape != test_y.shape or not np.isfinite(predicted).all():
+                raise ValueError('la proyección fuera de muestra no es finita')
+            rows[key] = {
+                'r2': _r2(test_y, predicted),
+                'rmse': _rmse(test_y, predicted),
+                'mae': _mae(test_y, predicted),
+                'bias': float(np.mean(predicted - test_y)),
+                'mape': _mape(test_y, predicted),
+                'nrmse': _rmse(test_y, predicted) / scale,
+                'actual': [float(v) for v in test_y],
+                'predicted': [float(v) for v in predicted],
+            }
+        except Exception as error:
+            rows[key] = {'error': str(error)}
+
+    return {
+        'available': bool(any('error' not in row for row in rows.values())),
+        'method': 'chronological_holdout',
+        'holdout_fraction': float(holdout_fraction),
+        'train_t': [float(v) for v in train_t],
+        'test_t': [float(v) for v in test_t],
+        'n_train': int(len(train_y)),
+        'n_test': int(len(test_y)),
+        'models': rows,
+    }
+
+
+def best_validated_trend_model(fitted_models, validation):
+    """Elige por nRMSE cronológico; sólo cae a R² in-sample sin validación."""
+    rows = (validation or {}).get('models', {})
+    best_key, best_score = None, np.inf
+    for key, model in fitted_models.items():
+        if 'error' in model:
+            continue
+        row = rows.get(key, {})
+        nrmse = row.get('nrmse')
+        if nrmse is None or not np.isfinite(nrmse):
+            continue
+        complexity_penalty = 0.02 if key in ('polynomial', 'logistic', 'mlp') else 0.0
+        score = float(nrmse) + complexity_penalty
+        if score < best_score:
+            best_key, best_score = key, score
+    return best_key or best_trend_model(fitted_models)
+
+
+def _forecast_fx_candidate(train_values, n_future, model_name):
+    """Pronostica niveles USD/MXN en logaritmos para un candidato estable."""
+    values = np.asarray(train_values, dtype=float)
+    values = values[np.isfinite(values) & (values > 0)]
+    if len(values) < 24:
+        raise ValueError('Se requieren al menos 24 meses para modelar USD/MXN')
+    logs = np.log(values)
+    n_future = int(n_future)
+
+    if model_name == 'holt_damped':
+        if not HAS_STATSMODELS:
+            raise RuntimeError('statsmodels no disponible')
+        fit = ExponentialSmoothing(
+            logs, trend='add', damped_trend=True, seasonal=None,
+            initialization_method='estimated',
+        ).fit(optimized=True)
+        future_logs = np.asarray(fit.forecast(n_future), dtype=float)
+    elif model_name == 'arima_log_returns':
+        if not HAS_STATSMODELS:
+            raise RuntimeError('statsmodels no disponible')
+        returns = np.diff(logs)
+        order = (1, 0, 1) if len(returns) >= 48 else (1, 0, 0)
+        fit = ARIMA(returns, order=order).fit()
+        future_returns = np.asarray(fit.forecast(n_future), dtype=float)
+        recent = returns[-min(60, len(returns)):]
+        lo = max(float(np.percentile(recent, 2)), -0.06)
+        hi = min(float(np.percentile(recent, 98)), 0.06)
+        future_returns = np.clip(future_returns, lo, hi)
+        future_logs = logs[-1] + np.cumsum(future_returns)
+    elif model_name == 'robust_damped_drift':
+        returns = np.diff(logs)
+        recent = returns[-min(60, len(returns)):]
+        lo, hi = np.percentile(recent, [10, 90])
+        clipped = np.clip(recent, lo, hi)
+        drift = float(np.median(clipped))
+        # La deriva reciente se extingue gradualmente; no se extrapola durante
+        # 25 años como una pendiente lineal ilimitada.
+        damping = np.exp(-np.arange(1, n_future + 1) / 48.0)
+        future_logs = logs[-1] + np.cumsum(drift * damping)
+    else:
+        raise ValueError(f'Modelo FX desconocido: {model_name}')
+
+    forecast = np.exp(future_logs)
+    if len(forecast) != n_future or not np.isfinite(forecast).all():
+        raise ValueError('El pronóstico FX no produjo valores finitos')
+    return forecast
+
+
+def forecast_fx_recent(monthly_series, horizon_years=25,
+                       window_years_options=(5, 8, 10),
+                       model_names=('holt_damped', 'arima_log_returns',
+                                    'robust_damped_drift')):
+    """Selecciona y proyecta USD/MXN usando sólo el régimen reciente.
+
+    La selección se realiza con los 24 meses finales como bloque fuera de
+    muestra. Se comparan ventanas recientes y modelos en escala logarítmica;
+    después se reajusta el ganador con su ventana completa. La salida anual se
+    suaviza con cambios observados recientemente, evitando que crisis de los
+    años noventa gobiernen el horizonte del proyecto.
+    """
+    if not isinstance(monthly_series, pd.Series):
+        raise TypeError('monthly_series debe ser pandas.Series')
+    series = pd.to_numeric(monthly_series, errors='coerce').dropna()
+    series.index = pd.to_datetime(series.index)
+    series = series.sort_index().resample('MS').mean().dropna()
+    series = series[series > 0]
+    if len(series) < 60:
+        raise ValueError('Se requieren al menos cinco años mensuales de USD/MXN')
+
+    # No tratar un mes parcial como observación mensual completa.
+    source_last_date = pd.Timestamp(monthly_series.dropna().index.max())
+    if source_last_date.normalize() < (source_last_date + pd.offsets.MonthEnd(0)).normalize():
+        incomplete_month = source_last_date.to_period('M')
+        series = series[series.index.to_period('M') < incomplete_month]
+    if len(series) < 60:
+        raise ValueError('Histórico mensual completo insuficiente')
+
+    holdout_months = 24
+    validation_rows = []
+    for window_years in window_years_options:
+        train_months = int(window_years) * 12
+        needed = train_months + holdout_months
+        if len(series) < needed:
+            continue
+        train = series.iloc[-needed:-holdout_months]
+        test = series.iloc[-holdout_months:]
+        actual = test.to_numpy(dtype=float)
+        scale = max(float(np.mean(np.abs(actual))), 1e-9)
+        for model_name in model_names:
+            try:
+                predicted = _forecast_fx_candidate(
+                    train.to_numpy(dtype=float), len(test), model_name)
+                error = predicted - actual
+                rmse = float(np.sqrt(np.mean(error ** 2)))
+                mae = float(np.mean(np.abs(error)))
+                bias = float(np.mean(error))
+                nrmse = rmse / scale
+                # Penalización pequeña para evitar elegir una trayectoria con
+                # buen RMSE pero sesgo persistente en el bloque final.
+                score = nrmse + 0.20 * abs(bias) / scale
+                validation_rows.append({
+                    'model': model_name,
+                    'window_years': int(window_years),
+                    'train_start': train.index[0].strftime('%Y-%m'),
+                    'train_end': train.index[-1].strftime('%Y-%m'),
+                    'test_start': test.index[0].strftime('%Y-%m'),
+                    'test_end': test.index[-1].strftime('%Y-%m'),
+                    'rmse': rmse,
+                    'mae': mae,
+                    'bias': bias,
+                    'nrmse': nrmse,
+                    'score': score,
+                })
+            except Exception as error:
+                validation_rows.append({
+                    'model': model_name,
+                    'window_years': int(window_years),
+                    'error': str(error),
+                })
+
+    valid_rows = [row for row in validation_rows if 'error' not in row]
+    if not valid_rows:
+        raise ValueError('Ningún modelo FX superó la validación temporal')
+    best = min(valid_rows, key=lambda row: row['score'])
+    window_months = int(best['window_years']) * 12
+    final_train = series.iloc[-window_months:]
+
+    project_start_year = int(series.index[-1].year) + 1
+    project_end_year = project_start_year + int(horizon_years) - 1
+    future_index = pd.date_range(
+        series.index[-1] + pd.offsets.MonthBegin(1),
+        f'{project_end_year}-12-01', freq='MS')
+    raw_monthly = _forecast_fx_candidate(
+        final_train.to_numpy(dtype=float), len(future_index), best['model'])
+    raw_series = pd.Series(raw_monthly, index=future_index)
+    raw_annual = raw_series.resample('YE').mean()
+    raw_annual = raw_annual[raw_annual.index.year >= project_start_year].iloc[:int(horizon_years)]
+
+    # Cambios anuales de años completos recientes. El año parcial permanece
+    # visible en el histórico, pero no define una variación anual.
+    observed_annual = series.resample('YE').mean()
+    observed_annual = observed_annual[observed_annual.index.year < project_start_year]
+    recent_annual = observed_annual.iloc[-min(11, len(observed_annual)):]
+    annual_changes = np.diff(np.log(recent_annual.to_numpy(dtype=float)))
+    if len(annual_changes):
+        lo = max(float(np.percentile(annual_changes, 10)), -0.12)
+        hi = min(float(np.percentile(annual_changes, 90)), 0.12)
+        if lo > 0: lo = 0.0
+        if hi < 0: hi = 0.0
+        recent_drift = float(np.clip(np.median(annual_changes), -0.03, 0.04))
+    else:
+        lo, hi, recent_drift = -0.05, 0.08, 0.0
+
+    anchor = float(series.iloc[-12:].mean())
+    annual = []
+    prev = anchor
+    previous_change = recent_drift
+    for i, raw in enumerate(raw_annual.to_numpy(dtype=float)):
+        raw_change = float(np.log(max(raw, 1e-9) / max(prev, 1e-9)))
+        # La influencia del modelo mensual y de la deriva reciente se extingue
+        # en el horizonte largo. Así el valor central converge gradualmente a
+        # una meseta en vez de perpetuar durante 25 años una depreciación corta.
+        long_target = recent_drift * np.exp(-i / 5.0)
+        raw_weight = 0.65 * np.exp(-i / 7.0)
+        desired = raw_weight * raw_change + (1.0 - raw_weight) * long_target
+        change = float(np.clip(0.50 * previous_change + 0.50 * desired, lo, hi))
+        prev = float(prev * np.exp(change))
+        annual.append(prev)
+        previous_change = change
+
+    years = list(range(project_start_year, project_start_year + len(annual)))
+    relative_error = max(float(best['nrmse']), 0.025)
+    band = np.minimum(
+        0.20,
+        relative_error * np.sqrt(np.arange(1, len(annual) + 1) / 3.0))
+    annual_arr = np.asarray(annual, dtype=float)
+    ci_low = annual_arr * (1.0 - band)
+    ci_high = annual_arr * (1.0 + band)
+
+    model_key = f"{best['model']}_w{best['window_years']}"
+    projection = {
+        model_key: {
+            'years': years,
+            'annual': [float(v) for v in annual_arr],
+            'ci_low': [float(v) for v in ci_low],
+            'ci_high': [float(v) for v in ci_high],
+            'cagr': float((annual_arr[-1] / anchor) ** (1.0 / len(annual_arr)) - 1.0),
+            'kind': best['model'],
+            'params': {
+                'window_years': int(best['window_years']),
+                'training_start': final_train.index[0].strftime('%Y-%m'),
+                'training_end': final_train.index[-1].strftime('%Y-%m'),
+            },
+            'metrics': {
+                'validation_rmse': float(best['rmse']),
+                'validation_mae': float(best['mae']),
+                'validation_bias': float(best['bias']),
+                'validation_nrmse': float(best['nrmse']),
+            },
+        }
+    }
+    return {
+        'best_model': model_key,
+        'projection': projection,
+        'validation': {
+            'available': True,
+            'method': 'rolling_recent_window_holdout_24m',
+            'n_test': holdout_months,
+            'selected': best,
+            'candidates': validation_rows,
+        },
+        'projection_policy': {
+            'applied': True,
+            'basis': 'recent_complete_year_log_changes',
+            'training_window_years': int(best['window_years']),
+            'annual_change_floor': float(np.expm1(lo)),
+            'annual_change_ceiling': float(np.expm1(hi)),
+            'recent_median_change': float(np.expm1(recent_drift)),
+            'long_horizon_damping': True,
+            'planning_band_max_relative': 0.20,
+        },
+        'monthly_history': series,
+        'project_start_year': project_start_year,
+        'training_start': final_train.index[0].strftime('%Y-%m'),
+        'training_end': final_train.index[-1].strftime('%Y-%m'),
+    }
+
+
+def constrain_market_projection(projection, history, category,
+                                anchor_rate_pct=None):
+    """Impone límites aprendidos del histórico a trayectorias de mercado.
+
+    No reemplaza al modelo seleccionado: limita saltos anuales fuera del rango
+    robusto observado y conserva positividad. Para FX se puede mezclar una
+    pequeña ancla macroeconómica explícita, sin ocultarla como dato entrenado.
+    """
+    history = np.asarray(history, dtype=float)
+    history = history[np.isfinite(history)]
+    if len(history) < 2:
+        return projection, {'applied': False, 'reason': 'histórico insuficiente'}
+
+    category = str(category or '').lower()
+    recent = history[-min(20, len(history)):]
+    policy = {
+        'applied': True,
+        'category': category,
+        'basis': 'robust_historical_annual_changes',
+        'history_points': int(len(history)),
+    }
+
+    if category in ('fx', 'pml'):
+        positive = recent[recent > 0]
+        changes = np.diff(np.log(positive)) if len(positive) >= 2 else np.array([0.0])
+        lo = max(float(np.percentile(changes, 5)), -0.20 if category == 'fx' else -0.35)
+        hi = min(float(np.percentile(changes, 95)), 0.25 if category == 'fx' else 0.45)
+        if lo > hi:
+            lo, hi = min(lo, hi), max(lo, hi)
+        trained_drift = float(np.median(changes))
+        anchor_weight = 0.0
+        target_drift = trained_drift
+        if category == 'fx' and anchor_rate_pct is not None:
+            anchor = np.log1p(float(anchor_rate_pct) / 100.0)
+            anchor_weight = 0.15
+            target_drift = (1.0 - anchor_weight) * trained_drift + anchor_weight * anchor
+        policy.update({
+            'change_space': 'log_return',
+            'annual_change_floor': float(np.expm1(lo)),
+            'annual_change_ceiling': float(np.expm1(hi)),
+            'trained_median_change': float(np.expm1(trained_drift)),
+            'anchor_weight': anchor_weight,
+        })
+
+        lower_bound, upper_bound = 1e-6, np.inf
+        def stabilize(raw_values):
+            prev = max(float(history[-1]), lower_bound)
+            out = []
+            for raw in raw_values:
+                raw = max(float(raw), lower_bound) if np.isfinite(raw) else prev
+                raw_change = np.log(raw / prev)
+                change = np.clip(0.85 * raw_change + 0.15 * target_drift, lo, hi)
+                prev = float(np.clip(prev * np.exp(change), lower_bound, upper_bound))
+                out.append(prev)
+            return np.asarray(out)
+    elif category == 'interest':
+        changes = np.diff(recent)
+        lo = max(float(np.percentile(changes, 5)), -5.0)
+        hi = min(float(np.percentile(changes, 95)), 5.0)
+        if lo > hi:
+            lo, hi = min(lo, hi), max(lo, hi)
+        lower_bound = 0.0
+        upper_bound = max(30.0, float(np.percentile(history, 99)) * 1.25)
+        policy.update({
+            'change_space': 'percentage_points',
+            'annual_change_floor': lo,
+            'annual_change_ceiling': hi,
+            'value_floor_pct': lower_bound,
+            'value_ceiling_pct': upper_bound,
+        })
+
+        def stabilize(raw_values):
+            prev = float(np.clip(history[-1], lower_bound, upper_bound))
+            out = []
+            for raw in raw_values:
+                raw = float(raw) if np.isfinite(raw) else prev
+                change = float(np.clip(raw - prev, lo, hi))
+                prev = float(np.clip(prev + change, lower_bound, upper_bound))
+                out.append(prev)
+            return np.asarray(out)
+    else:
+        return projection, {'applied': False, 'reason': 'categoría sin política'}
+
+    for model in projection.values():
+        if not isinstance(model, dict) or not model.get('annual'):
+            continue
+        raw = np.asarray(model['annual'], dtype=float)
+        annual = stabilize(raw)
+        original_low = np.asarray(model.get('ci_low', raw), dtype=float)
+        original_high = np.asarray(model.get('ci_high', raw), dtype=float)
+        half_width = np.maximum((original_high - original_low) / 2.0, 0.0)
+        model['annual_unconstrained'] = [float(v) for v in raw]
+        model['annual'] = [float(v) for v in annual]
+        model['ci_low'] = [float(v) for v in np.maximum(annual - half_width, lower_bound)]
+        model['ci_high'] = [float(v) for v in np.minimum(annual + half_width, upper_bound)]
+        if len(annual) and history[-1] > 0:
+            model['cagr'] = float((annual[-1] / history[-1]) ** (1.0 / len(annual)) - 1.0)
+
+    return projection, policy
 
 
 def project_25_years(hourly_values, fitted_models, horizon_years=25,
@@ -528,9 +983,10 @@ def project_25_years(hourly_values, fitted_models, horizon_years=25,
         else:
             cagr = None
 
-        # bandas de incertidumbre: residuos del ajuste histórico
-        resid = np.asarray(m['fitted']) - np.mean(m['fitted'])
-        sigma = float(np.std(resid)) if len(resid) > 1 else 0.0
+        # Bandas de incertidumbre: error residual histórico. La versión
+        # anterior usaba la dispersión de la tendencia ajustada y confundía
+        # crecimiento con incertidumbre.
+        sigma = float((m.get('metrics') or {}).get('residual_sigma') or 0.0)
         sigma_growing = sigma * np.sqrt(np.arange(1, horizon_years + 1))
         ci_low  = np.maximum(annual - 1.96 * sigma_growing, 0)
         ci_high = annual + 1.96 * sigma_growing

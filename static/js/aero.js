@@ -26,6 +26,10 @@ const WP = {
   technoFinalLoss: { enabled: false, pct: 3.0 },  // Pérdidas eléctricas aplicadas al AEP final (post-simulación)
   referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
   referenceMethod: 'hellmann', // método de extrapolación seleccionado
+  mcpStudy: null,
+  mcpRunId: null,
+  activeDataSource: 'observed',
+  parkConfiguration: null,
 };
 
 /** Altura de referencia activa para todos los cálculos.
@@ -155,6 +159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindPMLArena();
   bindInterestArena();
   bindFxArena();
+  bindParkConfiguration();
   bindEnergyLab();
   bindAI();
   bindOverview();
@@ -165,12 +170,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindTechno();
   bindExport();
   bindMarketDataHub();
+  bindMCPLab();
   await loadPresetFiles();   // populate preset file dropdown
   await loadMarketFiles();   // populate market data selectors
   await loadMarketPresets(); // populate dem/pml/interest/fx preset dropdowns
+  await loadParkConfiguration({ quiet: true });
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
-  setStatus('Plataforma iniciada — selecciona un parque eólico o carga tu archivo.');
+  setStatus('Plataforma iniciada — define el estudio en Globe y continúa a MCP Lab.');
 });
 
 // ─── SESSION ──────────────────────────────────────────────────────────────────
@@ -189,8 +196,8 @@ async function initSession() {
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function bindNavigation() {
   const moduleGroups = {
-    models: ['models', 'forecast'],
-    forecast: ['models', 'forecast'],
+    models: ['models'],
+    forecast: ['models'],
     kriging: ['kriging', 'parque'],
     parque: ['kriging', 'parque'],
     validation: ['validation', 'export'],
@@ -658,6 +665,193 @@ function bindModelArena() {
     });
     updateTrainBtnLabel();
   });
+}
+
+// ─── CONFIGURACIÓN TÉCNICO-COMERCIAL DEL PARQUE ─────────────────────────────
+function bindParkConfiguration() {
+  const commercial = document.getElementById('park-commercial-mode');
+  commercial?.addEventListener('change', updateParkCommercialControls);
+  ['park-base-fx', 'park-base-interest'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', renderParkConfigurationReadiness);
+  });
+  document.getElementById('btn-save-park-configuration')?.addEventListener('click', () => {
+    saveParkConfiguration();
+  });
+  document.getElementById('btn-park-continue-design')?.addEventListener('click', async () => {
+    const saved = await saveParkConfiguration({ quiet: true });
+    if (!saved?.ready_for_design) {
+      toast('Completa el archivo de precios, tipo de cambio y tasa; en autoconsumo también la serie de demanda.', 'warn');
+      return;
+    }
+    document.querySelector('.nav-btn[data-module="kriging"]')?.click();
+  });
+  updateParkCommercialControls();
+  renderParkConfigurationReadiness();
+}
+
+function collectParkConfiguration() {
+  return {
+    commercialization_mode: document.getElementById('park-commercial-mode')?.value || 'total_sale',
+    sale_scheme: document.getElementById('park-sale-scheme')?.value || 'spot_pml',
+    pml_node: document.getElementById('park-pml-node')?.value?.trim() || '',
+    project_horizon_years: parseInt(document.getElementById('park-project-horizon')?.value || '25'),
+    base_fx_mxn_usd: Number.isFinite(parseFloat(document.getElementById('park-base-fx')?.value))
+      ? parseFloat(document.getElementById('park-base-fx').value) : null,
+    base_interest_rate_pct: Number.isFinite(parseFloat(document.getElementById('park-base-interest')?.value))
+      ? parseFloat(document.getElementById('park-base-interest').value) : null,
+    reporting_currency: document.getElementById('park-reporting-currency')?.value || 'USD',
+  };
+}
+
+function applyParkConfiguration(config) {
+  if (!config) return;
+  WP.parkConfiguration = config;
+  const set = (id, value) => {
+    const el = document.getElementById(id);
+    if (el && value != null) el.value = value;
+  };
+  set('park-commercial-mode', config.commercialization_mode);
+  set('park-demand-source', config.demand_source || 'none');
+  set('park-annual-demand', 0);
+  set('park-sale-scheme', config.sale_scheme);
+  set('park-pml-node', config.pml_node);
+  set('park-project-horizon', config.project_horizon_years);
+  set('park-base-fx', config.base_fx_mxn_usd);
+  set('park-base-interest', config.base_interest_rate_pct);
+  set('park-reporting-currency', config.reporting_currency);
+  const revision = document.getElementById('park-config-revision');
+  if (revision) revision.textContent = config.configuration_revision
+    ? `Revisión ${config.configuration_revision}` : 'Configuración nueva';
+  updateParkCommercialControls();
+  renderParkConfigurationReadiness();
+}
+
+async function loadParkConfiguration({ quiet = false } = {}) {
+  if (!WP.sessionId) return null;
+  try {
+    const config = await api(`/api/sessions/${WP.sessionId}/park-configuration`, 'GET');
+    applyParkConfiguration(config);
+    return config;
+  } catch (error) {
+    if (!quiet) toast(`No se pudo recuperar la configuración: ${error.message}`, 'error');
+    return null;
+  }
+}
+
+async function saveParkConfiguration({ quiet = false } = {}) {
+  if (!WP.sessionId) return null;
+  const payload = collectParkConfiguration();
+  try {
+    const config = await api(`/api/sessions/${WP.sessionId}/park-configuration`, 'PUT', payload);
+    applyParkConfiguration(config);
+    krig3PullParamsFromArena();
+    if (!quiet) toast('Configuración del parque guardada', 'success');
+    return config;
+  } catch (error) {
+    if (!quiet) toast(error.message, 'error');
+    return null;
+  }
+}
+
+function updateParkCommercialControls() {
+  const mode = document.getElementById('park-commercial-mode')?.value || 'total_sale';
+  const demandSource = document.getElementById('park-demand-source');
+  const demandBlock = document.getElementById('park-demand-series-block');
+  const note = document.getElementById('park-commercial-note');
+  const totalSale = mode === 'total_sale';
+  if (demandSource) demandSource.value = totalSale ? 'none' : 'market_series';
+  if (demandBlock) {
+    demandBlock.hidden = totalSale;
+    demandBlock.style.display = totalSale ? 'none' : 'block';
+  }
+  if (note) {
+    if (totalSale) {
+      note.innerHTML = '<strong>Venta total.</strong> Toda la energía neta se liquida con el archivo de precios de compra y venta cargado.';
+    } else if (mode === 'self_consumption') {
+      note.innerHTML = '<strong>Autoconsumo.</strong> La serie histórica de demanda es obligatoria para comparar simultáneamente consumo y generación.';
+    } else {
+      note.innerHTML = '<strong>Autoconsumo con venta de excedentes.</strong> La generación atiende primero la demanda horaria y el excedente se valora como venta.';
+    }
+    note.classList.remove('hidden');
+  }
+  renderParkConfigurationReadiness();
+}
+
+function renderParkConfigurationReadiness() {
+  const box = document.getElementById('park-market-readiness');
+  const badge = document.getElementById('park-readiness-badge');
+  const button = document.getElementById('btn-park-continue-design');
+  const title = document.getElementById('park-config-status-title');
+  const text = document.getElementById('park-config-status-text');
+  if (!box) return;
+  const storedConfig = WP.parkConfiguration || {};
+  const selectedMode = document.getElementById('park-commercial-mode')?.value
+    || storedConfig.commercialization_mode || 'total_sale';
+  const inputFx = parseFloat(document.getElementById('park-base-fx')?.value);
+  const inputInterest = parseFloat(document.getElementById('park-base-interest')?.value);
+  const config = {
+    ...storedConfig,
+    commercialization_mode: selectedMode,
+    base_fx_mxn_usd: Number.isFinite(inputFx) ? inputFx : storedConfig.base_fx_mxn_usd,
+    base_interest_rate_pct: Number.isFinite(inputInterest)
+      ? inputInterest : storedConfig.base_interest_rate_pct,
+  };
+  const models = config.market_models || {};
+  const readiness = {
+    ...(config.readiness || {}),
+    demand: selectedMode === 'total_sale' || Boolean(config.demand_series),
+    fx: Number.isFinite(inputFx) ? inputFx > 0 : config.readiness?.fx === true,
+    interest: Number.isFinite(inputInterest) ? inputInterest >= 0 : config.readiness?.interest === true,
+  };
+  const labels = {
+    demand: 'Demanda del proyecto',
+    pml: 'PML de venta',
+    fx: 'Tipo de cambio USD/MXN',
+    interest: 'Tasa de interés',
+  };
+  const order = ['demand', 'pml', 'fx', 'interest'];
+  box.innerHTML = order.map(category => {
+    const ready = readiness[category] === true;
+    const model = models[category] || {};
+    const validation = model.validation || {};
+    const fixedPml = category === 'pml' && model.mode === 'fixed_2018_profile';
+    const metric = Number.isFinite(Number(validation.rmse))
+      ? ` · RMSE val. ${Number(validation.rmse).toFixed(category === 'pml' ? 4 : 2)}` : '';
+    let detail;
+    if (category === 'demand') {
+      detail = config.commercialization_mode === 'total_sale'
+        ? 'No aplica · venta total'
+        : ready
+          ? `${config.demand_series?.filename || 'Serie histórica cargada'} · ${Number(config.demand_series?.n_rows || 0).toLocaleString('es-MX')} registros`
+          : 'Carga obligatoria de la serie histórica';
+    } else if (category === 'fx') {
+      detail = ready
+        ? `${Number(config.base_fx_mxn_usd).toFixed(2)} MXN/USD · valor manual`
+        : 'Captura el tipo de cambio base';
+    } else if (category === 'interest') {
+      detail = ready
+        ? `${Number(config.base_interest_rate_pct).toFixed(2)} % anual · valor manual`
+        : 'Captura la tasa de interés anual base';
+    } else {
+      detail = fixedPml && ready
+      ? `Perfil 2018 fijo · ${Number(model.n_hours || 0).toLocaleString('es-MX')} h · sin escalamiento`
+      : ready
+        ? `${model.best_model || 'definida'} · ${model.years?.[0] || '—'}–${model.years?.at?.(-1) || '—'}${metric}`
+        : 'Carga el archivo de precio de compra y venta';
+    }
+    const manual = category === 'fx' || category === 'interest';
+    return `<div style="display:flex;justify-content:space-between;gap:12px;padding:.62rem 0;border-bottom:1px solid var(--border)">
+      <div><strong>${labels[category]}</strong><div class="text-muted" style="font-size:.7rem">${detail}</div></div>
+      <span class="cbadge ${ready ? 'g' : 'r'}">${ready ? (fixedPml ? 'FIJO 2018' : manual ? 'MANUAL' : 'LISTO') : 'PENDIENTE'}</span>
+    </div>`;
+  }).join('');
+  const ready = config.ready_for_design === true;
+  if (badge) { badge.textContent = ready ? 'Listo para diseño' : 'Variables pendientes'; badge.className = `badge ${ready ? 'badge--success' : 'badge--warn'}`; }
+  if (button) button.disabled = !ready;
+  if (title) title.textContent = ready ? 'Configuración lista para diseño' : 'Configuración incompleta';
+  if (text) text.textContent = ready
+    ? 'Diseño recibirá el esquema comercial y los parámetros guardados en esta revisión.'
+    : 'Carga el archivo de precios y captura tipo de cambio y tasa; en autoconsumo también carga la demanda.';
 }
 
 function getSelectedModels() {
@@ -2395,8 +2589,8 @@ function _niceRoseStep(maxPct) {
   return nice * exp;
 }
 
-function _drawWindRose(rose) {
-  const canvas = document.getElementById('chart-rose');
+function _drawWindRose(rose, canvasId = 'chart-rose', legendId = 'rose-legend') {
+  const canvas = document.getElementById(canvasId);
   if (!canvas || !rose?.bin_matrix) return;
 
   const matrix = rose.bin_matrix;             // [16][6] in % of total
@@ -2406,7 +2600,7 @@ function _drawWindRose(rose) {
     i === arr.length - 1 ? `≥${l.split('-')[0]}` : l);
 
   // Legend
-  const legendEl = document.getElementById('rose-legend');
+  const legendEl = document.getElementById(legendId);
   if (legendEl) {
     legendEl.innerHTML =
       `<span style="opacity:.75;font-weight:600;letter-spacing:.02em">Velocidad (m/s)</span>` +
@@ -2511,16 +2705,20 @@ function _drawWindRose(rose) {
   const labelR = R + 16;
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
+  const directionLabels = rose.labels || Array.from({length: nSectors}, (_, i) => `${i * 360 / nSectors}°`);
+  const labelStride = nSectors > 16 ? Math.max(1, Math.round(nSectors / 12)) : 1;
   for (let i = 0; i < nSectors; i++) {
+    if (i % labelStride !== 0) continue;
     const ang = (i * sectorWidthDeg - 90) * Math.PI / 180;
     const x = cx + labelR * Math.cos(ang);
     const y = cy + labelR * Math.sin(ang);
-    const cardinal = (i % 4 === 0);
+    const bearing = i * sectorWidthDeg;
+    const cardinal = Math.abs(bearing % 90) < 1e-9;
     ctx.font      = cardinal
       ? '700 11px "JetBrains Mono", ui-monospace, monospace'
       : '500 9px "JetBrains Mono", ui-monospace, monospace';
     ctx.fillStyle = cardinal ? txtBold : txtCol;
-    ctx.fillText(ROSE_DIR_LABELS[i], x, y);
+    ctx.fillText(directionLabels[i], x, y);
   }
 
   // Stats annotation (bottom-left)
@@ -2536,33 +2734,49 @@ function _drawWindRose(rose) {
 
 function renderWindRose(rose) {
   if (!rose) return;
-  destroyChart('chart-rose');  // safe: handles previous Chart.js instance if any
   if (!document.getElementById('chart-rose')) return;
+  const dominantIndex = (rose.frequency_pct || []).indexOf(Math.max(...(rose.frequency_pct || [0])));
+  const dominantLabel = ROSE_DIR_LABELS[dominantIndex] || rose.dominant_direction;
   document.getElementById('rose-dom').textContent =
-    `${rose.dominant_direction} ${rose.dominant_pct}%`;
+    `${dominantLabel} · ${rose.dominant_pct}%`;
+  const legendEl = document.getElementById('rose-legend');
+  if (legendEl) legendEl.innerHTML = '<span style="opacity:.75">Frecuencia direccional de la fuente activa · la dirección observada se conserva y sólo los huecos usan MCP corregido.</span>';
+  renderDirectionalRoseChart('chart-rose', rose, 'Fuente activa', false);
+}
 
-  // Cache rose for redraw on resize / theme change
-  WP._lastRose = rose;
-  _drawWindRose(rose);
-
-  // Re-bind resize listener (debounced)
-  if (!WP._roseResizeBound) {
-    let t;
-    window.addEventListener('resize', () => {
-      clearTimeout(t);
-      t = setTimeout(() => { if (WP._lastRose) _drawWindRose(WP._lastRose); }, 120);
-    });
-    WP._roseResizeBound = true;
-  }
-
-  // Stub so destroyChart() / theme-update loop don't throw on next render
-  WP.charts['chart-rose'] = {
-    destroy: () => {
-      const c = document.getElementById('chart-rose');
-      if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height);
+function renderDirectionalRoseChart(id, rose, title, showLegend = true) {
+  if (!rose?.frequency_pct) return;
+  const palette = ['#3B82F6','#4A91E2','#52A6E8','#48C2A3','#1D9E75','#73B85B','#B6C94C','#F2C94C','#F5B14C','#F39C5A','#E8794F','#D9534F','#C14D76','#A855A1','#7C6BC4','#5B73C7'];
+  destroyChart(id);
+  const canvas = document.getElementById(id);
+  if (!canvas) return;
+  const labels = rose.frequency_pct.length === 16 ? ROSE_DIR_LABELS : (rose.labels || []);
+  const colors = labels.map((_, index) => palette[index % palette.length]);
+  // El backend ya entrega sectores centrados en sus etiquetas meteorológicas.
+  // Chart.js define 0° en la parte superior de la escala radial: no se debe
+  // aplicar el antiguo desfase de medio sector, pues desplaza N hacia NNO.
+  const startAngleDeg = 0;
+  WP.charts[id] = new Chart(canvas, {
+    type: 'polarArea',
+    data: { labels, datasets: [{ label: title, data: rose.frequency_pct, backgroundColor: colors.map(color => color + 'b8'), borderColor: colors, borderWidth: 1 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      plugins: {
+        legend: { display: showLegend, position: 'right', labels: { boxWidth: 10, font: { size: 9 } } },
+        tooltip: { callbacks: { label: context => {
+          const mean = rose.mean_speed?.[context.dataIndex];
+          return `${context.label}: ${Number(context.raw).toFixed(2)}%${Number.isFinite(Number(mean)) ? ` · ${Number(mean).toFixed(2)} m/s` : ''}`;
+        } } },
+      },
+      scales: { r: {
+        beginAtZero: true,
+        startAngle: startAngleDeg,
+        grid: { color: gridColor() },
+        pointLabels: { display: true, font: { size: labels.length > 16 ? 7 : 9 } },
+        ticks: { backdropColor: 'transparent', font: { size: 8 } },
+      } },
     },
-    update: () => { if (WP._lastRose) _drawWindRose(WP._lastRose); }
-  };
+  });
 }
 
 function renderDiurnal(d) {
@@ -3108,13 +3322,17 @@ function _arrMean(arr) {
 function _arenaRawValues(paramKey) {
   const c = WP.arenaCache || {};
   if (paramKey === 'price') {
+    const fixed = WP.parkConfiguration?.market_models?.pml;
+    if (fixed?.mode === 'fixed_2018_profile' && Array.isArray(fixed.hourly_profile_2018)) {
+      return { values: fixed.hourly_profile_2018, source: 'fixed_pml_2018', unit: fixed.unit };
+    }
     const { sideCache: hourlySide } = getPmlForecastStudioSide(c.pml_hourly);
     const h = hourlySide?.raw_values || c.pml_hourly?.raw_values;
-    if (Array.isArray(h) && h.length) return { values: h, source: 'pml_hourly' };
+    if (Array.isArray(h) && h.length) return { values: h, source: 'pml_hourly', unit: c.pml?.meta?.unit };
     const { sideCache } = getPmlForecastStudioSide(c.pml);
     const side = sideCache || c.pml?.compra || c.pml?.venta || c.pml || null;
     const r = side?.raw_values;
-    return Array.isArray(r) && r.length ? { values: r, source: 'pml_annual' } : null;
+    return Array.isArray(r) && r.length ? { values: r, source: 'pml_annual', unit: c.pml?.meta?.unit } : null;
   }
   if (paramKey === 'rate') {
     const r = c.interest?.raw_values;
@@ -3137,11 +3355,13 @@ function _arenaProjectionAnnual(paramKey) {
               : paramKey === 'fx'    ? 'fx' : null;
   if (!cfgKey) return null;
   const cfg = getForecastFutureConfig(cfgKey);
-  if (!cfg) return null;
-  const proj = cfg.projection || {};
-  const model = cfg.bestModel && proj[cfg.bestModel] ? cfg.bestModel
+  const proj = cfg?.projection || {};
+  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel
               : Object.keys(proj).find(k => proj[k]?.annual?.length);
-  const annual = model ? proj[model]?.annual : null;
+  let annual = model ? proj[model]?.annual : null;
+  if (!Array.isArray(annual) || !annual.length) {
+    annual = WP.parkConfiguration?.market_models?.[cfgKey]?.annual;
+  }
   return Array.isArray(annual) && annual.length ? annual.map(Number) : null;
 }
 
@@ -3149,9 +3369,14 @@ function _arenaProjectionAnnual(paramKey) {
  * Convierte un valor PML al sistema USD/kWh.
  * Heurística: si val > 50 → asumimos MXN/MWh; entre 1 y 50 → USD/MWh; <1 → USD/kWh ya.
  */
-function _pmlToUsdKwh(val, fxScalar) {
+function _pmlToUsdKwh(val, fxScalar, unit = '') {
   const v = Number(val);
   if (!Number.isFinite(v)) return null;
+  const normalizedUnit = String(unit || '').toUpperCase().replace(/\s+/g, '');
+  if (normalizedUnit.includes('USD/KWH')) return v;
+  if (normalizedUnit.includes('USD/MWH')) return v / 1000;
+  if (normalizedUnit.includes('MXN/KWH')) return v / (fxScalar > 0 ? fxScalar : 18);
+  if (normalizedUnit.includes('MXN/MWH')) return v / (fxScalar > 0 ? fxScalar : 18) / 1000;
   if (v > 50) return v / (fxScalar > 0 ? fxScalar : 18) / 1000; // MXN/MWh → USD/kWh
   if (v > 1)  return v / 1000;                                  // USD/MWh → USD/kWh
   return v;                                                      // ya USD/kWh
@@ -3161,7 +3386,7 @@ function _pmlToUsdKwh(val, fxScalar) {
  * Construye la serie anual (length nYears) para un parámetro según mode/escenario.
  * - mode='fixed' → null (backend usa escalar)
  * - mode='arena' + scenario in {real, corrected} → media histórica para todos los años
- * - mode='arena' + scenario='ml' → año 1 = media histórica; años 2..N = proyección ML
+ * - mode='arena' + scenario='ml' → trayectoria publicada desde el año 1
  * Devuelve { series, baseline, hourly } donde:
  *   series = array length nYears (en unidades del backend) o null
  *   baseline = valor escalar año 1 (mostrado al usuario)
@@ -3170,35 +3395,47 @@ function _pmlToUsdKwh(val, fxScalar) {
 function technoBuildParamSeries(paramKey, mode, scenarioKey, nYears, fxScalar) {
   if (mode !== 'arena') return { series: null, baseline: null, hourly: null };
   const raw = _arenaRawValues(paramKey);
-  if (!raw) return { series: null, baseline: null, hourly: null };
+  const annualProjection = _arenaProjectionAnnual(paramKey);
+  if (!raw && (!annualProjection || !annualProjection.length)) {
+    return { series: null, baseline: null, hourly: null };
+  }
 
   // baseline (year 1) en unidades del backend
   let baseline = null;
   let hourly   = null;
-  if (paramKey === 'price') {
+  if (raw && paramKey === 'price') {
     const meanRaw = _arrMean(raw.values);
-    baseline = _pmlToUsdKwh(meanRaw, fxScalar);
-    // Hourly array (USD/kWh) cuando hay 8760 disponibles
-    if (raw.source === 'pml_hourly') {
-      hourly = raw.values.map(v => _pmlToUsdKwh(v, fxScalar)).map(v => Number.isFinite(v) ? v : baseline);
-    }
-  } else {
+    baseline = _pmlToUsdKwh(meanRaw, fxScalar, raw.unit);
+    // El PML fijo 2018 y el legado horario se ponderan contra la producción.
+    hourly = raw.values.map(v => _pmlToUsdKwh(v, fxScalar, raw.unit)).map(v => Number.isFinite(v) ? v : baseline);
+  } else if (raw) {
     baseline = _arrMean(raw.values);
+  } else {
+    const first = Number(annualProjection[0]);
+    baseline = paramKey === 'price' ? _pmlToUsdKwh(first, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit) : first;
   }
   if (baseline == null || !Number.isFinite(baseline)) {
     return { series: null, baseline: null, hourly: null };
   }
 
   const series = new Array(nYears).fill(baseline);
-  if (scenarioKey === 'ml') {
-    const annual = _arenaProjectionAnnual(paramKey);
+  if (scenarioKey === 'ml' || scenarioKey === 'corrected') {
+    const annual = annualProjection;
     if (annual && annual.length) {
-      // Años 2..N = annual[0..N-2] (proyección típicamente comienza en el año siguiente al base)
-      for (let i = 1; i < nYears; i++) {
-        let v = Number(annual[i - 1]);
+      // La trayectoria publicada comienza en el año 1 del proyecto y se usa
+      // completa; no se inserta un año histórico constante delante.
+      for (let i = 0; i < nYears; i++) {
+        let v = Number(annual[Math.min(i, annual.length - 1)]);
         if (!Number.isFinite(v)) continue;
-        if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar);
+        if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit);
         if (Number.isFinite(v)) series[i] = v;
+      }
+      baseline = series[0];
+      if (paramKey === 'price' && hourly?.length) {
+        const hourlyMean = _arrMean(hourly);
+        if (hourlyMean && Number.isFinite(hourlyMean) && Number.isFinite(baseline)) {
+          hourly = hourly.map(value => Number(value) * baseline / hourlyMean);
+        }
       }
     }
   }
@@ -3231,15 +3468,15 @@ function technoUpdateModeHints() {
     const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 20, fxScalar);
     if (!built.series) {
       const srcLabel = c.key === 'price' ? 'PML/PRECIO' : c.key.toUpperCase();
-      el.innerHTML = `<span style="color:#d97706">⚠ No hay datos del Centro de modelaje para ${srcLabel}. Ejecuta Forecast Studio o entrena el modelo.</span>`;
+      el.innerHTML = `<span style="color:#d97706">⚠ No hay trayectoria publicada para ${srcLabel}. Configura o estima la variable en Configuración del parque.</span>`;
       return;
     }
     const hAvg = built.series.length > 1
       ? built.series.slice(1).reduce((a,b)=>a+b,0) / (built.series.length - 1)
       : built.baseline;
-    const tag = scenarioKey === 'ml'
-      ? `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (${built.hourly ? '8760 horario' : 'media hist.'}) · Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> (proy. ML)`
-      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Centro de modelaje)`;
+    const tag = scenarioKey === 'ml' || scenarioKey === 'corrected'
+      ? `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> · Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> (trayectoria validada)`
+      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Configuración del parque)`;
     el.innerHTML = tag;
   });
 }
@@ -3248,7 +3485,7 @@ function technoBestAnnualValue(key) {
   const cfg = getForecastFutureConfig(key);
   const proj = cfg?.projection || {};
   const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel : Object.keys(proj).find(k => proj[k]?.annual?.length);
-  const arr = model ? proj[model]?.annual : null;
+  const arr = model ? proj[model]?.annual : WP.parkConfiguration?.market_models?.[key]?.annual;
   if (!arr?.length) return null;
   const vals = arr.map(Number).filter(Number.isFinite);
   if (!vals.length) return null;
@@ -3267,15 +3504,25 @@ function technoWindAnnualSeries() {
 
 function technoScenarioDefaults(key) {
   const base = technoCollectInputs();
-  if (key === 'ml' || key === 'corrected') base.years = 25;
+  const configuredHorizon = Number(WP.parkConfiguration?.project_horizon_years) || 25;
+  if (key === 'ml' || key === 'corrected') base.years = configuredHorizon;
+  const marketInputs = parkEquivalentDesignInputs();
   const demand = technoBestAnnualValue('demand');
   const pml = technoBestAnnualValue('pml');
   const rate = technoBestAnnualValue('interest');
   const fx = technoBestAnnualValue('fx');
-  if (demand != null) base.demand = Math.round(demand);
-  if (pml != null) base.price = Number(pml).toFixed(4);
-  if (rate != null) base.rate = Number(rate).toFixed(2);
-  if (fx != null) base.fx = Number(fx).toFixed(2);
+  base.demand = Math.round(marketInputs.demand_mwh ?? demand ?? 0);
+  if (marketInputs.price_usd_kwh != null) base.price = Number(marketInputs.price_usd_kwh).toFixed(4);
+  else if (pml != null) base.price = Number(pml).toFixed(4);
+  if (marketInputs.tasa != null) base.rate = Number(marketInputs.tasa * 100).toFixed(2);
+  else if (rate != null) base.rate = Number(rate).toFixed(2);
+  if (marketInputs.price_mxn_per_usd != null) base.fx = Number(marketInputs.price_mxn_per_usd).toFixed(2);
+  else if (fx != null) base.fx = Number(fx).toFixed(2);
+  if (key === 'ml' || key === 'corrected') {
+    if (parkMarketTrajectory('pml')?.length) base.priceMode = 'arena';
+    if (parkMarketTrajectory('interest')?.length) base.rateMode = 'arena';
+    if (parkMarketTrajectory('fx')?.length) base.fxMode = 'arena';
+  }
   if (key === 'corrected' && PARQUE.result?.turbine?.name) base.turbine = PARQUE.result.turbine.name;
   if (key === 'corrected' && PARQUE.result?.turbines?.length) base.nTurbines = PARQUE.result.turbines.length;
   return base;
@@ -3299,7 +3546,7 @@ function technoRefreshScenarioView() {
   const status = document.getElementById('te-scenario-status');
   const meta = {
     real: ['Base', 'Viento real de la estación meteorológica cargado en Data Hub. Demanda/PML/FX pueden capturarse o venir del archivo cargado.'],
-    ml: ['ML 25 años', 'Usa proyecciones futuras de Forecast Studio para viento, demanda, PML, tasa de interés y tipo de cambio cuando estén disponibles.'],
+    ml: ['ML 25 años', 'Usa las trayectorias publicadas en Configuración del parque para viento, demanda, PML, tasa de interés y tipo de cambio.'],
     corrected: ['ML + Kriging', 'Usa la predicción ML y prioriza el AEP/layout corregido de Parque/Kriging cuando existe una optimización vigente.'],
   };
   if (badge) badge.textContent = meta[key]?.[0] || 'Escenario';
@@ -3460,7 +3707,7 @@ async function calcTechnoEconomic() {
     if (inputs.rateMode  === 'arena' && !builtRate.series)  missing.push('tasa (interés)');
     if (inputs.fxMode    === 'arena' && !builtFx.series)    missing.push('FX');
     if (missing.length) {
-      toast(`Modo 8760 sin datos para: ${missing.join(', ')}. Carga el Centro de modelaje o usa Fijo.`, 'warn');
+      toast(`Sin trayectoria configurada para: ${missing.join(', ')}. Configura o estima la variable en Configuración del parque, o usa Fijo.`, 'warn');
     }
 
     const body = {
@@ -4806,7 +5053,7 @@ async function exportReport() {
       'Modelos ML: Ridge, RF, GBM, MLP, SVR, ARIMA — validación cronológica',
       'Energía: Curva de potencia real + corrección densidad de aire',
       'Tecno-econ.: Metodología PhD MATLAB — CAPEX, OPEX, VAN, LCOE, VAE',
-      'Weibull: ajuste por método de momentos (scipy.stats.weibull_min)',
+      'Weibull: máxima verosimilitud de 2 parámetros, localización fija en 0 (scipy.stats.weibull_min)',
       '',
       '── LIMITACIONES ───────────────────────────────────────',
       '· Datos a 50m; hub height típico 80–120m — aplicar extrapolación logarítmica',
@@ -5212,29 +5459,42 @@ async function runAdvanced() {
     // KPI row
     const kpiRow = document.getElementById('adv-kpi-row');
     kpiRow.style.display = '';
-    const ti = r.wind_speed_variability || r.turbulence;
+    const turbulence = r.turbulence || {};
+    const measuredTI  = turbulence.measured_10min || {};
+    const hourlyVar   = turbulence.hourly_variability || r.wind_speed_variability || {};
+    const historicalTI = turbulence.historical_model || {};
+    const hasMeasuredTI = measuredTI.available === true;
+    const ti = hasMeasuredTI ? measuredTI : hourlyVar;
     const sh = r.shear;
     const rp = r.return_periods;
 
     const _set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-    _set('adv-kpi-ti',    ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
-    _set('adv-kpi-ti15',  ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
-    // KPI clase IEC con asterisco si es proxy
-    const iecCls   = ti?.iec_class || null;
-    const iecLabel = iecCls ? `Clase ${iecCls}${ti?.iec_is_proxy ? '*' : ''}` : '—';
-    _set('adv-kpi-iec',   iecLabel);
+    _set('adv-kpi-ti',    hasMeasuredTI && ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-ti15',  hasMeasuredTI && ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-source', hasMeasuredTI ? 'CERTE 10 min' : 'Sin TI medida');
+    _set('adv-kpi-source-sub', hasMeasuredTI
+      ? `Entrenamiento ${measuredTI.training_year} · ${Number(measuredTI.logger_pair_coverage_pct || 0).toFixed(1)}% cobertura nativa`
+      : 'La serie horaria sólo aporta variabilidad');
     _set('adv-kpi-alpha', sh?.alpha != null ? sh.alpha.toFixed(3) : '—');
     _set('adv-kpi-v50',   rp?.v_50year != null ? rp.v_50year + ' m/s' : '—');
 
-    // Badges
-    const badgeIec = document.getElementById('adv-badge-iec');
-    if (badgeIec) {
-      badgeIec.textContent = iecCls
-        ? `IEC ${iecCls}${ti?.iec_is_proxy ? '* (supuesto proxy)' : ''}`
-        : 'TI proxy horario';
-      badgeIec.className = `cbadge ${iecCls === 'A' || iecCls === 'S' ? 'r' : iecCls === 'B' ? '' : 'g'}`;
-      badgeIec.title     = ti?.note || '';
+    const badgeSource = document.getElementById('adv-badge-ti-source');
+    if (badgeSource) {
+      badgeSource.textContent = hasMeasuredTI ? 'Medido · CERTE 10 min' : 'Proxy · horario';
+      badgeSource.className = `cbadge ${hasMeasuredTI ? 'g' : 'r'}`;
+      badgeSource.title = ti?.note || r.ti_warning || '';
     }
+    _set('adv-ti-chart-title', hasMeasuredTI
+      ? 'TI medida CERTE vs velocidad'
+      : 'Variabilidad interhoraria vs velocidad · no es TI');
+    const provenanceTitle = document.getElementById('adv-ti-provenance-title');
+    const provenanceText  = document.getElementById('adv-ti-provenance');
+    if (provenanceTitle) provenanceTitle.textContent = hasMeasuredTI
+      ? `Turbulencia medida CERTE ${measuredTI.training_year}`
+      : 'No hay turbulencia medida en la fuente activa';
+    if (provenanceText) provenanceText.textContent = hasMeasuredTI
+      ? `Se usan ${Number(measuredTI.N || 0).toLocaleString()} ventanas nativas de ${measuredTI.native_resolution_minutes || 10} minutos a ${measuredTI.measurement_height_m || 80} m. TI = σ₁₀min / V̄₁₀min. La serie MCP horaria permanece separada y la clase IEC no se asigna automáticamente.`
+      : `${measuredTI.reason || 'No se encontraron media y desviación estándar nativas.'} ${r.ti_warning || ''}`;
     _set('adv-badge-alpha',  `α = ${sh?.alpha?.toFixed(3) || '—'}`);
     _set('adv-badge-z0',     `z₀ = ${sh?.z0 ?? '—'} m`);
     _set('adv-badge-method', rp?.method || 'Gumbel');
@@ -5243,7 +5503,9 @@ async function runAdvanced() {
       if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
     }
 
-    renderTIChart(ti);
+    renderTIChart(ti, hasMeasuredTI);
+    renderHistoricalTurbulenceChart(historicalTI);
+    renderTurbulenceTraceability(measuredTI, historicalTI, hourlyVar);
     renderShearChart(sh);
     renderHubKPIs(sh?.hub);
     populateSectorTable(r.sectors);
@@ -5259,27 +5521,20 @@ async function runAdvanced() {
   }
 }
 
-function renderTIChart(ti) {
+function renderTIChart(ti, isMeasured = false) {
   if (!ti?.bins?.length) return;
   destroyChart('ti');
   const bins = ti.bins.filter(b => b.ti_mean != null);
   const ctx  = document.getElementById('chart-ti').getContext('2d');
-  const refs  = { A: 0.16, B: 0.14, C: 0.12 };
   WP.charts.ti = new Chart(ctx, {
     type: 'line',
     data: {
       labels: bins.map(b => b.ws_center),
       datasets: [
-        { label: 'TI medio', data: bins.map(b => b.ti_mean ? +(b.ti_mean * 100).toFixed(2) : null),
+        { label: isMeasured ? 'TI medida media' : 'Variabilidad horaria media', data: bins.map(b => b.ti_mean != null ? +(b.ti_mean * 100).toFixed(2) : null),
           borderColor: acc(), backgroundColor: acc() + '25', fill: false, tension: 0.35, pointRadius: 3 },
-        { label: 'TI P90', data: bins.map(b => b.ti_p90 ? +(b.ti_p90 * 100).toFixed(2) : null),
+        { label: isMeasured ? 'TI medida P90' : 'Variabilidad horaria P90', data: bins.map(b => b.ti_p90 != null ? +(b.ti_p90 * 100).toFixed(2) : null),
           borderColor: acc2(), borderDash: [4,4], fill: false, pointRadius: 2 },
-        { label: 'IEC A (16%)', data: bins.map(() => refs.A * 100),
-          borderColor: '#e55', borderDash: [6,3], fill: false, pointRadius: 0 },
-        { label: 'IEC B (14%)', data: bins.map(() => refs.B * 100),
-          borderColor: gold(), borderDash: [6,3], fill: false, pointRadius: 0 },
-        { label: 'IEC C (12%)', data: bins.map(() => refs.C * 100),
-          borderColor: acc() + '80', borderDash: [6,3], fill: false, pointRadius: 0 },
       ],
     },
     options: {
@@ -5288,11 +5543,78 @@ function renderTIChart(ti) {
       scales: {
         x: { title: { display: true, text: 'Velocidad (m/s)', color: mut() },
              ticks: { color: mut() }, grid: { color: mut() + '22' } },
-        y: { title: { display: true, text: 'TI (%)', color: mut() },
+        y: { title: { display: true, text: isMeasured ? 'TI medida (%)' : 'Variabilidad σ/V̄ (%)', color: mut() },
              ticks: { color: mut() }, grid: { color: mut() + '22' } },
       },
     },
   });
+}
+
+function renderHistoricalTurbulenceChart(model) {
+  destroyChart('ti-historical');
+  const ctx = document.getElementById('chart-ti-historical')?.getContext('2d');
+  if (!ctx || !model?.available || !model?.monthly?.length) return;
+  const rows = model.monthly;
+  WP.charts['ti-historical'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: rows.map(row => row.label),
+      datasets: [
+        { label: 'TI modelada P50', data: rows.map(row => row.ti_p50 != null ? +(row.ti_p50 * 100).toFixed(2) : null),
+          borderColor: acc(), backgroundColor: acc() + '22', fill: true, tension: .3, pointRadius: 3 },
+        { label: 'TI modelada P90', data: rows.map(row => row.ti_p90 != null ? +(row.ti_p90 * 100).toFixed(2) : null),
+          borderColor: acc2(), borderDash: [5, 4], fill: false, tension: .3, pointRadius: 3 },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: ink(), font: { size: 10 } } } },
+      scales: {
+        x: { ticks: { color: mut() }, grid: { color: mut() + '22' } },
+        y: { title: { display: true, text: 'TI modelada (%)', color: mut() },
+             ticks: { color: mut() }, grid: { color: mut() + '22' } },
+      },
+    },
+  });
+}
+
+function renderTurbulenceTraceability(measured, model, hourly) {
+  const detail = document.getElementById('adv-ti-model-details');
+  const badge  = document.getElementById('adv-badge-ti-model');
+  if (!detail) return;
+  if (!model?.available) {
+    if (badge) { badge.textContent = 'No disponible'; badge.className = 'cbadge r'; }
+    detail.textContent = `${model?.reason || 'No se publicó un modelo histórico de turbulencia.'} La variabilidad horaria permanece disponible sólo como diagnóstico y no se clasifica como TI.`;
+    return;
+  }
+  if (badge) {
+    badge.textContent = `${model.training_year} → histórico · modelado`;
+    badge.className = 'cbadge b';
+  }
+  const validation = model.validation || {};
+  const metrics = validation.metrics_p50 || {};
+  const missingNames = (validation.months_without_measurements || []).map(month =>
+    ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][month - 1]
+  );
+  const measuredText = measured?.available
+    ? `${Number(measured.training_records || measured.N || 0).toLocaleString()} ventanas CERTE de entrenamiento`
+    : 'sin TI nativa';
+  const campaignText = (measured?.campaign_years || []).map(row => {
+    const coverage = row.logger_pair_coverage_pct != null ? `${Number(row.logger_pair_coverage_pct).toFixed(1)}%` : '—';
+    const missing = (row.months_without_measurements || []).length;
+    return `${row.year}: ${row.status === 'complete' ? 'completo' : 'parcial'} (${coverage}${missing ? `, ${missing} meses ausentes` : ''})`;
+  }).join(' · ');
+  const validationText = validation.available
+    ? `Validación ${validation.year}: N=${Number(metrics.N || 0).toLocaleString()}, MAE=${metrics.MAE != null ? (metrics.MAE * 100).toFixed(2) + ' pp' : '—'}, sesgo=${metrics.Bias != null ? (metrics.Bias * 100).toFixed(2) + ' pp' : '—'}`
+    : `Sin validación medida en ${validation.year || 'el año solicitado'}`;
+  detail.innerHTML = `
+    <div><strong>Procedencia:</strong> modelado estadístico, no medido.</div>
+    <div><strong>Entrenamiento:</strong> ${model.training_year}, ${measuredText}; mes + velocidad + 16 sectores.</div>
+    <div><strong>Campaña real 10 min:</strong> ${campaignText || 'sin desglose anual'}.</div>
+    <div><strong>Histórico:</strong> ${Number(model.modelled_records || 0).toLocaleString()} horas con P50/P90 y σᵤ.</div>
+    <div><strong>${validationText}</strong></div>
+    <div><strong>Meses sin medición de validación:</strong> ${missingNames.length ? missingNames.join(', ') : 'ninguno'}.</div>
+    <div class="text-muted" style="margin-top:.45rem">La desviación móvil horaria (${hourly?.note || 'proxy'}) no alimenta esta reconstrucción.</div>`;
 }
 
 function renderShearChart(sh) {
@@ -6907,12 +7229,14 @@ async function krig3Run() {
   }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
   const physical = !!document.getElementById('krig3-physical')?.checked;
+  const marketInputs = parkEquivalentDesignInputs();
   const body = {
     year:             parseInt(document.getElementById('krig3-year').value),
-    demand_mwh:       parseFloat(document.getElementById('krig3-demand').value),
-    tasa:             parseFloat(document.getElementById('krig3-tasa').value) / 100,
-    price_usd_kwh:    parseFloat(document.getElementById('krig3-price').value),
-    price_mxn_per_usd: parseFloat(document.getElementById('krig3-fx').value),
+    demand_mwh:       marketInputs.demand_mwh ?? parseFloat(document.getElementById('krig3-demand').value),
+    tasa:             marketInputs.tasa ?? parseFloat(document.getElementById('krig3-tasa').value) / 100,
+    price_usd_kwh:    marketInputs.price_usd_kwh ?? parseFloat(document.getElementById('krig3-price').value),
+    price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('krig3-fx').value),
+    market_trajectories: marketInputs.trajectories,
     n_grid:           parseInt(document.getElementById('krig3-n').value),
     model:            document.getElementById('krig3-model').value,
     filenames:        Array.from(KRIG.selected),
@@ -7520,13 +7844,15 @@ async function mcdaRunAnalysis() {
     toast('Selecciona al menos una turbina de interés para TOPSIS.', 'warning');
     return;
   }
+  const marketInputs = parkEquivalentDesignInputs();
   const body = {
     scope:         areaMode ? 'park' : 'exploratory',
     year:          parseInt(document.getElementById('mcda-year').value),
-    demand_mwh:    parseFloat(document.getElementById('mcda-demand').value),
-    tasa:          parseFloat(document.getElementById('mcda-tasa').value) / 100,
-    price_usd_kwh: parseFloat(document.getElementById('mcda-price').value),
-    price_mxn_per_usd: parseFloat(document.getElementById('mcda-fx').value),
+    demand_mwh:    marketInputs.demand_mwh ?? parseFloat(document.getElementById('mcda-demand').value),
+    tasa:          marketInputs.tasa ?? parseFloat(document.getElementById('mcda-tasa').value) / 100,
+    price_usd_kwh: marketInputs.price_usd_kwh ?? parseFloat(document.getElementById('mcda-price').value),
+    price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('mcda-fx').value),
+    market_trajectories: marketInputs.trajectories,
     n_grid:        parseInt(document.getElementById('krig3-n')?.value) || 80,
     model:         document.getElementById('krig3-model')?.value || 'exponential',
     filenames:     Array.from(KRIG.selected),
@@ -8711,7 +9037,31 @@ function parqueActivate() {
   parqueInitMap();
   parqueLoadTurbines();
   parquePopulateTopsisRanking();
-  parqueLoadDemandFromSession();
+  // La configuración comercial gobierna la demanda del diseño. En venta
+  // total no debe intentarse inferir una carga desde la serie de viento; para
+  // autoconsumo se usa la meta/serie publicada y sólo se conserva el lector
+  // heredado cuando todavía no existe una demanda configurada.
+  const parkConfig = WP.parkConfiguration;
+  const configuredDemand = parkEquivalentDesignInputs().demand_mwh;
+  if (parkConfig) {
+    const demandInput = document.getElementById('parque-demand');
+    if (demandInput) demandInput.value = Math.round(Math.max(0, Number(configuredDemand) || 0));
+    const badge = document.getElementById('parque-demand-badge');
+    if (badge) {
+      badge.textContent = parkConfig.commercialization_mode === 'total_sale'
+        ? 'Venta total · demanda del proyecto = 0 MWh/año'
+        : `Configuración comercial · ${Math.round(Math.max(0, Number(configuredDemand) || 0)).toLocaleString('es-MX')} MWh/año`;
+      badge.style.display = '';
+    }
+    parqueUpdateRecommendation();
+    if (parkConfig.commercialization_mode !== 'total_sale'
+        && parkConfig.demand_source === 'market_series'
+        && !(Number(configuredDemand) > 0)) {
+      parqueLoadDemandFromSession();
+    }
+  } else {
+    parqueLoadDemandFromSession();
+  }
   const layerKey = document.getElementById('parque-map-layer')?.value || 'wind';
   parqueRenderKrigingLayer(layerKey);
   parqueRenderPolygon();
@@ -9349,6 +9699,7 @@ async function runDemandArena() {
       bestModel: fc.best_model, ylabel: 'Energía anual (GWh)', decimals: 1, unitLabel: 'GWh',
     });
     renderDemandTable(fc);
+    await loadParkConfiguration({ quiet: true });
     setStatus(`Demanda proyectada — modelo recomendado: ${fc.best_model}`);
     toast('Pronóstico de demanda completado', 'success');
   } catch (e) {
@@ -9384,9 +9735,10 @@ async function runDemandArenaHourly() {
       session_id: WP.sessionId, preset, growth, horizon, models
     });
     WP.arenaCache.demand = annualFc;
+    await loadParkConfiguration({ quiet: true });
     renderForecastFutureChart('demand');
     renderForecastFutureChart('demand_hourly');
-    toast('Perfil horario ajustado. Revisa el Centro de modelaje.', 'success');
+    toast('Perfil horario ajustado. Revisa Configuración del parque.', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
@@ -9535,113 +9887,73 @@ function renderDemandTable(fc) {
 
 // ─── PML ARENA ────────────────────────────────────────────────────────────────
 function bindPMLArena() {
-  const tagBox = document.getElementById('pml-model-tags');
-  if (tagBox) {
-    tagBox.addEventListener('click', e => {
-      const tag = e.target.closest('[data-model]');
-      if (tag) tag.classList.toggle('active');
-    });
-  }
-  const btn = document.getElementById('btn-pml-train');
+  const btn = document.getElementById('btn-pml-load-fixed');
   if (btn) btn.addEventListener('click', runPMLArena);
-  
-  const btnHourly = document.getElementById('btn-pml-train-hourly');
-  if (btnHourly) btnHourly.addEventListener('click', runPmlArenaHourly);
-
-  const sideSelect = document.getElementById('pml-side');
-  if (sideSelect) {
-    sideSelect.addEventListener('change', () => {
-      if (WP.arenaCache.pml) populateForecastStudioSelect('pml');
-      if (WP.arenaCache.pml_hourly) populateForecastStudioSelect('pml_hourly');
-      renderForecastFutureChart('pml');
-      renderForecastFutureChart('pml_hourly');
-    });
-  }
 }
 
 async function runPMLArena() {
   const preset = document.getElementById('pml-preset').value;
-  const side = document.getElementById('pml-side').value;
-  const growth = parseFloat(document.getElementById('pml-growth').value || '0.030');
-  const horizon = Math.max(25, parseInt(document.getElementById('pml-horizon').value || '25'));
-  const models = fcGetSelectedModels('pml-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
+  if (!preset) { toast('Selecciona el archivo PML 2018', 'warn'); return; }
 
-  const btn = document.getElementById('btn-pml-train');
-  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
+  const btn = document.getElementById('btn-pml-load-fixed');
+  btn.disabled = true; btn.textContent = 'Cargando perfil 2018…';
   try {
     const baseInfo = await api('/api/pml/load', 'POST', {
       session_id: WP.sessionId, preset
     });
-    renderPMLKPIs(baseInfo, side);
+    renderPMLKPIs(baseInfo, 'venta');
+    renderPMLSeries(baseInfo);
     renderPMLDiurnal(baseInfo);
-    renderPMLDuration(baseInfo, side === 'compra' ? 'compra' : 'venta');
-
-    const fc = await api('/api/pml/forecast', 'POST', {
-      session_id: WP.sessionId, preset, growth, horizon, side, models
-    });
-    WP.arenaCache.pml = fc;
-    renderForecastFutureChart('pml');
-    renderForecastFutureChart('pml_hourly');
-    renderPMLProjection(fc);
-    // Predicción continua: tomamos el primer lado disponible (o venta por defecto)
-    const sideKey = (fc.sides && fc.sides.venta) ? 'venta' : Object.keys(fc.sides || {})[0];
-    if (sideKey && fc.sides[sideKey]) {
-      const sd = fc.sides[sideKey];
-      const baseYear = new Date().getFullYear();
-      const histYearsAbs = (sd.history_t || []).map(t => baseYear - (sd.history_t.length - 1) + t);
-      renderArenaPrediction({
-        canvasId: 'pml-prediction-chart', badgeId: 'pml-prediction-badge',
-        history: { years: histYearsAbs, annual: sd.history_annual || [] },
-        projection: sd.projection, bestModel: sd.best_model,
-        ylabel: `PML anual ($/kWh) — ${sideKey}`, decimals: 4, unitLabel: '$/kWh',
-      });
+    renderPMLDuration(baseInfo, 'venta');
+    WP.arenaCache.pml = {
+      mode: 'fixed_2018_profile',
+      meta: baseInfo.meta,
+      raw_values: baseInfo.profile_2018,
+      sides: { venta: { raw_values: baseInfo.profile_2018 } },
+    };
+    await loadParkConfiguration({ quiet: true });
+    const norm = baseInfo.normalization?.venta || {};
+    const status = document.getElementById('pml-fixed-status');
+    if (status) {
+      const filled = Number(norm.filled_hours || 0);
+      status.style.display = '';
+      status.innerHTML = `<strong>PML 2018 publicado.</strong> ${Number(norm.output_hours || 0).toLocaleString('es-MX')} horas · replicación fija · escalamiento 0 %.${filled ? ` Se completó ${filled} hora faltante con la media anual porque el archivo no contiene timestamp.` : ''}`;
     }
-    renderPMLTable(fc);
-    setStatus(`PML proyectado — lados: ${Object.keys(fc.sides).join(', ')}`);
-    toast('Pronóstico de PML completado', 'success');
+    setStatus('PML 2018 cargado — perfil fijo publicado para el proyecto');
+    toast('PML 2018 cargado y publicado sin modelado', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena (Anual)';
+    btn.disabled = false; btn.textContent = 'Cargar y usar PML 2018';
   }
 }
 
-async function runPmlArenaHourly() {
-  const preset = document.getElementById('pml-preset').value;
-  const side = document.getElementById('pml-side').value;
-  const models = fcGetSelectedModels('pml-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
-
-  const btn = document.getElementById('btn-pml-train-hourly');
-  btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
-  try {
-    const baseInfo = await api('/api/pml/load', 'POST', {
-      session_id: WP.sessionId, preset
-    });
-    renderPMLKPIs(baseInfo, side);
-    renderPMLDiurnal(baseInfo);
-    renderPMLDuration(baseInfo, side === 'compra' ? 'compra' : 'venta');
-
-    const fc = await api('/api/pml/forecast_hourly', 'POST', {
-      session_id: WP.sessionId, preset, models
-    });
-    WP.arenaCache.pml_hourly = fc;
-
-    const growth = parseFloat(document.getElementById('pml-growth').value || '0.030');
-    const horizon = Math.max(25, parseInt(document.getElementById('pml-horizon').value || '25'));
-    const annualFc = await api('/api/pml/forecast', 'POST', {
-      session_id: WP.sessionId, preset, growth, horizon, side, models
-    });
-    WP.arenaCache.pml = annualFc;
-    renderForecastFutureChart('pml');
-    renderForecastFutureChart('pml_hourly');
-    toast('Perfil horario de PML ajustado. Revisa el Centro de modelaje.', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Entrenar Perfil Horario (8760 pts)';
-  }
+function renderPMLSeries(info) {
+  destroyChart('pml-series-chart');
+  const ctx = document.getElementById('pml-series-chart')?.getContext('2d');
+  if (!ctx) return;
+  const values = info.daily_mean_venta || [];
+  WP.charts['pml-series-chart'] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: values.map((_, index) => `Día ${index + 1}`),
+      datasets: [{
+        label: 'PML medio diario · venta', data: values,
+        borderColor: acc(), backgroundColor: acc() + '18',
+        borderWidth: 1.6, pointRadius: 0, tension: 0.15, fill: true,
+      }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { color: gridColor() }, title: { display: true, text: 'Día de 2018' } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: info.meta?.unit || '$/kWh' } },
+      },
+    },
+  });
+  const badge = document.getElementById('pml-series-badge');
+  if (badge) badge.textContent = `${info.base_year} · ${Number(info.stats_venta?.n_hours || 0).toLocaleString('es-MX')} h · fijo`;
 }
 
 function renderPMLKPIs(info, side) {
@@ -9804,13 +10116,6 @@ function renderPMLTable(fc) {
 
 // ─── TASA DE INTERÉS ARENA ───────────────────────────────────────────────────
 function bindInterestArena() {
-  const tagBox = document.getElementById('interest-model-tags');
-  if (tagBox) {
-    tagBox.addEventListener('click', e => {
-      const tag = e.target.closest('[data-model]');
-      if (tag) tag.classList.toggle('active');
-    });
-  }
   const btn = document.getElementById('btn-interest-train');
   if (btn) btn.addEventListener('click', runInterestArena);
 }
@@ -9818,41 +10123,28 @@ function bindInterestArena() {
 async function runInterestArena() {
   const preset = document.getElementById('interest-preset').value;
   const horizon = Math.max(25, parseInt(document.getElementById('interest-horizon').value || '25'));
-  const models = fcGetSelectedModels('interest-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
   const btn = document.getElementById('btn-interest-train');
-  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
+  btn.disabled = true; btn.textContent = 'Validando ventanas recientes…';
   try {
     const fc = await api('/api/interest/forecast', 'POST', {
-      session_id: WP.sessionId, preset, horizon, models
+      session_id: WP.sessionId, preset, horizon
     });
     WP.arenaCache.interest = fc;
-    renderForecastFutureChart('interest');
-    
-    // KPIs (Año Base)
     renderInterestKPIs(fc);
-    
-    // Proyección Chart (continua: histórico + futuro)
-    renderInterestProjection(fc);
-
-    // Proyección 25 años (solo futuro)
     renderArena25Years({
       canvasId: 'interest-25y-chart', badgeId: 'interest-25y-badge',
       projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Tasa (%)', decimals: 2, unitLabel: '%',
+      ylabel: 'Tasa (%)', decimals: 2, unitLabel: '%', bestOnly: true,
     });
-
-    // Tabla Comparativa
-    renderInterestCompareTable(fc);
-
-    document.getElementById('interest-best-badge').textContent = `★ Mejor: ${fc.best_model}`;
-    toast('Arena de Tasa de Interés entrenada con éxito');
+    renderMarketMilestones('interest-milestone-tbl', fc, '%');
+    await loadParkConfiguration({ quiet: true });
+    toast('Trayectoria de tasa estimada para 25 años', 'success');
   } catch (err) {
     console.error(err);
     toast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+    btn.disabled = false; btn.textContent = 'Estimar tasa del proyecto · 25 años';
   }
 }
 
@@ -9860,14 +10152,17 @@ function renderInterestKPIs(fc) {
   const kpiBox = document.getElementById('interest-kpis');
   if (!fc.history_annual || !fc.history_annual.length) return;
   const vals = fc.history_annual;
-  const first = vals[0], last = vals[vals.length - 1];
-  const max = Math.max(...vals), min = Math.min(...vals);
-  
+  const last = vals[vals.length - 1];
+  const years = fc.history_years || [];
+  const start = fc.provenance?.training_start_year ?? '—';
+  const end = fc.provenance?.training_end_year ?? '—';
+  const metric = fc.validation?.models?.[fc.best_model] || {};
+
   kpiBox.innerHTML = [
-    fcKpiCard(`Año Inicio (${fc.history_years[0]})`, `${fcFormatNumber(first)} %`),
-    fcKpiCard(`Año Base (${fc.history_years[fc.history_years.length-1]})`, `${fcFormatNumber(last)} %`),
-    fcKpiCard('Máximo Histórico', `${fcFormatNumber(max)} %`),
-    fcKpiCard('Mínimo Histórico', `${fcFormatNumber(min)} %`)
+    fcKpiCard('Histórico visible', `${years[0]}–${years.at(-1)}`),
+    fcKpiCard(`Último año (${years.at(-1)})`, `${fcFormatNumber(last)} %`),
+    fcKpiCard('Ventana de entrenamiento', `${start}–${end}`),
+    fcKpiCard('RMSE fuera de muestra', `${fcFormatNumber(metric.rmse, 3)} pp`)
   ].join('');
 }
 
@@ -9962,64 +10257,72 @@ function renderInterestCompareTable(fc) {
 
 // ─── TIPO DE CAMBIO ARENA ────────────────────────────────────────────────────
 function bindFxArena() {
-  const tagBox = document.getElementById('fx-model-tags');
-  if (tagBox) {
-    tagBox.addEventListener('click', e => {
-      const tag = e.target.closest('[data-model]');
-      if (tag) tag.classList.toggle('active');
-    });
-  }
   const btn = document.getElementById('btn-fx-train');
   if (btn) btn.addEventListener('click', runFxArena);
 }
 
 async function runFxArena() {
   const preset = document.getElementById('fx-preset').value;
-  const depreciation = parseFloat(document.getElementById('fx-depreciation').value || '2.5');
   const horizon = Math.max(25, parseInt(document.getElementById('fx-horizon').value || '25'));
-  const models = fcGetSelectedModels('fx-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
 
   const btn = document.getElementById('btn-fx-train');
-  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
+  btn.disabled = true; btn.textContent = 'Validando ventanas recientes…';
   try {
     const fc = await api('/api/fx/forecast', 'POST', {
-      session_id: WP.sessionId, preset, depreciation, horizon, models
+      session_id: WP.sessionId, preset, horizon
     });
     WP.arenaCache.fx = fc;
-    renderForecastFutureChart('fx');
-    
     renderFxKPIs(fc);
-    renderFxProjection(fc);
     renderArena25Years({
       canvasId: 'fx-25y-chart', badgeId: 'fx-25y-badge',
       projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'MXN / USD', decimals: 2, unitLabel: 'MXN',
+      ylabel: 'MXN / USD', decimals: 2, unitLabel: 'MXN/USD', bestOnly: true,
     });
-    renderFxCompareTable(fc);
-
-    document.getElementById('fx-best-badge').textContent = `★ Mejor: ${fc.best_model}`;
-    toast('Arena de Tipo de Cambio entrenada con éxito');
+    renderMarketMilestones('fx-milestone-tbl', fc, 'MXN/USD');
+    await loadParkConfiguration({ quiet: true });
+    toast('Trayectoria USD/MXN estimada con el régimen reciente', 'success');
   } catch (err) {
     console.error(err);
     toast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena';
+    btn.disabled = false; btn.textContent = 'Estimar USD/MXN del proyecto · 25 años';
   }
+}
+
+function renderMarketMilestones(tableId, fc, unit) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  const projection = fc?.projection?.[fc?.best_model];
+  if (!tbody || !projection?.annual?.length) return;
+  const windowYears = projection.params?.window_years
+    || fc.validation?.selected_window_years
+    || fc.projection_policy?.training_window_years
+    || '—';
+  const milestones = [1, 5, 10, 15, 20, 25]
+    .filter(year => year <= projection.annual.length);
+  tbody.innerHTML = milestones.map(projectYear => {
+    const index = projectYear - 1;
+    return `<tr>
+      <td>${projectYear}</td>
+      <td>${projection.years[index]}</td>
+      <td>${fcFormatNumber(projection.annual[index], 3)} ${unit}</td>
+      <td>${fc.best_model} · ${windowYears} años</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderFxKPIs(fc) {
   const kpiBox = document.getElementById('fx-kpis');
   if (!fc.history_annual || !fc.history_annual.length) return;
   const vals = fc.history_annual;
-  const first = vals[0], last = vals[vals.length - 1];
-  const max = Math.max(...vals), min = Math.min(...vals);
-  
+  const last = vals[vals.length - 1];
+  const years = fc.history_years || [];
+  const metric = fc.validation?.models?.[fc.best_model] || {};
+
   kpiBox.innerHTML = [
-    fcKpiCard(`Año Inicio (${fc.history_years[0]})`, `$ ${fcFormatNumber(first)}`),
-    fcKpiCard(`Año Base (${fc.history_years[fc.history_years.length-1]})`, `$ ${fcFormatNumber(last)}`),
-    fcKpiCard('Máximo Histórico', `$ ${fcFormatNumber(max)}`),
-    fcKpiCard('Mínimo Histórico', `$ ${fcFormatNumber(min)}`)
+    fcKpiCard('Histórico visible', `${years[0]}–${years.at(-1)}`),
+    fcKpiCard(`Último año (${years.at(-1)})`, `${fcFormatNumber(last)} MXN/USD`),
+    fcKpiCard('Ventana de entrenamiento', `${fc.training_start || '—'}–${fc.training_end || '—'}`),
+    fcKpiCard('RMSE fuera de muestra', `${fcFormatNumber(metric.rmse, 3)} MXN/USD`)
   ].join('');
 }
 
@@ -10491,13 +10794,14 @@ function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, be
 }
 
 // Proyección 25 años (solo futuro) con bandas IC del mejor modelo
-function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '' }) {
+function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '', bestOnly = false }) {
   destroyChart(canvasId);
   const ctxEl = document.getElementById(canvasId);
   if (!ctxEl) return;
   const ctx = ctxEl.getContext('2d');
   const proj = projection || {};
-  const keys = Object.keys(proj).filter(k => proj[k] && !proj[k].error);
+  let keys = Object.keys(proj).filter(k => proj[k] && !proj[k].error);
+  if (bestOnly && bestModel && proj[bestModel]) keys = [bestModel];
   if (!keys.length) return;
   const labels = proj[keys[0]].years;
 
@@ -10517,12 +10821,12 @@ function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, 
   if (bestModel && proj[bestModel]) {
     const b = proj[bestModel];
     datasets.push({
-      label: 'IC 95% sup', data: b.ci_high.map(scaler),
+      label: 'Banda de planeación sup', data: b.ci_high.map(scaler),
       borderColor: 'transparent', backgroundColor: '#22c55e22',
       fill: '+1', pointRadius: 0, borderWidth: 0,
     });
     datasets.push({
-      label: 'IC 95% inf', data: b.ci_low.map(scaler),
+      label: 'Banda de planeación inf', data: b.ci_low.map(scaler),
       borderColor: 'transparent', backgroundColor: 'transparent',
       pointRadius: 0, borderWidth: 0, fill: false,
     });
@@ -10534,7 +10838,7 @@ function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, 
       responsive: true, maintainAspectRatio: false,
       interaction: { intersect: false, mode: 'index' },
       plugins: {
-        legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
+        legend: { labels: { filter: it => !/Banda de planeación/.test(it.text) } },
         tooltip: { callbacks: {
           label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
         } }
@@ -10548,7 +10852,7 @@ function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, 
 
   if (badgeId && bestModel && proj[bestModel]) {
     const b = proj[bestModel];
-    const txt = `Best: ${bestModel} · CAGR ${fcPct(b.cagr)} · Año final ${fcFormatNumber(scaler(b.annual.at(-1)), decimals)} ${unitLabel}`;
+    const txt = `${bestModel} · Año 25: ${fcFormatNumber(scaler(b.annual.at(-1)), decimals)} ${unitLabel}`;
     const bd = document.getElementById(badgeId);
     if (bd) bd.textContent = txt;
   }
@@ -10910,6 +11214,7 @@ async function loadMarketFile(category, filename) {
       category: category,
     });
     _renderMarketResult(category, r);
+    await syncParkCommercialFile(category);
     toast(`${MARKET_LABELS[category]}: ${r.filename} cargado — ${r.n_rows.toLocaleString()} registros`, 'success');
     setStatus(`${MARKET_LABELS[category]} listo: ${r.filename}`);
   } catch (e) {
@@ -10927,6 +11232,7 @@ async function uploadMarketFile(category, file) {
   try {
     const r = await apiFD('/api/market/upload', fd);
     _renderMarketResult(category, r);
+    await syncParkCommercialFile(category);
     // Reload file list so the new file appears in the selector
     await loadMarketFiles();
     toast(`${MARKET_LABELS[category]}: ${r.filename} subido — ${r.n_rows.toLocaleString()} registros`, 'success');
@@ -10934,6 +11240,20 @@ async function uploadMarketFile(category, file) {
   } catch (e) {
     toast(`Error subiendo ${file.name}: ${e.message}`, 'error');
     setStatus('Error al subir archivo de mercado.');
+  }
+}
+
+async function syncParkCommercialFile(category) {
+  if (category === 'pml') {
+    const fixed = await api('/api/pml/load', 'POST', {
+      session_id: WP.sessionId,
+      preset: 'session_market_pml',
+    });
+    WP.arenaCache.pmlBase = fixed;
+  }
+  if (category === 'pml' || category === 'demand') {
+    const saved = await saveParkConfiguration({ quiet: true });
+    if (!saved) await loadParkConfiguration({ quiet: true });
   }
 }
 
@@ -11011,6 +11331,445 @@ function _renderMarketResult(category, r) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  MCP LAB — selección Globe, ejecución, validación y publicación
+// ════════════════════════════════════════════════════════════════════════════
+function mcpEsc(value) {
+  return String(value ?? '').replace(/[&<>"]/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[char]));
+}
+
+function mcpFmt(value, digits = 3) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toFixed(digits) : '—';
+}
+
+function mcpMethodLabel(value) {
+  const method = String(value || '');
+  if (method === 'sector_qm_16') return 'MCP cuantílico sectorial · 16 sectores';
+  if (method === 'sector_qm_12') return 'MCP cuantílico sectorial · 12 sectores';
+  const labels = {
+    quantile_mapping: 'Mapeo cuantílico', seasonal_quantile_mapping: 'Mapeo cuantílico estacional · 2018',
+    linear: 'MCP lineal', variance_ratio: 'Variance Ratio',
+    quadratic: 'MCP cuadrático', ml_gradient_boosting: 'Gradient Boosting',
+    ml_random_forest: 'Random Forest', ml_ridge: 'Ridge', ml_mlp: 'MLP',
+  };
+  return labels[method] || method;
+}
+
+function bindMCPLab() {
+  document.getElementById('btn-mcp-run')?.addEventListener('click', runMCPLab);
+  document.getElementById('btn-mcp-publish')?.addEventListener('click', publishMCPRun);
+  document.getElementById('btn-mcp-back-globe')?.addEventListener('click', restoreGlobeStage);
+  document.querySelector('.nav-btn[data-module="mcp"]')?.addEventListener('click', () => {
+    setTimeout(() => loadMCPStudy(), 30);
+  });
+}
+
+async function loadMCPStudy() {
+  if (!WP.sessionId) return;
+  try {
+    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'GET');
+    WP.mcpStudy = study;
+    document.getElementById('mcp-study-revision').textContent = `Revisión ${study.study_revision}`;
+    const obs = study.observed_station;
+    document.getElementById('mcp-study-observation').innerHTML =
+      `<strong>${mcpEsc(obs.display_name)}</strong><br><span class="text-muted">OBS · ${mcpEsc(obs.provider)} · ${mcpFmt(obs.latitude, 3)}, ${mcpFmt(obs.longitude, 3)}${obs.timezone_label ? ` · ${mcpEsc(obs.timezone_label)}` : ''}</span>`;
+    document.getElementById('mcp-study-references').innerHTML = (study.reference_stations || []).map(ref =>
+      `<span class="mcp-ref-chip">${mcpEsc(ref.provider)} · ${mcpEsc(ref.display_name)} · ${mcpFmt(ref.distance_km, 1)} km
+        <button type="button" class="mcp-ref-remove" data-reference-id="${mcpEsc(ref.station_id)}" aria-label="Retirar ${mcpEsc(ref.display_name)}">×</button>
+      </span>`
+    ).join('') || '—';
+    document.querySelectorAll('#mcp-study-references .mcp-ref-remove').forEach(button => {
+      button.addEventListener('click', () => removeMCPReference(button.dataset.referenceId));
+    });
+    document.getElementById('mcp-target-height').value = study.target_height_m || 80;
+    document.getElementById('btn-mcp-run').disabled = !(study.reference_stations || []).length;
+    document.getElementById('mcp-progress-message').textContent = 'Estudio listo. Ejecuta el análisis MCP cuando quieras.';
+  } catch (e) {
+    WP.mcpStudy = null;
+    document.getElementById('mcp-study-revision').textContent = 'Sin selección';
+    document.getElementById('btn-mcp-run').disabled = true;
+  }
+}
+
+async function removeMCPReference(referenceId) {
+  if (!WP.mcpStudy) return;
+  const remaining = (WP.mcpStudy.reference_station_ids || []).filter(value => value !== referenceId);
+  if (!remaining.length) {
+    toast('El estudio MCP debe conservar al menos una referencia.', 'warn');
+    return;
+  }
+  try {
+    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'PUT', {
+      observed_station_id: WP.mcpStudy.observed_station_id,
+      reference_station_ids: remaining,
+      poi: WP.mcpStudy.poi,
+      radius_km: WP.mcpStudy.radius_km,
+      target_height_m: parseFloat(document.getElementById('mcp-target-height')?.value) || WP.mcpStudy.target_height_m || 80,
+    });
+    WP.mcpStudy = study;
+    await loadMCPStudy();
+    toast(`Referencia retirada. Estudio actualizado a revisión ${study.study_revision}.`, 'success');
+  } catch (e) {
+    toast(`No se pudo retirar la referencia: ${e.message}`, 'error');
+  }
+}
+
+async function runMCPLab() {
+  if (!WP.mcpStudy) return;
+  const btn = document.getElementById('btn-mcp-run');
+  btn.disabled = true;
+  document.getElementById('btn-mcp-publish').disabled = true;
+  document.getElementById('mcp-publish-status').textContent = 'No publicado';
+  try {
+    const started = await api('/api/mcp/runs', 'POST', {
+      session_id: WP.sessionId,
+      target_height_m: parseFloat(document.getElementById('mcp-target-height').value) || 80,
+      train_year: parseInt(document.getElementById('mcp-train-year').value) || 2018,
+      test_year: parseInt(document.getElementById('mcp-test-year').value) || 2019,
+      sector_count: parseInt(document.getElementById('mcp-sector-count')?.value) || 16,
+    });
+    WP.mcpRunId = started.run_id;
+    document.getElementById('mcp-run-status').textContent = 'Ejecutando';
+    await pollMCPTask(started.task_id);
+  } catch (e) {
+    document.getElementById('mcp-run-status').textContent = 'Error';
+    document.getElementById('mcp-progress-message').textContent = e.message;
+    toast(`MCP no pudo iniciar: ${e.message}`, 'error');
+    btn.disabled = false;
+  }
+}
+
+async function pollMCPTask(taskId) {
+  try {
+    const task = await api(`/api/tasks/${encodeURIComponent(taskId)}`, 'GET');
+    document.getElementById('mcp-progress-fill').style.width = `${Math.max(0, Math.min(100, task.progress || 0))}%`;
+    document.getElementById('mcp-progress-message').textContent = task.message || 'Procesando…';
+    document.getElementById('mcp-run-status').textContent = task.status === 'done' ? 'Terminado' : task.status === 'error' ? 'Error' : 'Ejecutando';
+    if (task.status === 'done') {
+      WP.mcpRunId = task.result?.run_id || WP.mcpRunId;
+      const result = await api(`/api/mcp/runs/${encodeURIComponent(WP.mcpRunId)}?session_id=${encodeURIComponent(WP.sessionId)}`, 'GET');
+      renderMCPResult(result);
+      document.getElementById('btn-mcp-run').disabled = false;
+      document.getElementById('btn-mcp-publish').disabled = false;
+      toast('Corrida MCP terminada y lista para revisión.', 'success');
+      return;
+    }
+    if (task.status === 'error') {
+      document.getElementById('btn-mcp-run').disabled = false;
+      toast(`Corrida MCP fallida: ${task.message}`, 'error');
+      return;
+    }
+    setTimeout(() => pollMCPTask(taskId), 1600);
+  } catch (e) {
+    document.getElementById('btn-mcp-run').disabled = false;
+    toast(`No se pudo consultar la corrida MCP: ${e.message}`, 'error');
+  }
+}
+
+function renderMCPResult(result) {
+  const studyRefs = result.study?.reference_stations || [];
+  const providerByFilename = new Map();
+  studyRefs.forEach(ref => (ref.file_ids || []).forEach(name => providerByFilename.set(name, ref.provider)));
+  const ranking = result.reference_ranking || [];
+  document.getElementById('mcp-ranking-body').innerHTML = ranking.length ? ranking.map(row => `<tr class="${row.rank === 1 ? 'best-row' : ''}">
+    <td class="model-name">${row.rank === 1 ? '★ ' : ''}${mcpEsc(row.reference)}</td><td>${mcpEsc(providerByFilename.get(row.reference) || '')}</td>
+    <td>${mcpFmt(row.R)}</td><td>${mcpFmt(row.R2)}</td><td>${mcpFmt(row.RMSE)}</td><td>${mcpFmt(row.MAE)}</td><td>${mcpFmt(row.Bias)}</td><td>${row.N ?? '—'}</td>
+  </tr>`).join('') : '<tr><td colspan="8">Sin referencias evaluables</td></tr>';
+
+  const modelRows = [];
+  const speedSelection = result.speed_model_selection || {};
+  const excludedSpeedMethods = new Set(speedSelection.excluded_speed_methods || []);
+  (result.mcp_method_comparison_2019 || []).forEach(row => modelRows.push({ family: 'MCP', ...row }));
+  (result.ml_model_comparison_2019 || []).forEach(row => modelRows.push({ family: 'ML', ...row }));
+  if (result.multi_reference?.nnls) modelRows.push({ family: 'Multi-ref', ...result.multi_reference.nnls });
+  (result.multi_reference?.ml_comparison || []).forEach(row => modelRows.push({ family: 'Multi-ref ML', ...row }));
+  document.getElementById('mcp-models-body').innerHTML = modelRows.length ? modelRows.map(row => {
+    const met = row.metrics || {};
+    const selectionStatus = row.method === speedSelection.selected_method
+      ? '★ Ganador de velocidad'
+      : (excludedSpeedMethods.has(row.method) ? 'Sólo diagnóstico sectorial' : row.status);
+    return `<tr class="${row.method === speedSelection.selected_method ? 'best-row' : ''}"><td>${row.family}</td><td class="model-name">${mcpEsc(mcpMethodLabel(row.method))}</td><td>${mcpFmt(met.RMSE)}</td><td>${mcpFmt(met.MAE)}</td><td>${mcpFmt(met.R2)}</td><td>${mcpFmt(met.Bias)}</td><td>${mcpFmt(met.delta_weibull_k)}</td><td>${mcpFmt(met.delta_weibull_lambda)}</td><td>${mcpEsc(selectionStatus)}</td></tr>`;
+  }).join('') : '<tr><td colspan="9">Sin comparación</td></tr>';
+
+  const forward = result.validation_forward?.metrics || {};
+  const reverse = result.validation_reverse?.metrics || {};
+  document.getElementById('mcp-validation-summary').innerHTML = `<div class="mcp-kpis">
+    <div class="mcp-kpi">2018 → 2019<b>RMSE ${mcpFmt(forward.RMSE)} · R² ${mcpFmt(forward.R2)}</b></div>
+    <div class="mcp-kpi">Sensibilidad inversa · no usada para estimar<b>2019 → 2018 · RMSE ${mcpFmt(reverse.RMSE)} · R² ${mcpFmt(reverse.R2)}</b></div>
+    <div class="mcp-kpi">Entrenamiento final<b>2018 exclusivamente · 2019 fuera de muestra</b></div>
+    <div class="mcp-kpi">Ganador de velocidad<b>${mcpEsc(mcpMethodLabel(speedSelection.selected_method || result.backtesting_multi_year?.selected_method))}</b></div>
+    <div class="mcp-kpi">Validación de distribución<b>KS ${mcpFmt(forward.KS)} · Δk ${mcpFmt(forward.delta_weibull_k)} · Δλ ${mcpFmt(forward.delta_weibull_lambda)} m/s</b></div>
+    <div class="mcp-kpi">Rosa y dirección<b>${mcpEsc(result.selected_direction_reference || result.selected_reference)} · ${Number(result.wind_rose_direction_model?.n_sectors || 16)} sectores estacionales</b></div>
+    <div class="mcp-kpi">Criterio de velocidad<b>Estacionalidad mensual 2018 → validación 2019</b></div>
+  </div>`;
+
+  const hist = result.historical_reconstruction || {};
+  const historicalWeibull = result.weibull_provenance || hist.weibull || {};
+  const modelWeibull = historicalWeibull.model_hindcast || {};
+  const projectWeibull = historicalWeibull.project_series || {};
+  document.getElementById('mcp-hindcast-summary').innerHTML = `
+    <div class="mcp-kpi">Periodo<b>${mcpEsc((hist.period_start || '').slice(0,10))} → ${mcpEsc((hist.period_end || '').slice(0,10))}</b></div>
+    <div class="mcp-kpi">Horas válidas<b>${Number(hist.valid_long_term_hours || 0).toLocaleString()}</b></div>
+    <div class="mcp-kpi">Reconstruido<b>${mcpFmt(hist.reconstructed_share_pct, 1)}%</b></div>
+    <div class="mcp-kpi">Referencia de velocidad<b>${mcpEsc(result.selected_reference)}</b></div>
+    <div class="mcp-kpi">Referencia de dirección<b>${mcpEsc(result.selected_direction_reference || result.selected_reference)}</b></div>
+    <div class="mcp-kpi">Weibull del hindcast modelado<b>k ${mcpFmt(modelWeibull.k)} · λ ${mcpFmt(modelWeibull.lambda)} m/s · MLE</b></div>
+    <div class="mcp-kpi">Weibull de la serie del proyecto<b>k ${mcpFmt(projectWeibull.k)} · λ ${mcpFmt(projectWeibull.lambda)} m/s · observado + huecos MCP</b></div>`;
+  const oqc = result.quality_control?.observations || {};
+  document.getElementById('mcp-qc-summary').innerHTML = `
+    <div class="mcp-kpi">Observación válida<b>${Number(oqc.records_valid || oqc.eligible_rows || oqc.valid_rows || 0).toLocaleString()} registros</b></div>
+    <div class="mcp-kpi">Reloj de M04<b>${mcpEsc(result.observation_metadata?.timezone_input || 'UTC')} → UTC</b></div>
+    <div class="mcp-kpi">Perfil vertical α<b>${mcpFmt(result.vertical_profile?.alpha, 4)}</b></div>
+    <div class="mcp-kpi">Referencias evaluadas<b>${ranking.length}</b></div>`;
+
+  const gap = result.visualization?.gap_treatment;
+  const gapBox = document.getElementById('mcp-gap-summary');
+  const gapBody = document.getElementById('mcp-gap-body');
+  if (gap?.yearly?.length && gapBox && gapBody) {
+    gapBox.classList.remove('hidden');
+    gapBody.innerHTML = gap.yearly.map(row => `<tr>
+      <td>${row.year}</td><td>${Number(row.expected_hours).toLocaleString()}</td>
+      <td>${Number(row.measured_hours).toLocaleString()}</td><td>${mcpFmt(row.measured_availability_pct, 1)}%</td>
+      <td>${Number(row.mcp_filled_hours).toLocaleString()}</td><td>${Number(row.unresolved_hours).toLocaleString()}</td>
+    </tr>`).join('');
+    const may2019 = (gap.monthly || []).find(row => row.year === 2019 && row.month === 5);
+    const note = document.getElementById('mcp-gap-note');
+    if (note) note.textContent = may2019
+      ? `Mayo de 2019: ${Number(may2019.measured_hours).toLocaleString()} h medidas, ${Number(may2019.mcp_filled_hours).toLocaleString()} h reconstruidas por MCP y ${Number(may2019.unresolved_hours).toLocaleString()} h sin resolver. Los valores reconstruidos nunca se etiquetan como medición.`
+      : 'Los valores reconstruidos nunca se etiquetan como medición.';
+  } else {
+    gapBox?.classList.add('hidden');
+  }
+
+  renderMCPVisualizations(result);
+
+  const labels = {
+    final_report_html: 'Informe HTML', result_json: 'Resultado JSON', run_manifest_json: 'Manifiesto',
+    reference_ranking_csv: 'Ranking CSV', historical_reconstruction_csv: 'Hindcast CSV',
+    historical_reconstruction_annual_csv: 'Resumen anual', reconstruction_readiness_json: 'Readiness',
+    multi_reference_comparison_json: 'Comparación multirreferencia', campaign_sensitivity_csv: 'Sensibilidad de campaña',
+    m04_gap_treatment_csv: 'Faltantes M04 CSV', direction_correction_json: 'Corrección direccional JSON',
+    direction_reference_ranking_csv: 'Ranking direccional 2018 CSV',
+    certe_2018_training_baseline_json: 'Control CERTE 2018 JSON',
+    measured_turbulence_10min_csv: 'TI CERTE medida 10 min CSV',
+    historical_turbulence_csv: 'TI histórica modelada CSV',
+    turbulence_summary_json: 'Resumen de turbulencia JSON',
+  };
+  document.getElementById('mcp-artifacts').innerHTML = Object.entries(labels)
+    .filter(([key]) => result.artifacts?.[key])
+    .map(([key, label]) => `<a href="/api/mcp/runs/${encodeURIComponent(result.run_id)}/artifacts/${encodeURIComponent(key)}?session_id=${encodeURIComponent(WP.sessionId)}" target="_blank" rel="noopener">⬇ ${label}</a>`).join('');
+}
+
+function renderMCPVisualizations(result) {
+  const visual = result.visualization?.validation_forward;
+  const empty = document.getElementById('mcp-visual-empty');
+  const content = document.getElementById('mcp-visual-content');
+  if (!visual?.timeseries?.timestamps?.length) {
+    empty?.classList.remove('hidden');
+    content?.classList.add('hidden');
+    return;
+  }
+  empty?.classList.add('hidden');
+  content?.classList.remove('hidden');
+  const period = document.getElementById('mcp-visual-period');
+  if (period) period.textContent = `${String(visual.period_start || '').slice(0, 10)} → ${String(visual.period_end || '').slice(0, 10)} · ${Number(visual.pairs || 0).toLocaleString()} pares`;
+
+  const measuredColor = '#1D9E75';
+  const estimatedColor = '#E59A45';
+  const mutedColor = isLight() ? '#64748b' : '#94a3b8';
+  const baseOptions = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { boxWidth: 12, font: { size: 10 } } } },
+    scales: {
+      x: { grid: { color: gridColor() }, ticks: { maxTicksLimit: 9, font: { size: 9 } } },
+      y: { grid: { color: gridColor() }, ticks: { font: { size: 9 } }, title: { display: true, text: 'm/s' } },
+    },
+  };
+  const putChart = (id, config) => {
+    destroyChart(id);
+    const canvas = document.getElementById(id);
+    if (canvas) WP.charts[id] = new Chart(canvas, config);
+  };
+
+  const baseline = result.visualization?.training_observation_baseline || {};
+  const rawBaseline = baseline.raw_10min || {};
+  const hourlyBaseline = baseline.hourly_circular || {};
+  const baselineBox = document.getElementById('mcp-certe-baseline');
+  if (rawBaseline.weibull && rawBaseline.wind_rose_36) {
+    baselineBox?.classList.remove('hidden');
+    const match = baseline.documentary_reference?.matches_raw_10min;
+    const baselineKpis = document.getElementById('mcp-certe-baseline-kpis');
+    if (baselineKpis) baselineKpis.innerHTML = `
+      <div class="mcp-kpi">CERTE original · 10 min<b>k ${mcpFmt(rawBaseline.weibull.k)} · λ ${mcpFmt(rawBaseline.weibull.lambda)} m/s</b></div>
+      <div class="mcp-kpi">CERTE sincronizado · 1 h<b>k ${mcpFmt(hourlyBaseline.weibull?.k)} · λ ${mcpFmt(hourlyBaseline.weibull?.lambda)} m/s</b></div>
+      <div class="mcp-kpi">Figura CERTE 2018<b>${match ? 'Coincide' : 'Revisar'} · k 1.809 · λ 10.522 m/s</b></div>
+      <div class="mcp-kpi">Efecto sobre orientación<b>TV ${mcpFmt(baseline.aggregation_effect?.rose_total_variation_pct_points, 2)} puntos porcentuales</b></div>`;
+    _drawWindRose(rawBaseline.wind_rose_36, 'mcp-chart-certe-rose', 'mcp-certe-rose-legend');
+    putChart('mcp-chart-certe-weibull', {
+      type: 'bar',
+      data: { labels: rawBaseline.weibull.labels_ms || [], datasets: [
+        { label: 'Frecuencia observada', data: rawBaseline.weibull.empirical_density || [], backgroundColor: measuredColor + '88', borderColor: measuredColor, borderWidth: 1 },
+        { type: 'line', label: `Weibull MLE · k ${mcpFmt(rawBaseline.weibull.k)} · λ ${mcpFmt(rawBaseline.weibull.lambda)}`, data: rawBaseline.weibull.weibull_pdf || [], borderColor: isLight() ? '#111827' : '#f8fafc', borderWidth: 2, pointRadius: 0, tension: .25 },
+      ] },
+      options: { ...baseOptions, scales: {
+        x: { grid: { display: false }, title: { display: true, text: 'Velocidad (m/s)' }, ticks: { maxTicksLimit: 12 } },
+        y: { grid: { color: gridColor() }, title: { display: true, text: 'Densidad f' }, beginAtZero: true },
+      } },
+    });
+    const baselineNote = document.getElementById('mcp-certe-baseline-note');
+    if (baselineNote) baselineNote.textContent = `${baseline.note || ''} La dirección horaria usa media circular seno/coseno; no se promedian grados de forma lineal.`;
+  } else {
+    baselineBox?.classList.add('hidden');
+  }
+
+  putChart('mcp-chart-timeseries', {
+    type: 'line',
+    data: { labels: visual.timeseries.timestamps.map(value => value.slice(0, 10)), datasets: [
+      { label: 'Medido', data: visual.timeseries.measured, borderColor: measuredColor, backgroundColor: measuredColor + '20', pointRadius: 0, borderWidth: 1.4 },
+      { label: 'Estimado', data: visual.timeseries.estimated, borderColor: estimatedColor, backgroundColor: estimatedColor + '20', pointRadius: 0, borderWidth: 1.2 },
+    ] },
+    options: baseOptions,
+  });
+
+  const scatterPoints = (visual.scatter.measured || []).map((value, index) => ({ x: value, y: visual.scatter.estimated[index] }));
+  const scatterMax = Math.max(1, ...scatterPoints.flatMap(point => [Number(point.x) || 0, Number(point.y) || 0]));
+  putChart('mcp-chart-scatter', {
+    type: 'scatter',
+    data: { datasets: [
+      { label: 'Pares horarios', data: scatterPoints, backgroundColor: measuredColor + '55', borderColor: measuredColor, pointRadius: 2 },
+      { label: 'Línea 1:1', type: 'line', data: [{x:0,y:0},{x:scatterMax,y:scatterMax}], borderColor: mutedColor, borderDash: [5,4], borderWidth: 1.2, pointRadius: 0 },
+    ] },
+    options: { ...baseOptions, interaction: { mode: 'nearest', intersect: false }, scales: {
+      x: { type: 'linear', min: 0, grid: { color: gridColor() }, title: { display: true, text: 'Medido (m/s)' } },
+      y: { type: 'linear', min: 0, grid: { color: gridColor() }, title: { display: true, text: 'Estimado (m/s)' } },
+    } },
+  });
+
+  putChart('mcp-chart-distribution', {
+    type: 'line',
+    data: { labels: visual.speed_distribution.labels.map(value => Number(value).toFixed(1)), datasets: [
+      { label: 'Medido', data: visual.speed_distribution.measured_pct, borderColor: measuredColor, backgroundColor: measuredColor + '22', fill: true, pointRadius: 0, tension: .2 },
+      { label: 'Estimado', data: visual.speed_distribution.estimated_pct, borderColor: estimatedColor, backgroundColor: estimatedColor + '16', fill: true, pointRadius: 0, tension: .2 },
+    ] },
+    options: { ...baseOptions, scales: {
+      x: { grid: { display: false }, title: { display: true, text: 'Velocidad (m/s)' }, ticks: { maxTicksLimit: 10 } },
+      y: { grid: { color: gridColor() }, title: { display: true, text: 'Frecuencia (%)' } },
+    } },
+  });
+
+  putChart('mcp-chart-residuals', {
+    type: 'bar',
+    data: { labels: visual.residual_distribution.labels.map(value => Number(value).toFixed(1)), datasets: [
+      { label: 'Errores', data: visual.residual_distribution.frequency, backgroundColor: '#7C6BC4aa', borderColor: '#7C6BC4', borderWidth: 1 },
+    ] },
+    options: { ...baseOptions, plugins: { legend: { display: false } }, scales: {
+      x: { grid: { display: false }, title: { display: true, text: 'Error (m/s)' }, ticks: { maxTicksLimit: 9 } },
+      y: { grid: { color: gridColor() }, title: { display: true, text: 'Frecuencia' } },
+    } },
+  });
+
+  const monthLabels = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  putChart('mcp-chart-monthly', {
+    type: 'line',
+    data: { labels: monthLabels, datasets: [
+      { label: 'Medido', data: visual.monthly_profile.measured, borderColor: measuredColor, backgroundColor: measuredColor, pointRadius: 3, tension: .25 },
+      { label: 'Estimado', data: visual.monthly_profile.estimated, borderColor: estimatedColor, backgroundColor: estimatedColor, pointRadius: 3, tension: .25 },
+    ] },
+    options: baseOptions,
+  });
+
+  const campaign = (result.campaign_sensitivity || []).filter(row => row.status === 'ok' && Number.isFinite(Number(row.metrics?.RMSE)));
+  putChart('mcp-chart-campaign', {
+    type: 'line',
+    data: { labels: campaign.map(row => `${row.campaign_months} m`), datasets: [
+      { label: 'RMSE', data: campaign.map(row => row.metrics.RMSE), borderColor: '#4A7BC8', backgroundColor: '#4A7BC833', fill: true, pointRadius: 4, tension: .2 },
+      { label: 'MAE', data: campaign.map(row => row.metrics.MAE), borderColor: '#7C6BC4', backgroundColor: '#7C6BC4', pointRadius: 3, tension: .2 },
+    ] },
+    options: baseOptions,
+  });
+
+  const fullCampaign = result.visualization?.campaign_daily || {};
+  putChart('mcp-chart-campaign-full', {
+    type: 'line',
+    data: { labels: (fullCampaign.timestamps || []).map(value => value.slice(0, 10)), datasets: [
+      { label: 'Medido CERTE', data: fullCampaign.measured || [], borderColor: measuredColor, backgroundColor: measuredColor, pointRadius: 0, borderWidth: 1.3, spanGaps: false },
+      { label: 'Estimado MCP', data: fullCampaign.estimated || [], borderColor: estimatedColor, backgroundColor: estimatedColor, pointRadius: 0, borderDash: [4, 3], borderWidth: 1.0, spanGaps: true },
+      { label: 'Serie combinada', data: fullCampaign.combined || [], borderColor: '#4A7BC8', backgroundColor: '#4A7BC8', pointRadius: 0, borderWidth: 1.7, spanGaps: true },
+    ] },
+    options: { ...baseOptions, interaction: { mode: 'index', intersect: false } },
+  });
+
+  const renderRose = (id, rose, title) => {
+    renderDirectionalRoseChart(id, rose, title, true);
+  };
+  renderRose('mcp-chart-rose-measured', visual.wind_roses?.measured, 'Medido');
+  renderRose('mcp-chart-rose-estimated', visual.wind_roses?.estimated, 'Estimado');
+  const roseNote = document.getElementById('mcp-rose-note');
+  if (roseNote) {
+    const mae = visual.wind_roses?.direction_mae_deg;
+    roseNote.textContent = visual.wind_roses
+      ? `${visual.wind_roses.note || ''}${Number.isFinite(Number(mae)) ? ` · Error direccional medio: ${Number(mae).toFixed(1)}°` : ''}`
+      : 'No hay datos de dirección suficientes para construir las rosas de validación.';
+  }
+
+  const annual = result.visualization?.annual_hindcast || {};
+  putChart('mcp-chart-hindcast', {
+    type: 'line',
+    data: { labels: annual.years || [], datasets: [
+      { label: 'Serie combinada', data: annual.long_term || [], borderColor: '#4A7BC8', backgroundColor: '#4A7BC8', borderWidth: 2, pointRadius: 2, spanGaps: true },
+      { label: 'Observado', data: annual.measured || [], borderColor: measuredColor, backgroundColor: measuredColor, borderWidth: 1.5, pointRadius: 3, spanGaps: false },
+      { label: 'Modelo', data: annual.estimated || [], borderColor: estimatedColor, backgroundColor: estimatedColor, borderDash: [5,3], borderWidth: 1.4, pointRadius: 1, spanGaps: true },
+    ] },
+    options: baseOptions,
+  });
+
+  const historical = result.visualization?.historical_monthly || {};
+  putChart('mcp-chart-historical-full', {
+    type: 'line',
+    data: { labels: (historical.timestamps || []).map(value => value.slice(0, 7)), datasets: [
+      { label: 'Hindcast combinado', data: historical.hindcast || [], borderColor: '#4A7BC8', backgroundColor: '#4A7BC822', pointRadius: 0, borderWidth: 1.5, fill: true, spanGaps: true },
+      { label: 'Modelo MCP', data: historical.model || [], borderColor: estimatedColor, backgroundColor: estimatedColor, pointRadius: 0, borderDash: [4, 3], borderWidth: 1.0, spanGaps: true },
+      { label: 'Medido CERTE', data: historical.measured || [], borderColor: measuredColor, backgroundColor: measuredColor, pointRadius: 0, borderWidth: 1.8, spanGaps: false },
+    ] },
+    options: baseOptions,
+  });
+
+  const future = result.visualization?.future_climate_25y || {};
+  putChart('mcp-chart-future-25y', {
+    type: 'line',
+    data: { labels: future.years || [], datasets: [
+      { label: 'P95', data: future.p95 || [], borderColor: '#7C6BC488', pointRadius: 0, borderWidth: 1 },
+      { label: 'P05–P95', data: future.p05 || [], borderColor: '#7C6BC488', backgroundColor: '#7C6BC42d', pointRadius: 0, borderWidth: 1, fill: '-1' },
+      { label: 'P50 climatológico', data: future.p50 || [], borderColor: '#4A7BC8', backgroundColor: '#4A7BC8', pointRadius: 2, borderWidth: 2 },
+    ] },
+    options: baseOptions,
+  });
+  const futureNote = document.getElementById('mcp-future-note');
+  if (futureNote) futureNote.textContent = `${future.note || ''}${Number.isFinite(Number(future.iav_pct)) ? ` · Variabilidad interanual histórica: ${Number(future.iav_pct).toFixed(2)}%.` : ''}`;
+}
+
+async function publishMCPRun() {
+  if (!WP.mcpRunId) return;
+  const btn = document.getElementById('btn-mcp-publish');
+  btn.disabled = true;
+  try {
+    const published = await api(`/api/mcp/runs/${encodeURIComponent(WP.mcpRunId)}/publish`, 'POST', { session_id: WP.sessionId });
+    WP.activeDataSource = published.source_id;
+    WP.referenceHeight = published.target_height_m || WP.referenceHeight || 80;
+    applyReferenceHeightToUI(WP.referenceHeight);
+    document.getElementById('mcp-publish-status').textContent = 'Publicado';
+    document.getElementById('mcp-publish-status').className = 'badge badge--success';
+    toast('Hindcast MCP publicado como fuente del proyecto.', 'success');
+    document.querySelector('.nav-btn[data-module="resumen"]')?.click();
+    if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
+  } catch (e) {
+    toast(`No se pudo publicar: ${e.message}`, 'error');
+    btn.disabled = false;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 //  GLOBE STAGE — pantalla inicial: globo terráqueo + búsqueda + estaciones
 // ════════════════════════════════════════════════════════════════════════════
 const GLOBE = {
@@ -11030,6 +11789,9 @@ const GLOBE = {
   sites: [],
   visibleSites: [],
   master: null,
+  observedStation: null,
+  mcpReferences: new Set(),
+  mcpCatalog: null,
   collapsed: false,
   collapsedOnce: false,
   zoomScale: 1,           // 1 = base, hasta 4
@@ -11073,6 +11835,7 @@ async function bindGlobeStage() {
   bindGlobeUploadModalUI();
   bindGlobeBackButton();
   bindGlobeModeSwitch();
+  document.getElementById('btn-globe-continue-mcp')?.addEventListener('click', continueGlobeToMCP);
 
   // Auto-advance loader → app after 2.4s
   setTimeout(() => switchToGlobeApp(), 2400);
@@ -11105,11 +11868,17 @@ async function globePreloadSites() {
   const yearSel = document.getElementById('krig3-year');
   const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
 
-  // 1) Versión LIGHT: solo nombre + coords. Responde casi instantáneo y permite
-  //    pintar los pines del globo de inmediato.
+  // Catálogo MCP tipificado: una observación local y referencias ERA5/MERRA-2.
   try {
-    const rl = await api('/api/kriging/sites/light', 'GET');
-    GLOBE.sites = rl.sites || [];
+    const rl = await api(`/api/mcp/catalog?session_id=${encodeURIComponent(WP.sessionId)}`, 'GET');
+    GLOBE.mcpCatalog = rl;
+    const normalize = row => ({
+      ...row,
+      filename: row.file_ids?.[0] || row.station_id,
+      lat: Number(row.latitude), lon: Number(row.longitude),
+      source: String(row.provider || '').toLowerCase(),
+    });
+    GLOBE.sites = [...(rl.observations || []).map(normalize), ...(rl.references || []).map(normalize)];
     GLOBE.sitesLight = true;
     updateGlobeStationsBadge();
     console.log(`[globe] ${GLOBE.sites.length} estaciones (light) listas`);
@@ -11127,7 +11896,7 @@ async function globePreloadSites() {
     const r = await api(`/api/kriging/sites?year=${year}${htParamG}`, 'GET');
     if (r.sites && r.sites.length) {
       const byName = new Map(r.sites.map(s => [s.filename, s]));
-      GLOBE.sites = GLOBE.sites.map(s => byName.get(s.filename) || s);
+      GLOBE.sites = GLOBE.sites.map(s => s.data_kind === 'observed' ? s : ({ ...s, ...(byName.get(s.filename) || {}) }));
       GLOBE.sitesLight = false;
       updateGlobeStationsBadge();
       console.log(`[globe] enriquecimiento completo (año ${year})`);
@@ -11135,6 +11904,10 @@ async function globePreloadSites() {
   } catch (e) {
     console.warn('[globe] enriquecimiento falló (pines siguen visibles):', e);
   }
+}
+
+function globeSiteKey(site) {
+  return site?.station_id || site?.filename || '';
 }
 
 function updateGlobeStationsBadge(error = false) {
@@ -11294,13 +12067,13 @@ function initGlobeMain() {
         if (!isPointVisible(s.lat, s.lon)) continue;
         const c = GLOBE.mainProj([s.lon, s.lat]);
         if (!c) continue;
-        const isMaster = (GLOBE.master === s.filename);
+        const isMaster = (GLOBE.master === globeSiteKey(s));
         const hitR = isMaster ? 24 : 18;
         // hitbox vertical: rectángulo desde la base hacia arriba
         const dx = mx - c[0];
         const dy = my - (c[1] - 9);   // centroide del icono está por encima de la base
         if (Math.abs(dx) <= hitR && dy <= hitR && dy >= -16) {
-          handleGlobeStationPick(s.filename);
+          handleGlobeStationPick(globeSiteKey(s));
           return;
         }
       }
@@ -11445,8 +12218,9 @@ function drawGlobeMain() {
       if (!isPointVisible(s.lat, s.lon)) return;
       const c = GLOBE.mainProj([s.lon, s.lat]);
       if (!c) return;
-      const isMaster = (GLOBE.master === s.filename);
-      drawTurbineIcon(ctx, c[0], c[1], isMaster, isLight, GLOBE.poiHaloPhase);
+      const isMaster = (GLOBE.master === globeSiteKey(s));
+      const isSelected = GLOBE.mcpReferences.has(globeSiteKey(s));
+      drawTurbineIcon(ctx, c[0], c[1], isMaster, isLight, GLOBE.poiHaloPhase, s.provider, isSelected);
     });
   }
 
@@ -11500,12 +12274,15 @@ function drawCatalogPin(ctx, x, y, isLight) {
 }
 
 // Turbina eólica 3D estilizada — base, mástil, nacela y tres aspas
-function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase) {
+function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase, provider = '', isSelected = false) {
   const scale = isMaster ? 1.45 : 1.0;
   const mastH = 18 * scale;
   const mastW = 2.4 * scale;
   const hubR  = 3.2 * scale;
   const bladeL = 11 * scale;
+  const providerKey = String(provider || '').toUpperCase();
+  const refDark = isSelected ? '#0F6E56' : (providerKey === 'ERA5' ? '#0F5FA8' : '#5B3F99');
+  const refLight = isSelected ? '#8FE3C5' : (providerKey === 'ERA5' ? '#82BFFF' : '#C4B5FD');
 
   ctx.save();
   // Sombra elíptica debajo
@@ -11540,9 +12317,9 @@ function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase) {
     mastGrad.addColorStop(0.45, '#FFC890');
     mastGrad.addColorStop(1,    '#5A3210');
   } else {
-    mastGrad.addColorStop(0,    isLight ? '#0B3258' : '#13243C');
-    mastGrad.addColorStop(0.45, isLight ? '#82BFFF' : '#9ECCFF');
-    mastGrad.addColorStop(1,    isLight ? '#0B3258' : '#0B1A2E');
+    mastGrad.addColorStop(0,    refDark);
+    mastGrad.addColorStop(0.45, refLight);
+    mastGrad.addColorStop(1,    refDark);
   }
   ctx.fillStyle = mastGrad;
   ctx.beginPath();
@@ -11573,7 +12350,7 @@ function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase) {
       bladeGrad.addColorStop(1, '#B45309');
     } else {
       bladeGrad.addColorStop(0, isLight ? '#FFFFFF' : '#E0EFFF');
-      bladeGrad.addColorStop(1, isLight ? '#0F5FA8' : '#4DA3FF');
+      bladeGrad.addColorStop(1, refDark);
     }
     ctx.fillStyle = bladeGrad;
     ctx.strokeStyle = isLight ? 'rgba(11,18,32,0.55)' : 'rgba(0,0,0,0.55)';
@@ -11591,7 +12368,7 @@ function drawTurbineIcon(ctx, x, y, isMaster, isLight, phase) {
   // Hub (nacela) con relieve
   const hubGrad = ctx.createRadialGradient(cx - 1, cy - 1, 0.6, cx, cy, hubR);
   hubGrad.addColorStop(0, '#FFFFFF');
-  hubGrad.addColorStop(1, isMaster ? '#B45309' : (isLight ? '#0F5FA8' : '#1B3A66'));
+  hubGrad.addColorStop(1, isMaster ? '#B45309' : refDark);
   ctx.fillStyle = hubGrad;
   ctx.beginPath();
   ctx.arc(cx, cy, hubR, 0, 2*Math.PI);
@@ -11649,11 +12426,14 @@ function clearGlobePoi() {
   GLOBE.poi = null;
   GLOBE.visibleSites = [];
   GLOBE.master = null;
+  GLOBE.observedStation = null;
+  GLOBE.mcpReferences.clear();
   document.getElementById('btn-globe-clear-poi')?.classList.remove('is-visible');
   document.getElementById('globe-panel')?.classList.remove('is-open');
   const status = document.getElementById('globe-status');
   if (status) status.textContent = 'Marca un sitio en el mapa o busca una dirección';
   leafletClearAll();
+  globeUpdateContinueState();
 }
 
 function globeHaversineKm(lat1, lon1, lat2, lon2) {
@@ -11677,8 +12457,6 @@ async function globeFilterByRadius() {
   });
   inside.sort((a, b) => a._dist - b._dist);
   GLOBE.visibleSites = inside;
-  // Maestra por default = la más cercana
-  GLOBE.master = inside[0]?.filename || null;
   globeRenderStationList();
   globeUpdateStatus();
   // Abrir el panel
@@ -11717,21 +12495,30 @@ function globeRenderStationList() {
     return;
   }
   if (title) title.textContent = `${GLOBE.visibleSites.length} estaciones cercanas`;
-  list.innerHTML = GLOBE.visibleSites.map(s => {
-    const isMaster = (GLOBE.master === s.filename);
-    const src = (s.source || '').toUpperCase();
-    return `<div class="globe-station ${isMaster ? 'is-master' : ''}" data-fn="${s.filename}">
-      <div class="globe-station__star">${isMaster ? '★' : '○'}</div>
+  const observed = GLOBE.visibleSites.filter(s => s.data_kind === 'observed');
+  const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
+  const row = s => {
+    const key = globeSiteKey(s);
+    const isMaster = (GLOBE.master === key);
+    const isSelected = GLOBE.mcpReferences.has(key);
+    const src = (s.provider || s.source || '').toUpperCase();
+    return `<div class="globe-station ${isMaster ? 'is-master is-observed' : ''} ${isSelected ? 'is-selected' : ''}" data-site-id="${key}">
+      <div class="globe-station__star">${isMaster ? '★' : (isSelected ? '✓' : '○')}</div>
       <div class="globe-station__body">
         <div class="globe-station__name">${s.display_name || s.filename}</div>
-        <div class="globe-station__meta">${src} · ${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°${s.state ? ' · ' + s.state : ''}</div>
+        <div class="globe-station__meta">${s.data_kind === 'observed' ? 'OBS · ' : ''}${src} · ${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°${s.state ? ' · ' + s.state : ''}</div>
       </div>
       <div class="globe-station__dist">${s._dist.toFixed(0)} km</div>
     </div>`;
-  }).join('');
+  };
+  list.innerHTML = `<div class="globe-panel__section">Estación observada principal</div>` +
+    (observed.length ? observed.map(row).join('') : '<div class="globe-panel__empty">No hay observaciones en el radio. Puedes cargar una propia.</div>') +
+    `<div class="globe-panel__section">Referencias ERA5 / MERRA-2</div>` +
+    (references.length ? references.map(row).join('') : '<div class="globe-panel__empty">No hay referencias en el radio.</div>');
   list.querySelectorAll('.globe-station').forEach(el => {
-    el.addEventListener('click', () => handleGlobeStationPick(el.dataset.fn));
+    el.addEventListener('click', () => handleGlobeStationPick(el.dataset.siteId));
   });
+  globeUpdateContinueState();
 }
 
 // ─── HEIGHT NORMALIZATION MODAL ───────────────────────────────────────────────
@@ -11817,30 +12604,50 @@ function closeHeightNormModal() {
   if (modal) { modal.style.display = 'none'; modal.setAttribute('aria-hidden', 'true'); }
 }
 
-async function handleGlobeStationPick(filename) {
-  if (!filename) return;
-  const site = GLOBE.visibleSites.find(s => s.filename === filename) ||
-               GLOBE.sites.find(s => s.filename === filename);
-  GLOBE.master = filename;
+async function handleGlobeStationPick(identifier) {
+  if (!identifier) return;
+  const site = GLOBE.visibleSites.find(s => globeSiteKey(s) === identifier) ||
+               GLOBE.sites.find(s => globeSiteKey(s) === identifier);
+  if (!site) return;
+  if (site.data_kind === 'observed') {
+    GLOBE.master = identifier;
+    GLOBE.observedStation = site;
+  } else if (GLOBE.mcpReferences.has(identifier)) {
+    GLOBE.mcpReferences.delete(identifier);
+  } else {
+    GLOBE.mcpReferences.add(identifier);
+  }
   globeRenderStationList();
+}
 
-  const result = await showHeightNormModal(filename, site?.source || 'auto');
-  if (!result.confirmed) return;
+function globeUpdateContinueState() {
+  const btn = document.getElementById('btn-globe-continue-mcp');
+  if (!btn) return;
+  const ready = !!GLOBE.observedStation && GLOBE.mcpReferences.size > 0;
+  btn.disabled = !ready;
+  btn.textContent = ready
+    ? `Continuar a MCP Lab (${GLOBE.mcpReferences.size} referencia${GLOBE.mcpReferences.size === 1 ? '' : 's'}) →`
+    : 'Selecciona observación y referencias';
+}
 
-  WP.referenceHeight = result.targetHeight;
-  WP.referenceMethod = result.method;
-  applyReferenceHeightToUI(result.targetHeight);
-
+async function continueGlobeToMCP() {
+  if (!GLOBE.observedStation || !GLOBE.mcpReferences.size) return;
+  const radius = parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM;
   try {
-    await loadPresetFileByName(filename, site?.source || 'auto',
-                               result.targetHeight, result.method);
-  } finally {
+    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'PUT', {
+      observed_station_id: globeSiteKey(GLOBE.observedStation),
+      reference_station_ids: [...GLOBE.mcpReferences],
+      poi: GLOBE.poi || { lat: GLOBE.observedStation.lat, lon: GLOBE.observedStation.lon },
+      radius_km: radius,
+      target_height_m: 80,
+    });
+    WP.mcpStudy = study;
+    if (GLOBE.mcpReferences.size === 1) toast('Una sola referencia es válida; se recomiendan varias para comparar.', 'warn');
     collapseGlobeStage();
-    if (result.quickDesign) {
-      setTimeout(() => quickDesignStart(result), 400);
-    } else if (typeof runResumenPipeline === 'function') {
-      setTimeout(() => runResumenPipeline(), 350);
-    }
+    document.querySelector('.nav-btn[data-module="mcp"]')?.click();
+    await loadMCPStudy();
+  } catch (e) {
+    toast(`No se pudo crear el estudio MCP: ${e.message}`, 'error');
   }
 }
 
@@ -12512,7 +13319,13 @@ function bindGlobeUploadModalUI() {
   const input = document.getElementById('globe-file-input');
   const srcSel = document.getElementById('globe-source-select');
 
-  const openModal  = () => modal?.classList.add('is-open');
+  const openModal  = () => {
+    const lat = document.getElementById('globe-upload-lat');
+    const lon = document.getElementById('globe-upload-lon');
+    if (lat && GLOBE.poi) lat.value = GLOBE.poi.lat.toFixed(5);
+    if (lon && GLOBE.poi) lon.value = GLOBE.poi.lon.toFixed(5);
+    modal?.classList.add('is-open');
+  };
   const closeModal = () => modal?.classList.remove('is-open');
 
   open?.addEventListener('click', openModal);
@@ -12532,17 +13345,40 @@ function bindGlobeUploadModalUI() {
 }
 
 async function handleGlobeOwnFile(file, source) {
-  // Sincronizar con el select de Data Hub (que sigue oculto pero existe)
-  const dhSrc = document.getElementById('source-select');
-  if (dhSrc && source) dhSrc.value = source;
-  document.getElementById('globe-modal')?.classList.remove('is-open');
+  const lat = parseFloat(document.getElementById('globe-upload-lat')?.value);
+  const lon = parseFloat(document.getElementById('globe-upload-lon')?.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    toast('Define coordenadas válidas para el archivo.', 'warn'); return;
+  }
+  const kind = source === 'observed' ? 'observed' : 'reanalysis';
+  const provider = source === 'era5' ? 'ERA5' : source === 'merra2' ? 'MERRA2' : 'USER';
+  const form = new FormData();
+  form.append('session_id', WP.sessionId);
+  form.append('file', file);
+  form.append('data_kind', kind);
+  form.append('provider', provider);
+  form.append('display_name', document.getElementById('globe-upload-name')?.value || file.name);
+  form.append('latitude', lat);
+  form.append('longitude', lon);
+  form.append('measurement_height_m', document.getElementById('globe-upload-height')?.value || 80);
+  form.append('timezone', document.getElementById('globe-upload-timezone')?.value || 'UTC');
   try {
-    await uploadFile(file);
-  } finally {
-    collapseGlobeStage();
-    if (typeof runResumenPipeline === 'function') {
-      setTimeout(() => runResumenPipeline(), 350);
+    const response = await apiFD('/api/mcp/uploads', form);
+    const row = response.station;
+    const site = { ...row, filename: row.file_ids?.[0] || row.station_id, lat: Number(row.latitude), lon: Number(row.longitude), source: String(row.provider || '').toLowerCase() };
+    GLOBE.sites = GLOBE.sites.filter(item => globeSiteKey(item) !== row.station_id);
+    GLOBE.sites.push(site);
+    if (kind === 'observed') {
+      GLOBE.observedStation = site;
+      GLOBE.master = row.station_id;
+    } else {
+      GLOBE.mcpReferences.add(row.station_id);
     }
+    document.getElementById('globe-modal')?.classList.remove('is-open');
+    await globeFilterByRadius();
+    toast(`${row.display_name} añadido al estudio MCP`, response.warning ? 'warn' : 'success');
+  } catch (e) {
+    toast(`No se pudo registrar el archivo: ${e.message}`, 'error');
   }
 }
 
@@ -12635,7 +13471,7 @@ function resetSimulationState() {
   if (vSub) vSub.textContent = 'Calcula el análisis para ver la evaluación del recurso';
   vCta?.setAttribute('disabled', '');
   if (title) title.textContent = '— sin datos —';
-  if (sub)   sub.textContent   = 'Selecciona una estación en el Globe para iniciar el análisis automático.';
+  if (sub)   sub.textContent   = 'Publica un hindcast en MCP Lab o usa datos observados en modo manual.';
 
   // 5) Reset visual de KPIs principales
   ['kv-mean','kv-max','kv-weibull','kv-pd','kv-ext','kv-near-mean','kv-temp','kv-pres','kv-nobs'].forEach(id => {
@@ -12812,7 +13648,7 @@ function leafletRenderStations() {
   GLOBE.leafletStations.forEach(m => GLOBE.leafletMap.removeLayer(m));
   GLOBE.leafletStations = [];
   GLOBE.visibleSites.forEach(s => {
-    const isMaster = (GLOBE.master === s.filename);
+    const isMaster = (GLOBE.master === globeSiteKey(s));
     const W = isMaster ? 44 : 30;
     const H = isMaster ? 58 : 42;
     const icon = L.divIcon({
@@ -12825,7 +13661,7 @@ function leafletRenderStations() {
       .addTo(GLOBE.leafletMap)
       .bindTooltip(`<b>${s.display_name || s.filename}</b><br>${s._dist.toFixed(1)} km · ${(s.source||'').toUpperCase()}`,
                    { direction: 'top', offset: [0, -H + 4] });
-    m.on('click', () => handleGlobeStationPick(s.filename));
+    m.on('click', () => handleGlobeStationPick(globeSiteKey(s)));
     GLOBE.leafletStations.push(m);
   });
 }
@@ -12881,47 +13717,21 @@ function bindResumenUnified() {
     const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
     arenaBtn?.click();
   });
-  // Mover cada selector de archivo del panel de mercado a su sub-tab
-  // correspondiente dentro del Centro de modelaje, así no necesitamos una tab
-  // "Datos" extra ni el panel agregado. Además creamos preview + stats
-  // por sub-tab para que el resultado de cargar el archivo se vea.
+  // Configuración del parque concentra únicamente los dos archivos requeridos:
+  // demanda (cuando hay autoconsumo) y PML. FX y tasa son campos manuales.
   const movements = [
-    ['#market-demand-select',   'arena-demand-tab',   'demand'],
-    ['#market-pml-select',      'arena-pml-tab',      'pml'],
-    ['#market-interest-select', 'arena-interest-tab', 'interest'],
-    ['#market-fx-select',       'arena-fx-tab',       'fx'],
+    ['#market-demand-select', 'park-demand-file-slot'],
+    ['#market-pml-select', 'park-pml-file-slot'],
   ];
-  movements.forEach(([sel, tabId, cat]) => {
+  movements.forEach(([sel, destinationId]) => {
     const select = document.querySelector(sel);
-    const tab = document.getElementById(tabId);
-    if (!select || !tab) return;
+    const destination = document.getElementById(destinationId);
+    if (!select || !destination) return;
     const row = select.closest('.market-data-row');
     if (!row || row.dataset.movedToArena === '1') return;
     row.dataset.movedToArena = '1';
-    tab.insertBefore(row, tab.firstChild);
-
-    // Insertar tarjeta de Vista Previa + Estadísticos para esta categoría
-    if (!document.getElementById(`market-${cat}-preview-card`)) {
-      const card = document.createElement('div');
-      card.id = `market-${cat}-preview-card`;
-      card.className = 'grid-2 mt-2';
-      card.innerHTML = `
-        <div class="card">
-          <div class="card-header"><span class="card-title">Vista Previa — ${cat.toUpperCase()}</span></div>
-          <div class="card-body" style="height:200px;">
-            <canvas id="market-${cat}-preview-chart"></canvas>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-header"><span class="card-title">Estadísticos del histórico observado</span></div>
-          <div class="card-body">
-            <div id="market-${cat}-stats-grid" class="meta-grid"></div>
-          </div>
-        </div>
-      `;
-      // Insertar justo después del row de carga
-      row.insertAdjacentElement('afterend', card);
-    }
+    row.classList.remove('mb-3');
+    destination.appendChild(row);
   });
   // Si quedó arena-data-tab residual de un bind previo, lo retiramos.
   document.getElementById('arena-data-tab')?.remove();
@@ -12992,31 +13802,108 @@ async function krig3AutoFitFromGlobe() {
   KRIG._appliedGlobePoi = poiKey;
 }
 
-// Llena los inputs de parámetros del diseño desde el cache de Centro de modelaje
+function parkMarketTrajectory(category) {
+  const stored = WP.parkConfiguration?.market_models?.[category]?.annual;
+  if (Array.isArray(stored) && stored.length) return stored.map(Number).filter(Number.isFinite);
+  const paramKey = category === 'pml' ? 'price' : category === 'interest' ? 'rate' : category;
+  return _arenaProjectionAnnual(paramKey) || null;
+}
+
+function parkEquivalentDesignInputs() {
+  const config = WP.parkConfiguration || {};
+  const horizon = Math.max(5, Number(config.project_horizon_years) || 25);
+  const priceSeries = (parkMarketTrajectory('pml') || []).slice(0, horizon);
+  const projectedRate = (parkMarketTrajectory('interest') || []).slice(0, horizon);
+  const projectedFx = (parkMarketTrajectory('fx') || []).slice(0, horizon);
+  const baseRate = Number(config.base_interest_rate_pct);
+  const baseFx = Number(config.base_fx_mxn_usd);
+  const hasBaseRate = config.base_interest_rate_pct !== null
+    && config.base_interest_rate_pct !== '' && Number.isFinite(baseRate);
+  const rateSeriesPct = hasBaseRate
+    ? Array.from({ length: horizon }, () => baseRate)
+    : projectedRate;
+  const fxSeries = Number.isFinite(baseFx) && baseFx > 0
+    ? Array.from({ length: horizon }, () => baseFx)
+    : projectedFx;
+  const n = Math.max(priceSeries.length, rateSeriesPct.length, fxSeries.length, 1);
+  const rates = Array.from({ length: n }, (_, i) => {
+    const v = Number(rateSeriesPct[Math.min(i, rateSeriesPct.length - 1)]);
+    return Number.isFinite(v) ? Math.max(v, 0) / 100 : 0.08;
+  });
+  let cumulative = 1;
+  const discount = rates.map(rate => (cumulative *= (1 + rate)));
+  const weights = discount.map(value => 1 / value);
+  const weightedMean = (series, fallback) => {
+    if (!series.length) return fallback;
+    let num = 0, den = 0;
+    for (let i = 0; i < n; i++) {
+      const value = Number(series[Math.min(i, series.length - 1)]);
+      if (Number.isFinite(value)) { num += value * weights[i]; den += weights[i]; }
+    }
+    return den > 0 ? num / den : fallback;
+  };
+  const equivalentRate = rateSeriesPct.length
+    ? Math.pow(discount.at(-1) || 1, 1 / n) - 1
+    : null;
+  const priceRaw = weightedMean(priceSeries, null);
+  const fx = weightedMean(fxSeries, null);
+  const price = priceRaw == null ? null : _pmlToUsdKwh(priceRaw, fx || 18, config.market_models?.pml?.unit);
+  let demand = 0;
+  if (config.commercialization_mode !== 'total_sale') {
+    if (config.demand_source === 'market_series') {
+      demand = Number(parkMarketTrajectory('demand')?.[0]) || Number(config.annual_demand_mwh) || 0;
+    } else {
+      demand = Number(config.annual_demand_mwh) || 0;
+    }
+  }
+  return {
+    demand_mwh: demand,
+    tasa: Number.isFinite(equivalentRate) ? equivalentRate : null,
+    price_usd_kwh: price,
+    price_mxn_per_usd: fx,
+    trajectories: {
+      pml: priceSeries,
+      interest_pct: rateSeriesPct,
+      fx_mxn_per_usd: fxSeries,
+      horizon_years: horizon,
+      configuration_revision: config.configuration_revision || 0,
+      commercialization_mode: config.commercialization_mode || 'total_sale',
+      equivalence_method: 'discounted_levelized_price_and_geometric_rate',
+    },
+  };
+}
+
+// Llena el diseño con equivalentes calculados desde las trayectorias completas.
 function krig3PullParamsFromArena() {
-  if (typeof WP === 'undefined' || !WP.arenaCache) return;
+  if (typeof WP === 'undefined') return;
   const cache = WP.arenaCache;
   const _avg = arr => (arr && arr.length) ? arr.reduce((s,v)=>s+v,0) / arr.length : null;
+  const equivalent = parkEquivalentDesignInputs();
 
-  // Tasa de interés (%) — promedio del histórico observado
-  const tasa = _avg(cache.interest?.raw_values);
+  // Tasa equivalente: media geométrica de los factores anuales proyectados.
+  const tasa = equivalent.tasa != null ? equivalent.tasa * 100 : _avg(cache.interest?.raw_values);
   if (tasa != null) {
-    const inp = document.getElementById('krig3-tasa');
-    if (inp) inp.value = tasa.toFixed(2);
+    ['krig3-tasa', 'mcda-tasa'].forEach(id => {
+      const inp = document.getElementById(id);
+      if (inp) inp.value = tasa.toFixed(2);
+    });
   }
 
-  // USD/MXN — promedio del histórico observado
-  const fxAvg = _avg(cache.fx?.raw_values);
+  // USD/MXN equivalente ponderado por descuento sobre el horizonte.
+  const fxAvg = equivalent.price_mxn_per_usd != null
+    ? equivalent.price_mxn_per_usd : _avg(cache.fx?.raw_values);
   if (fxAvg != null) {
-    const inp = document.getElementById('krig3-fx');
-    if (inp) inp.value = fxAvg.toFixed(2);
+    ['krig3-fx', 'mcda-fx'].forEach(id => {
+      const inp = document.getElementById(id);
+      if (inp) inp.value = fxAvg.toFixed(2);
+    });
   }
 
-  // Precio (USD/kWh) — promedio del PML observado, convertido si está en $/MWh MXN
-  const pmlSide = cache.pml?.compra || cache.pml?.venta || cache.pml;
+  // PML nivelado: promedio de la trayectoria ponderado por factores de descuento.
+  const pmlSide = cache.pml?.venta || cache.pml?.compra || cache.pml;
   const pmlAvg = _avg(pmlSide?.raw_values);
-  if (pmlAvg != null) {
-    let usdKwh;
+  let usdKwh = equivalent.price_usd_kwh;
+  if (usdKwh == null && pmlAvg != null) {
     if (pmlAvg > 50) {                     // típicamente MXN/MWh
       const fx = parseFloat(document.getElementById('krig3-fx')?.value) || fxAvg || 20;
       usdKwh = (pmlAvg / 1000) / fx;
@@ -13026,17 +13913,19 @@ function krig3PullParamsFromArena() {
     } else {                                // USD/kWh ya
       usdKwh = pmlAvg;
     }
-    const inp = document.getElementById('krig3-price');
-    if (inp && Number.isFinite(usdKwh)) inp.value = usdKwh.toFixed(4);
+  }
+  if (Number.isFinite(usdKwh)) {
+    ['krig3-price', 'mcda-price'].forEach(id => {
+      const inp = document.getElementById(id);
+      if (inp) inp.value = usdKwh.toFixed(4);
+    });
   }
 
-  // Demanda anual (MWh) — suma del histórico horario observado
-  const demSer = cache.demand_hourly?.raw_values || cache.demand?.raw_values;
-  if (demSer && demSer.length) {
-    const annualMWh = demSer.reduce((s,v)=>s+v, 0); // MW × 1h = MWh
-    const inp = document.getElementById('krig3-demand');
-    if (inp) inp.value = Math.round(annualMWh).toString();
-  }
+  const demand = Math.max(0, Number(equivalent.demand_mwh) || 0);
+  ['krig3-demand', 'mcda-demand', 'parque-demand', 'te-demand'].forEach(id => {
+    const inp = document.getElementById(id);
+    if (inp) inp.value = Math.round(demand).toString();
+  });
 }
 
 function switchResumenTab(name) {

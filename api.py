@@ -14,10 +14,11 @@ import traceback
 import requests
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from datetime import datetime, timezone
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, send_from_directory, render_template
+from flask import Flask, request, jsonify, send_from_directory, send_file, render_template
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -68,6 +69,8 @@ from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
                           HybridDispatch, HybridEconomics,
                           build_load_profile, estimate_clearsky_ghi)
 from core.site_catalog import get_site_info
+from core.mcp_catalog import (M04_STATION_ID, build_mcp_catalog, public_catalog,
+                              catalog_index, classify_file)
 from core.kriging import (parse_coords_from_filename, read_wind_file,
                           site_wind_stats, kriging_grid, analyze_sites,
                           analyze_spatial_topsis_sites,
@@ -82,10 +85,18 @@ from core.multicriteria import (topsis, rank_sites_turbines,
                                  CRITERION_DIRECTION)
 from core.forecasting import (read_one_column, read_pml,
                                base_year_stats,
+                               normalize_fixed_hourly_profile,
                                synthesize_annual_series,
                                fit_all_trend_models,
                                project_25_years,
-                               best_trend_model)
+                               best_trend_model,
+                               chronological_trend_validation,
+                               best_validated_trend_model,
+                               constrain_market_projection,
+                               forecast_fx_recent)
+from windmcp.config import ConfigurationError
+from windmcp.data import read_certe_files, read_reference_files, resample_hourly
+from windmcp.service import run_mcp_validation
 
 
 # ─── APP FACTORY ──────────────────────────────────────────────────────────────
@@ -115,6 +126,7 @@ def create_app():
     arena_store = {}     # session_id -> ModelArena
     _sessions_lock = threading.Lock()
     _executor = ThreadPoolExecutor(max_workers=4)
+    mcp_base_catalog = build_mcp_catalog(Config.DATA_FOLDER, Config.CERTE_FOLDER)
     SESSION_TTL_SEC = 4 * 3600   # 4 h sin actividad
     TASK_TTL_SEC    = 4 * 3600   # 4 h tras la última lectura
 
@@ -356,10 +368,83 @@ def create_app():
                 return col
         return 'wind_speed' if 'wind_speed' in df.columns else None
 
+    def _analysis_df(sess, body=None):
+        """Resolve the requested/published source without mutating observations."""
+        body = body or {}
+        source_id = body.get('data_source') or sess.get('active_data_source')
+        if source_id and source_id != 'observed':
+            source = (sess.get('data_sources') or {}).get(source_id)
+            if source is not None:
+                return source.get('df')
+        observed_source = (sess.get('data_sources') or {}).get('observed')
+        if source_id == 'observed' and observed_source is not None:
+            return observed_source.get('df')
+        return sess.get('df')
+
+    def _analysis_source_record(sess, body=None):
+        """Return metadata for the active/requested source, when registered."""
+        body = body or {}
+        source_id = body.get('data_source') or sess.get('active_data_source') or 'observed'
+        return source_id, (sess.get('data_sources') or {}).get(source_id)
+
+    def _long_term_wind_summary(df, speed_col='wind_speed'):
+        """Climatology, IAV, anomalies, extremes and Weibull for a published source."""
+        if df is None or speed_col not in df.columns or not isinstance(df.index, pd.DatetimeIndex):
+            return {}
+        speed = pd.to_numeric(df[speed_col], errors='coerce').dropna()
+        if speed.empty:
+            return {}
+        annual = speed.resample('YE').agg(['mean', 'count']).dropna(subset=['mean'])
+        expected = np.asarray([8784 if stamp.is_leap_year else 8760 for stamp in annual.index], dtype=float)
+        annual['coverage_pct'] = np.where(expected > 0, annual['count'].to_numpy() / expected * 100.0, 0.0)
+        stable = annual.loc[annual['coverage_pct'] >= 90.0]
+        sample = stable if len(stable) >= 2 else annual
+        long_mean = float(sample['mean'].mean())
+        q25 = float(sample['mean'].quantile(0.25))
+        q75 = float(sample['mean'].quantile(0.75))
+        annual_rows = []
+        for timestamp, row in annual.iterrows():
+            value = float(row['mean'])
+            annual_rows.append({
+                'year': int(timestamp.year),
+                'mean_wind_speed': round(value, 4),
+                'hours': int(row['count']),
+                'coverage_pct': round(float(row['coverage_pct']), 2),
+                'anomaly_ms': round(value - long_mean, 4),
+                'anomaly_pct': round((value / long_mean - 1.0) * 100.0, 3) if long_mean else None,
+                'classification': 'low' if value <= q25 else ('high' if value >= q75 else 'normal'),
+            })
+        monthly = speed.groupby(speed.index.month).mean()
+        weibull = None
+        try:
+            from scipy.stats import weibull_min
+            positive = speed.loc[speed > 0].to_numpy(dtype=float)
+            if len(positive) >= 20:
+                shape, _, scale = weibull_min.fit(positive, floc=0)
+                weibull = {'k': round(float(shape), 5), 'lambda': round(float(scale), 5), 'N': int(len(positive))}
+        except Exception:
+            logger.exception('No se pudo ajustar Weibull para la fuente publicada')
+        return {
+            'mean_wind_speed': round(long_mean, 5),
+            'iav_pct': round(float(sample['mean'].std(ddof=1) / long_mean * 100.0), 4) if len(sample) > 1 and long_mean else 0.0,
+            'annual': annual_rows,
+            'monthly_climatology': [
+                {'month': month, 'mean_wind_speed': round(float(monthly.get(month)), 4) if month in monthly else None}
+                for month in range(1, 13)
+            ],
+            'extremes': {
+                'p95_ms': round(float(speed.quantile(0.95)), 4),
+                'p99_ms': round(float(speed.quantile(0.99)), 4),
+                'maximum_ms': round(float(speed.max()), 4),
+            },
+            'weibull': weibull,
+            'year_class_thresholds': {'low_max_ms': round(q25, 4), 'high_min_ms': round(q75, 4)},
+        }
+
     def _energy_ws_col(sess, body=None):
         """Wind-energy endpoints must not follow arbitrary ML target_col changes."""
         body = body or {}
-        df = sess.get('df')
+        df = _analysis_df(sess, body)
         if df is None:
             return body.get('ws_col') or sess.get('wind_speed_col') or 'wind_speed'
         for candidate in [body.get('ws_col'), sess.get('wind_speed_col')]:
@@ -662,6 +747,624 @@ def create_app():
             sessions[sid] = {'_last_access': time.time()}
         return jsonify({'session_id': sid})
 
+    # ─── MCP STUDY / CATALOG ─────────────────────────────────────────────────
+
+    def _mcp_upload_records(sess):
+        return list(sess.get('mcp_uploads', {}).values())
+
+    def _mcp_index(sess):
+        return catalog_index(mcp_base_catalog, _mcp_upload_records(sess))
+
+    def _public_station(record):
+        return {k: numpy_to_python(v) for k, v in record.items() if not str(k).startswith('_')}
+
+    def _mcp_study_payload(sess):
+        study = sess.get('mcp_study')
+        if not study:
+            return None
+        index = _mcp_index(sess)
+        result = dict(study)
+        observation = index[study['observed_station_id']]
+        result['observed_station'] = _public_station(observation)
+        result['reference_stations'] = []
+        for value in study['reference_station_ids']:
+            if value not in index:
+                continue
+            reference = _public_station(index[value])
+            reference['distance_km'] = round(_haversine_km(
+                float(observation['latitude']), float(observation['longitude']),
+                float(reference['latitude']), float(reference['longitude']),
+            ), 3)
+            result['reference_stations'].append(reference)
+        return result
+
+    @app.route('/api/mcp/catalog', methods=['GET'])
+    def mcp_catalog():
+        sid = request.args.get('session_id')
+        sess = get_session(sid) if sid else {}
+        return jsonify(public_catalog(mcp_base_catalog, _mcp_upload_records(sess)))
+
+    @app.route('/api/mcp/uploads', methods=['POST'])
+    def mcp_upload():
+        sid = request.form.get('session_id')
+        if not sid:
+            return _err('session_id requerido')
+        file_storage = request.files.get('file')
+        if not file_storage or not file_storage.filename:
+            return _err('file requerido')
+        if not allowed_file(file_storage.filename):
+            return _err('Tipo de archivo no soportado')
+        data_kind = str(request.form.get('data_kind', '')).strip().lower()
+        if data_kind not in {'observed', 'reanalysis'}:
+            return _err('data_kind debe ser observed o reanalysis')
+        provider = str(request.form.get('provider', 'USER')).strip().upper()
+        if data_kind == 'reanalysis' and provider not in {'ERA5', 'MERRA2'}:
+            return _err('Una referencia debe declarar provider ERA5 o MERRA2')
+        try:
+            latitude = float(request.form.get('latitude'))
+            longitude = float(request.form.get('longitude'))
+            if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+                raise ValueError
+            measurement_height = float(request.form.get('measurement_height_m', 80 if data_kind == 'observed' else 50))
+            if not 1 <= measurement_height <= 300:
+                return _err('measurement_height_m fuera de rango')
+        except (TypeError, ValueError):
+            return _err('Coordenadas o altura inválidas')
+
+        station_id = 'upload-' + uuid.uuid4().hex[:16]
+        upload_dir = Path(Config.MCP_UPLOAD_FOLDER) / secure_filename(sid) / station_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        filename = secure_filename(file_storage.filename) or 'station.txt'
+        path = upload_dir / filename
+        file_storage.save(path)
+        signature = classify_file(path)
+        # An explicit user role wins, but contradictions are surfaced for audit.
+        warning = None
+        if signature['data_kind'] not in {'unknown', data_kind}:
+            warning = 'La firma del archivo no coincide con el tipo declarado por el usuario.'
+        target_column = str(request.form.get('target_column', 'wind_speed')).strip() or 'wind_speed'
+        declared_timezone = str(request.form.get('timezone', 'UTC')).strip() or 'UTC'
+        try:
+            if data_kind == 'observed':
+                checked, _ = read_certe_files(
+                    [str(path)], target_column=target_column, timezone=declared_timezone
+                )
+                if checked.empty or checked['wind_speed_obs'].notna().sum() == 0:
+                    raise ValueError('no contiene velocidades válidas')
+            else:
+                checked_refs = read_reference_files([str(path)])
+                if not checked_refs or checked_refs[0].frame['wind_speed_ref'].notna().sum() == 0:
+                    raise ValueError('no contiene velocidades válidas')
+        except Exception as error:
+            return _err('El archivo no pasó la validación de timestamp/velocidad: ' + str(error))
+        record = {
+            'station_id': station_id,
+            'display_name': str(request.form.get('display_name') or Path(filename).stem),
+            'data_kind': data_kind,
+            'provider': provider if data_kind == 'reanalysis' else str(request.form.get('provider', 'USER')).upper(),
+            'allowed_role': 'observation' if data_kind == 'observed' else 'reference',
+            'latitude': latitude,
+            'longitude': longitude,
+            'measurement_heights': [measurement_height],
+            'measurement_height_m': measurement_height,
+            'timezone': declared_timezone,
+            'target_column': target_column,
+            'file_ids': [filename],
+            'legacy_aliases': [],
+            'source_confidence': 'user',
+            'signature_detected': signature,
+            'warning': warning,
+            '_paths': [str(path.resolve())],
+        }
+        sess = get_session(sid)
+        sess.setdefault('mcp_uploads', {})[station_id] = record
+        return jsonify({'station': _public_station(record), 'warning': warning}), 201
+
+    @app.route('/api/sessions/<sid>/mcp-study', methods=['GET', 'PUT'])
+    def mcp_study(sid):
+        sess = get_session(sid)
+        if request.method == 'GET':
+            payload = _mcp_study_payload(sess)
+            if payload is None:
+                return jsonify({'error': 'No hay estudio MCP en la sesión'}), 404
+            return jsonify(payload)
+
+        body = request.get_json(silent=True) or {}
+        observed_id = str(body.get('observed_station_id', '')).strip()
+        reference_ids = list(dict.fromkeys(str(value).strip() for value in body.get('reference_station_ids', []) if str(value).strip()))
+        index = _mcp_index(sess)
+        observed = index.get(observed_id)
+        if not observed or observed.get('allowed_role') != 'observation':
+            return _err('Debe seleccionarse una estación observada válida')
+        if not reference_ids:
+            return _err('Debe seleccionarse al menos una referencia ERA5/MERRA-2')
+        invalid = [value for value in reference_ids if value not in index or index[value].get('allowed_role') != 'reference']
+        if invalid:
+            return _err('Referencias inválidas: ' + ', '.join(invalid))
+        poi = body.get('poi') or {'lat': observed.get('latitude'), 'lon': observed.get('longitude')}
+        try:
+            target_height = float(body.get('target_height_m', 80))
+            radius_km = float(body.get('radius_km', 200))
+        except (TypeError, ValueError):
+            return _err('target_height_m o radius_km inválidos')
+        prior = sess.get('mcp_study') or {}
+        selection_key = (observed_id, tuple(reference_ids), round(target_height, 4))
+        prior_key = (prior.get('observed_station_id'), tuple(prior.get('reference_station_ids', [])), prior.get('target_height_m'))
+        revision = int(prior.get('study_revision', 0)) + (0 if prior and selection_key == prior_key else 1)
+        study = {
+            'study_revision': max(revision, 1),
+            'observed_station_id': observed_id,
+            'reference_station_ids': reference_ids,
+            'poi': {'lat': float(poi.get('lat')), 'lon': float(poi.get('lon'))},
+            'radius_km': radius_km,
+            'target_height_m': target_height,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        }
+        sess['mcp_study'] = study
+        for run in (sess.get('mcp_runs') or {}).values():
+            run['is_current_revision'] = run.get('study_revision') == study['study_revision']
+        return jsonify(_mcp_study_payload(sess))
+
+    def _default_park_configuration():
+        return {
+            'configuration_revision': 0,
+            'commercialization_mode': 'total_sale',
+            'demand_source': 'none',
+            'annual_demand_mwh': 0.0,
+            'sale_scheme': 'spot_pml',
+            'pml_side': 'venta',
+            'pml_node': '',
+            'project_horizon_years': 25,
+            'reporting_currency': 'USD',
+            'base_fx_mxn_usd': None,
+            'base_interest_rate_pct': None,
+            'market_models': {},
+            'updated_at': None,
+        }
+
+    def _park_demand_series_info(sess):
+        record = (sess.get('market') or {}).get('demand') or {}
+        data = record.get('data') or {}
+        values = data.get('values') or []
+        if not values:
+            return None
+        meta = record.get('meta') or {}
+        return {
+            'filename': record.get('filename') or meta.get('filename'),
+            'n_rows': int(meta.get('n_rows') or len(values)),
+            'unit': meta.get('unit') or 'MW',
+            'date_range': meta.get('date_range'),
+        }
+
+    def _park_configuration_payload(sess):
+        payload = _default_park_configuration()
+        payload.update(sess.get('park_configuration') or {})
+        models = payload.get('market_models') or {}
+        demand_series = _park_demand_series_info(sess)
+        demand_required = payload['commercialization_mode'] in {
+            'self_consumption', 'self_consumption_surplus'}
+        demand_ready = (not demand_required) or demand_series is not None
+        fx_value = payload.get('base_fx_mxn_usd')
+        interest_value = payload.get('base_interest_rate_pct')
+        readiness = {
+            'demand': demand_ready,
+            'pml': bool(models.get('pml', {}).get('annual')),
+            'fx': fx_value is not None and np.isfinite(float(fx_value)) and float(fx_value) > 0,
+            'interest': interest_value is not None and np.isfinite(float(interest_value)) and float(interest_value) >= 0,
+        }
+        payload['demand_series'] = demand_series
+        payload['demand_series_required'] = demand_required
+        payload['readiness'] = readiness
+        payload['ready_for_design'] = bool(all(readiness.values()))
+        return payload
+
+    def _store_market_model(sess, category, *, best_model, projection,
+                            source_key, unit, validation=None,
+                            projection_policy=None, provenance=None):
+        selected = (projection or {}).get(best_model) if best_model else None
+        if not selected or not selected.get('annual'):
+            return
+        park = sess.setdefault('park_configuration', _default_park_configuration())
+        park.setdefault('market_models', {})[category] = {
+            'category': category,
+            'source_key': source_key,
+            'unit': unit,
+            'best_model': best_model,
+            'years': selected.get('years') or [],
+            'annual': selected.get('annual') or [],
+            'ci_low': selected.get('ci_low') or [],
+            'ci_high': selected.get('ci_high') or [],
+            'validation': (validation or {}).get('models', {}).get(best_model),
+            'validation_method': (validation or {}).get('method'),
+            'projection_policy': projection_policy or {},
+            'provenance': provenance or {},
+            'published_at': datetime.now(timezone.utc).isoformat(),
+        }
+        park['configuration_revision'] = int(park.get('configuration_revision', 0)) + 1
+        park['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+    def _store_fixed_pml_profile(sess, *, source_key, meta, profile,
+                                 normalization, base_year=2018):
+        """Publica el PML observado de 2018 como perfil fijo, sin modelos."""
+        park = sess.setdefault('park_configuration', _default_park_configuration())
+        horizon = int(park.get('project_horizon_years', 25))
+        start_year = datetime.now(timezone.utc).year
+        mean_price = float(np.mean(profile))
+        park.setdefault('market_models', {})['pml'] = {
+            'category': 'pml',
+            'mode': 'fixed_2018_profile',
+            'source_key': source_key,
+            'unit': (meta or {}).get('unit', '$/kWh'),
+            'best_model': None,
+            'base_year': int(base_year),
+            'side': 'venta',
+            'years': list(range(start_year, start_year + horizon)),
+            'annual': [mean_price] * horizon,
+            'ci_low': [],
+            'ci_high': [],
+            'hourly_profile_2018': [float(value) for value in profile],
+            'n_hours': int(len(profile)),
+            'normalization': normalization,
+            'validation': None,
+            'validation_method': None,
+            'projection_policy': {
+                'mode': 'fixed_replication',
+                'base_year': int(base_year),
+                'price_escalation_pct': 0.0,
+                'leap_day_policy': 'interpolate_feb28_mar01',
+            },
+            'provenance': {
+                'source': (meta or {}).get('label', source_key),
+                'file': (meta or {}).get('file'),
+                'history_basis': 'observed_base_year',
+                'base_year': int(base_year),
+                'side': 'venta',
+                'modeling': 'none',
+            },
+            'published_at': datetime.now(timezone.utc).isoformat(),
+        }
+        park['configuration_revision'] = int(park.get('configuration_revision', 0)) + 1
+        park['updated_at'] = datetime.now(timezone.utc).isoformat()
+
+    @app.route('/api/sessions/<sid>/park-configuration', methods=['GET', 'PUT'])
+    def park_configuration(sid):
+        sess = get_session(sid)
+        if request.method == 'GET':
+            return jsonify(numpy_to_python(_park_configuration_payload(sess)))
+
+        body = request.get_json(silent=True) or {}
+        commercial = str(body.get('commercialization_mode', 'total_sale'))
+        if commercial not in {
+                'total_sale', 'self_consumption', 'self_consumption_surplus'}:
+            return _err('Modo de comercialización inválido')
+        sale_scheme = str(body.get('sale_scheme', 'spot_pml'))
+        if sale_scheme not in {'spot_pml', 'ppa', 'mixed'}:
+            return _err('Esquema de venta inválido')
+        prior = sess.get('park_configuration') or _default_park_configuration()
+
+        def _optional_number(name, fallback):
+            value = body.get(name, fallback)
+            if value in (None, ''):
+                return None
+            return float(value)
+
+        try:
+            horizon = int(body.get('project_horizon_years', 25))
+            base_fx = _optional_number('base_fx_mxn_usd', prior.get('base_fx_mxn_usd'))
+            base_interest = _optional_number(
+                'base_interest_rate_pct', prior.get('base_interest_rate_pct'))
+        except (TypeError, ValueError):
+            return _err('Horizonte, tipo de cambio o tasa de interés inválidos')
+        if not 5 <= horizon <= 40:
+            return _err('El horizonte debe estar entre 5 y 40 años')
+        if base_fx is not None and (not np.isfinite(base_fx) or base_fx <= 0):
+            return _err('El tipo de cambio base debe ser mayor que cero')
+        if base_interest is not None and (
+                not np.isfinite(base_interest) or base_interest < 0):
+            return _err('La tasa de interés base no puede ser negativa')
+
+        if commercial == 'total_sale':
+            demand_source = 'none'
+        else:
+            demand_source = 'market_series'
+            if _park_demand_series_info(sess) is None:
+                return _err(
+                    'Autoconsumo requiere cargar una serie histórica de demanda')
+
+        revision = int(prior.get('configuration_revision', 0)) + 1
+        sess['park_configuration'] = {
+            **prior,
+            'configuration_revision': revision,
+            'commercialization_mode': commercial,
+            'demand_source': demand_source,
+            'annual_demand_mwh': 0.0,
+            'sale_scheme': sale_scheme,
+            'pml_side': 'venta',
+            'pml_node': str(body.get('pml_node') or '').strip(),
+            'project_horizon_years': horizon,
+            'base_fx_mxn_usd': base_fx,
+            'base_interest_rate_pct': base_interest,
+            'reporting_currency': str(body.get('reporting_currency', 'USD')).upper()
+                if str(body.get('reporting_currency', 'USD')).upper() in {'USD', 'MXN'} else 'USD',
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        return jsonify(numpy_to_python(_park_configuration_payload(sess)))
+
+    @app.route('/api/mcp/runs', methods=['POST'])
+    def mcp_start_run():
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
+        sess = get_session(sid)
+        study = sess.get('mcp_study')
+        if not study:
+            return _err('Primero guarda la selección de Globe')
+        index = _mcp_index(sess)
+        observed = index.get(study['observed_station_id'])
+        references = [index[value] for value in study['reference_station_ids'] if value in index]
+        if not observed or not references:
+            return _err('La selección MCP ya no es válida')
+        run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '_' + uuid.uuid4().hex[:8]
+        run_dir = Path(Config.MCP_RUNS_FOLDER) / run_id
+        power_curve_file = None
+        if body.get('power_curve_file'):
+            candidate = (Path(Config.TURBINES_FOLDER) / Path(str(body['power_curve_file'])).name).resolve()
+            turbine_root = Path(Config.TURBINES_FOLDER).resolve()
+            if turbine_root not in candidate.parents or not candidate.is_file():
+                return _err('Curva de potencia MCP no encontrada')
+            power_curve_file = str(candidate)
+        task_id = str(uuid.uuid4())
+        task = {
+            'status': 'queued', 'progress': 0, 'message': 'Corrida MCP en cola',
+            'result': None, 'run_id': run_id, 'session_id': sid,
+            '_last_access': time.time(),
+        }
+        tasks[task_id] = task
+        study_snapshot = json.loads(json.dumps(study))
+        is_official_m04 = observed.get('station_id') == M04_STATION_ID
+        train_year = 2018 if is_official_m04 else int(body.get('train_year', 2018))
+        test_year = 2019 if is_official_m04 else int(body.get('test_year', 2019))
+        request_config = {
+            'observation_files': list(observed.get('_paths', [])),
+            'reference_files': [path for row in references for path in row.get('_paths', [])],
+            'target_column': observed.get('target_column', body.get('target_column', 'WS_80mA_mean')),
+            'observation_height_m': observed.get('measurement_height_m'),
+            'observation_timezone': observed.get('timezone', 'UTC'),
+            'target_height_m': float(body.get('target_height_m', study.get('target_height_m', 80))),
+            'train_year': train_year,
+            'test_year': test_year,
+            'ranking_year': train_year,
+            # Fixed thesis policy: sectors reconstruct direction/rose only.
+            # They never replace the winning wind-speed model.
+            'sector_count': 16,
+            'run_id': run_id,
+            'output_dir': str(run_dir),
+            'max_wind_speed': float(body.get('max_wind_speed', 70)),
+            'max_jump': float(body.get('max_jump', 15)),
+            'max_persistence': int(body.get('max_persistence', 6)),
+            'power_curve_file': power_curve_file,
+            'turbine_count': int(body.get('turbine_count', 1)),
+            'losses_pct': float(body.get('losses_pct', 0)),
+        }
+
+        def _run_mcp_thread():
+            try:
+                task.update(status='running', progress=8, message='Leyendo y controlando calidad de los datos')
+                result = run_mcp_validation(request_config)
+                task.update(progress=92, message='Registrando artefactos y trazabilidad')
+                result['study'] = study_snapshot
+                result['study']['observed_station'] = _public_station(observed)
+                result['study']['reference_stations'] = []
+                for row in references:
+                    public = _public_station(row)
+                    public['distance_km'] = round(_haversine_km(
+                        float(observed['latitude']), float(observed['longitude']),
+                        float(row['latitude']), float(row['longitude']),
+                    ), 3)
+                    result['study']['reference_stations'].append(public)
+                nearest = min(result['study']['reference_stations'], key=lambda row: row.get('distance_km', float('inf')))
+                result['reference_strategies'] = {
+                    'nearest': {
+                        'station_id': nearest.get('station_id'),
+                        'display_name': nearest.get('display_name'),
+                        'distance_km': nearest.get('distance_km'),
+                    },
+                    'best_reference': result.get('selected_reference'),
+                    'multi_reference': result.get('multi_reference', {}),
+                }
+                result_path = run_dir / 'result.json'
+                result_path.write_text(json.dumps(numpy_to_python(result), ensure_ascii=False, indent=2), encoding='utf-8')
+                manifest_path = run_dir / 'run_manifest.json'
+                if manifest_path.is_file():
+                    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                    manifest['study'] = study_snapshot
+                    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
+                sess.setdefault('mcp_runs', {})[run_id] = {
+                    'run_id': run_id,
+                    'study_revision': study_snapshot['study_revision'],
+                    'result_path': str(result_path),
+                    'created_at': result.get('created_at'),
+                    'selected_reference': result.get('selected_reference'),
+                    'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+                    'status': 'done',
+                    'is_current_revision': sess.get('mcp_study', {}).get('study_revision') == study_snapshot['study_revision'],
+                }
+                task.update(
+                    status='done', progress=100, message='Corrida MCP terminada',
+                    result={
+                        'run_id': run_id,
+                        'selected_reference': result.get('selected_reference'),
+                        'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+                        'study_revision': study_snapshot['study_revision'],
+                    },
+                )
+            except Exception as error:
+                logger.exception('Corrida MCP fallida')
+                task.update(status='error', progress=100, message=str(error))
+
+        _executor.submit(_run_mcp_thread)
+        return jsonify({'run_id': run_id, 'task_id': task_id, 'status': 'queued'}), 202
+
+    def _mcp_result_for_session(sess, run_id):
+        record = (sess.get('mcp_runs') or {}).get(run_id)
+        if not record:
+            return None, None
+        result_path = Path(record['result_path']).resolve()
+        root = Path(Config.MCP_RUNS_FOLDER).resolve()
+        if root not in result_path.parents or not result_path.is_file():
+            return record, None
+        return record, json.loads(result_path.read_text(encoding='utf-8'))
+
+    @app.route('/api/mcp/runs/<run_id>', methods=['GET'])
+    def mcp_get_run(run_id):
+        sid = request.args.get('session_id')
+        if not sid:
+            return _err('session_id requerido')
+        record, result = _mcp_result_for_session(get_session(sid), run_id)
+        if not record:
+            return jsonify({'error': 'Corrida no encontrada'}), 404
+        if result is None:
+            return jsonify({'error': 'Resultado no disponible'}), 409
+        result['is_current_revision'] = record.get('study_revision') == get_session(sid).get('mcp_study', {}).get('study_revision')
+        return jsonify(numpy_to_python(result))
+
+    @app.route('/api/mcp/runs/<run_id>/artifacts/<artifact_key>', methods=['GET'])
+    def mcp_download_artifact(run_id, artifact_key):
+        sid = request.args.get('session_id')
+        if not sid:
+            return _err('session_id requerido')
+        record, result = _mcp_result_for_session(get_session(sid), run_id)
+        if not record or not result:
+            return jsonify({'error': 'Corrida no encontrada'}), 404
+        value = (result.get('artifacts') or {}).get(artifact_key)
+        if not value:
+            return jsonify({'error': 'Artefacto no encontrado'}), 404
+        path = Path(value).resolve()
+        run_root = (Path(Config.MCP_RUNS_FOLDER) / run_id).resolve()
+        if run_root not in path.parents or not path.is_file():
+            return jsonify({'error': 'Ruta de artefacto inválida'}), 403
+        return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.route('/api/mcp/runs/<run_id>/publish', methods=['POST'])
+    def mcp_publish_run(run_id):
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
+        sess = get_session(sid)
+        record, result = _mcp_result_for_session(sess, run_id)
+        if not record or not result:
+            return jsonify({'error': 'Corrida no encontrada'}), 404
+        artifact = (result.get('artifacts') or {}).get('historical_reconstruction_csv')
+        if not artifact or not Path(artifact).is_file():
+            return jsonify({'error': 'La corrida no contiene hindcast publicable'}), 409
+        reconstructed = pd.read_csv(artifact)
+        timestamp = pd.to_datetime(reconstructed['timestamp'], errors='coerce', utc=True)
+        canonical = pd.DataFrame(index=pd.DatetimeIndex(timestamp, name='timestamp'))
+        canonical['wind_speed'] = pd.to_numeric(reconstructed['long_term_wind_speed'], errors='coerce').to_numpy()
+        if 'model_wind_speed_p05' in reconstructed:
+            canonical['wind_speed_p05'] = pd.to_numeric(reconstructed['model_wind_speed_p05'], errors='coerce').to_numpy()
+        if 'model_wind_speed_p95' in reconstructed:
+            canonical['wind_speed_p95'] = pd.to_numeric(reconstructed['model_wind_speed_p95'], errors='coerce').to_numpy()
+        if 'wind_direction' in reconstructed:
+            canonical['wind_direction'] = pd.to_numeric(reconstructed['wind_direction'], errors='coerce').to_numpy()
+        for turbulence_column in (
+            'turbulence_intensity_p50', 'turbulence_intensity_p90',
+            'sigma_u_p50', 'sigma_u_p90',
+        ):
+            if turbulence_column in reconstructed:
+                canonical[turbulence_column] = pd.to_numeric(
+                    reconstructed[turbulence_column], errors='coerce'
+                ).to_numpy()
+        for turbulence_label_column in ('turbulence_model_level', 'turbulence_data_source'):
+            if turbulence_label_column in reconstructed:
+                canonical[turbulence_label_column] = reconstructed[turbulence_label_column].astype(str).to_numpy()
+        if 'direction_data_source' in reconstructed:
+            canonical['direction_data_source'] = reconstructed['direction_data_source'].astype(str).to_numpy()
+        canonical['data_source'] = reconstructed['data_source'].astype(str).to_numpy()
+        canonical = canonical.loc[~canonical.index.isna()].sort_index()
+        source_id = 'mcp:' + run_id
+        target_height_m = result.get('config', {}).get('target_height_m')
+        study_revision = result.get('study', {}).get('study_revision')
+        canonical['target_height_m'] = target_height_m
+        canonical['run_id'] = run_id
+        canonical['study_revision'] = study_revision
+        source_record = {
+            'source_id': source_id,
+            'label': 'Hindcast MCP ' + run_id,
+            'kind': 'mcp',
+            'run_id': run_id,
+            'study_revision': study_revision,
+            'target_height_m': target_height_m,
+            'selected_reference': result.get('selected_reference'),
+            'selected_direction_reference': result.get('selected_direction_reference'),
+            'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+            'speed_seasonality': result.get('historical_reconstruction_model', {}).get('seasonality'),
+            'direction_correction': result.get('direction_correction'),
+            'rows': int(len(canonical)),
+            'period_start': canonical.index.min().isoformat() if len(canonical) else None,
+            'period_end': canonical.index.max().isoformat() if len(canonical) else None,
+            'long_term_statistics': _long_term_wind_summary(canonical),
+            'turbulence_summary': {
+                'measured_10min_available': bool(
+                    result.get('turbulence', {}).get('measured_10min', {}).get('available')
+                ),
+                'historical_model_available': bool(
+                    result.get('turbulence', {}).get('historical_model', {}).get('available')
+                ),
+                'training_year': result.get('turbulence', {}).get('historical_model', {}).get('training_year'),
+            },
+            '_turbulence': result.get('turbulence', {}),
+            'df': canonical,
+        }
+        sess.setdefault('data_sources', {})[source_id] = source_record
+        try:
+            observed_frame, _ = read_certe_files(
+                result.get('config', {}).get('observation_files', []),
+                target_column=result.get('config', {}).get('target_column', 'WS_80mA_mean'),
+                timezone=result.get('config', {}).get('observation_timezone', 'UTC'),
+            )
+            observed_hourly = resample_hourly(observed_frame)
+            observed_canonical = pd.DataFrame(index=observed_hourly.index)
+            observed_canonical.index.name = 'timestamp'
+            observed_canonical['wind_speed'] = observed_hourly['wind_speed_obs']
+            if 'wind_direction_obs' in observed_hourly:
+                observed_canonical['wind_direction'] = observed_hourly['wind_direction_obs']
+            sess['data_sources']['observed'] = {
+                'source_id': 'observed',
+                'label': result.get('study', {}).get('observed_station', {}).get('display_name', 'Observación'),
+                'kind': 'observed',
+                'rows': int(len(observed_canonical)),
+                'df': observed_canonical,
+                'target_height_m': result.get('config', {}).get('target_height_m'),
+                'turbulence_summary': source_record['turbulence_summary'],
+                '_turbulence': result.get('turbulence', {}),
+            }
+        except Exception:
+            logger.exception('No se pudo registrar la fuente observada de la corrida %s', run_id)
+        sess['active_data_source'] = source_id
+        sess['ws_height_m'] = source_record['target_height_m'] or sess.get('ws_height_m', 80)
+        record['published_source_id'] = source_id
+        return jsonify({
+            k: numpy_to_python(v) for k, v in source_record.items()
+            if k != 'df' and not str(k).startswith('_')
+        })
+
+    @app.route('/api/sessions/<sid>/data-sources', methods=['GET'])
+    def mcp_data_sources(sid):
+        sess = get_session(sid)
+        rows = []
+        if 'df' in sess and 'observed' not in (sess.get('data_sources') or {}):
+            rows.append({
+                'source_id': 'observed', 'label': 'Datos observados/manuales', 'kind': 'observed',
+                'rows': int(len(sess['df'])), 'active': sess.get('active_data_source') in {None, 'observed'},
+            })
+        for source_id, source in (sess.get('data_sources') or {}).items():
+            row = {
+                k: numpy_to_python(v) for k, v in source.items()
+                if k != 'df' and not str(k).startswith('_')
+            }
+            row['active'] = source_id == sess.get('active_data_source')
+            rows.append(row)
+        return jsonify({'active': sess.get('active_data_source') or 'observed', 'sources': rows})
+
     # ─── PRESET FILE BROWSER ──────────────────────────────────────────────────
 
     @app.route('/api/data/list_files', methods=['GET'])
@@ -829,7 +1532,8 @@ def create_app():
         sid = _require_sid(body)
         target_col = body.get('target_col', 'wind_speed')
         sess = get_session(sid)
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded. Upload a file first.'}), 400
 
         try:
@@ -840,7 +1544,7 @@ def create_app():
 
             def compute_quality():
                 checker = DataQualityChecker()
-                return checker.run(sess['df'], target_col=target_col)
+                return checker.run(df, target_col=target_col)
 
             (report, flags), cache_hit = get_or_compute('quality', cache_parts, compute_quality)
             report = dict(report)
@@ -849,7 +1553,6 @@ def create_app():
             sess['qc_flags']  = flags
 
             # time series with flags highlighted
-            df = sess['df']
             s  = df[target_col] if target_col in df.columns else None
             ts_chart = None
             if s is not None and isinstance(df.index, pd.DatetimeIndex):
@@ -1161,8 +1864,9 @@ def create_app():
         body = request.get_json(silent=True) or {}
         sid  = _require_sid(body)
         sess = get_session(sid)
-
-        if 'df' not in sess:
+        source_body = {**body, **(body.get('simulation') or {})}
+        df = _analysis_df(sess, source_body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
 
         turbine_cfg = body.get('turbine', {})
@@ -1212,9 +1916,9 @@ def create_app():
                 curtailment_losses=curt_losses,
             )
 
-            ws_col = _energy_ws_col(sess, sim_cfg)
+            ws_col = _energy_ws_col(sess, source_body)
             df_sim, summary = engine.run(
-                sess['df'], ws_col=ws_col,
+                df, ws_col=ws_col,
                 ws_height_m=ws_height_m,
                 altitude_m=altitude_m,
                 extrapolation=extr_method,
@@ -1299,8 +2003,8 @@ def create_app():
         body = request.get_json(silent=True) or {}
         sid  = _require_sid(body)
         sess = get_session(sid)
-
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
 
         turbine_keys = body.get('turbine_keys', None)
@@ -1314,7 +2018,6 @@ def create_app():
             if turbine_keys:
                 all_turbines = [t for t in all_turbines if t.name in turbine_keys]
             turbines = all_turbines if all_turbines else [PowerCurve.from_builtin('V150_4.5')]
-            df = sess['df']
             ws = df[ws_col].fillna(df[ws_col].median()).values
 
             # extrapolate to each turbine's hub height
@@ -1336,15 +2039,17 @@ def create_app():
         temp_col= body.get('temp_col','temperature')
         pres_col= body.get('pres_col','pressure')
         sess = get_session(sid)
-
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
+        if wd_col not in df.columns:
+            wd_col = _auto_detect_wd_col(df) or wd_col
 
         try:
-            df = sess['df']
             params = {
                 'ws_col': ws_col, 'wd_col': wd_col,
                 'temp_col': temp_col, 'pres_col': pres_col,
+                'data_source': body.get('data_source') or sess.get('active_data_source'),
             }
             cache_parts = ('wind-stats-v1', _df_cache_signature(sess, params))
 
@@ -1375,7 +2080,7 @@ def create_app():
 
     @app.route('/api/wind/advanced', methods=['POST'])
     def wind_advanced():
-        """TI, wind shear, sector analysis, extreme return periods."""
+        """Measured/logger TI, hourly variability, shear and extremes."""
         body    = request.get_json(silent=True) or {}
         sid          = _require_sid(body)
         ws_col       = body.get('ws_col', 'wind_speed')
@@ -1386,15 +2091,44 @@ def create_app():
         z_hub        = float(z_hub) if z_hub is not None else None
         sess         = get_session(sid)
         ws_h         = _sess_ws_h(body, sess, 'ws_height')
-
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
+        if wd_col not in df.columns:
+            wd_col = _auto_detect_wd_col(df) or wd_col
 
         try:
-            df = sess['df']
+            source_id, source_record = _analysis_source_record(sess, body)
+            turbulence_products = dict((source_record or {}).get('_turbulence') or {})
+            hourly_variability = numpy_to_python(compute_turbulence_intensity(df, ws_col))
+            measured_turbulence = turbulence_products.get('measured_10min') or {
+                'available': False,
+                'source_kind': 'observed_native',
+                'reason': 'La fuente activa no conserva estadísticas nativas de desviación estándar.',
+            }
+            historical_turbulence = turbulence_products.get('historical_model') or {
+                'available': False,
+                'source_kind': 'modelled_not_measured',
+                'reason': 'No existe una reconstrucción histórica de turbulencia publicada para esta fuente.',
+            }
             result = {
-                'wind_speed_variability': numpy_to_python(compute_turbulence_intensity(df, ws_col)),
-                'ti_warning':             'Proxy horario, no TI IEC 61400-1',
+                # Backward-compatible key. It remains explicitly a variability
+                # proxy and is never used as measured TI when CERTE is present.
+                'wind_speed_variability': hourly_variability,
+                'turbulence': {
+                    'active_source_id': source_id,
+                    'display_product': (
+                        'measured_10min' if measured_turbulence.get('available')
+                        else 'hourly_variability'
+                    ),
+                    'measured_10min': numpy_to_python(measured_turbulence),
+                    'historical_model': numpy_to_python(historical_turbulence),
+                    'hourly_variability': hourly_variability,
+                },
+                'ti_warning': (
+                    'TI medida sólo desde CERTE nativo de 10 min. La serie MCP horaria '
+                    'se muestra separadamente como variabilidad interhoraria.'
+                ),
                 'shear':                  numpy_to_python(compute_wind_shear(
                                               df, ws_col, ws_h,
                                               orog_factor=orog_factor, z_scale=z_scale,
@@ -1416,12 +2150,11 @@ def create_app():
         body = request.get_json(silent=True) or {}
         sid  = _require_sid(body)
         sess = get_session(sid)
-
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
 
         try:
-            df     = sess['df']
             ws_col = _energy_ws_col(sess, body)
             ws_h   = _sess_ws_h(body, sess, 'ws_height')
             lat    = float(body.get('lat', 20.0))
@@ -1549,8 +2282,8 @@ def create_app():
                                rated_power_kw=rated_kw, hub_height_m=hub_h)
         if err is not None:
             return err
-
-        if 'df' not in sess:
+        analysis_df = _analysis_df(sess, body)
+        if analysis_df is None:
             return _err('No data loaded.')
 
         try:
@@ -1574,7 +2307,7 @@ def create_app():
 
             ws_col      = _energy_ws_col(sess, body)
             ws_height_m = _sess_ws_h(body, sess)
-            df          = sess['df']
+            df          = analysis_df
             requested_n_turbines = int(body.get('n_turbines') or 1)
             _scenario = str(body.get('scenario', '')).lower()
             # "real" (sin predicción) must always use the station time series directly.
@@ -1756,6 +2489,13 @@ def create_app():
                         revenue_usd_y1 = float((e_arr * p_arr).sum())
                         if np.isfinite(revenue_usd_y1) and revenue_usd_y1 > 0:
                             _year1_rev_override = revenue_usd_y1
+                            # El perfil PML 2018 se replica en todos los años.
+                            # Si la forma horaria de producción se conserva y
+                            # sólo cambia su escala anual, el precio ponderado
+                            # por energía es constante durante el proyecto.
+                            weighted_price = revenue_usd_y1 / _y1_energy_target_kwh
+                            if np.isfinite(weighted_price) and weighted_price > 0:
+                                _price_series = [float(weighted_price)] * _project_years
             except Exception as _e_y1:
                 logger.warning('Year-1 hourly revenue override failed: %s', _e_y1)
 
@@ -2309,8 +3049,8 @@ def create_app():
         err = _validate_ranges(rated_power_kw=rated_kw, hub_height_m=hub_h)
         if err is not None:
             return err
-
-        if 'df' not in sess:
+        analysis_df = _analysis_df(sess, body)
+        if analysis_df is None:
             return _err('No data loaded.')
 
         layout = body.get('layout') or []
@@ -2334,7 +3074,7 @@ def create_app():
                     hub_height_m=hub_h,
                 )
 
-            df = sess['df']
+            df = analysis_df
             ws_col = _energy_ws_col(sess, body)
             wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
             ws_h = _sess_ws_h(body, sess)
@@ -2734,8 +3474,8 @@ def create_app():
             ws_col = None
 
             if sid:
-                if 'df' in sess:
-                    df     = sess['df']
+                df = _analysis_df(sess, body)
+                if df is not None:
                     ws_col = _energy_ws_col(sess, body)
                     wd_col = body.get('wd_col') or sess.get('wd_col', 'wind_dir')
                     ws_hub, wd, temp_c, pres_p, reference_wind_mean, wind_info = _farm_wind_from_session(
@@ -3163,9 +3903,10 @@ def create_app():
         sid = _require_sid(body)
         col = body.get('col', 'wind_speed')
         sess = get_session(sid)
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded'}), 400
-        hm = compute_month_hour_heatmap(sess['df'], col=col)
+        hm = compute_month_hour_heatmap(df, col=col)
         if hm is None:
             return jsonify({'error': 'Column not found or not datetime-indexed'}), 400
         return jsonify(numpy_to_python(hm))
@@ -3384,6 +4125,16 @@ def create_app():
                     include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
                     progress_callback=cb,
                 )
+                if body.get('market_trajectories'):
+                    result['market_configuration'] = {
+                        'trajectories': body.get('market_trajectories'),
+                        'equivalent_inputs': {
+                            'demand_mwh': float(body.get('demand_mwh', 0)),
+                            'discount_rate': float(body.get('tasa', 0.08)),
+                            'price_usd_kwh': float(body.get('price_usd_kwh', 0.20)),
+                            'fx_mxn_per_usd': float(body.get('price_mxn_per_usd', 20)),
+                        },
+                    }
                 tasks[task_id]['result'] = numpy_to_python(result)
                 tasks[task_id]['status'] = 'done'
                 tasks[task_id]['progress'] = 100
@@ -3565,6 +4316,15 @@ def create_app():
                 tasks[task_id]['result'] = numpy_to_python({
                     **spatial,
                     'ranking': ranking,
+                    'market_configuration': {
+                        'trajectories': body.get('market_trajectories') or {},
+                        'equivalent_inputs': {
+                            'demand_mwh': demand_mwh,
+                            'discount_rate': tasa,
+                            'price_usd_kwh': price_usd_kwh,
+                            'fx_mxn_per_usd': price_mxn_per_usd,
+                        },
+                    },
                 })
                 tasks[task_id]['status'] = 'done'
                 tasks[task_id]['progress'] = 100
@@ -3853,8 +4613,8 @@ def create_app():
         'PML_IPO.txt':           ('pml_ipo',    'PML horario (compra/venta)',  '$/kWh'),
         'PML_usd.txt':           ('pml_usd',    'PML en USD (compra/venta)',   'USD/kWh'),
         'GDMTH_USD.txt':         ('gdmth_usd',  'Tarifa GDMTH (USD/kWh)',      'USD/kWh'),
-        'TIIE_28D_HISTORICO.txt':('tiie_28d',   'TIIE 28 Días (Banxico)',      '%'),
-        'USDMXN_HISTORICO.txt':  ('usdmxn',     'USD/MXN FIX (Banxico)',       'MXN'),
+        'TIIE_28D_HISTORICO.txt':('tiie_28d',   'TIIE 28d · histórico aportado', '%'),
+        'USDMXN_HISTORICO.txt':  ('usdmxn',     'USD/MXN · histórico aportado',  'MXN/USD'),
         'INFLACION_HISTORICO.txt':('inflacion', 'Inflación histórica (INEGI)', '%'),
     }
 
@@ -4105,10 +4865,11 @@ def create_app():
                 base_year = 2024
                 use_real = False
 
+            validation = chronological_trend_validation(t, annual_hist, models=models)
             fitted = fit_all_trend_models(t, annual_hist, models=models)
             projection = project_25_years(values, fitted, horizon_years=horizon,
                                            base_year_label=base_year)
-            best = best_trend_model(fitted)
+            best = best_validated_trend_model(fitted, validation)
 
             summary = []
             for k, m in fitted.items():
@@ -4122,6 +4883,7 @@ def create_app():
                     'r2':      m['metrics']['r2'],
                     'rmse':    m['metrics']['rmse'],
                     'mape':    m['metrics']['mape'],
+                    'validation': validation.get('models', {}).get(k),
                     'cagr':    proj.get('cagr'),
                     'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
                 })
@@ -4131,7 +4893,7 @@ def create_app():
 
             raw = values.tolist()
 
-            return jsonify(numpy_to_python({
+            response = {
                 'preset': key,
                 'growth_seed': growth,
                 'horizon_years': horizon,
@@ -4142,11 +4904,25 @@ def create_app():
                 'projection': projection,
                 'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                 'best_model': best,
+                'selection_basis': 'chronological_holdout' if validation.get('available') else 'in_sample_fallback',
+                'validation': validation,
                 'raw_values': raw,
                 'raw_n': len(raw),
                 'used_real_annual': use_real,
                 'annual_kind': 'sum',
-            }))
+                'provenance': {
+                    'source': (meta or {}).get('label', key),
+                    'file': (meta or {}).get('file'),
+                    'history_basis': 'observed_multiyear' if use_real else 'single_year_scenario',
+                    'aggregation': 'annual_sum_mwh',
+                },
+            }
+            _store_market_model(
+                sess, 'demand', best_model=best, projection=projection,
+                source_key=key, unit='MWh/year', validation=validation,
+                provenance=response['provenance'],
+            )
+            return jsonify(numpy_to_python(response))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
@@ -4231,31 +5007,52 @@ def create_app():
 
         try:
             if isinstance(pml_data, dict) and 'compra' in pml_data:
-                compra = np.asarray(pml_data['compra'], dtype=float)
-                venta  = np.asarray(pml_data['venta'], dtype=float)
+                compra_raw = np.asarray(pml_data['compra'], dtype=float)
+                venta_raw  = np.asarray(pml_data['venta'], dtype=float)
             else:
                 # Single-column fallback — treat as venta
                 vals = np.asarray(pml_data if isinstance(pml_data, np.ndarray) else pml_data, dtype=float)
-                compra = venta = vals
+                compra_raw = venta_raw = vals
+
+            compra, compra_norm = normalize_fixed_hourly_profile(compra_raw)
+            venta, venta_norm = normalize_fixed_hourly_profile(venta_raw)
 
             stats_compra, hit_compra = get_or_compute(
                 'market_stats',
-                ('base-year-stats-v1', _array_cache_signature(compra, {'category': 'pml', 'key': key, 'side': 'compra'})),
+                ('base-year-stats-v2-2018', _array_cache_signature(compra, {'category': 'pml', 'key': key, 'side': 'compra'})),
                 lambda: base_year_stats(compra),
             )
             stats_venta, hit_venta = get_or_compute(
                 'market_stats',
-                ('base-year-stats-v1', _array_cache_signature(venta, {'category': 'pml', 'key': key, 'side': 'venta'})),
+                ('base-year-stats-v2-2018', _array_cache_signature(venta, {'category': 'pml', 'key': key, 'side': 'venta'})),
                 lambda: base_year_stats(venta),
             )
             stats_compra = dict(stats_compra)
             stats_venta = dict(stats_venta)
             stats_compra['cache_hit'] = bool(hit_compra)
             stats_venta['cache_hit'] = bool(hit_venta)
+            _store_fixed_pml_profile(
+                sess, source_key=key, meta=meta, profile=venta,
+                normalization=venta_norm, base_year=2018)
+            daily_venta = venta.reshape(365, 24).mean(axis=1)
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta,
+                'mode': 'fixed_2018_profile',
+                'base_year': 2018,
+                'side_used_in_project': 'venta',
                 'stats_compra': stats_compra,
                 'stats_venta':  stats_venta,
+                'normalization': {
+                    'compra': compra_norm,
+                    'venta': venta_norm,
+                },
+                'profile_2018': venta.tolist(),
+                'daily_mean_venta': daily_venta.tolist(),
+                'replication': {
+                    'horizon_years': int((sess.get('park_configuration') or {}).get('project_horizon_years', 25)),
+                    'price_escalation_pct': 0.0,
+                    'modeling': 'none',
+                },
                 'sample_first_24h': {
                     'compra': compra[:24].tolist(),
                     'venta':  venta[:24].tolist(),
@@ -4267,9 +5064,17 @@ def create_app():
 
     @app.route('/api/pml/forecast', methods=['POST'])
     def pml_forecast():
+        """Endpoint legado deshabilitado: el proyecto replica PML 2018.
+
+        Se conserva la ruta para devolver una explicación clara a clientes
+        antiguos, pero no se entrena ni proyecta ningún precio.
         """
-        Proyecta PML a 25 años usando datos REALES anuales (no sintetizados).
-        """
+        return _err(
+            'El PML no se modela ni se predice. Usa POST /api/pml/load para '
+            'publicar el perfil fijo observado de 2018.', 410)
+
+        # Código histórico inalcanzable conservado temporalmente para facilitar
+        # la migración de clientes fuera de este flujo.
         body = request.get_json(silent=True) or {}
         sid     = _require_sid(body)
         key     = body.get('preset', 'pml_ipo')
@@ -4311,22 +5116,29 @@ def create_app():
             for s in sides:
                 values = np.asarray(cache[s], dtype=float)
 
-                # PML: usamos suma anual para mantener consistencia con synthesize
-                real_annual = _real_annual_from_hourly(values, agg='sum')
+                # El PML es un precio: su agregado anual correcto es la media,
+                # no la suma de 8760 precios horarios.
+                real_annual = _real_annual_from_hourly(values, agg='mean')
                 if real_annual is not None:
                     t, annual_hist, base_year = real_annual
                     use_real = True
                 else:
+                    # Escenario de tendencia desde el precio medio del único
+                    # año disponible. Nunca sumar precios horarios.
+                    annual_seed = np.asarray([float(np.nanmean(values))], dtype=float)
                     t, annual_hist = synthesize_annual_series(
-                        values, n_years_history=hist_y, growth_seed=growth,
+                        annual_seed, n_years_history=hist_y, growth_seed=growth,
                         noise_pct=0.04)
                     base_year = 2024
                     use_real = False
 
+                validation = chronological_trend_validation(t, annual_hist, models=models)
                 fitted = fit_all_trend_models(t, annual_hist, models=models)
                 projection = project_25_years(values, fitted, horizon_years=horizon,
                                                base_year_label=base_year)
-                best = best_trend_model(fitted)
+                projection, projection_policy = constrain_market_projection(
+                    projection, annual_hist, 'pml')
+                best = best_validated_trend_model(fitted, validation)
                 summary = []
                 for k, m in fitted.items():
                     if 'error' in m:
@@ -4338,6 +5150,7 @@ def create_app():
                         'r2':      m['metrics']['r2'],
                         'rmse':    m['metrics']['rmse'],
                         'mape':    m['metrics']['mape'],
+                        'validation': validation.get('models', {}).get(k),
                         'cagr':    proj.get('cagr'),
                         'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
                     })
@@ -4351,11 +5164,32 @@ def create_app():
                     'projection': projection,
                     'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
                     'best_model': best,
+                    'selection_basis': 'chronological_holdout' if validation.get('available') else 'in_sample_fallback',
+                    'validation': validation,
+                    'projection_policy': projection_policy,
                     'raw_values': raw_s,
                     'raw_n': len(raw_s),
                     'used_real_annual': use_real,
-                    'annual_kind': 'sum',
+                    'annual_kind': 'mean',
+                    'provenance': {
+                        'source': meta.get('label') if isinstance(meta, dict) else key,
+                        'file': meta.get('file') if isinstance(meta, dict) else None,
+                        'history_basis': 'observed_multiyear' if use_real else 'single_year_scenario',
+                    },
                 }
+            # La fuente del generador siempre es el lado de venta. El lado de
+            # compra puede analizarse, pero no se publica como ingreso.
+            published_side = 'venta' if 'venta' in result['sides'] else None
+            if published_side:
+                published = result['sides'][published_side]
+                _store_market_model(
+                    sess, 'pml', best_model=published['best_model'],
+                    projection=published['projection'], source_key=key,
+                    unit=(meta or {}).get('unit', '$/kWh'),
+                    validation=published['validation'],
+                    projection_policy=published['projection_policy'],
+                    provenance={**published['provenance'], 'side': published_side},
+                )
             return jsonify(numpy_to_python(result))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -4364,6 +5198,10 @@ def create_app():
     @app.route('/api/pml/forecast_hourly', methods=['POST'])
     @limiter.limit('5 per minute')
     def pml_forecast_hourly():
+        return _err(
+            'El perfil PML 2018 se replica directamente; no requiere '
+            'entrenamiento horario. Usa POST /api/pml/load.', 410)
+
         body = request.get_json(silent=True) or {}
         sid = _require_sid(body)
         preset = body.get('preset', 'pml_ipo')
@@ -4430,21 +5268,23 @@ def create_app():
 
     @app.route('/api/interest/forecast', methods=['POST'])
     def interest_forecast():
-        """Proyecta Tasa de Interés a 25 años usando históricos anuales REALES."""
+        """Entrena, valida y publica una trayectoria anual de tasa de interés."""
         body = request.get_json(silent=True) or {}
         sid     = body.get('session_id')
         key     = body.get('preset', 'tiie_28d')
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
-        models  = body.get('models')
+        models  = body.get('models') or ['mean_reversion', 'arima', 'holt_winters']
 
         # Intentar Data Hub primero
         raw_values = None
+        sess = get_session(sid) if sid else None
+        meta = None
         if sid:
-            sess = get_session(sid)
             market = sess.get('market', {}).get('interest')
             if market and market.get('data') and 'values' in market['data']:
                 raw_values = np.asarray(market['data']['values'], dtype=float)
                 dates = market['data'].get('dates')
+                meta = market.get('meta') or {}
 
         if raw_values is not None and dates:
             # Usar datos del Data Hub — ya tenemos valores y fechas
@@ -4462,96 +5302,135 @@ def create_app():
             col_name = df.columns[0]
 
         try:
-            # Agregar anualmente (promedio)
+            # Agregar anualmente para visualización. El último año parcial no
+            # participa como si fuera una observación anual completa.
             annual_df = df.resample('YE').mean().dropna()
-            
-            # Serie completa para la gráfica
             years_full = annual_df.index.year.values
             values_full = annual_df[col_name].values
-            
-            # Serie de entrenamiento (desde 2001)
-            train_df = annual_df[annual_df.index.year >= 2001]
-            if len(train_df) < 2:
-                train_df = annual_df  # usar todo si no hay suficiente post-2001
-            years_train = train_df.index.year.values
-            values_train = train_df[col_name].values
-            
-            t_train = years_train - years_train[0]
-            
+
+            last_source_date = pd.Timestamp(df.index.max())
+            complete_df = annual_df.copy()
+            if last_source_date.month < 12:
+                complete_df = complete_df[complete_df.index.year < last_source_date.year]
+            if len(complete_df) < 8:
+                complete_df = annual_df
+
             import core.forecasting as fc
-            
-            fitted = fc.fit_all_trend_models(t_train, values_train, models=models)
-            
-            if 'mean_reversion' in fitted and '_predict' not in fitted.get('mean_reversion', {}):
-                mr = fc.fit_mean_reversion(t_train, values_train)
-                yhat = mr['fitted']
-                fitted['mean_reversion'] = {
-                    'kind': mr['kind'],
-                    'params': mr['params'],
-                    'metrics': {
-                        'r2': fc._r2(values_train, yhat),
-                        'rmse': fc._rmse(values_train, yhat),
-                        'mape': fc._mape(values_train, yhat)
-                    },
-                    '_predict': mr['predict'],
-                    'fitted': [float(x) for x in yhat],
-                }
-            
-            projection = fc.project_25_years(values_train, fitted, horizon_years=horizon, base_year_label=years_train[-1])
-            best = fc.best_trend_model(fitted)
-            
-            summary = []
-            for k, m in fitted.items():
-                if 'error' in m:
-                    summary.append({'model': k, 'error': m['error']}); continue
-                proj = projection.get(k, {})
-                summary.append({
-                    'model':   k,
-                    'r2':      m['metrics'].get('r2'),
-                    'rmse':    m['metrics'].get('rmse'),
-                    'mape':    m['metrics'].get('mape'),
-                    'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
-                })
-            
+
+            window_candidates = []
+            for window_years in (8, 10, 15):
+                if len(complete_df) < window_years:
+                    continue
+                window_df = complete_df.iloc[-window_years:]
+                values_window = window_df[col_name].to_numpy(dtype=float)
+                t_window = np.arange(len(values_window), dtype=float)
+                candidate_validation = fc.chronological_trend_validation(
+                    t_window, values_window, models=models, min_train=6, min_test=2)
+                for model_name, metrics in candidate_validation.get('models', {}).items():
+                    if metrics.get('error') or metrics.get('nrmse') is None:
+                        continue
+                    window_candidates.append({
+                        'window_years': window_years,
+                        'model': model_name,
+                        'metrics': metrics,
+                        'score': float(metrics['nrmse']) + 0.10 * abs(float(metrics.get('bias', 0))) /
+                                 max(float(np.mean(np.abs(values_window))), 1e-9),
+                    })
+            if not window_candidates:
+                raise ValueError('No fue posible validar una ventana reciente de TIIE')
+            selected = min(window_candidates, key=lambda row: row['score'])
+            train_df = complete_df.iloc[-selected['window_years']:]
+            years_train = train_df.index.year.values
+            values_train = train_df[col_name].to_numpy(dtype=float)
+            t_train = np.arange(len(values_train), dtype=float)
+            fitted = fc.fit_all_trend_models(
+                t_train, values_train, models=[selected['model']])
+            best = selected['model']
+            if best not in fitted or fitted[best].get('error'):
+                raise ValueError(f'El modelo TIIE seleccionado no pudo reajustarse: {best}')
+
+            projection = fc.project_25_years(
+                values_train, fitted, horizon_years=horizon,
+                base_year_label=max(int(last_source_date.year), int(years_train[-1])))
+            projection, projection_policy = fc.constrain_market_projection(
+                projection, values_train, 'interest')
+            validation = {
+                'available': True,
+                'method': 'recent_window_chronological_holdout',
+                'selected_window_years': int(selected['window_years']),
+                'selected_model': best,
+                'models': {best: selected['metrics']},
+                'candidates': window_candidates,
+            }
+            projection_policy['training_window_years'] = int(selected['window_years'])
+            proj = projection[best]
+            summary = [{
+                'model': best,
+                'window_years': int(selected['window_years']),
+                'validation': selected['metrics'],
+                'rmse': selected['metrics'].get('rmse'),
+                'mae': selected['metrics'].get('mae'),
+                'bias': selected['metrics'].get('bias'),
+                'final': proj.get('annual', [None])[-1],
+            }]
             for m in fitted.values(): m.pop('_predict', None)
             
             # Raw values for Forecast Studio
             all_raw = df[col_name].dropna().values.tolist()
             
-            return jsonify(numpy_to_python({
+            response = {
                 'preset': key, 'horizon_years': horizon,
                 'history_years': [int(y) for y in years_full],
                 'history_annual': [float(v) for v in values_full],
                 'fitted': fitted, 'projection': projection,
-                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'summary': summary,
                 'best_model': best,
+                'selection_basis': 'recent_window_chronological_holdout',
+                'validation': validation,
+                'projection_policy': projection_policy,
                 'raw_values': all_raw,
                 'raw_n': len(all_raw),
                 'used_real_annual': True,
                 'annual_kind': 'mean',
-            }))
+                'provenance': {
+                    'source': (meta or {}).get('label', 'Serie histórica de tasa'),
+                    'file': (meta or {}).get('file'),
+                    'history_basis': 'user_provided_observed_multiyear',
+                    'aggregation': 'annual_mean',
+                    'training_start_year': int(years_train[0]),
+                    'training_end_year': int(years_train[-1]),
+                },
+            }
+            if sess is not None:
+                _store_market_model(
+                    sess, 'interest', best_model=best, projection=projection,
+                    source_key=key, unit='%', validation=validation,
+                    projection_policy=projection_policy,
+                    provenance=response['provenance'],
+                )
+            return jsonify(numpy_to_python(response))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
     @app.route('/api/fx/forecast', methods=['POST'])
     def fx_forecast():
-        """Proyecta Tipo de Cambio a 25 años usando históricos anuales REALES."""
+        """Entrena USD/MXN con ventanas recientes y validación temporal."""
         body = request.get_json(silent=True) or {}
         sid     = body.get('session_id')
         key     = body.get('preset', 'usdmxn')
-        depr    = float(body.get('depreciation', 2.5))
         horizon = int(body.get('horizon', Config.FORECAST_HORIZON_YEARS))
-        models  = body.get('models')
 
         # Data Hub primero
         raw_values = None
+        sess = get_session(sid) if sid else None
+        meta = None
         if sid:
-            sess = get_session(sid)
             market = sess.get('market', {}).get('fx')
             if market and market.get('data') and 'values' in market['data']:
                 raw_values = np.asarray(market['data']['values'], dtype=float)
                 dates = market['data'].get('dates')
+                meta = market.get('meta') or {}
 
         if raw_values is not None and dates:
             df = pd.DataFrame({'v': raw_values},
@@ -4568,47 +5447,75 @@ def create_app():
             col_name = df.columns[0]
 
         try:
-            annual_df = df.resample('YE').mean().dropna()
+            source_series = pd.Series(
+                pd.to_numeric(df[col_name], errors='coerce').values,
+                index=pd.to_datetime(df.index), name='usdmxn').dropna()
+            recent = forecast_fx_recent(
+                source_series, horizon_years=horizon,
+                window_years_options=(5, 8, 10))
+            projection = recent['projection']
+            projection_policy = recent['projection_policy']
+            best = recent['best_model']
+            selected_validation = recent['validation']['selected']
+            validation = {
+                **recent['validation'],
+                'models': {
+                    best: {
+                        'rmse': selected_validation['rmse'],
+                        'mae': selected_validation['mae'],
+                        'bias': selected_validation['bias'],
+                        'nrmse': selected_validation['nrmse'],
+                    }
+                },
+            }
+            annual_df = source_series.resample('YE').mean().dropna()
             years = annual_df.index.year.values
-            values = annual_df[col_name].values
-            t = years - years[0]
-            
-            import core.forecasting as fc
-            fitted = fc.fit_all_trend_models(t, values, models=models)
-            
-            projection = fc.project_25_years(values, fitted, horizon_years=horizon, base_year_label=years[-1])
-            best = fc.best_trend_model(fitted)
-            
-            summary = []
-            for k, m in fitted.items():
-                if 'error' in m:
-                    summary.append({'model': k, 'error': m['error']}); continue
-                proj = projection.get(k, {})
-                summary.append({
-                    'model':   k,
-                    'r2':      m['metrics'].get('r2'),
-                    'rmse':    m['metrics'].get('rmse'),
-                    'mape':    m['metrics'].get('mape'),
-                    'final':   proj.get('annual', [None])[-1] if proj.get('annual') else None,
-                })
-            
-            for m in fitted.values(): m.pop('_predict', None)
-            
-            # Raw values for Forecast Studio
-            all_raw = df[col_name].dropna().values.tolist()
-            
-            return jsonify(numpy_to_python({
-                'preset': key, 'horizon_years': horizon, 'depreciation': depr,
+            values = annual_df.values
+            best_projection = projection[best]
+            summary = [{
+                'model': best,
+                'kind': best_projection.get('kind'),
+                'window_years': projection_policy['training_window_years'],
+                'validation': validation['models'][best],
+                'rmse': selected_validation['rmse'],
+                'mae': selected_validation['mae'],
+                'bias': selected_validation['bias'],
+                'final': best_projection['annual'][-1],
+            }]
+            response = {
+                'preset': key, 'horizon_years': horizon,
                 'history_years': [int(y) for y in years],
                 'history_annual': [float(v) for v in values],
-                'fitted': fitted, 'projection': projection,
-                'summary': sorted(summary, key=lambda r: r.get('r2') or -1, reverse=True),
+                'history_monthly_start': source_series.index.min().strftime('%Y-%m-%d'),
+                'history_monthly_end': source_series.index.max().strftime('%Y-%m-%d'),
+                'training_start': recent['training_start'],
+                'training_end': recent['training_end'],
+                'fitted': {}, 'projection': projection,
+                'summary': summary,
                 'best_model': best,
-                'raw_values': all_raw,
-                'raw_n': len(all_raw),
+                'selection_basis': 'recent_windows_rolling_holdout',
+                'validation': validation,
+                'projection_policy': projection_policy,
+                'raw_values': source_series.values.tolist(),
+                'raw_n': int(len(source_series)),
                 'used_real_annual': True,
                 'annual_kind': 'mean',
-            }))
+                'provenance': {
+                    'source': (meta or {}).get('label', 'USD/MXN histórico'),
+                    'file': (meta or {}).get('file'),
+                    'history_basis': 'user_provided_observed_multiyear',
+                    'aggregation': 'monthly_mean_for_training',
+                    'training_scope': 'recent_window_only',
+                },
+            }
+            if sess is not None:
+                _store_market_model(
+                    sess, 'fx', best_model=best, projection=projection,
+                    source_key=key, unit='MXN/USD', validation=validation,
+                    projection_policy=projection_policy,
+                    provenance=response['provenance'],
+                )
+            return jsonify(numpy_to_python(response))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
@@ -4628,12 +5535,12 @@ def create_app():
         include_raw = bool(body.get('include_raw', True))
 
         sess = get_session(sid)
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
 
         try:
             import core.forecasting as fc
-            df = sess['df']
             if ws_col not in df.columns:
                 ws_col = sess.get('target_col', 'wind_speed')
             if ws_col not in df.columns:
