@@ -822,7 +822,7 @@ function renderParkConfigurationReadiness() {
       detail = config.commercialization_mode === 'total_sale'
         ? 'No aplica · venta total'
         : ready
-          ? `${config.demand_series?.filename || 'Serie histórica cargada'} · ${Number(config.demand_series?.n_rows || 0).toLocaleString('es-MX')} registros`
+          ? `${config.demand_series?.filename || 'Serie histórica cargada'} · ${Number(config.demand_series?.n_rows || 0).toLocaleString('es-MX')} registros · ${Number(config.demand_series?.annual_mwh || 0).toLocaleString('es-MX', { maximumFractionDigits: 0 })} MWh/año`
           : 'Carga obligatoria de la serie histórica';
     } else if (category === 'fx') {
       detail = ready
@@ -8629,7 +8629,9 @@ async function parqueLoadDemandFromSession() {
     if (r.found) {
       document.getElementById('parque-demand').value = Math.round(r.annual_mwh);
       if (badge) {
-        badge.textContent = `📊 Col: "${r.column}"  ·  μ: ${parqueFmt(r.mean_mw, 2)} MW  ·  máx: ${parqueFmt(r.max_mw, 2)} MW  ·  ${r.n_records} reg  ·  Δt=${r.dt_h}h`;
+        const source = r.source === 'market_series'
+          ? `Archivo: ${r.filename || r.column}` : `Col: "${r.column}"`;
+        badge.textContent = `📊 ${source}  ·  μ: ${parqueFmt(r.mean_mw, 2)} MW  ·  máx: ${parqueFmt(r.max_mw, 2)} MW  ·  ${r.n_records} reg  ·  Δt=${r.dt_h}h`;
         badge.style.display = '';
       }
       parqueUpdateRecommendation();
@@ -13851,7 +13853,10 @@ function parkEquivalentDesignInputs() {
   let demand = 0;
   if (config.commercialization_mode !== 'total_sale') {
     if (config.demand_source === 'market_series') {
-      demand = Number(parkMarketTrajectory('demand')?.[0]) || Number(config.annual_demand_mwh) || 0;
+      demand = Number(config.demand_series?.annual_mwh)
+        || Number(config.annual_demand_mwh)
+        || Number(parkMarketTrajectory('demand')?.[0])
+        || 0;
     } else {
       demand = Number(config.annual_demand_mwh) || 0;
     }

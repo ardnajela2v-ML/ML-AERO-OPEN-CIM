@@ -571,7 +571,114 @@ def create_app():
                 return col
         return None
 
-    def _load_kw_for_dispatch(df, n_hours, dt_h, demand_mwh=0.0):
+    def _market_demand_profile(sess):
+        """Devuelve la demanda comercial de la sesión como potencia en kW.
+
+        La serie cargada en Configuración del Parque es independiente del
+        DataFrame meteorológico principal. El valor anual se normaliza a un
+        año de 8760 h a partir de la potencia media observada, de modo que una
+        hora ausente no reduzca artificialmente la demanda de diseño.
+        """
+        record = (sess.get('market') or {}).get('demand') or {}
+        data = record.get('data') or {}
+        raw_values = data.get('values') or []
+        if not raw_values:
+            return None
+
+        values = pd.to_numeric(pd.Series(raw_values), errors='coerce').to_numpy(dtype=float)
+        finite = np.isfinite(values)
+        values = values[finite]
+        if not len(values):
+            return None
+
+        meta = record.get('meta') or {}
+        source_dt_h = 1.0
+        dates = data.get('dates') or []
+        if len(dates) == len(raw_values):
+            parsed = pd.to_datetime(pd.Series(dates)[finite], errors='coerce')
+            diffs = parsed.diff().dt.total_seconds().div(3600)
+            diffs = diffs[(diffs > 0) & np.isfinite(diffs)]
+            if not diffs.empty:
+                source_dt_h = float(diffs.median())
+        else:
+            try:
+                candidate = float(meta.get('dt_h') or meta.get('time_step_hours') or 1.0)
+                if np.isfinite(candidate) and candidate > 0:
+                    source_dt_h = candidate
+            except (TypeError, ValueError):
+                pass
+
+        unit = str(meta.get('unit') or 'MW').strip()
+        unit_l = unit.lower().replace(' ', '')
+        if 'kwh' in unit_l:
+            profile_kw = values / max(source_dt_h, 1e-9)
+            unit_interpretation = 'kWh/step'
+        elif 'mwh' in unit_l:
+            profile_kw = values * 1000.0 / max(source_dt_h, 1e-9)
+            unit_interpretation = 'MWh/step'
+        elif 'kw' in unit_l:
+            profile_kw = values
+            unit_interpretation = 'kW'
+        else:
+            profile_kw = values * 1000.0
+            unit_interpretation = 'MW'
+        profile_kw = np.clip(profile_kw, 0.0, None)
+        if not len(profile_kw):
+            return None
+
+        mean_kw = float(np.mean(profile_kw))
+        annual_mwh = mean_kw * 8760.0 / 1000.0
+        info = {
+            'source': 'market_series',
+            'filename': record.get('filename') or meta.get('filename'),
+            'column': meta.get('column') or 'serie de demanda',
+            'unit': unit,
+            'units_assumed': unit_interpretation,
+            'n_records': int(len(profile_kw)),
+            'dt_h': round(float(source_dt_h), 6),
+            'coverage_hours': round(float(len(profile_kw) * source_dt_h), 3),
+            'observed_energy_mwh': round(float(profile_kw.sum() * source_dt_h / 1000.0), 3),
+            'annual_mwh': round(float(annual_mwh), 3),
+            'mean_mw': round(mean_kw / 1000.0, 6),
+            'max_mw': round(float(np.max(profile_kw)) / 1000.0, 6),
+            'annualization': 'mean_power_x_8760',
+        }
+        return profile_kw, info
+
+    def _align_market_demand_profile(profile_kw, source_dt_h, n_hours, target_dt_h):
+        """Alinea y repite el perfil real sin alterar su potencia media."""
+        profile_kw = np.asarray(profile_kw, dtype=float)
+        if not len(profile_kw) or n_hours <= 0:
+            return np.zeros(max(int(n_hours), 0), dtype=float)
+        source_dt_h = max(float(source_dt_h), 1e-9)
+        target_dt_h = max(float(target_dt_h), 1e-9)
+        if not np.isclose(source_dt_h, target_dt_h):
+            duration_h = len(profile_kw) * source_dt_h
+            target_count = max(1, int(round(duration_h / target_dt_h)))
+            source_pos = (np.arange(len(profile_kw), dtype=float) + 0.5) * source_dt_h
+            target_pos = (np.arange(target_count, dtype=float) + 0.5) * target_dt_h
+            aligned = np.interp(
+                np.mod(target_pos, duration_h), source_pos, profile_kw,
+                period=duration_h)
+            if np.mean(aligned) > 0:
+                aligned *= float(np.mean(profile_kw) / np.mean(aligned))
+            profile_kw = aligned
+        repeats = int(np.ceil(int(n_hours) / len(profile_kw)))
+        return np.tile(profile_kw, max(repeats, 1))[:int(n_hours)]
+
+    def _load_kw_for_dispatch(df, n_hours, dt_h, demand_mwh=0.0,
+                              market_demand=None):
+        if market_demand is not None:
+            profile_kw, source_info = market_demand
+            load_kw = _align_market_demand_profile(
+                profile_kw, source_info.get('dt_h', 1.0), n_hours, dt_h)
+            return load_kw, {
+                **source_info,
+                'alignment': 'repeat_real_profile',
+                'n_records_aligned': int(len(load_kw)),
+                'target_dt_h': round(float(dt_h), 6),
+            }
+
         demand_col = _find_demand_column(df)
         if demand_col is not None:
             vals = pd.to_numeric(df[demand_col], errors='coerce').to_numpy(dtype=float)
@@ -923,17 +1030,24 @@ def create_app():
         }
 
     def _park_demand_series_info(sess):
-        record = (sess.get('market') or {}).get('demand') or {}
-        data = record.get('data') or {}
-        values = data.get('values') or []
-        if not values:
+        market_demand = _market_demand_profile(sess)
+        if market_demand is None:
             return None
+        _, demand_info = market_demand
+        record = (sess.get('market') or {}).get('demand') or {}
         meta = record.get('meta') or {}
         return {
-            'filename': record.get('filename') or meta.get('filename'),
-            'n_rows': int(meta.get('n_rows') or len(values)),
-            'unit': meta.get('unit') or 'MW',
+            'filename': demand_info['filename'],
+            'n_rows': demand_info['n_records'],
+            'unit': demand_info['unit'],
             'date_range': meta.get('date_range'),
+            'dt_h': demand_info['dt_h'],
+            'coverage_hours': demand_info['coverage_hours'],
+            'observed_energy_mwh': demand_info['observed_energy_mwh'],
+            'annual_mwh': demand_info['annual_mwh'],
+            'mean_mw': demand_info['mean_mw'],
+            'max_mw': demand_info['max_mw'],
+            'annualization': demand_info['annualization'],
         }
 
     def _park_configuration_payload(sess):
@@ -954,6 +1068,8 @@ def create_app():
         }
         payload['demand_series'] = demand_series
         payload['demand_series_required'] = demand_required
+        payload['annual_demand_mwh'] = (
+            demand_series['annual_mwh'] if demand_required and demand_series else 0.0)
         payload['readiness'] = readiness
         payload['ready_for_design'] = bool(all(readiness.values()))
         return payload
@@ -1065,11 +1181,14 @@ def create_app():
 
         if commercial == 'total_sale':
             demand_source = 'none'
+            annual_demand_mwh = 0.0
         else:
             demand_source = 'market_series'
-            if _park_demand_series_info(sess) is None:
+            demand_series = _park_demand_series_info(sess)
+            if demand_series is None:
                 return _err(
                     'Autoconsumo requiere cargar una serie histórica de demanda')
+            annual_demand_mwh = demand_series['annual_mwh']
 
         revision = int(prior.get('configuration_revision', 0)) + 1
         sess['park_configuration'] = {
@@ -1077,7 +1196,7 @@ def create_app():
             'configuration_revision': revision,
             'commercialization_mode': commercial,
             'demand_source': demand_source,
-            'annual_demand_mwh': 0.0,
+            'annual_demand_mwh': annual_demand_mwh,
             'sale_scheme': sale_scheme,
             'pml_side': 'venta',
             'pml_node': str(body.get('pml_node') or '').strip(),
@@ -2537,7 +2656,9 @@ def create_app():
             if dispatch_annual_kwh > 0 and target_annual_kwh > 0:
                 p_kw_dispatch = p_kw_dispatch * (target_annual_kwh / dispatch_annual_kwh)
             load_kw, load_info = _load_kw_for_dispatch(
-                df, len(ws_hub), dt_h, demand_mwh=float(fin_cfg.get('demand_mwh', 0))
+                df, len(ws_hub), dt_h,
+                demand_mwh=float(fin_cfg.get('demand_mwh', 0)),
+                market_demand=_market_demand_profile(sess),
             )
             hourly_dispatch = _techno_hourly_dispatch(
                 p_kw_dispatch, load_kw, dispatch_index, dt_h, n_turbines, turbine, load_info
@@ -3603,6 +3724,22 @@ def create_app():
         if not sid:
             return _err('session_id required')
         sess = sessions.get(sid, {})
+        market_demand = _market_demand_profile(sess)
+        if market_demand is not None:
+            _, info = market_demand
+            return jsonify(numpy_to_python({
+                'found': True,
+                'source': info['source'],
+                'filename': info['filename'],
+                'column': info['column'],
+                'annual_mwh': info['annual_mwh'],
+                'mean_mw': info['mean_mw'],
+                'max_mw': info['max_mw'],
+                'n_records': info['n_records'],
+                'dt_h': info['dt_h'],
+                'coverage_hours': info['coverage_hours'],
+                'annualization': info['annualization'],
+            }))
         if 'df' not in sess:
             return _err('No hay datos en la sesión')
         df = sess['df']

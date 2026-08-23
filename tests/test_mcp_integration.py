@@ -199,8 +199,30 @@ class MCPIntegrationTests(unittest.TestCase):
             configured_data = configured.get_json()
             self.assertEqual(configured_data["demand_source"], "market_series")
             self.assertEqual(configured_data["demand_series"]["filename"], demand_file)
+            self.assertGreater(configured_data["annual_demand_mwh"], 0)
+            self.assertEqual(
+                configured_data["annual_demand_mwh"],
+                configured_data["demand_series"]["annual_mwh"],
+            )
             self.assertTrue(configured_data["readiness"]["demand"])
             self.assertTrue(configured_data["ready_for_design"])
+
+            design_demand = self.client.post("/api/farm/session_demand", json={
+                "session_id": self.sid,
+            })
+            self.assertEqual(
+                design_demand.status_code, 200,
+                design_demand.get_data(as_text=True),
+            )
+            design_data = design_demand.get_json()
+            self.assertTrue(design_data["found"])
+            self.assertEqual(design_data["source"], "market_series")
+            self.assertEqual(design_data["filename"], demand_file)
+            self.assertAlmostEqual(
+                design_data["annual_mwh"],
+                configured_data["annual_demand_mwh"],
+                places=3,
+            )
 
     def test_fx_recent_forecast_is_independent_from_distant_history(self):
         index = pd.date_range("2005-01-31", "2024-12-31", freq="ME")
