@@ -77,6 +77,10 @@ from core.kriging import (parse_coords_from_filename, read_wind_file,
                           legacy_three_maps, parallel_read_sites,
                           _compute_site_stats_cached, clear_site_stats_cache,
                           _haversine_km)
+from core.spatial_calibration import (METHOD as SPATIAL_CALIBRATION_METHOD,
+                                      build_calibrated_maps,
+                                      calibrate_spatial_nodes,
+                                      resolve_sector_roughness)
 from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
                        recommend_n_turbines, optimize_layout_greedy,
                        optimize_layout_structured, energy_weighted_dominant_direction)
@@ -4094,6 +4098,59 @@ def create_app():
         Acepta target_height_m para normalizar todas las estaciones a esa altura.
         """
         folder = Config.DATA_FOLDER
+        sid = request.args.get('session_id')
+        data_source = request.args.get('data_source')
+        if sid and data_source and data_source.startswith('mcp:'):
+            sess = get_session(sid)
+            source = (sess.get('data_sources') or {}).get(data_source)
+            if not source or source.get('kind') != 'mcp':
+                return jsonify({'error': 'Diseño requiere un hindcast MCP publicado en esta sesión'}), 409
+            study = sess.get('mcp_study') or {}
+            try:
+                poi_lat = float(request.args.get('poi_lat', (study.get('poi') or {}).get('lat', 16.55)))
+                poi_lon = float(request.args.get('poi_lon', (study.get('poi') or {}).get('lon', -94.955)))
+                radius_km = float(request.args.get('radius_km', study.get('radius_km', 200)))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'POI o radius_km inválido'}), 400
+            index = _mcp_index(sess)
+            references = []
+            for row in index.values():
+                if row.get('data_kind') != 'reanalysis' or row.get('provider') not in {'ERA5', 'MERRA2'}:
+                    continue
+                distance = _haversine_km(poi_lat, poi_lon, float(row['latitude']), float(row['longitude']))
+                if distance > radius_km:
+                    continue
+                references.append({
+                    'station_id': row['station_id'],
+                    # filename remains the stable UI selection key for legacy JS.
+                    'filename': row['station_id'],
+                    'file_ids': list(row.get('file_ids') or []),
+                    'display_name': row.get('display_name') or row['station_id'],
+                    'lat': float(row['latitude']), 'lon': float(row['longitude']),
+                    'distance_km': round(float(distance), 3),
+                    'source': str(row['provider']).lower(), 'provider': row['provider'],
+                    'data_kind': 'reanalysis', 'allowed_role': 'spatial_reference',
+                    'source_height_m': float((row.get('measurement_heights') or [0])[0]),
+                    'qc_status': 'pending_calibration', 'calibration_method': SPATIAL_CALIBRATION_METHOD,
+                })
+            anchor = {
+                'station_id': M04_STATION_ID, 'filename': M04_STATION_ID,
+                'display_name': 'M04 CERTE · hindcast MCP',
+                'lat': 16.55, 'lon': -94.955, 'distance_km': round(_haversine_km(poi_lat, poi_lon, 16.55, -94.955), 3),
+                'source': 'mcp', 'provider': 'MCP', 'data_kind': 'spatial_anchor',
+                'allowed_role': 'anchor', 'target_height_m': source.get('target_height_m'),
+                'n_hours': int(source.get('rows') or len(source.get('df', []))),
+                'v_mean': float(pd.to_numeric(source['df']['wind_speed'], errors='coerce').mean()),
+                'qc_status': 'published_hindcast', 'selectable': False,
+            }
+            references.sort(key=lambda row: (row['provider'], row['distance_km'], row['station_id']))
+            return jsonify(numpy_to_python({
+                'sites': [anchor] + references, 'count': 1 + len(references),
+                'anchor': anchor, 'reference_count': len(references),
+                'poi': {'lat': poi_lat, 'lon': poi_lon}, 'radius_km': radius_km,
+                'data_source': data_source, 'study_revision': source.get('study_revision'),
+                'selection_namespace': 'KRIG.selected', 'mcp_selection_independent': True,
+            }))
         year = request.args.get('year', type=int)
         target_h = request.args.get('target_height_m', type=float)
         if not os.path.isdir(folder):
@@ -4149,6 +4206,142 @@ def create_app():
             'count':   len(sites),
             'skipped': len(skipped),
         }))
+
+    def _calibration_for_session(sess, calibration_id):
+        record = (sess.get('kriging_calibrations') or {}).get(str(calibration_id))
+        if not record:
+            return None, None
+        path = Path(str(record.get('result_path', ''))).resolve()
+        root = (Path(Config.KRIGING_RUNS_FOLDER) / str(calibration_id)).resolve()
+        if root not in path.parents or not path.is_file():
+            return record, None
+        return record, json.loads(path.read_text(encoding='utf-8'))
+
+    @app.route('/api/kriging/calibrations', methods=['POST'])
+    def kriging_start_calibration():
+        body = request.get_json(silent=True) or {}
+        sid = _require_sid(body)
+        sess = get_session(sid)
+        data_source = str(body.get('data_source') or sess.get('active_data_source') or '')
+        source = (sess.get('data_sources') or {}).get(data_source)
+        if not data_source.startswith('mcp:') or not source or source.get('kind') != 'mcp':
+            return _err('El flujo guiado de Diseño requiere publicar primero una corrida MCP', 409)
+        method = str(body.get('method') or SPATIAL_CALIBRATION_METHOD)
+        if method != SPATIAL_CALIBRATION_METHOD:
+            return _err('Método de calibración espacial no soportado')
+        study = sess.get('mcp_study') or {}
+        if source.get('study_revision') != study.get('study_revision'):
+            return _err('La fuente MCP pertenece a una revisión anterior del estudio; publícala de nuevo', 409)
+        poi = body.get('poi') or study.get('poi') or {'lat': 16.55, 'lon': -94.955}
+        try:
+            poi = {'lat': float(poi['lat']), 'lon': float(poi['lon'])}
+            radius_km = float(body.get('radius_km', study.get('radius_km', 200)))
+            target_height_m = float(body.get('target_height_m', source.get('target_height_m') or 80))
+        except (KeyError, TypeError, ValueError):
+            return _err('POI, radius_km o target_height_m inválido')
+        if radius_km <= 0 or not 10 <= target_height_m <= 300:
+            return _err('Radio o altura objetivo fuera de rango')
+        excluded_ids = {str(value) for value in body.get('excluded_station_ids', [])}
+        references = []
+        for row in _mcp_index(sess).values():
+            if row.get('station_id') in excluded_ids:
+                continue
+            if row.get('data_kind') != 'reanalysis' or row.get('provider') not in {'ERA5', 'MERRA2'}:
+                continue
+            if _haversine_km(poi['lat'], poi['lon'], float(row['latitude']), float(row['longitude'])) <= radius_km:
+                references.append(row)
+        provider_counts = {
+            provider: sum(row.get('provider') == provider for row in references)
+            for provider in ('ERA5', 'MERRA2')
+        }
+        if max(provider_counts.values(), default=0) < 3:
+            return _err('Se requieren al menos tres nodos válidos de un mismo proveedor dentro del radio')
+        calibration_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '_' + uuid.uuid4().hex[:8]
+        run_dir = Path(Config.KRIGING_RUNS_FOLDER) / calibration_id
+        task_id = str(uuid.uuid4())
+        task = {
+            'status': 'queued', 'progress': 0, 'message': 'Calibración espacial en cola',
+            'result': None, 'calibration_id': calibration_id, 'session_id': sid,
+            '_last_access': time.time(),
+        }
+        tasks[task_id] = task
+        anchor_frame = source['df'].copy()
+        observed_record = (sess.get('data_sources') or {}).get('observed')
+        observed_frame = observed_record.get('df').copy() if observed_record and observed_record.get('df') is not None else None
+        study_revision = source.get('study_revision')
+        resolve_roughness = bool(body.get('resolve_roughness', True))
+
+        def _run_spatial_calibration():
+            try:
+                run_dir.mkdir(parents=True, exist_ok=True)
+                task.update(status='running', progress=4, message='Preparando hindcast MCP y nodos espaciales')
+
+                def cb(progress, message):
+                    task.update(progress=int(progress), message=str(message), _last_access=time.time())
+
+                calibration = calibrate_spatial_nodes(
+                    # Spatial anomalies are always evaluated at the physical
+                    # M04 anchor, even when the design POI/radius is elsewhere.
+                    anchor_frame, observed_frame, references,
+                    poi={'lat': 16.55, 'lon': -94.955},
+                    target_height_m=target_height_m, train_year=2018, validation_year=2019,
+                    roughness_resolver=resolve_sector_roughness if resolve_roughness else None,
+                    progress_callback=cb,
+                )
+                calibration.update({
+                    'calibration_id': calibration_id, 'session_id': sid,
+                    'data_source': data_source, 'run_id': source.get('run_id'),
+                    'study_revision': study_revision, 'poi': poi, 'radius_km': radius_km,
+                    'excluded_station_ids': sorted(excluded_ids),
+                    'created_at': datetime.now(timezone.utc).isoformat(),
+                })
+                nodes_path = run_dir / 'calibrated_nodes.csv'
+                pd.DataFrame([
+                    {key: value for key, value in node.items() if key not in {'sectorial', 'roughness'}}
+                    for node in calibration.get('nodes', [])
+                ]).to_csv(nodes_path, index=False)
+                calibration['artifacts'] = {'calibrated_nodes_csv': str(nodes_path.resolve())}
+                result_path = run_dir / 'calibration.json'
+                result_path.write_text(json.dumps(numpy_to_python(calibration), ensure_ascii=False, indent=2), encoding='utf-8')
+                record = {
+                    'calibration_id': calibration_id, 'data_source': data_source,
+                    'study_revision': study_revision, 'method': SPATIAL_CALIBRATION_METHOD,
+                    'result_path': str(result_path.resolve()), 'created_at': calibration['created_at'],
+                    'status': 'done', 'provider_weights': calibration.get('provider_weights'),
+                    'common_period': calibration.get('common_period'),
+                }
+                sess.setdefault('kriging_calibrations', {})[calibration_id] = record
+                sess['active_kriging_calibration_id'] = calibration_id
+                task.update(
+                    status='done', progress=100, message='Calibración espacial lista',
+                    result={
+                        'calibration_id': calibration_id,
+                        'data_source': data_source,
+                        'study_revision': study_revision,
+                        'provider_weights': calibration.get('provider_weights'),
+                        'provider_counts': calibration.get('provider_counts'),
+                        'common_period': calibration.get('common_period'),
+                        'qc': calibration.get('qc'),
+                    },
+                )
+            except Exception as error:
+                task.update(status='error', message=str(error), _last_access=time.time())
+                logger.exception('Calibración espacial fallida')
+
+        _executor.submit(_run_spatial_calibration)
+        return jsonify({'task_id': task_id, 'calibration_id': calibration_id}), 202
+
+    @app.route('/api/kriging/calibrations/<calibration_id>', methods=['GET'])
+    def kriging_get_calibration(calibration_id):
+        sid = request.args.get('session_id')
+        if not sid:
+            return _err('session_id requerido')
+        record, calibration = _calibration_for_session(get_session(sid), calibration_id)
+        if record is None:
+            return jsonify({'error': 'Calibración no encontrada'}), 404
+        if calibration is None:
+            return jsonify({'error': 'Artefacto de calibración no disponible'}), 410
+        return jsonify(numpy_to_python(calibration))
 
     @app.route('/api/kriging/grid', methods=['POST'])
     def kriging_compute_grid():
@@ -4207,6 +4400,18 @@ def create_app():
         (viento, inversión, VAN).
         """
         body = request.get_json(silent=True) or {}
+        calibration_payload = None
+        if body.get('calibration_id'):
+            sid = body.get('session_id')
+            if not sid:
+                return _err('session_id requerido para usar una calibración')
+            sess = get_session(str(sid))
+            record, calibration_payload = _calibration_for_session(sess, body['calibration_id'])
+            if record is None or calibration_payload is None:
+                return _err('Calibración espacial no encontrada', 404)
+            requested_source = body.get('data_source') or sess.get('active_data_source')
+            if requested_source != record.get('data_source'):
+                return _err('La calibración no pertenece a la fuente MCP solicitada', 409)
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
                           'message': 'Procesando sitios…', 'result': None}
@@ -4235,33 +4440,49 @@ def create_app():
                 def cb(pct, msg):
                     tasks[task_id]['progress'] = pct
                     tasks[task_id]['message'] = msg
-                result = legacy_three_maps(
-                    wind_folder=Config.DATA_FOLDER,
-                    turbines_folder=Config.TURBINES_FOLDER,
-                    year=int(body.get('year', 2018)),
-                    demand_mwh=float(body.get('demand_mwh', 1000)),
-                    tasa=float(body.get('tasa', 0.08)),
-                    price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
-                    price_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
-                    max_files=body.get('max_files'),
-                    n_grid=int(body.get('n_grid', 80)),
-                    model=body.get('model', 'exponential'),
-                    center_lat=float(cen_lat) if cen_lat is not None else None,
-                    center_lon=float(cen_lon) if cen_lon is not None else None,
-                    radius_km=float(body['radius_km']) if body.get('radius_km') else None,
-                    filter_filenames=body.get('filenames') or None,
-                    physical=bool(body.get('physical', False)),
-                    grid_bounds=grid_bounds,
-                    cost_model=CostModel.from_dict(body.get('cost_model')),
-                    z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
-                    # Cuando el usuario activa la corrección física queremos
-                    # **recomputar** las capas sectoriales e inversión/VAN con
-                    # el viento corregido (restaura comportamiento pre-f138856
-                    # antes del refactor que las hizo opt-in).
-                    include_sectorial=bool(body.get('include_sectorial', body.get('physical', False))),
-                    include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
-                    progress_callback=cb,
-                )
+                if calibration_payload is not None:
+                    result = build_calibrated_maps(
+                        calibration_payload,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        n_grid=int(body.get('n_grid', 80)),
+                        model=body.get('model', 'auto'),
+                        bounds=grid_bounds,
+                        target_height_m=float(body.get('target_height_m') or calibration_payload['anchor']['target_height_m']),
+                        physical=bool(body.get('physical', True)),
+                        demand_mwh=float(body.get('demand_mwh', 0)),
+                        discount_rate=float(body.get('tasa', 0.08)),
+                        price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
+                        fx_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
+                        project_years=int(body.get('project_years', 20)),
+                        cost_model=CostModel.from_dict(body.get('cost_model')),
+                        orographic_speedup_grid=body.get('orographic_speedup_grid'),
+                        progress_callback=cb,
+                    )
+                else:
+                    # Compatibility path for manual/legacy clients.
+                    result = legacy_three_maps(
+                        wind_folder=Config.DATA_FOLDER,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        year=int(body.get('year', 2018)),
+                        demand_mwh=float(body.get('demand_mwh', 1000)),
+                        tasa=float(body.get('tasa', 0.08)),
+                        price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
+                        price_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
+                        max_files=body.get('max_files'),
+                        n_grid=int(body.get('n_grid', 80)),
+                        model=body.get('model', 'exponential'),
+                        center_lat=float(cen_lat) if cen_lat is not None else None,
+                        center_lon=float(cen_lon) if cen_lon is not None else None,
+                        radius_km=float(body['radius_km']) if body.get('radius_km') else None,
+                        filter_filenames=body.get('filenames') or None,
+                        physical=bool(body.get('physical', False)),
+                        grid_bounds=grid_bounds,
+                        cost_model=CostModel.from_dict(body.get('cost_model')),
+                        z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
+                        include_sectorial=bool(body.get('include_sectorial', body.get('physical', False))),
+                        include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
+                        progress_callback=cb,
+                    )
                 if body.get('market_trajectories'):
                     result['market_configuration'] = {
                         'trajectories': body.get('market_trajectories'),

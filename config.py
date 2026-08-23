@@ -14,6 +14,9 @@ class Config:
     MCP_UPLOAD_FOLDER = os.environ.get(
         'AERO_MCP_UPLOAD_FOLDER',
         os.path.join(BASE_DIR, 'uploads', 'mcp'))
+    KRIGING_RUNS_FOLDER = os.environ.get(
+        'AERO_KRIGING_RUNS_FOLDER',
+        os.path.join(BASE_DIR, 'runs', 'kriging'))
     CERTE_FOLDER = os.environ.get(
         'AERO_CERTE_FOLDER',
         os.path.abspath(os.path.join(BASE_DIR, '..', '..', 'copiaunoMCPSOFT', 'certe')))
@@ -95,7 +98,7 @@ class Config:
     @classmethod
     def ensure_dirs(cls):
         for d in [cls.UPLOAD_FOLDER, cls.EXPORT_FOLDER, cls.MODEL_FOLDER, cls.CACHE_FOLDER,
-                  cls.MCP_RUNS_FOLDER, cls.MCP_UPLOAD_FOLDER]:
+                  cls.MCP_RUNS_FOLDER, cls.MCP_UPLOAD_FOLDER, cls.KRIGING_RUNS_FOLDER]:
             os.makedirs(d, exist_ok=True)
 
 Config.ensure_dirs()

@@ -360,6 +360,29 @@ class MCPIntegrationTests(unittest.TestCase):
         sources = self.client.get(f"/api/sessions/{self.sid}/data-sources").get_json()
         self.assertEqual(sources["active"], source_id)
         self.assertEqual({row["source_id"] for row in sources["sources"]}, {"observed", source_id})
+        spatial_sites = self.client.get(
+            "/api/kriging/sites",
+            query_string={
+                "session_id": self.sid,
+                "data_source": source_id,
+                "radius_km": 100,
+                "poi_lat": 16.55,
+                "poi_lon": -94.955,
+            },
+        )
+        self.assertEqual(spatial_sites.status_code, 200, spatial_sites.get_data(as_text=True))
+        spatial_payload = spatial_sites.get_json()
+        self.assertEqual(spatial_payload["sites"][0]["station_id"], M04_STATION_ID)
+        self.assertEqual(spatial_payload["sites"][0]["allowed_role"], "anchor")
+        self.assertTrue(all(
+            row["provider"] in {"ERA5", "MERRA2"}
+            for row in spatial_payload["sites"][1:]
+        ))
+        self.assertTrue(all(
+            row["station_id"] != M04_STATION_ID
+            for row in spatial_payload["sites"][1:]
+        ))
+        self.assertTrue(spatial_payload["mcp_selection_independent"])
         wind = self.client.post("/api/wind/stats", json={
             "session_id": self.sid,
             "data_source": source_id,

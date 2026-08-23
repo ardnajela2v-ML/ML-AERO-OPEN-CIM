@@ -5979,12 +5979,24 @@ const KRIG = {
   poiCircle: null,          // círculo de radio en modo selección
   poiResultMarker: null,    // marcador con valor interpolado tras Kriging
   placingPoi: false,
+  guidedMcp: false,
+  calibrationId: null,
+  calibrationTaskId: null,
+  calibrationSignature: null,
+  calibration: null,
+  orographicSpeedupGrid: null,
 };
 
 const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
   wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
+  wind_era5:    { unit: 'm/s',   title: 'Campo ERA5 calibrado y anclado a M04 MCP' },
+  wind_merra2:  { unit: 'm/s',   title: 'Campo MERRA-2 calibrado y anclado a M04 MCP' },
+  wind_direction:{ unit: '°',    title: 'Dirección meteorológica · norte verdadero' },
+  uncertainty:  { unit: 'm/s',   title: 'Incertidumbre MCP + Kriging + proveedores' },
+  weibull_k:    { unit: '',      title: 'Weibull k · reconstrucción histórica' },
+  weibull_lambda:{ unit: 'm/s',  title: 'Weibull λ · reconstrucción histórica' },
   wind_directional: { unit: 'm/s', title: 'Viento corregido direccional (m/s)' },
   gust:         { unit: 'm/s',   title: 'Ráfagas / extremo anual P99.5 (m/s)' },
   power_density:{ unit: 'W/m²',  title: 'Densidad de potencia eólica (W/m²)' },
@@ -5995,6 +6007,7 @@ const KRIG_LAYERS = {
   elevation:    { unit: 'm',     title: 'Topografía — altitud DEM (m)' },
   roughness:    { unit: 'm',     title: 'Rugosidad superficial z₀ (m)' },
   air_density:  { unit: 'kg/m³', title: 'Densidad del aire local' },
+  terrain_complexity:{ unit: '%', title: 'RIX proxy · cribado DEM, no CFD' },
 };
 
 // Rampa RdYlBu reversed (azul→rojo)
@@ -6238,6 +6251,10 @@ function krig3PowerDensity(rho, C, k) {
 }
 
 function krig3ComputeOptimal() {
+  if (KRIG.guidedMcp && !KRIG.calibration) {
+    KRIG.optimal = [];
+    return KRIG.optimal;
+  }
   const sources = (KRIG.sites || []).filter(s => KRIG.selected.has(s.filename));
   const pool = sources.length ? sources : (KRIG.sites || []);
   if (!pool.length) { KRIG.optimal = []; return KRIG.optimal; }
@@ -6388,7 +6405,10 @@ async function krig3PlacePoi(latlng) {
     icon, zIndexOffset: 1000, interactive: true, draggable: false,
   }).addTo(KRIG.map);
   KRIG.poiMarker.bindTooltip('Emplazamiento del parque', { direction: 'top', offset: [0, -42] });
-
+  krig3InvalidateCalibration('cambió el emplazamiento');
+  if (WP.activeDataSource?.startsWith('mcp:') && !document.getElementById('krig3-manual-mode')?.checked) {
+    await krig3LoadSites(true);
+  }
   krig3FilterByRadius();
 }
 
@@ -6401,6 +6421,7 @@ function krig3ClearPoi() {
   if (KRIG.poiResultMarker)  { KRIG.map.removeLayer(KRIG.poiResultMarker);  KRIG.poiResultMarker = null; }
   const info = document.getElementById('krig3-poi-info');
   if (info) info.textContent = '—';
+  krig3InvalidateCalibration('se retiró el emplazamiento');
 }
 
 function krig3FilterByRadius() {
@@ -6419,26 +6440,30 @@ function krig3FilterByRadius() {
 
   // Reset selección y selecciona estaciones dentro del radio
   KRIG.selected.clear();
-  KRIG.principal = null;
+  const anchor = KRIG.sites.find(s => s.allowed_role === 'anchor');
+  KRIG.principal = anchor?.filename || null;
   let inside = 0;
   let nearest = null, nearestD = Infinity;
   KRIG.sites.forEach(s => {
     const d = krig3HaversineKm(KRIG.poi.lat, KRIG.poi.lon, s.lat, s.lon);
-    if (d <= km) {
+    if (d <= km && s.allowed_role !== 'anchor') {
       KRIG.selected.add(s.filename);
       inside++;
       if (d < nearestD) { nearestD = d; nearest = s; }
     }
   });
-  // Marca como principal automáticamente la estación más cercana
-  if (nearest) KRIG.principal = nearest.filename;
+  // En el flujo MCP, M04 es el ancla fija. En manual se conserva el más cercano.
+  if (!anchor && nearest) KRIG.principal = nearest.filename;
+  krig3InvalidateCalibration('cambió el radio o la selección espacial');
   krig3UpdateAllMarkers();
 
   const info = document.getElementById('krig3-poi-info');
   if (info) {
     info.innerHTML = `${KRIG.poi.lat.toFixed(3)}°, ${KRIG.poi.lon.toFixed(3)}° · ` +
       `<b>${inside}</b> estaciones dentro de ${km} km` +
-      (nearest ? ` · ★ ${nearest.display_name || nearest.filename} (${nearestD.toFixed(1)} km)` : '');
+      (anchor
+        ? ` · ancla <b>OBS · MCP M04</b>`
+        : (nearest ? ` · ★ ${nearest.display_name || nearest.filename} (${nearestD.toFixed(1)} km)` : ''));
   }
   if (inside < 3) {
     toast(`Solo ${inside} estaciones dentro de ${km} km. Aumenta el radio para Kriging (≥ 3 sitios).`,
@@ -6556,6 +6581,7 @@ function krig3ResetDesign() {
 
   // Reset visual de tabs físicos y panel
   document.querySelectorAll('.krig3-tab-phys').forEach(b => b.style.display = 'none');
+  document.querySelectorAll('.krig3-tab-mcp').forEach(b => b.style.display = 'none');
   KRIG.layerKey = 'wind';
   document.querySelectorAll('.krig3-tab').forEach(b => {
     b.classList.toggle('is-active', b.dataset.layer === 'wind');
@@ -6892,7 +6918,8 @@ function krig3MarkerStyle(filename) {
 function krig3SiteIconHtml(filename) {
   const isPrincipal = filename === KRIG.principal;
   const isSelected = KRIG.selected.has(filename);
-  const bg = isPrincipal ? '#facc15' : (isSelected ? '#3b82f6' : '#475569');
+  const isAnchor = KRIG.sites.find(s => s.filename === filename)?.allowed_role === 'anchor';
+  const bg = (isPrincipal || isAnchor) ? '#facc15' : (isSelected ? '#3b82f6' : '#475569');
   const stroke = isPrincipal ? '#78350f' : (isSelected ? '#dbeafe' : '#cbd5e1');
   const glyph = isPrincipal
     ? `<path d="M12 5l1.8 3.9 4.2.5-3.1 2.9.8 4.2L12 14.4 8.3 16.5l.8-4.2L6 9.4l4.2-.5L12 5z" fill="#78350f"/>`
@@ -6949,34 +6976,47 @@ function krig3UpdateAllMarkers() {
 function krig3UpdateSelectionInfo() {
   const el = document.getElementById('krig3-selection-info');
   if (!el) return;
-  const total = KRIG.sites.length;
+  const total = KRIG.sites.filter(s => s.allowed_role !== 'anchor').length;
   const sel = KRIG.selected.size;
   const principalSite = KRIG.sites.find(x => x.filename === KRIG.principal);
   const principalLabel = principalSite
     ? `principal: <b>${principalSite.display_name || principalSite.filename}</b>`
     : '<span style="color:#f59e0b">sin parque principal</span>';
-  el.innerHTML = `${sel}/${total} sitios seleccionados · ${principalLabel}`;
+  el.innerHTML = KRIG.guidedMcp
+    ? `${sel}/${total} nodos virtuales seleccionados · ancla: <b>OBS · MCP M04</b>`
+    : `${sel}/${total} sitios seleccionados · ${principalLabel}`;
 }
 
 function krig3SitePopupHtml(s) {
   const isPrincipal = s.filename === KRIG.principal;
+  const isAnchor = s.allowed_role === 'anchor';
+  const meanSpeed = Number(s.v_mean ?? s.calibrated_mean_speed);
+  const gust = Number(s.gust_ms ?? s.v_max);
+  const weibullC = Number(s.weibull_C ?? s.weibull_lambda);
+  const weibullK = Number(s.weibull_K ?? s.weibull_k);
+  const metricLine = isFinite(meanSpeed)
+    ? `v̄ ${meanSpeed.toFixed(2)} m/s${isFinite(gust) ? ` · ráfaga ${gust.toFixed(2)} m/s` : ''}<br>`
+    : '';
+  const weibullLine = isFinite(weibullC) && isFinite(weibullK)
+    ? `Weibull λ=${weibullC.toFixed(2)} · k=${weibullK.toFixed(2)}`
+    : `Altura fuente ${Number(s.source_height_m || s.target_height_m || 0).toFixed(0)} m`;
   return `
     <div style="min-width:220px">
       <div style="font-weight:600;font-size:.85rem;margin-bottom:.15rem">${s.display_name || s.filename}</div>
       ${s.state ? `<div style="font-size:.72rem;color:#94a3b8;margin-bottom:.25rem">${s.state}${s.municipality ? ' · ' + s.municipality : ''}</div>` : ''}
       <div style="font-size:.75rem;color:#64748b;line-height:1.4">
-        ${s.lat.toFixed(3)}°N  ${s.lon.toFixed(3)}°W<br>
-        v̄ ${(+s.v_mean).toFixed(2)} m/s · ráfaga ${(+s.gust_ms || +s.v_max || 0).toFixed(2)} m/s<br>
-        densidad ${(+s.power_density_wm2 || 0).toFixed(1)} W/m² · Weibull C=${(+s.weibull_C).toFixed(2)} K=${(+s.weibull_K).toFixed(2)}
+        <b>${isAnchor ? 'OBS · MCP' : (s.provider || s.source || '').toUpperCase()}</b> · ${s.lat.toFixed(3)}°, ${s.lon.toFixed(3)}°<br>
+        ${metricLine}${weibullLine}
+        ${s.distance_km != null ? `<br>Distancia ${Number(s.distance_km).toFixed(1)} km · QC ${s.qc_status || 'pendiente'}` : ''}
         ${krig3TerrainBadge(s.filename)}
       </div>
       <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
-        <button class="btn-secondary krig3-popup-toggle" data-fn="${s.filename}" style="font-size:.72rem;padding:.25rem .5rem">
+        ${isAnchor ? '<span class="badge badge--warning">Ancla fija · hindcast completo</span>' : `<button class="btn-secondary krig3-popup-toggle" data-fn="${s.filename}" style="font-size:.72rem;padding:.25rem .5rem">
           ${KRIG.selected.has(s.filename) ? '✕ Excluir' : '✓ Incluir'}
-        </button>
-        <button class="btn-primary krig3-popup-principal" data-fn="${s.filename}" style="font-size:.72rem;padding:.25rem .5rem">
+        </button>`}
+        ${KRIG.guidedMcp || isAnchor ? '' : `<button class="btn-primary krig3-popup-principal" data-fn="${s.filename}" style="font-size:.72rem;padding:.25rem .5rem">
           ${isPrincipal ? '★ Es principal' : '★ Marcar principal'}
-        </button>
+        </button>`}
       </div>
     </div>`;
 }
@@ -6991,10 +7031,11 @@ function krig3RebindPopupButtons() {
 }
 
 function krig3ToggleSite(filename) {
+  if (KRIG.sites.find(s => s.filename === filename)?.allowed_role === 'anchor') return;
   if (KRIG.selected.has(filename)) KRIG.selected.delete(filename);
   else KRIG.selected.add(filename);
   // Si el principal sale de la selección, lo limpiamos.
-  if (KRIG.principal && !KRIG.selected.has(KRIG.principal)) KRIG.principal = null;
+  if (!KRIG.guidedMcp && KRIG.principal && !KRIG.selected.has(KRIG.principal)) KRIG.principal = null;
   krig3UpdateMarker(filename);
   krig3UpdateSelectionInfo();
   // Refresh popup content for the open marker.
@@ -7003,9 +7044,11 @@ function krig3ToggleSite(filename) {
     const s = KRIG.sites.find(x => x.filename === filename);
     if (s) m.setPopupContent(krig3SitePopupHtml(s));
   }
+  krig3InvalidateCalibration('cambió la selección de nodos');
 }
 
 function krig3SetPrincipal(filename) {
+  if (KRIG.guidedMcp) return;
   KRIG.principal = filename;
   // Si el principal no estaba seleccionado, inclúyelo.
   KRIG.selected.add(filename);
@@ -7017,17 +7060,167 @@ function krig3SetPrincipal(filename) {
   });
 }
 
+function krig3CalibrationKey() {
+  return JSON.stringify({
+    source: WP.activeDataSource,
+    selected: Array.from(KRIG.selected).sort(),
+    poi: KRIG.poi ? [Number(KRIG.poi.lat).toFixed(5), Number(KRIG.poi.lon).toFixed(5)] : null,
+    radius: Number(document.getElementById('krig3-poi-radius')?.value || 200),
+    height: Number(wsH()),
+  });
+}
+
+function krig3InvalidateCalibration(reason='') {
+  if (!KRIG.calibrationId && !KRIG.calibration) return;
+  KRIG.calibrationId = null;
+  KRIG.calibrationTaskId = null;
+  KRIG.calibrationSignature = null;
+  KRIG.calibration = null;
+  const panel = document.getElementById('krig3-calibration-panel');
+  if (panel) {
+    panel.style.display = '';
+    panel.innerHTML = `<span class="text-muted" style="font-size:.75rem">La calibración anterior quedó invalidada${reason ? `: ${reason}` : ''}. Se recalculará al generar los mapas.</span>`;
+  }
+}
+
+function krig3RenderCalibration(calibration) {
+  const panel = document.getElementById('krig3-calibration-panel');
+  if (!panel || !calibration) return;
+  const period = calibration.common_period || {};
+  const weights = calibration.provider_weights || {};
+  const nodes = calibration.nodes || [];
+  const validation = calibration.provider_validation || {};
+  nodes.forEach(node => {
+    const site = KRIG.sites.find(candidate =>
+      candidate.station_id === node.station_id || candidate.filename === node.station_id
+    );
+    if (!site) return;
+    site.v_mean = Number(node.calibrated_mean_speed);
+    site.v_max = Number(node.gust_p995);
+    site.gust_ms = Number(node.gust_p995);
+    site.weibull_C = Number(node.weibull_lambda);
+    site.weibull_K = Number(node.weibull_k);
+    site.rho_mean = Number(node.air_density_mean);
+    site.power_density_wm2 = Number(node.power_density_wm2);
+    site.coverage_pct = Number(node.coverage_pct);
+    site.qc_status = node.qc_status;
+  });
+  const rows = nodes.map(node => `<tr>
+    <td>${node.display_name || node.station_id}</td>
+    <td>${node.provider}</td>
+    <td>${Number(node.raw_mean_speed).toFixed(2)}</td>
+    <td>${Number(node.calibrated_mean_speed).toFixed(2)}</td>
+    <td>${Number(node.generalized_mean_speed).toFixed(2)}</td>
+    <td>${Number(node.coverage_pct).toFixed(1)}%</td>
+    <td>${node.qc_status}</td>
+  </tr>`).join('');
+  const validationText = Object.entries(validation).map(([provider, row]) => {
+    const rmse = row.rmse_monthly_balanced;
+    return `${provider}: ${rmse == null ? 'sin validación' : `RMSE ${Number(rmse).toFixed(3)} m/s`} · meses ${(row.months_used || []).join(', ') || '—'}`;
+  }).join('<br>');
+  panel.style.display = '';
+  panel.innerHTML = `
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-bottom:.45rem">
+      <b style="font-size:.8rem">Calibración espacial anclada</b>
+      <span class="badge badge--success">${period.start_year || '—'}–${period.end_year || '—'} · ${period.n_years || 0} años</span>
+      <span class="badge badge--info">ERA5 ${(100 * Number(weights.ERA5 || 0)).toFixed(1)}%</span>
+      <span class="badge badge--info">MERRA-2 ${(100 * Number(weights.MERRA2 || 0)).toFixed(1)}%</span>
+      <span class="text-muted" style="font-size:.72rem">M04 MCP permanece como ancla; los nodos conservan sus gradientes.</span>
+    </div>
+    <div class="text-muted" style="font-size:.72rem;margin-bottom:.45rem">${validationText}</div>
+    <div style="overflow:auto;max-height:220px"><table class="data-table" style="font-size:.7rem">
+      <thead><tr><th>Nodo</th><th>Proveedor</th><th>Raw m/s</th><th>Calibrado m/s</th><th>Generalizado m/s</th><th>Cobertura</th><th>QC</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  krig3RenderOptimalList();
+}
+
+async function krig3WaitForTask(taskId, onProgress) {
+  while (true) {
+    const task = await api(`/api/tasks/${encodeURIComponent(taskId)}`, 'GET');
+    if (onProgress) onProgress(task);
+    if (task.status === 'done') return task.result;
+    if (task.status === 'error') throw new Error(task.message || 'La tarea falló');
+    await new Promise(resolve => setTimeout(resolve, 800));
+  }
+}
+
+async function krig3EnsureCalibration() {
+  const signature = krig3CalibrationKey();
+  if (KRIG.calibrationId && KRIG.calibrationSignature === signature) return KRIG.calibrationId;
+  if (!WP.activeDataSource?.startsWith('mcp:')) {
+    throw new Error('Publica una corrida MCP antes de entrar al flujo guiado de Diseño.');
+  }
+  const references = KRIG.sites.filter(s => s.allowed_role === 'spatial_reference');
+  const excluded = references.filter(s => !KRIG.selected.has(s.filename)).map(s => s.station_id || s.filename);
+  const studyPoi = KRIG.poi || (typeof GLOBE !== 'undefined' && GLOBE?.poi) || { lat: 16.55, lon: -94.955 };
+  const body = {
+    session_id: WP.sessionId,
+    data_source: WP.activeDataSource,
+    poi: { lat: Number(studyPoi.lat), lon: Number(studyPoi.lon) },
+    radius_km: Number(document.getElementById('krig3-poi-radius')?.value || 200),
+    target_height_m: Number(wsH()),
+    excluded_station_ids: excluded,
+    method: 'anchored_spatial_anomaly_v1',
+  };
+  document.getElementById('krig3-progress-wrap').style.display = '';
+  const started = await api('/api/kriging/calibrations', 'POST', body);
+  KRIG.calibrationTaskId = started.task_id;
+  const summary = await krig3WaitForTask(started.task_id, task => {
+    document.getElementById('krig3-progress-fill').style.width = `${task.progress || 0}%`;
+    document.getElementById('krig3-progress-text').textContent = task.message || '';
+    document.getElementById('krig3-status').textContent = 'Calibrando nodos…';
+  });
+  KRIG.calibrationId = summary.calibration_id;
+  KRIG.calibrationSignature = signature;
+  KRIG.calibration = await api(`/api/kriging/calibrations/${encodeURIComponent(KRIG.calibrationId)}?session_id=${encodeURIComponent(WP.sessionId)}`, 'GET');
+  krig3RenderCalibration(KRIG.calibration);
+  return KRIG.calibrationId;
+}
+
 // ── Cargar todos los sitios y dibujarlos sobre el mapa de México ──────────────
 async function krig3LoadSites(force=false) {
   if (KRIG.sites.length && !force) return;
   const map = krig3InitMap();
   try {
+    const manual = !!document.getElementById('krig3-manual-mode')?.checked;
+    KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
+    const sourceBadge = document.getElementById('krig3-source-badge');
+    if (!KRIG.guidedMcp && !manual) {
+      KRIG.sites = [];
+      KRIG.selected.clear();
+      if (sourceBadge) {
+        sourceBadge.textContent = 'Falta publicar MCP';
+        sourceBadge.className = 'badge badge--warning';
+      }
+      throw new Error('Publica el hindcast en MCP Lab o activa explícitamente el modo manual heredado.');
+    }
     const year = parseInt(document.getElementById('krig3-year').value) || 2018;
     const htParam = WP.referenceHeight ? `&target_height_m=${WP.referenceHeight}` : '';
-    const r = await api(`/api/kriging/sites?year=${year}${htParam}`, 'GET');
+    let url;
+    if (KRIG.guidedMcp) {
+      const query = new URLSearchParams({
+        session_id: WP.sessionId,
+        data_source: WP.activeDataSource,
+        radius_km: String(Number(document.getElementById('krig3-poi-radius')?.value || 200)),
+      });
+      if (KRIG.poi) {
+        query.set('poi_lat', String(KRIG.poi.lat));
+        query.set('poi_lon', String(KRIG.poi.lon));
+      }
+      url = `/api/kriging/sites?${query.toString()}`;
+    } else {
+      url = `/api/kriging/sites?year=${year}${htParam}`;
+    }
+    const r = await api(url, 'GET');
     KRIG.sites = r.sites || [];
-    KRIG.selected = new Set(KRIG.sites.map(s => s.filename));  // por defecto todos
-    KRIG.principal = null;
+    KRIG.selected = new Set(KRIG.sites.filter(s => s.allowed_role !== 'anchor').map(s => s.filename));
+    KRIG.principal = KRIG.sites.find(s => s.allowed_role === 'anchor')?.filename || null;
+    krig3InvalidateCalibration('se recargó el catálogo espacial');
+    if (sourceBadge) {
+      sourceBadge.textContent = KRIG.guidedMcp ? `Activo · ${WP.activeDataSource}` : 'Modo manual heredado';
+      sourceBadge.className = `badge ${KRIG.guidedMcp ? 'badge--success' : 'badge--warning'}`;
+    }
     // limpiar marcadores anteriores
     Object.values(KRIG.siteMarkers).forEach(m => map.removeLayer(m));
     KRIG.siteMarkers = {};
@@ -7086,7 +7279,13 @@ function krig3RenderLayer(key) {
     const row = z[ny - 1 - j];
     for (let i = 0; i < nx; i++) {
       const t = rng > 0 ? (row[i] - z_min) / rng : 0.5;
-      const [r_, g_, b_] = krigColor(t);
+      let r_, g_, b_;
+      if (key === 'wind_direction') {
+        const rgb = krigHslToRgb((((Number(row[i]) % 360) + 360) % 360) / 360, .72, .52);
+        [r_, g_, b_] = rgb;
+      } else {
+        [r_, g_, b_] = krigColor(t);
+      }
       const idx = (j * nx + i) * 4;
       img.data[idx]     = r_;
       img.data[idx + 1] = g_;
@@ -7100,11 +7299,38 @@ function krig3RenderLayer(key) {
     { opacity: 0.78 }).addTo(map);
   KRIG.overlays.push(overlay);
 
+  if (key === 'wind_direction' && Array.isArray(KRIG.result.direction_vectors)) {
+    KRIG.result.direction_vectors.forEach(vector => {
+      const bearing = ((Number(vector.direction_deg) % 360) + 360) % 360;
+      const icon = L.divIcon({
+        className: 'krig3-direction-vector',
+        html: `<div title="Viento desde ${bearing.toFixed(0)}° · ${Number(vector.speed_ms).toFixed(2)} m/s" style="width:18px;height:18px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:17px;font-weight:800;text-shadow:0 1px 3px #000;transform:rotate(${bearing}deg)">↑</div>`,
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      });
+      const marker = L.marker([vector.lat, vector.lon], { icon, interactive: false }).addTo(map);
+      KRIG.overlays.push(marker);
+    });
+  }
+
   krig3RenderPoiOnResult();
 
   document.getElementById('krig3-map-title').textContent = grid.title || meta.title;
   document.getElementById('krig3-legend').textContent = krig3FormatRange(grid, meta.unit);
   setTimeout(() => map.invalidateSize(), 60);
+}
+
+function krigHslToRgb(h, s, l) {
+  const hue = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  const q = l < .5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [hue(p, q, h + 1/3), hue(p, q, h), hue(p, q, h - 1/3)].map(v => Math.round(v * 255));
 }
 
 // ── Auto-zoom alrededor del parque principal tras correr Kriging ──────────────
@@ -7227,6 +7453,12 @@ async function krig3Run() {
     toast('Ya hay un Kriging ejecutándose. Espera a que termine.', 'warning');
     return;
   }
+  const manual = !!document.getElementById('krig3-manual-mode')?.checked;
+  KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
+  if (!KRIG.guidedMcp && !manual) {
+    toast('Publica una corrida MCP antes de continuar, o activa el modo manual heredado.', 'error');
+    return;
+  }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
   const physical = !!document.getElementById('krig3-physical')?.checked;
   const marketInputs = parkEquivalentDesignInputs();
@@ -7243,6 +7475,12 @@ async function krig3Run() {
     physical:         physical,
     target_height_m:  wsH(),
   };
+  if (KRIG.guidedMcp) {
+    body.session_id = WP.sessionId;
+    body.data_source = WP.activeDataSource;
+    body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 20);
+    if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
+  }
   if (principal) {
     body.center_file = principal.filename;
     body.center_lat  = principal.lat;
@@ -7266,6 +7504,10 @@ async function krig3Run() {
   const runBtn = document.getElementById('btn-krig3-run');
   if (runBtn) runBtn.disabled = true;
   try {
+    if (KRIG.guidedMcp) {
+      body.calibration_id = await krig3EnsureCalibration();
+      document.getElementById('krig3-progress-text').textContent = 'Generando campos ERA5, MERRA-2 y ensamble…';
+    }
     const r = await api('/api/kriging/legacy_maps', 'POST', body);
     KRIG.task_id = r.task_id;
     krig3Poll();
@@ -7291,6 +7533,10 @@ async function krig3Poll() {
       document.querySelectorAll('.krig3-tab-phys').forEach(b => {
         b.style.display = physOn ? '' : 'none';
       });
+      const mcpOn = !!d.calibration_id;
+      document.querySelectorAll('.krig3-tab-mcp').forEach(b => {
+        b.style.display = mcpOn && d[b.dataset.layer] ? '' : 'none';
+      });
       // Si el modo cambió y la pestaña activa ya no aplica, vuelve a "wind".
       if (!physOn && (KRIG.layerKey || '').match(/^(wind_directional|wind_neutral|elevation|roughness|air_density)$/)) {
         KRIG.layerKey = 'wind';
@@ -7303,7 +7549,9 @@ async function krig3Poll() {
       // Auto-zoom alrededor del parque principal (100 km por defecto).
       krig3ZoomToPrincipal();
       const nCurves = (d.turbine_curves || []).length;
-      const tag = physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '';
+      const tag = mcpOn
+        ? ` · MCP espacial · ${Object.entries(d.provider_weights || {}).map(([p,w]) => `${p} ${(100*w).toFixed(0)}%`).join(' / ')}`
+        : (physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '');
       const nMaps = Object.keys(d).filter(k => d[k] && Array.isArray(d[k].z)).length;
       document.getElementById('krig3-status').textContent =
         `${d.n_sites} sitios · ${nMaps} mapas · ${nCurves} curvas${tag}`;
@@ -7313,7 +7561,7 @@ async function krig3Poll() {
       KRIG.task_id = null;
       const runBtn = document.getElementById('btn-krig3-run');
       if (runBtn) runBtn.disabled = false;
-      toast(physOn ? 'Kriging físico listo' : 'Kriging listo', 'success');
+      toast(mcpOn ? 'Kriging MCP físico-direccional listo' : (physOn ? 'Kriging físico listo' : 'Kriging listo'), 'success');
     } else if (r.status === 'error') {
       toast(`Kriging falló: ${r.message}`, 'error');
       document.getElementById('krig3-status').textContent = 'Error';
@@ -7354,19 +7602,25 @@ document.addEventListener('DOMContentLoaded', () => {
   // Botones de selección masiva
   const bAll = document.getElementById('btn-krig3-select-all');
   if (bAll) bAll.addEventListener('click', () => {
-    KRIG.selected = new Set(KRIG.sites.map(s => s.filename));
+    KRIG.selected = new Set(KRIG.sites.filter(s => s.allowed_role !== 'anchor').map(s => s.filename));
+    krig3InvalidateCalibration('se incluyeron todos los nodos');
     krig3UpdateAllMarkers();
   });
   const bNone = document.getElementById('btn-krig3-select-none');
   if (bNone) bNone.addEventListener('click', () => {
     KRIG.selected.clear();
-    KRIG.principal = null;
+    KRIG.principal = KRIG.sites.find(s => s.allowed_role === 'anchor')?.filename || null;
+    krig3InvalidateCalibration('se excluyeron los nodos');
     krig3UpdateAllMarkers();
   });
 
   // Si cambia el año, recargar sitios (n_hours puede variar)
   const yearSel = document.getElementById('krig3-year');
   if (yearSel) yearSel.addEventListener('change', () => krig3LoadSites(true));
+  document.getElementById('krig3-manual-mode')?.addEventListener('change', () => {
+    krig3InvalidateCalibration('cambió el modo de cálculo');
+    krig3LoadSites(true);
+  });
 
   // ── Rectangular selection: Ctrl+drag to select/deselect sites in a box ──
   (function initRectSelect() {
@@ -7395,12 +7649,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // Toggle sites within bounds
         let toggled = 0;
         KRIG.sites.forEach(s => {
-          if (b.contains(L.latLng(s.lat, s.lon))) {
+          if (s.allowed_role !== 'anchor' && b.contains(L.latLng(s.lat, s.lon))) {
             KRIG.selected.add(s.filename);
             toggled++;
           }
         });
-        if (toggled) { krig3UpdateAllMarkers(); toast(`${toggled} sitios seleccionados`, 'info'); }
+        if (toggled) {
+          krig3InvalidateCalibration('cambió la selección rectangular');
+          krig3UpdateAllMarkers(); toast(`${toggled} sitios seleccionados`, 'info');
+        }
       }
       startLL = null;
     }
@@ -7435,7 +7692,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-krig3-clear-poi')  ?.addEventListener('click', krig3ClearPoi);
   document.getElementById('btn-krig3-reset')      ?.addEventListener('click', krig3ResetDesign);
   document.getElementById('krig3-poi-radius')     ?.addEventListener('input', krig3FilterByRadius);
-  document.getElementById('krig3-poi-radius')     ?.addEventListener('change', krig3FilterByRadius);
+  document.getElementById('krig3-poi-radius')     ?.addEventListener('change', () => {
+    krig3InvalidateCalibration('cambió el radio');
+    if (KRIG.guidedMcp) krig3LoadSites(true);
+    else krig3FilterByRadius();
+  });
   document.getElementById('btn-krig3-draw-park')  ?.addEventListener('click', krig3StartParkDraw);
   document.getElementById('btn-krig3-finish-park')?.addEventListener('click', krig3FinishPark);
   document.getElementById('btn-krig3-clear-park') ?.addEventListener('click', krig3ClearPark);
@@ -7474,6 +7735,29 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-krig3-search')?.addEventListener('click', krig3SearchSubmit);
   document.getElementById('btn-krig3-search-clear')?.addEventListener('click', krig3SearchClear);
   document.getElementById('btn-krig3-download')?.addEventListener('click', krig3DownloadMap);
+  document.getElementById('krig3-speedup-file')?.addEventListener('change', async (event) => {
+    const status = document.getElementById('krig3-speedup-status');
+    const file = event.target.files?.[0];
+    KRIG.orographicSpeedupGrid = null;
+    if (!file) {
+      if (status) status.textContent = 'Sin capa externa: el DEM permanece como diagnóstico y no modifica velocidad.';
+      return;
+    }
+    try {
+      const parsed = JSON.parse(await file.text());
+      const grid = Array.isArray(parsed) ? parsed : parsed.speedup_grid;
+      if (!Array.isArray(grid) || !grid.length || !grid.every(row => Array.isArray(row))) {
+        throw new Error('se esperaba una matriz JSON o {speedup_grid: [[...]]}');
+      }
+      KRIG.orographicSpeedupGrid = grid;
+      if (status) status.textContent = `${file.name} · ${grid.length}×${grid[0]?.length || 0} · se validará contra la grilla al ejecutar`;
+      krig3InvalidateCalibration('cambió la capa WAsP/CFD importada');
+    } catch (error) {
+      event.target.value = '';
+      if (status) status.textContent = `Archivo no válido: ${error.message}`;
+      toast(`Capa WAsP/CFD no válida: ${error.message}`, 'error');
+    }
+  });
 
   // ── Overlays físicos (hillshade + cobertura) ──
   document.getElementById('krig3-ovl-hillshade')?.addEventListener('change',
@@ -13784,7 +14068,7 @@ async function krig3AutoFitFromGlobe() {
 
   // Marcar POI usando la lógica existente de Kriging (solo primera vez).
   if (typeof krig3PlacePoi === 'function') {
-    krig3PlacePoi({ lat: GLOBE.poi.lat, lng: GLOBE.poi.lon });
+    await krig3PlacePoi({ lat: GLOBE.poi.lat, lng: GLOBE.poi.lon });
   } else if (typeof KRIG !== 'undefined') {
     KRIG.poi = { lat: GLOBE.poi.lat, lon: GLOBE.poi.lon };
   }

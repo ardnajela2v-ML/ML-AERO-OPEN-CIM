@@ -587,3 +587,44 @@ def sample_grid_z0(lats: List[float], lons: List[float],
             if z0_lc is not None:
                 out[j][i] = float(z0_lc)
     return out
+
+
+def sample_grid_worldcover_z0(lats: List[float], lons: List[float],
+                              fallback_z0: float = 0.03) -> List[List[float]]:
+    """Return WorldCover-derived roughness without a topographic proxy.
+
+    The anchored MCP downscaling pipeline uses this stricter sampler. Missing
+    or undecodable WorldCover cells receive the single project-reference
+    roughness; DEM slope is never converted into ``z0`` here. This keeps
+    roughness correction and terrain screening as independent physical inputs.
+    """
+    if not lats or not lons:
+        return [[]]
+    fallback = max(1.0e-4, float(fallback_z0))
+    bounds = (min(lats), min(lons), max(lats), max(lons))
+    z = _cap_zoom_for_tile_budget(
+        lats,
+        lons,
+        min(_zoom_for_resolution(bounds, len(lons), len(lats)), 10),
+    )
+    tiles = _required_tiles(lats, lons, z)
+    _prefetch_tiles(tiles, _fetch_landcover_tile)
+
+    out: List[List[float]] = [[fallback] * len(lons) for _ in lats]
+    for j, lat in enumerate(lats):
+        for i, lon in enumerate(lons):
+            tx, ty, px, py = _latlon_to_tile_pixel(lat, lon, z)
+            img = _fetch_landcover_tile(z, tx, ty)
+            if img is None:
+                continue
+            try:
+                rgb = img.getpixel((px, py))[:3]
+            except Exception:
+                continue
+            cls, dist = _nearest_landcover_class(rgb)
+            if dist > 60 or cls is None:
+                continue
+            z0_lc = class_to_z0(cls)
+            if z0_lc is not None:
+                out[j][i] = float(z0_lc)
+    return out
