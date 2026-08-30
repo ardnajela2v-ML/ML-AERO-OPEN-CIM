@@ -8,7 +8,8 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from core.kriging import kriging_interp
+from core.kriging import analyze_spatial_topsis_maps, kriging_interp
+from core.mcp_catalog import M04_LATITUDE, M04_LONGITUDE
 from core.terrain import sample_grid_worldcover_z0
 from core.spatial_calibration import (
     PROJECT_REFERENCE_HEIGHT_M,
@@ -127,7 +128,7 @@ class SpatialCalibrationTests(unittest.TestCase):
         with patch("core.spatial_calibration._load_station", side_effect=fake_load):
             result = calibrate_spatial_nodes(
                 anchor_frame, observed_frame, stations,
-                poi={"lat": 16.55, "lon": -94.955},
+                poi={"lat": M04_LATITUDE, "lon": M04_LONGITUDE},
                 target_height_m=80.0, min_years=3,
                 roughness_resolver=roughness,
             )
@@ -149,7 +150,7 @@ class SpatialCalibrationTests(unittest.TestCase):
         values = [row["generalized_mean_speed"] for row in rows]
         predicted, _ = kriging_interp(
             lons, lats, values,
-            np.asarray([[-94.955]]), np.asarray([[16.55]]), model="exponential", rng=50.0,
+            np.asarray([[M04_LONGITUDE]]), np.asarray([[M04_LATITUDE]]), model="exponential", rng=50.0,
         )
         self.assertAlmostEqual(predicted[0, 0], result["anchor"]["generalized_mean_speed"], places=4)
 
@@ -163,9 +164,47 @@ class SpatialCalibrationTests(unittest.TestCase):
         self.assertIn("wind_merra2", maps)
         self.assertIn("wind_direction", maps)
         self.assertIn("uncertainty", maps)
+        self.assertIn("wind_raw_reference", maps)
+        self.assertIn("wind_calibration_delta", maps)
+        self.assertEqual(maps["wind_raw_reference"]["bounds"], maps["wind_neutral"]["bounds"])
+        raw_reference = maps["raw_reference"]
+        self.assertFalse(raw_reference["uses_mcp_anchor"])
+        self.assertFalse(raw_reference["uses_horizontal_calibration"])
+        self.assertFalse(raw_reference["uses_local_roughness"])
+        self.assertFalse(raw_reference["uses_orographic_correction"])
+        self.assertAlmostEqual(sum(raw_reference["provider_weights"].values()), 1.0, places=12)
+        self.assertEqual(set(raw_reference["provider_weights"]), {"ERA5", "MERRA2"})
+        self.assertAlmostEqual(raw_reference["provider_weights"]["ERA5"], 0.5, places=12)
+        raw_node = raw_reference["nodes"][0]
+        expected_raw_reference = raw_node["raw_mean_speed_ms"] * (
+            np.log(PROJECT_REFERENCE_HEIGHT_M / PROJECT_REFERENCE_ROUGHNESS_M)
+            / np.log(raw_node["source_height_m"] / PROJECT_REFERENCE_ROUGHNESS_M)
+        )
+        self.assertAlmostEqual(raw_node["raw_reference_speed_ms"], expected_raw_reference, places=12)
+        np.testing.assert_allclose(
+            np.asarray(maps["wind_calibration_delta"]["z"]),
+            np.asarray(maps["wind_neutral"]["z"]) - np.asarray(maps["wind_raw_reference"]["z"]),
+        )
         self.assertEqual(len(maps["sectorial"]["frequency_pct"]), 16)
         self.assertEqual(maps["provenance"]["direction"], "meteorological_from_true_north_clockwise")
         self.assertFalse(maps["terrain"]["orography_speed_correction_applied"])
+
+        with tempfile.TemporaryDirectory() as turbine_folder:
+            turbine_name = "Prueba_p2000_r45.csv"
+            (Path(turbine_folder) / turbine_name).write_text(
+                "0,0\n3,0\n5,250\n8,900\n12,2000\n20,2000\n25,0\n",
+                encoding="utf-8",
+            )
+            spatial = analyze_spatial_topsis_maps(
+                maps, turbines_folder=turbine_folder,
+                scope="exploratory", bounds=maps["wind"]["bounds"],
+                max_points=6, turbine_filenames=[turbine_name],
+            )
+        self.assertEqual(spatial["field_source"], "mcp_calibrated_maps")
+        self.assertEqual(spatial["n_input_stations"], maps["n_sites"])
+        self.assertEqual(spatial["n_virtual_sites"], 6)
+        self.assertTrue(all(site["source"] == "mcp_calibrated_kriging" for site in spatial["sites"]))
+        self.assertTrue(all(len(site["sectorial"]["frequency_pct"]) == 16 for site in spatial["sites"]))
 
     def test_variogram_loo_and_dem_screening_are_diagnostic(self):
         lons = [-95.2, -95.0, -94.8, -94.6]

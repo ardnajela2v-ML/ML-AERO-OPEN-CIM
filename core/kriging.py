@@ -1039,6 +1039,192 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     }
 
 
+def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
+                                scope: str,
+                                polygon: Optional[List[dict]] = None,
+                                bounds: Optional[dict] = None,
+                                demand_mwh=1000, tasa=0.08,
+                                price_usd_kwh=0.20,
+                                price_mxn_per_usd=20.0,
+                                anios=ANIOS,
+                                max_points: int = 72,
+                                turbine_filenames: Optional[List[str]] = None,
+                                cost_model: Optional[CostModel] = None):
+    """Evaluate TOPSIS candidates from the published MCP spatial fields.
+
+    This is the guided Design path.  It deliberately does not reopen raw
+    ERA5/MERRA-2 files: wind, Weibull, density and 16-sector statistics are
+    sampled from the calibrated field bundle produced by
+    :func:`build_calibrated_maps`.
+    """
+
+    scope = 'park' if scope == 'park' else 'exploratory'
+    if scope == 'park':
+        if not polygon or len(polygon) < 3:
+            raise ValueError('El análisis de área seleccionada requiere el polígono cerrado del parque.')
+        requested_bounds = _bounds_from_polygon(polygon)
+    else:
+        if not bounds:
+            raise ValueError('La exploración global requiere un área rectangular seleccionada.')
+        requested_bounds = bounds
+
+    required = ('wind', 'gust', 'power_density', 'weibull_k', 'air_density', 'sectorial')
+    missing = [key for key in required if not field_bundle.get(key)]
+    if missing:
+        raise ValueError(f'Campos MCP incompletos para TOPSIS: {", ".join(missing)}')
+
+    wind_grid = field_bundle['wind']
+    gust_grid = field_bundle['gust']
+    power_grid = field_bundle['power_density']
+    k_grid = field_bundle['weibull_k']
+    rho_grid = field_bundle['air_density']
+    elevation_grid = field_bundle.get('elevation')
+    roughness_grid = field_bundle.get('roughness')
+    sectorial = field_bundle['sectorial']
+    sector_freq_grids = list(sectorial.get('frequency_pct') or [])
+    sector_speed_grids = list(sectorial.get('mean_speed') or [])
+    sector_energy_grids = list(sectorial.get('energy_pct') or [])
+    if not all(len(group) == SECTOR_COUNT for group in (
+        sector_freq_grids, sector_speed_grids, sector_energy_grids,
+    )):
+        raise ValueError('El campo MCP debe contener exactamente 16 sectores direccionales.')
+
+    grid_bounds = wind_grid.get('bounds') or requested_bounds
+    candidates = []
+    z_values = wind_grid.get('z') or []
+    ny = len(z_values)
+    nx = len(z_values[0]) if ny else 0
+    if ny < 2 or nx < 2:
+        raise ValueError('El campo MCP no contiene una grilla espacial válida.')
+    for j in range(ny):
+        lat = grid_bounds['lat_min'] + (grid_bounds['lat_max'] - grid_bounds['lat_min']) * j / max(1, ny - 1)
+        for i in range(nx):
+            lon = grid_bounds['lon_min'] + (grid_bounds['lon_max'] - grid_bounds['lon_min']) * i / max(1, nx - 1)
+            if scope == 'park' and not _point_in_polygon(lat, lon, polygon or []):
+                continue
+            if scope == 'exploratory' and not (
+                float(requested_bounds['lat_min']) <= lat <= float(requested_bounds['lat_max'])
+                and float(requested_bounds['lon_min']) <= lon <= float(requested_bounds['lon_max'])
+            ):
+                continue
+            wind = _grid_sample_value(wind_grid, lat, lon)
+            if wind is None or not np.isfinite(wind):
+                continue
+            gust = _grid_sample_value(gust_grid, lat, lon) or wind * 1.6
+            power = _grid_sample_value(power_grid, lat, lon) or 0.0
+            score = 0.55 * float(wind) + 0.003 * float(power) + 0.12 * float(gust)
+            candidates.append({'lat': lat, 'lon': lon, 'score': score})
+
+    if not candidates:
+        raise ValueError('No hay puntos MCP interpolados dentro del área seleccionada.')
+    if scope == 'exploratory':
+        candidates.sort(key=lambda point: point['score'], reverse=True)
+        candidates = candidates[:max_points]
+    elif len(candidates) > max_points:
+        step = max(1, int(math.ceil(len(candidates) / max_points)))
+        candidates = candidates[::step][:max_points]
+
+    turb_files = sorted(
+        filename for filename in os.listdir(turbines_folder)
+        if filename.lower().endswith('.csv') and not filename.startswith('.')
+    )
+    if turbine_filenames:
+        selected_turbines = set(turbine_filenames)
+        turb_files = [filename for filename in turb_files if filename in selected_turbines]
+    if not turb_files:
+        raise ValueError('Selecciona al menos una turbina válida para el análisis TOPSIS.')
+
+    turbines = []
+    for filename in turb_files:
+        try:
+            data = pd.read_csv(os.path.join(turbines_folder, filename), header=None).values
+            turbines.append((
+                filename, data[:, 0].astype(float), data[:, 1].astype(float),
+                *parse_turbine_filename(filename),
+            ))
+        except Exception as exc:
+            log.warning('analyze_spatial_topsis_maps: skip turbine %s — %s', filename, exc)
+    if not turbines:
+        raise ValueError('Ninguna curva de potencia seleccionada pudo leerse.')
+
+    sites_out = []
+    for idx, point in enumerate(candidates, start=1):
+        lat, lon = point['lat'], point['lon']
+        wind = max(0.0, float(_grid_sample_value(wind_grid, lat, lon) or 0.0))
+        k_value = max(0.45, float(_grid_sample_value(k_grid, lat, lon) or 2.0))
+        rho_mean = max(0.5, float(_grid_sample_value(rho_grid, lat, lon) or 1.225))
+        sector_frequency = [
+            max(0.0, float(_grid_sample_value(grid, lat, lon) or 0.0))
+            for grid in sector_freq_grids
+        ]
+        sector_speed = [
+            max(0.0, float(_grid_sample_value(grid, lat, lon) or 0.0))
+            for grid in sector_speed_grids
+        ]
+        sector_energy = [
+            max(0.0, float(_grid_sample_value(grid, lat, lon) or 0.0))
+            for grid in sector_energy_grids
+        ]
+        total_frequency = sum(sector_frequency)
+        total_energy = sum(sector_energy)
+        if total_frequency > 0:
+            sector_frequency = [value / total_frequency * 100.0 for value in sector_frequency]
+        if total_energy > 0:
+            sector_energy = [value / total_energy * 100.0 for value in sector_energy]
+        dominant_idx = int(np.argmax(sector_energy if total_energy > 0 else sector_frequency))
+        directional_concentration = float(
+            (sector_energy[dominant_idx] if total_energy > 0 else sector_frequency[dominant_idx]) / 100.0
+        )
+        ws_hub = _virtual_weibull_series(wind, k_value)
+        rho = np.full_like(ws_hub, rho_mean, dtype=float)
+        turbines_out = []
+        for filename, x_curve, y_curve, name, rotor, nominal_kw in turbines:
+            economics = turbine_site_economics(
+                ws_hub, rho, x_curve, y_curve, rotor, nominal_kw,
+                demand_mwh=demand_mwh, tasa=tasa,
+                price_usd_kwh=price_usd_kwh,
+                price_mxn_per_usd=price_mxn_per_usd, anios=anios,
+                cost_model=cost_model,
+            )
+            economics['turbina'] = name
+            economics['rotor_m'] = rotor
+            turbines_out.append(economics)
+        sites_out.append({
+            'name': f'Sitio MCP virtual {idx:02d}',
+            'lat': float(lat), 'lon': float(lon),
+            'source': 'mcp_calibrated_kriging', 'scope': scope,
+            'n_hours': int(len(ws_hub)),
+            'v_mean': wind, 'v_mean_raw': wind,
+            'v_max': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
+            'gust_ms': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
+            'power_density_wm2': float(_grid_sample_value(power_grid, lat, lon) or 0.0),
+            'weibull_C': float(wind / max(1e-9, math.gamma(1.0 + 1.0 / k_value))),
+            'weibull_K': k_value, 'rho_mean': rho_mean,
+            'dominant_direction_deg': float(dominant_idx * SECTOR_DEG),
+            'dominant_frequency_pct': float(sector_frequency[dominant_idx]),
+            'directional_concentration': directional_concentration,
+            'sectorial': {
+                'n_sectors': SECTOR_COUNT, 'labels': SECTOR_LABELS,
+                'frequency_pct': sector_frequency,
+                'mean_speed': sector_speed, 'energy_pct': sector_energy,
+            },
+            'elevation_m': float(_grid_sample_value(elevation_grid, lat, lon) or 0.0) if elevation_grid else None,
+            'roughness_z0': float(_grid_sample_value(roughness_grid, lat, lon) or Z0) if roughness_grid else None,
+            'resource_score': float(point['score']), 'turbines': turbines_out,
+        })
+
+    return {
+        'sites': sites_out, 'scope': scope,
+        'physical': bool(field_bundle.get('physical')),
+        'n_input_stations': int(field_bundle.get('n_sites') or 0),
+        'n_virtual_sites': len(sites_out), 'bounds': grid_bounds,
+        'field_source': 'mcp_calibrated_maps',
+        'data_source': field_bundle.get('data_source'),
+        'calibration_id': field_bundle.get('calibration_id'),
+        'study_revision': field_bundle.get('study_revision'),
+    }
+
+
 # ── Legacy replica: 3 mapas Kriging como en ajuste_aerogeneradores.py ─────────
 
 def _haversine_km(lat1, lon1, lat2, lon2):

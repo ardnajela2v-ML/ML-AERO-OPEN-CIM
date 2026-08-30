@@ -5993,6 +5993,8 @@ const KRIG_LAYERS = {
   wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
   wind_era5:    { unit: 'm/s',   title: 'Campo ERA5 calibrado y anclado a M04 MCP' },
   wind_merra2:  { unit: 'm/s',   title: 'Campo MERRA-2 calibrado y anclado a M04 MCP' },
+  wind_raw_reference:{ unit: 'm/s', title: 'ERA5 + MERRA-2 raw · extrapolación vertical directa a 100 m' },
+  wind_calibration_delta:{ unit: 'm/s', title: 'Diferencia calibrado − raw a 100 m' },
   wind_direction:{ unit: '°',    title: 'Dirección meteorológica · norte verdadero' },
   uncertainty:  { unit: 'm/s',   title: 'Incertidumbre MCP + Kriging + proveedores' },
   weibull_k:    { unit: '',      title: 'Weibull k · reconstrucción histórica' },
@@ -6016,6 +6018,23 @@ function krigColor(t) {
     [0.00, [49, 54,149]], [0.16, [69,117,180]], [0.33, [116,173,209]],
     [0.50, [254,224,144]], [0.67, [253,174, 97]], [0.83, [244,109, 67]],
     [1.00, [215, 48, 39]],
+  ];
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, c0] = stops[i], [t1, c1] = stops[i + 1];
+    if (t <= t1) {
+      const u = (t - t0) / (t1 - t0);
+      return [c0[0] + u*(c1[0]-c0[0]), c0[1] + u*(c1[1]-c0[1]), c0[2] + u*(c1[2]-c0[2])];
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+
+// Rampa divergente centrada exactamente en cero para comparar campos.
+function krigDeltaColor(t) {
+  const stops = [
+    [0.00, [37, 99, 235]], [0.25, [147, 197, 253]],
+    [0.50, [248, 250, 252]], [0.75, [252, 165, 165]], [1.00, [185, 28, 28]],
   ];
   t = Math.max(0, Math.min(1, t));
   for (let i = 0; i < stops.length - 1; i++) {
@@ -7000,14 +7019,22 @@ function krig3SitePopupHtml(s) {
   const weibullLine = isFinite(weibullC) && isFinite(weibullK)
     ? `Weibull λ=${weibullC.toFixed(2)} · k=${weibullK.toFixed(2)}`
     : `Altura fuente ${Number(s.source_height_m || s.target_height_m || 0).toFixed(0)} m`;
+  const aliasCount = Number(s.alias_count || s.file_ids?.length || 1);
+  const coordinateLine = !isAnchor
+    ? `<br>Coordenada: ${s.coordinate_source === 'file_metadata' ? 'metadato interno' : 'catálogo'}${s.coordinate_status === 'corrected_filename_mismatch' ? ' · nombre de archivo corregido' : ''}`
+    : '<br>Coordenada oficial INEEL';
+  const aliasLine = !isAnchor && aliasCount > 1
+    ? `<br>${aliasCount} archivos agrupados en este nodo físico`
+    : '';
   return `
     <div style="min-width:220px">
       <div style="font-weight:600;font-size:.85rem;margin-bottom:.15rem">${s.display_name || s.filename}</div>
       ${s.state ? `<div style="font-size:.72rem;color:#94a3b8;margin-bottom:.25rem">${s.state}${s.municipality ? ' · ' + s.municipality : ''}</div>` : ''}
       <div style="font-size:.75rem;color:#64748b;line-height:1.4">
-        <b>${isAnchor ? 'OBS · MCP' : (s.provider || s.source || '').toUpperCase()}</b> · ${s.lat.toFixed(3)}°, ${s.lon.toFixed(3)}°<br>
+        <b>${isAnchor ? 'OBS · MCP' : (s.provider || s.source || '').toUpperCase()}</b> · ${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>
         ${metricLine}${weibullLine}
         ${s.distance_km != null ? `<br>Distancia ${Number(s.distance_km).toFixed(1)} km · QC ${s.qc_status || 'pendiente'}` : ''}
+        ${coordinateLine}${aliasLine}
         ${krig3TerrainBadge(s.filename)}
       </div>
       <div style="display:flex;gap:.3rem;margin-top:.5rem;flex-wrap:wrap">
@@ -7153,7 +7180,7 @@ async function krig3EnsureCalibration() {
   }
   const references = KRIG.sites.filter(s => s.allowed_role === 'spatial_reference');
   const excluded = references.filter(s => !KRIG.selected.has(s.filename)).map(s => s.station_id || s.filename);
-  const studyPoi = KRIG.poi || (typeof GLOBE !== 'undefined' && GLOBE?.poi) || { lat: 16.55, lon: -94.955 };
+  const studyPoi = KRIG.poi || (typeof GLOBE !== 'undefined' && GLOBE?.poi) || { lat: 16.54701944, lon: -94.95578611 };
   const body = {
     session_id: WP.sessionId,
     data_source: WP.activeDataSource,
@@ -7275,14 +7302,21 @@ function krig3RenderLayer(key) {
   const ctx = canvas.getContext('2d');
   const img = ctx.createImageData(nx, ny);
   const rng = z_max - z_min;
+  const deltaScale = key === 'wind_calibration_delta'
+    ? Math.max(Math.abs(Number(z_min)), Math.abs(Number(z_max)), 1e-9)
+    : null;
   for (let j = 0; j < ny; j++) {
     const row = z[ny - 1 - j];
     for (let i = 0; i < nx; i++) {
-      const t = rng > 0 ? (row[i] - z_min) / rng : 0.5;
+      const t = deltaScale != null
+        ? (Number(row[i]) + deltaScale) / (2 * deltaScale)
+        : (rng > 0 ? (row[i] - z_min) / rng : 0.5);
       let r_, g_, b_;
       if (key === 'wind_direction') {
         const rgb = krigHslToRgb((((Number(row[i]) % 360) + 360) % 360) / 360, .72, .52);
         [r_, g_, b_] = rgb;
+      } else if (key === 'wind_calibration_delta') {
+        [r_, g_, b_] = krigDeltaColor(t);
       } else {
         [r_, g_, b_] = krigColor(t);
       }
@@ -7315,7 +7349,9 @@ function krig3RenderLayer(key) {
   krig3RenderPoiOnResult();
 
   document.getElementById('krig3-map-title').textContent = grid.title || meta.title;
-  document.getElementById('krig3-legend').textContent = krig3FormatRange(grid, meta.unit);
+  document.getElementById('krig3-legend').textContent = key === 'wind_calibration_delta'
+    ? `${(-deltaScale).toFixed(2)} → 0 → ${deltaScale.toFixed(2)} ${meta.unit}`
+    : krig3FormatRange(grid, meta.unit);
   setTimeout(() => map.invalidateSize(), 60);
 }
 
@@ -7470,7 +7506,9 @@ async function krig3Run() {
     price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('krig3-fx').value),
     market_trajectories: marketInputs.trajectories,
     n_grid:           parseInt(document.getElementById('krig3-n').value),
-    model:            document.getElementById('krig3-model').value,
+    // La vista clásica conserva el selector exponencial/gaussiano. En el flujo
+    // MCP guiado la selección del variograma continúa siendo automática (LOO).
+    model:            KRIG.guidedMcp ? 'auto' : document.getElementById('krig3-model').value,
     filenames:        Array.from(KRIG.selected),
     physical:         physical,
     target_height_m:  wsH(),
@@ -7550,7 +7588,7 @@ async function krig3Poll() {
       krig3ZoomToPrincipal();
       const nCurves = (d.turbine_curves || []).length;
       const tag = mcpOn
-        ? ` · MCP espacial · ${Object.entries(d.provider_weights || {}).map(([p,w]) => `${p} ${(100*w).toFixed(0)}%`).join(' / ')}`
+        ? ` · MCP espacial · ${Object.entries(d.provider_weights || {}).map(([p,w]) => `${p} ${(100*w).toFixed(0)}%`).join(' / ')} · comparación raw @ ${Number(d.raw_reference?.reference_height_m || 100).toFixed(0)} m`
         : (physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '');
       const nMaps = Object.keys(d).filter(k => d[k] && Array.isArray(d[k].z)).length;
       document.getElementById('krig3-status').textContent =
@@ -8157,6 +8195,19 @@ async function mcdaRunAnalysis() {
     : 'Buscando sitios candidatos interpolados dentro del área exploratoria…';
   try {
     mcdaClearSpatialMarkers();
+    const manual = !!document.getElementById('krig3-manual-mode')?.checked;
+    const guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
+    if (guidedMcp) {
+      document.getElementById('mcda-progress-text').textContent =
+        'Preparando la calibración MCP y sus campos espaciales…';
+      body.session_id = WP.sessionId;
+      body.data_source = WP.activeDataSource;
+      body.calibration_id = await krig3EnsureCalibration();
+      body.target_height_m = Number(wsH());
+      body.physical = !!document.getElementById('krig3-physical')?.checked;
+      body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 20);
+      if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
+    }
     const r = await api('/api/multicriteria/spatial', 'POST', body);
     MCDA.taskId = r.task_id;
     mcdaPollStatus();
@@ -9054,6 +9105,7 @@ async function parqueUpdateRecommendation() {
 
   try {
     const r = await api('/api/farm/recommend', 'POST', {
+      session_id: WP.sessionId,
       turbine: turbineCfg, demand_mwh: demand,
       v_mean: vMean, weibull_k: wK,
       hub_height_m: hubHeight,
@@ -12160,14 +12212,14 @@ async function globePreloadSites() {
     GLOBE.mcpCatalog = rl;
     const normalize = row => ({
       ...row,
-      filename: row.file_ids?.[0] || row.station_id,
+      filename: row.primary_file_id || row.file_ids?.[0] || row.station_id,
       lat: Number(row.latitude), lon: Number(row.longitude),
       source: String(row.provider || '').toLowerCase(),
     });
     GLOBE.sites = [...(rl.observations || []).map(normalize), ...(rl.references || []).map(normalize)];
     GLOBE.sitesLight = true;
     updateGlobeStationsBadge();
-    console.log(`[globe] ${GLOBE.sites.length} estaciones (light) listas`);
+    console.log(`[globe] ${GLOBE.sites.length} puntos físicos (light) listos`);
   } catch (e) {
     console.error('[globe] error light:', e);
     updateGlobeStationsBadge(true);
@@ -12182,7 +12234,12 @@ async function globePreloadSites() {
     const r = await api(`/api/kriging/sites?year=${year}${htParamG}`, 'GET');
     if (r.sites && r.sites.length) {
       const byName = new Map(r.sites.map(s => [s.filename, s]));
-      GLOBE.sites = GLOBE.sites.map(s => s.data_kind === 'observed' ? s : ({ ...s, ...(byName.get(s.filename) || {}) }));
+      // Conserva coordenadas, rol y procedencia del catálogo tipificado. El
+      // endpoint heredado sólo aporta estadísticas y deriva sus coordenadas
+      // del nombre de archivo, que puede ser un alias geográfico incorrecto.
+      GLOBE.sites = GLOBE.sites.map(s => s.data_kind === 'observed'
+        ? s
+        : ({ ...(byName.get(s.filename) || {}), ...s }));
       GLOBE.sitesLight = false;
       updateGlobeStationsBadge();
       console.log(`[globe] enriquecimiento completo (año ${year})`);
@@ -12210,7 +12267,7 @@ function updateGlobeStationsBadge(error = false) {
     el.textContent = 'Cargando estaciones…';
     el.style.color = 'var(--text-muted)';
   } else {
-    el.textContent = `${n} estaciones meteorológicas disponibles`;
+    el.textContent = `${n} puntos meteorológicos disponibles`;
     el.style.color = 'var(--text)';
   }
   el.style.display = '';
@@ -12777,10 +12834,10 @@ function globeRenderStationList() {
   if (!list) return;
   if (!GLOBE.visibleSites.length) {
     list.innerHTML = '<div class="globe-panel__empty">Sin estaciones a este radio. Aumenta el radio o usa "+ Cargar mi propio archivo".</div>';
-    if (title) title.textContent = '0 estaciones';
+    if (title) title.textContent = '0 puntos';
     return;
   }
-  if (title) title.textContent = `${GLOBE.visibleSites.length} estaciones cercanas`;
+  if (title) title.textContent = `${GLOBE.visibleSites.length} puntos cercanos`;
   const observed = GLOBE.visibleSites.filter(s => s.data_kind === 'observed');
   const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
   const row = s => {
@@ -12788,11 +12845,14 @@ function globeRenderStationList() {
     const isMaster = (GLOBE.master === key);
     const isSelected = GLOBE.mcpReferences.has(key);
     const src = (s.provider || s.source || '').toUpperCase();
+    const aliasCount = Number(s.alias_count || s.file_ids?.length || 1);
+    const coordNote = s.coordinate_status === 'corrected_filename_mismatch' ? ' · coordenada interna verificada' : '';
+    const aliasNote = aliasCount > 1 ? ` · ${aliasCount} archivos agrupados` : '';
     return `<div class="globe-station ${isMaster ? 'is-master is-observed' : ''} ${isSelected ? 'is-selected' : ''}" data-site-id="${key}">
       <div class="globe-station__star">${isMaster ? '★' : (isSelected ? '✓' : '○')}</div>
       <div class="globe-station__body">
         <div class="globe-station__name">${s.display_name || s.filename}</div>
-        <div class="globe-station__meta">${s.data_kind === 'observed' ? 'OBS · ' : ''}${src} · ${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°${s.state ? ' · ' + s.state : ''}</div>
+        <div class="globe-station__meta">${s.data_kind === 'observed' ? 'OBS · ' : ''}${src} · ${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°${s.state ? ' · ' + s.state : ''}${coordNote}${aliasNote}</div>
       </div>
       <div class="globe-station__dist">${s._dist.toFixed(0)} km</div>
     </div>`;
@@ -13651,7 +13711,7 @@ async function handleGlobeOwnFile(file, source) {
   try {
     const response = await apiFD('/api/mcp/uploads', form);
     const row = response.station;
-    const site = { ...row, filename: row.file_ids?.[0] || row.station_id, lat: Number(row.latitude), lon: Number(row.longitude), source: String(row.provider || '').toLowerCase() };
+    const site = { ...row, filename: row.primary_file_id || row.file_ids?.[0] || row.station_id, lat: Number(row.latitude), lon: Number(row.longitude), source: String(row.provider || '').toLowerCase() };
     GLOBE.sites = GLOBE.sites.filter(item => globeSiteKey(item) !== row.station_id);
     GLOBE.sites.push(site);
     if (kind === 'observed') {

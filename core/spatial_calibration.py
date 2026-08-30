@@ -798,6 +798,21 @@ def build_calibrated_maps(
     z0_ref = float(project_ref.get("roughness_z0_m", PROJECT_REFERENCE_ROUGHNESS_M))
     provider_grids: dict[str, dict[str, Any]] = {}
     selections: dict[str, Any] = {}
+    official_nodes = [node for node in nodes if node.get("field_role") == "official"]
+    if bounds:
+        map_bounds = {key: float(bounds[key]) for key in ("lat_min", "lat_max", "lon_min", "lon_max")}
+    else:
+        extent_rows = [anchor] + official_nodes
+        extent_lats = np.asarray([float(row["latitude"]) for row in extent_rows], dtype=float)
+        extent_lons = np.asarray([float(row["longitude"]) for row in extent_rows], dtype=float)
+        lon_margin = max(0.1, float(np.ptp(extent_lons)) * 0.15)
+        lat_margin = max(0.1, float(np.ptp(extent_lats)) * 0.15)
+        map_bounds = {
+            "lat_min": float(extent_lats.min() - lat_margin),
+            "lat_max": float(extent_lats.max() + lat_margin),
+            "lon_min": float(extent_lons.min() - lon_margin),
+            "lon_max": float(extent_lons.max() + lon_margin),
+        }
     if progress_callback:
         progress_callback(10, "Validación espacial leave-one-node-out")
     for provider in participating:
@@ -824,7 +839,7 @@ def build_calibrated_maps(
             values = [row.get(field) for row in rows]
             fields[field] = _grid_with_range(
                 lons, lats, values, n=n_grid, model=chosen_model, range_km=range_km,
-                bounds=bounds, title=title, names=names if field == "generalized_mean_speed" else None,
+                bounds=map_bounds, title=title, names=names if field == "generalized_mean_speed" else None,
             )
         sector_fields = {"frequency_pct": [], "mean_speed": [], "energy_pct": []}
         for sector_field in sector_fields:
@@ -832,9 +847,56 @@ def build_calibrated_maps(
                 values = [(row.get("sectorial") or {}).get(sector_field, [0.0] * SECTOR_COUNT)[sector] for row in rows]
                 sector_fields[sector_field].append(_grid_with_range(
                     lons, lats, values, n=n_grid, model=chosen_model, range_km=range_km,
-                    bounds=bounds, title=f"{provider} · {sector_field} · {SECTOR_LABELS[sector]}",
+                    bounds=map_bounds, title=f"{provider} · {sector_field} · {SECTOR_LABELS[sector]}",
                 ))
         provider_grids[provider] = {"fields": fields, "sectorial": sector_fields, "nodes": rows}
+
+    # Direct comparison field: raw reanalysis only, no M04, no temporal MCP,
+    # no anchored anomaly and no validation-derived provider weights.  Each
+    # node is moved from its declared source height to the single project
+    # reference height using the same neutral log profile and fixed z0_ref.
+    raw_provider_grids: dict[str, dict[str, Any]] = {}
+    raw_selections: dict[str, Any] = {}
+    raw_node_records: list[dict[str, Any]] = []
+    for provider in participating:
+        provider_nodes = [node for node in official_nodes if node["provider"] == provider]
+        if len(provider_nodes) < MIN_PROVIDER_NODES:
+            continue
+        raw_lats = [float(node["latitude"]) for node in provider_nodes]
+        raw_lons = [float(node["longitude"]) for node in provider_nodes]
+        raw_names = [str(node["display_name"]) for node in provider_nodes]
+        raw_values = []
+        for node in provider_nodes:
+            source_height = float(node["source_height_m"])
+            raw_speed = float(node["raw_mean_speed"])
+            extrapolated = float(generalize_speed(
+                [raw_speed], source_height, z0_ref,
+                reference_height_m=h_ref, reference_z0_m=z0_ref,
+            )[0])
+            raw_values.append(extrapolated)
+            raw_node_records.append({
+                "station_id": node["station_id"], "display_name": node["display_name"],
+                "provider": provider, "latitude": float(node["latitude"]),
+                "longitude": float(node["longitude"]), "source_height_m": source_height,
+                "raw_mean_speed_ms": raw_speed, "reference_height_m": h_ref,
+                "raw_reference_speed_ms": extrapolated,
+            })
+        raw_selection = select_variogram_loo(raw_lons, raw_lats, raw_values, requested=model)
+        raw_selections[provider] = raw_selection
+        raw_provider_grids[provider] = _grid_with_range(
+            raw_lons, raw_lats, raw_values,
+            n=n_grid, model=str(raw_selection["model"]),
+            range_km=float(raw_selection["range_km"]), bounds=map_bounds,
+            title=f"{provider} raw extrapolado verticalmente a {h_ref:g} m",
+            names=raw_names,
+        )
+
+    if not raw_provider_grids:
+        raise ValueError("No provider has enough raw nodes for the direct comparison map")
+    raw_equal_weights = {
+        provider: 1.0 / len(raw_provider_grids) for provider in raw_provider_grids
+    }
+    raw_reference = np.maximum(0.0, _blend_grids(raw_provider_grids, raw_equal_weights))
 
     speed_generalized = _blend_grids(
         {provider: data["fields"]["generalized_mean_speed"] for provider, data in provider_grids.items()}, weights
@@ -926,6 +988,14 @@ def build_calibrated_maps(
     result = {
         "wind": _wrap_grid(template, wind, "Viento MCP espacial calibrado a altura objetivo"),
         "wind_neutral": _wrap_grid(template, speed_generalized, f"Viento generalizado ({h_ref:g} m, z₀={z0_ref:g} m)"),
+        "wind_raw_reference": _wrap_grid(
+            template, raw_reference,
+            f"Reanálisis raw · extrapolación vertical directa a {h_ref:g} m",
+        ),
+        "wind_calibration_delta": _wrap_grid(
+            template, speed_generalized - raw_reference,
+            f"Diferencia calibrado − raw a {h_ref:g} m",
+        ),
         "wind_direction": _wrap_grid(template, direction, "Dirección meteorológica · norte verdadero"),
         "gust": _wrap_grid(template, gust, "Ráfaga histórica P99.5 calibrada"),
         "weibull_k": _wrap_grid(template, weibull_k, "Weibull k · reconstrucción histórica"),
@@ -940,6 +1010,14 @@ def build_calibrated_maps(
         "providers": {},
         "provider_weights": weights,
         "variogram_selection": selections,
+        "raw_reference": {
+            "reference_height_m": h_ref, "reference_roughness_z0_m": z0_ref,
+            "vertical_method": "neutral_log_profile_fixed_project_z0",
+            "uses_mcp_anchor": False, "uses_horizontal_calibration": False,
+            "uses_local_roughness": False, "uses_orographic_correction": False,
+            "provider_weights": raw_equal_weights, "variogram_selection": raw_selections,
+            "nodes": raw_node_records,
+        },
         "calibration_id": calibration.get("calibration_id"),
         "data_source": calibration.get("data_source"),
         "study_revision": calibration.get("study_revision"),
@@ -966,6 +1044,11 @@ def build_calibrated_maps(
             "weight": weights.get(provider), "wind_layer": key,
             "variogram": selections.get(provider),
             "node_count": sum(node["provider"] == provider and node.get("field_role") == "official" for node in nodes),
+        }
+    for provider, raw_grid in raw_provider_grids.items():
+        result["wind_raw_" + provider.lower()] = {
+            **raw_grid,
+            "title": f"{provider} raw · extrapolación vertical directa a {h_ref:g} m",
         }
 
     # Sparse vector field for Leaflet.  Arrow orientation is a true-north

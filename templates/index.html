@@ -2475,7 +2475,7 @@
     </div>
     <div class="card-body">
       <div class="form-grid-4">
-        <div><label class="form-label">Periodo (modo manual)</label>
+        <div><label class="form-label">Año</label>
           <select class="form-select" id="krig3-year">
             <option value="2018" selected>2018</option>
             <option value="2019">2019</option>
@@ -2493,8 +2493,7 @@
           <input class="form-input" type="number" id="krig3-fx" value="20" step="0.5"></div>
         <div><label class="form-label">Modelo</label>
           <select class="form-select" id="krig3-model">
-            <option value="auto" selected>Automático · LOO</option>
-            <option value="exponential">Exponencial</option>
+            <option value="exponential" selected>Exponencial</option>
             <option value="gaussian">Gaussiano</option>
           </select></div>
         <div><label class="form-label">Grilla</label>
@@ -2506,27 +2505,13 @@
         <div><label class="form-label">Zoom tras Kriging (km)</label>
           <input class="form-input" type="number" id="krig3-zoom-km" value="100" step="25" min="25"></div>
       </div>
-      <div class="mt-2" style="padding:.65rem .75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
-        <div style="display:flex;gap:.7rem;align-items:center;flex-wrap:wrap">
-          <b style="font-size:.82rem">Continuidad MCP → Diseño</b>
-          <span class="badge badge--info" id="krig3-source-badge">Comprobando fuente…</span>
-          <span class="text-muted" style="font-size:.75rem">Referencia común del proyecto: h<sub>ref</sub> = 100 m · z₀<sub>ref</sub> = 0.03 m</span>
-          <label style="margin-left:auto;font-size:.75rem;display:flex;align-items:center;gap:.3rem;cursor:pointer"
-                 title="Conserva el cálculo anterior con archivos observados/reanálisis sin calibración espacial MCP.">
-            <input type="checkbox" id="krig3-manual-mode"> Modo manual heredado
-          </label>
-        </div>
-        <p class="text-muted" id="krig3-method-note" style="font-size:.74rem;margin:.45rem 0 0">
-          El hindcast MCP publicado fija el clima absoluto. ERA5 y MERRA-2 aportan únicamente anomalías espaciales; se calibran por separado y se ensamblan con validación 2019 balanceada por mes.
-        </p>
-      </div>
       <div class="flex-end mt-2" style="gap:.4rem;align-items:center">
         <span class="text-muted" id="krig3-selection-info" style="font-size:.78rem;margin-right:auto">
           Click: popup · Shift+click: incluir/excluir · <b>Ctrl+arrastrar: selección rectangular</b> · ★ parque principal.
         </span>
-        <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem;cursor:pointer" title="Generaliza rugosidad antes de Kriging, la reaplica por píxel y usa elevación sólo para densidad. El DEM no multiplica la velocidad.">
-          <input type="checkbox" id="krig3-physical" checked>
-          Downscaling físico (rugosidad + densidad)
+        <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem;cursor:pointer" title="Aplica corrección log-altura por z₀ y altitud DEM píxel a píxel: produce además mapas de Topografía, Rugosidad, Densidad del aire y Viento neutralizado.">
+          <input type="checkbox" id="krig3-physical">
+          Corrección física (z₀ + altitud)
         </label>
         <button class="btn-secondary" id="btn-krig3-select-all" type="button">Seleccionar todos</button>
         <button class="btn-secondary" id="btn-krig3-select-none" type="button">Limpiar</button>
@@ -2536,12 +2521,32 @@
         <div id="krig3-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
       </div>
       <p class="text-muted mt-1" id="krig3-progress-text" style="font-size:.75rem"></p>
-      <div id="krig3-calibration-panel" style="display:none;margin-top:.65rem;border-top:1px solid var(--border);padding-top:.65rem"></div>
-      <div style="display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;margin-top:.55rem">
-        <label class="form-label" for="krig3-speedup-file" style="margin:0">Corrección orográfica avanzada</label>
-        <input class="form-input" id="krig3-speedup-file" type="file" accept=".json,application/json" style="max-width:320px;height:34px;padding:.25rem .4rem">
-        <span class="text-muted" id="krig3-speedup-status" style="font-size:.72rem">Opcional: matriz WAsP/CFD de factores positivos; sin archivo, el DEM es sólo diagnóstico.</span>
-      </div>
+      <details id="krig3-downscaling-details" class="mt-2" style="border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
+        <summary style="cursor:pointer;padding:.65rem .75rem;font-size:.82rem;font-weight:600">Downscaling MCP avanzado</summary>
+        <div style="padding:0 .75rem .75rem;border-top:1px solid var(--border)">
+          <div style="display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin-top:.65rem">
+            <b style="font-size:.82rem">Continuidad MCP → Diseño</b>
+            <span class="badge badge--info" id="krig3-source-badge">Comprobando fuente…</span>
+            <span class="text-muted" style="font-size:.75rem">Referencia común del proyecto: h<sub>ref</sub> = 100 m · z₀<sub>ref</sub> = 0.03 m</span>
+            <label style="margin-left:auto;font-size:.75rem;display:flex;align-items:center;gap:.3rem;cursor:pointer"
+                   title="Conserva el cálculo anterior con archivos observados/reanálisis sin calibración espacial MCP.">
+              <input type="checkbox" id="krig3-manual-mode"> Modo manual heredado
+            </label>
+          </div>
+          <p class="text-muted" id="krig3-method-note" style="font-size:.74rem;margin:.45rem 0 0">
+            El hindcast MCP publicado fija el clima absoluto. ERA5 y MERRA-2 aportan únicamente anomalías espaciales; se calibran por separado y se ensamblan con validación 2019 balanceada por mes.
+          </p>
+          <p class="text-muted" id="krig3-raw-method-note" style="font-size:.74rem;margin:.25rem 0 0">
+            Comparación raw: nodos ERA5/MERRA-2 sin M04 ni calibración horizontal, extrapolados directamente a h<sub>ref</sub> = 100 m con perfil logarítmico y z₀ = 0.03 m.
+          </p>
+          <div id="krig3-calibration-panel" style="display:none;margin-top:.65rem;border-top:1px solid var(--border);padding-top:.65rem"></div>
+          <div style="display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;margin-top:.55rem">
+            <label class="form-label" for="krig3-speedup-file" style="margin:0">Corrección orográfica avanzada</label>
+            <input class="form-input" id="krig3-speedup-file" type="file" accept=".json,application/json" style="max-width:320px;height:34px;padding:.25rem .4rem">
+            <span class="text-muted" id="krig3-speedup-status" style="font-size:.72rem">Opcional: matriz WAsP/CFD de factores positivos; sin archivo, el DEM es sólo diagnóstico.</span>
+          </div>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -2554,12 +2559,6 @@
     <div class="card-body">
       <div class="krig3-tabs" role="tablist" style="display:flex;gap:.35rem;margin-bottom:.6rem;flex-wrap:wrap;align-items:center">
         <button class="btn-secondary krig3-tab is-active" data-layer="wind"         type="button">① Velocidad (m/s)</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_era5" type="button" style="display:none">ERA5 calibrado</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_merra2" type="button" style="display:none">MERRA-2 calibrado</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_direction" type="button" style="display:none">Dirección + vectores</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="uncertainty" type="button" style="display:none">Incertidumbre</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="weibull_k" type="button" style="display:none">Weibull k</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="weibull_lambda" type="button" style="display:none">Weibull λ</button>
         <button class="btn-secondary krig3-tab"           data-layer="gust"         type="button">② Ráfagas (m/s)</button>
         <button class="btn-secondary krig3-tab"           data-layer="power_density" type="button">③ Potencia (W/m²)</button>
         <button class="btn-secondary krig3-tab"           data-layer="inversion"    type="button">④ Inversión (USD)</button>
@@ -2569,7 +2568,6 @@
         <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="elevation"    type="button" style="display:none">⑧ Topografía (m)</button>
         <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="roughness"    type="button" style="display:none">⑨ Rugosidad z₀ (m)</button>
         <button class="btn-secondary krig3-tab krig3-tab-phys" data-layer="air_density"  type="button" style="display:none">⑩ Densidad aire (kg/m³)</button>
-        <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="terrain_complexity" type="button" style="display:none">RIX proxy · diagnóstico</button>
         <button class="btn-secondary" id="btn-krig3-reset" type="button"
                 style="display:none;margin-left:auto"
                 title="Limpia los mapas Kriging y vuelve al modo de diseño / selección. Conserva las estaciones, el emplazamiento y el polígono.">
@@ -2577,6 +2575,21 @@
         </button>
         <button class="btn-primary" id="btn-krig3-download" type="button" style="margin-left:.4rem" title="Guarda el mapa actual como PNG">⬇ Descargar imagen</button>
       </div>
+
+      <details id="krig3-advanced-layers" style="margin:-.15rem 0 .6rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
+        <summary style="cursor:pointer;padding:.5rem .65rem;font-size:.78rem;font-weight:600">Capas avanzadas MCP y downscaling</summary>
+        <div style="display:flex;gap:.35rem;flex-wrap:wrap;padding:.55rem .65rem;border-top:1px solid var(--border)">
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_era5" type="button" style="display:none">ERA5 calibrado</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_merra2" type="button" style="display:none">MERRA-2 calibrado</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_raw_reference" type="button" style="display:none">Raw @ 100 m</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_calibration_delta" type="button" style="display:none">Δ calibrado − raw</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="wind_direction" type="button" style="display:none">Dirección + vectores</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="uncertainty" type="button" style="display:none">Incertidumbre</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="weibull_k" type="button" style="display:none">Weibull k</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="weibull_lambda" type="button" style="display:none">Weibull λ</button>
+          <button class="btn-secondary krig3-tab krig3-tab-mcp" data-layer="terrain_complexity" type="button" style="display:none">RIX proxy · diagnóstico</button>
+        </div>
+      </details>
 
       <!-- Tooltip flotante de hover sobre el mapa de resultado -->
       <div id="krig3-hover-tip"
@@ -4092,6 +4105,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260822-spatial-mcp-v1"></script>
+<script src="/static/js/aero.js?v=20260830-classic-kriging-v1"></script>
 </body>
 </html>

@@ -11,7 +11,13 @@ import pandas as pd
 
 from api import create_app
 from config import Config
-from core.mcp_catalog import M04_STATION_ID, build_mcp_catalog, classify_file
+from core.mcp_catalog import (
+    M04_LATITUDE,
+    M04_LONGITUDE,
+    M04_STATION_ID,
+    build_mcp_catalog,
+    classify_file,
+)
 from core.forecasting import forecast_fx_recent
 
 
@@ -36,7 +42,11 @@ class MCPIntegrationTests(unittest.TestCase):
     def test_catalog_uses_official_m04_raw_file_and_excludes_aliases(self):
         catalog = build_mcp_catalog(Config.DATA_FOLDER, Config.CERTE_FOLDER)
         observation = next(row for row in catalog["observations"] if row["station_id"] == M04_STATION_ID)
-        self.assertEqual((observation["latitude"], observation["longitude"]), (16.55, -94.955))
+        self.assertEqual(
+            (observation["latitude"], observation["longitude"]),
+            (M04_LATITUDE, M04_LONGITUDE),
+        )
+        self.assertEqual(observation["coordinate_status"], "verified")
         self.assertEqual(observation["file_ids"], ["M04_CERTE_CONSOLIDADO_2017-2020.txt"])
         self.assertEqual(observation["timezone"], "Etc/GMT+6")
         reference_files = {name for row in catalog["references"] for name in row["file_ids"]}
@@ -52,6 +62,33 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(detected["data_kind"], "reanalysis")
         self.assertEqual(detected["provider"], "MERRA2")
         self.assertEqual(detected["confidence"], "content")
+
+    def test_catalog_prefers_internal_coordinates_and_groups_physical_aliases(self):
+        data_root = Path(self.temporary.name) / "catalog_data"
+        certe_root = Path(self.temporary.name) / "catalog_certe"
+        data_root.mkdir()
+        certe_root.mkdir()
+        header = (
+            "NASA Global Modeling and Assimilation Office\n"
+            "MERRA-2\nLatitude: 16.500000\nLongitude: -95.000000\n"
+            "Date/time [UTC]\tSpeed_50m [m/s]\n2018-01-01 00:00\t8.0\n"
+        )
+        first = data_root / "alias_MERRA2_N16,000_W94,000.txt"
+        second = data_root / "alias_copy_MERRA2_N16,500_W95,000.txt"
+        first.write_text(header, encoding="utf-8")
+        second.write_text(header + "2018-01-01 01:00\t8.5\n", encoding="utf-8")
+
+        catalog = build_mcp_catalog(data_root, certe_root)
+
+        self.assertEqual(catalog["counts"]["references"], 1)
+        node = catalog["references"][0]
+        self.assertEqual((node["latitude"], node["longitude"]), (16.5, -95.0))
+        self.assertEqual(node["coordinate_source"], "file_metadata")
+        self.assertEqual(node["coordinate_status"], "corrected_filename_mismatch")
+        self.assertEqual(node["alias_count"], 2)
+        self.assertEqual(set(node["file_ids"]), {first.name, second.name})
+        self.assertEqual(node["primary_file_id"], second.name)
+        self.assertEqual(node["_paths"], [str(second.resolve())])
 
     def test_study_enforces_roles_and_creates_revisions(self):
         catalog = self.client.get(f"/api/mcp/catalog?session_id={self.sid}").get_json()
@@ -238,6 +275,18 @@ class MCPIntegrationTests(unittest.TestCase):
         base_path = base["projection"][base["best_model"]]["annual"]
         changed_path = changed["projection"][changed["best_model"]]["annual"]
         np.testing.assert_allclose(base_path, changed_path, rtol=0, atol=1e-10)
+
+    def test_farm_recommend_preserves_session_height_handoff(self):
+        response = self.client.post("/api/farm/recommend", json={
+            "session_id": self.sid,
+            "turbine": {"builtin_model": "Vestas V90-2.0MW", "hub_height_m": 100},
+            "demand_mwh": 5000,
+            "v_mean": 8.0,
+            "weibull_k": 2.0,
+            "measurement_height_m": 80,
+        })
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertGreaterEqual(response.get_json()["n_turbines"], 1)
 
     def _synthetic_inputs(self):
         first = pd.date_range("2018-01-01", periods=240, freq="1h")

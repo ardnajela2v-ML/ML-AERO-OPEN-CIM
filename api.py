@@ -69,11 +69,12 @@ from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
                           HybridDispatch, HybridEconomics,
                           build_load_profile, estimate_clearsky_ghi)
 from core.site_catalog import get_site_info
-from core.mcp_catalog import (M04_STATION_ID, build_mcp_catalog, public_catalog,
-                              catalog_index, classify_file)
+from core.mcp_catalog import (M04_LATITUDE, M04_LONGITUDE, M04_STATION_ID,
+                              build_mcp_catalog, public_catalog, catalog_index,
+                              classify_file)
 from core.kriging import (parse_coords_from_filename, read_wind_file,
                           site_wind_stats, kriging_grid, analyze_sites,
-                          analyze_spatial_topsis_sites,
+                          analyze_spatial_topsis_maps, analyze_spatial_topsis_sites,
                           legacy_three_maps, parallel_read_sites,
                           _compute_site_stats_cached, clear_site_stats_cache,
                           _haversine_km)
@@ -3473,6 +3474,8 @@ def create_app():
           avg_wake_loss:      float 0..1 (default 0.08)
         """
         body     = request.get_json(silent=True) or {}
+        sid      = body.get('session_id')
+        sess     = get_session(sid) if sid else {}
         t_cfg    = body.get('turbine', {})
         rated_kw = float(t_cfg.get('rated_power_kw', 2000))
         hub_h    = float(t_cfg.get('hub_height_m', 80))
@@ -4107,8 +4110,8 @@ def create_app():
                 return jsonify({'error': 'Diseño requiere un hindcast MCP publicado en esta sesión'}), 409
             study = sess.get('mcp_study') or {}
             try:
-                poi_lat = float(request.args.get('poi_lat', (study.get('poi') or {}).get('lat', 16.55)))
-                poi_lon = float(request.args.get('poi_lon', (study.get('poi') or {}).get('lon', -94.955)))
+                poi_lat = float(request.args.get('poi_lat', (study.get('poi') or {}).get('lat', M04_LATITUDE)))
+                poi_lon = float(request.args.get('poi_lon', (study.get('poi') or {}).get('lon', M04_LONGITUDE)))
                 radius_km = float(request.args.get('radius_km', study.get('radius_km', 200)))
             except (TypeError, ValueError):
                 return jsonify({'error': 'POI o radius_km inválido'}), 400
@@ -4125,18 +4128,25 @@ def create_app():
                     # filename remains the stable UI selection key for legacy JS.
                     'filename': row['station_id'],
                     'file_ids': list(row.get('file_ids') or []),
+                    'primary_file_id': row.get('primary_file_id'),
+                    'legacy_aliases': list(row.get('legacy_aliases') or []),
                     'display_name': row.get('display_name') or row['station_id'],
                     'lat': float(row['latitude']), 'lon': float(row['longitude']),
                     'distance_km': round(float(distance), 3),
                     'source': str(row['provider']).lower(), 'provider': row['provider'],
                     'data_kind': 'reanalysis', 'allowed_role': 'spatial_reference',
                     'source_height_m': float((row.get('measurement_heights') or [0])[0]),
+                    'coordinate_source': row.get('coordinate_source'),
+                    'coordinate_status': row.get('coordinate_status'),
+                    'maximum_coordinate_discrepancy_km': row.get('maximum_coordinate_discrepancy_km'),
+                    'alias_count': int(row.get('alias_count') or 1),
                     'qc_status': 'pending_calibration', 'calibration_method': SPATIAL_CALIBRATION_METHOD,
                 })
             anchor = {
                 'station_id': M04_STATION_ID, 'filename': M04_STATION_ID,
                 'display_name': 'M04 CERTE · hindcast MCP',
-                'lat': 16.55, 'lon': -94.955, 'distance_km': round(_haversine_km(poi_lat, poi_lon, 16.55, -94.955), 3),
+                'lat': M04_LATITUDE, 'lon': M04_LONGITUDE,
+                'distance_km': round(_haversine_km(poi_lat, poi_lon, M04_LATITUDE, M04_LONGITUDE), 3),
                 'source': 'mcp', 'provider': 'MCP', 'data_kind': 'spatial_anchor',
                 'allowed_role': 'anchor', 'target_height_m': source.get('target_height_m'),
                 'n_hours': int(source.get('rows') or len(source.get('df', []))),
@@ -4232,7 +4242,7 @@ def create_app():
         study = sess.get('mcp_study') or {}
         if source.get('study_revision') != study.get('study_revision'):
             return _err('La fuente MCP pertenece a una revisión anterior del estudio; publícala de nuevo', 409)
-        poi = body.get('poi') or study.get('poi') or {'lat': 16.55, 'lon': -94.955}
+        poi = body.get('poi') or study.get('poi') or {'lat': M04_LATITUDE, 'lon': M04_LONGITUDE}
         try:
             poi = {'lat': float(poi['lat']), 'lon': float(poi['lon'])}
             radius_km = float(body.get('radius_km', study.get('radius_km', 200)))
@@ -4283,7 +4293,7 @@ def create_app():
                     # Spatial anomalies are always evaluated at the physical
                     # M04 anchor, even when the design POI/radius is elsewhere.
                     anchor_frame, observed_frame, references,
-                    poi={'lat': 16.55, 'lon': -94.955},
+                    poi={'lat': M04_LATITUDE, 'lon': M04_LONGITUDE},
                     target_height_m=target_height_m, train_year=2018, validation_year=2019,
                     roughness_resolver=resolve_sector_roughness if resolve_roughness else None,
                     progress_callback=cb,
@@ -4643,6 +4653,21 @@ def create_app():
         max_points = int(body.get('max_points') or (48 if scope == 'park' else 60))
         filter_files = body.get('filenames')
         turbine_files = body.get('turbine_filenames') or body.get('turbines') or None
+        calibration_payload = None
+        calibration_record = None
+        if body.get('calibration_id'):
+            sid = body.get('session_id')
+            if not sid:
+                return _err('session_id requerido para el análisis MCP calibrado')
+            sess = get_session(str(sid))
+            calibration_record, calibration_payload = _calibration_for_session(
+                sess, body['calibration_id']
+            )
+            if calibration_record is None or calibration_payload is None:
+                return _err('Calibración espacial no encontrada', 404)
+            requested_source = body.get('data_source') or sess.get('active_data_source')
+            if requested_source != calibration_record.get('data_source'):
+                return _err('La calibración no pertenece a la fuente MCP solicitada', 409)
 
         task_id = str(uuid.uuid4())
         tasks[task_id] = {'status': 'running', 'progress': 0,
@@ -4651,24 +4676,74 @@ def create_app():
 
         def _run():
             try:
-                spatial = analyze_spatial_topsis_sites(
-                    wind_folder=Config.DATA_FOLDER,
-                    turbines_folder=Config.TURBINES_FOLDER,
-                    year=year,
-                    scope=scope,
-                    polygon=polygon,
-                    bounds=bounds,
-                    demand_mwh=demand_mwh,
-                    tasa=tasa,
-                    price_usd_kwh=price_usd_kwh,
-                    price_mxn_per_usd=price_mxn_per_usd,
-                    n_grid=n_grid,
-                    model=model,
-                    max_points=max_points,
-                    filter_filenames=filter_files,
-                    turbine_filenames=turbine_files,
-                    cost_model=CostModel.from_dict(body.get('cost_model')),
-                )
+                cost_model = CostModel.from_dict(body.get('cost_model'))
+                if calibration_payload is not None:
+                    tasks[task_id]['progress'] = 10
+                    tasks[task_id]['message'] = 'Construyendo campos MCP calibrados para TOPSIS…'
+                    if scope == 'park':
+                        field_bounds = {
+                            'lat_min': min(float(point['lat']) for point in polygon),
+                            'lat_max': max(float(point['lat']) for point in polygon),
+                            'lon_min': min(float(point['lon']) for point in polygon),
+                            'lon_max': max(float(point['lon']) for point in polygon),
+                        }
+                    else:
+                        field_bounds = bounds
+
+                    def calibration_progress(percent, message):
+                        tasks[task_id]['progress'] = min(70, 10 + int(float(percent) * 0.6))
+                        tasks[task_id]['message'] = message
+
+                    field_bundle = build_calibrated_maps(
+                        calibration_payload,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        n_grid=n_grid, model=model, bounds=field_bounds,
+                        target_height_m=float(
+                            body.get('target_height_m')
+                            or calibration_payload['anchor']['target_height_m']
+                        ),
+                        physical=bool(body.get('physical', True)),
+                        demand_mwh=demand_mwh, discount_rate=tasa,
+                        price_usd_kwh=price_usd_kwh,
+                        fx_mxn_per_usd=price_mxn_per_usd,
+                        project_years=int(body.get('project_years', 20)),
+                        cost_model=cost_model,
+                        orographic_speedup_grid=body.get('orographic_speedup_grid'),
+                        progress_callback=calibration_progress,
+                    )
+                    tasks[task_id]['progress'] = 75
+                    tasks[task_id]['message'] = 'Evaluando sitios virtuales sobre el campo MCP…'
+                    spatial = analyze_spatial_topsis_maps(
+                        field_bundle=field_bundle,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        scope=scope, polygon=polygon, bounds=bounds,
+                        demand_mwh=demand_mwh, tasa=tasa,
+                        price_usd_kwh=price_usd_kwh,
+                        price_mxn_per_usd=price_mxn_per_usd,
+                        max_points=max_points,
+                        turbine_filenames=turbine_files,
+                        cost_model=cost_model,
+                    )
+                else:
+                    # Compatibility path for manual/legacy clients.
+                    spatial = analyze_spatial_topsis_sites(
+                        wind_folder=Config.DATA_FOLDER,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        year=year,
+                        scope=scope,
+                        polygon=polygon,
+                        bounds=bounds,
+                        demand_mwh=demand_mwh,
+                        tasa=tasa,
+                        price_usd_kwh=price_usd_kwh,
+                        price_mxn_per_usd=price_mxn_per_usd,
+                        n_grid=n_grid,
+                        model=model,
+                        max_points=max_points,
+                        filter_filenames=filter_files,
+                        turbine_filenames=turbine_files,
+                        cost_model=cost_model,
+                    )
                 ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
                 ranking['mode'] = mode
                 tasks[task_id]['result'] = numpy_to_python({
