@@ -21,6 +21,7 @@ from core.spatial_calibration import (
     meteorological_to_uv,
     monthly_balanced_metrics,
     reapply_speed,
+    resolve_sector_roughness,
     sector_indices,
     select_variogram_loo,
     terrain_screening,
@@ -37,6 +38,18 @@ class SpatialCalibrationTests(unittest.TestCase):
                 [16.5, 16.6], [-95.0, -94.9], fallback_z0=0.03
             )
         np.testing.assert_allclose(z0, [[0.03, 0.03], [0.03, 0.03]])
+
+    def test_advanced_sector_roughness_uses_classic_dem_slope_fallback(self):
+        with patch("core.terrain.get_landcover", return_value={"z0": None}), patch(
+            "core.terrain.estimate_dem_slope_z0", return_value=0.24
+        ):
+            resolved = resolve_sector_roughness(M04_LATITUDE, M04_LONGITUDE)
+        np.testing.assert_allclose(resolved["z0_by_sector_m"], [0.24] * 16)
+        self.assertEqual(resolved["fallback_sectors"], 16)
+        self.assertEqual(
+            resolved["source"],
+            "WorldCover_2021_sector_fetch_with_dem_slope_fallback",
+        )
 
     def test_direction_is_circular_true_north_and_uses_meteorological_from(self):
         delta = circular_difference([359.0, 0.0, 1.0], [0.0, 359.0, 359.0])
@@ -188,6 +201,29 @@ class SpatialCalibrationTests(unittest.TestCase):
         self.assertEqual(len(maps["sectorial"]["frequency_pct"]), 16)
         self.assertEqual(maps["provenance"]["direction"], "meteorological_from_true_north_clockwise")
         self.assertFalse(maps["terrain"]["orography_speed_correction_applied"])
+
+        dem = np.linspace(0.0, 450.0, 12 * 12).reshape(12, 12).tolist()
+        z0 = np.full((12, 12), 0.24).tolist()
+        with tempfile.TemporaryDirectory() as turbine_folder, patch(
+            "core.terrain.sample_grid_elevation", return_value=dem
+        ), patch("core.terrain.sample_grid_z0", return_value=z0) as roughness_sampler:
+            physical_maps = build_calibrated_maps(
+                result, turbines_folder=turbine_folder,
+                n_grid=12, model="auto", target_height_m=80.0,
+                physical=True,
+            )
+        roughness_sampler.assert_called_once()
+        np.testing.assert_allclose(physical_maps["roughness"]["z"], z0)
+        self.assertTrue(physical_maps["terrain"]["dem_slope_affects_wind_via_roughness"])
+        self.assertFalse(physical_maps["terrain"]["direct_dem_speed_multiplier_applied"])
+        self.assertEqual(
+            physical_maps["terrain"]["roughness_method"],
+            "WorldCover_preferred_DEM_slope_fallback",
+        )
+        self.assertFalse(np.allclose(
+            np.asarray(physical_maps["wind"]["z"]),
+            np.asarray(physical_maps["wind_neutral"]["z"]),
+        ))
 
         with tempfile.TemporaryDirectory() as turbine_folder:
             turbine_name = "Prueba_p2000_r45.csv"

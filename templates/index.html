@@ -2546,7 +2546,7 @@
             </label>
           </div>
           <p class="text-muted" id="krig3-method-note" style="font-size:.74rem;margin:.45rem 0 0">
-            El hindcast MCP publicado fija el clima absoluto. ERA5 y MERRA-2 aportan únicamente anomalías espaciales; se calibran por separado y se ensamblan con validación 2019 balanceada por mes.
+            El hindcast MCP publicado fija el clima absoluto. Los nodos se neutralizan, se interpola el campo neutral y se reaplica por píxel la rugosidad WorldCover con respaldo de pendiente DEM, igual que en el método clásico.
           </p>
           <p class="text-muted" id="krig3-raw-method-note" style="font-size:.74rem;margin:.25rem 0 0">
             Comparación raw: nodos ERA5/MERRA-2 sin M04 ni calibración horizontal, extrapolados directamente a h<sub>ref</sub> = 100 m con perfil logarítmico y z₀ = 0.03 m.
@@ -2555,7 +2555,7 @@
           <div style="display:flex;gap:.45rem;align-items:center;flex-wrap:wrap;margin-top:.55rem">
             <label class="form-label" for="krig3-speedup-file" style="margin:0">Corrección orográfica avanzada</label>
             <input class="form-input" id="krig3-speedup-file" type="file" accept=".json,application/json" style="max-width:320px;height:34px;padding:.25rem .4rem">
-            <span class="text-muted" id="krig3-speedup-status" style="font-size:.72rem">Opcional: matriz WAsP/CFD de factores positivos; sin archivo, el DEM es sólo diagnóstico.</span>
+            <span class="text-muted" id="krig3-speedup-status" style="font-size:.72rem">Opcional: matriz WAsP/CFD; sin archivo, el DEM afecta la rugosidad de respaldo, pero no aplica aceleración orográfica directa.</span>
           </div>
         </div>
       </details>
@@ -4117,6 +4117,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260830-kriging-methods-v2"></script>
+<script src="/static/js/aero.js?v=20260830-mcp-terrain-v3"></script>
 </body>
 </html>

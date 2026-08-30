@@ -326,15 +326,16 @@ def _sector_roughness(direction: np.ndarray, sector_z0: Sequence[float]) -> np.n
 
 
 def resolve_sector_roughness(lat: float, lon: float, fetch_m: float = 750.0) -> dict[str, Any]:
-    """Sample WorldCover with one consistent fetch criterion for all sites.
+    """Sample sector roughness using the classic terrain fallback chain.
 
-    A failure is explicit and falls back to the declared project reference;
-    topography is never substituted as a roughness or speed-up correction.
+    WorldCover remains preferred.  When it is unavailable, local DEM slope is
+    converted to the same z0 proxy used by the original WindProPlatform map.
+    This affects the neutral log profile, but is not an orographic speed-up.
     """
 
-    from core.terrain import get_landcover
+    from core.terrain import estimate_dem_slope_z0, get_landcover
 
-    values: list[float] = []
+    sampled: list[float | None] = []
     sources: list[str] = []
     for sector in range(SECTOR_COUNT):
         bearing = sector * 360.0 / SECTOR_COUNT
@@ -343,11 +344,27 @@ def resolve_sector_roughness(lat: float, lon: float, fetch_m: float = 750.0) -> 
         sample_lon = float(lon) + (fetch_m / (111_000.0 * max(0.2, math.cos(math.radians(lat))))) * math.sin(rad)
         landcover = get_landcover(sample_lat, sample_lon, z=11, window=7)
         value = landcover.get("z0")
-        values.append(float(value) if value is not None else PROJECT_REFERENCE_ROUGHNESS_M)
-        sources.append("WorldCover_2021" if value is not None else "project_reference_fallback")
+        sampled.append(float(value) if value is not None else None)
+        sources.append("WorldCover_2021" if value is not None else "pending_dem_slope_fallback")
+    try:
+        dem_fallback = float(estimate_dem_slope_z0(float(lat), float(lon)))
+        dem_available = True
+    except Exception:
+        dem_fallback = PROJECT_REFERENCE_ROUGHNESS_M
+        dem_available = False
+    values = []
+    for idx, value in enumerate(sampled):
+        if value is not None:
+            values.append(value)
+        else:
+            values.append(dem_fallback)
+            sources[idx] = (
+                "dem_slope_fallback" if dem_available
+                else "project_reference_fallback"
+            )
     return {
         "z0_by_sector_m": values, "fetch_m": float(fetch_m),
-        "source": "WorldCover_2021_sector_fetch",
+        "source": "WorldCover_2021_sector_fetch_with_dem_slope_fallback",
         "fallback_sectors": int(sum(value != "WorldCover_2021" for value in sources)),
     }
 
@@ -626,7 +643,7 @@ def calibrate_spatial_nodes(
         },
         "project_reference": {
             "height_m": float(reference_height_m), "roughness_z0_m": float(reference_z0_m),
-            "roughness_method": "sector_log_law_worldcover_same_fetch",
+            "roughness_method": "sector_log_law_worldcover_with_dem_slope_fallback",
             "orography_removed": False,
             "orographic_limitation": "M04 local orographic component remains in the spatial anchor",
         },
@@ -643,8 +660,9 @@ def calibrate_spatial_nodes(
             "excluded_nodes": len(excluded),
         },
         "topography_policy": {
-            "screening": "DEM slope/aspect/exposure/RIX proxy is diagnostic only",
-            "speed_correction": "none_without_imported_wasp_or_cfd_speedup",
+            "screening": "DEM slope/aspect/exposure/RIX proxy remains diagnostic",
+            "roughness_fallback": "DEM slope supplies z0 when WorldCover is unavailable",
+            "speed_correction": "DEM slope affects the neutral log profile through z0; no direct speed-up without WAsP/CFD",
             "advanced_import_supported": True,
         },
     }
@@ -916,17 +934,17 @@ def build_calibrated_maps(
         if progress_callback:
             progress_callback(55, "Muestreando WorldCover y DEM por píxel")
         try:
-            from core.terrain import sample_grid_elevation, sample_grid_worldcover_z0
+            from core.terrain import sample_grid_elevation, sample_grid_z0
             grid_lats = np.linspace(template["bounds"]["lat_min"], template["bounds"]["lat_max"], ny).tolist()
             grid_lons = np.linspace(template["bounds"]["lon_min"], template["bounds"]["lon_max"], nx).tolist()
             with ThreadPoolExecutor(max_workers=2) as pool:
                 elevation_future = pool.submit(sample_grid_elevation, grid_lats, grid_lons)
                 elevation = np.asarray(elevation_future.result(timeout=terrain_timeout_s), dtype=float)
                 roughness_future = pool.submit(
-                    sample_grid_worldcover_z0, grid_lats, grid_lons, z0_ref
+                    sample_grid_z0, grid_lats, grid_lons, elevation.tolist()
                 )
                 roughness = np.asarray(roughness_future.result(timeout=terrain_timeout_s), dtype=float)
-            terrain_source = "DEM_screening_and_WorldCover_2021_roughness"
+            terrain_source = "WindProPlatform_classic_WorldCover_with_DEM_slope_roughness_fallback"
         except Exception:
             elevation = np.zeros((ny, nx), dtype=float)
             roughness = np.full((ny, nx), z0_ref, dtype=float)
@@ -1003,7 +1021,7 @@ def build_calibrated_maps(
         "power_density": _wrap_grid(template, power_density, "Densidad de potencia histórica"),
         "uncertainty": _wrap_grid(template, uncertainty, "Incertidumbre MCP + Kriging + dispersión de proveedores"),
         "elevation": _wrap_grid(template, elevation, "Altitud DEM · diagnóstico"),
-        "roughness": _wrap_grid(template, roughness, "Rugosidad WorldCover sectorial/local"),
+        "roughness": _wrap_grid(template, roughness, "Rugosidad WorldCover + respaldo por pendiente DEM"),
         "air_density": _wrap_grid(template, density, "Densidad del aire por elevación"),
         "terrain_complexity": _wrap_grid(template, screening["rix_proxy_pct"], "RIX proxy · diagnóstico, no CFD"),
         "sectorial": sectorial,
@@ -1027,6 +1045,9 @@ def build_calibrated_maps(
         "terrain": {
             "source": terrain_source, "screening_label": screening["label"],
             "exposure_sector_mean": screening["exposure_sector_mean"],
+            "roughness_method": "WorldCover_preferred_DEM_slope_fallback",
+            "dem_slope_affects_wind_via_roughness": bool(physical),
+            "direct_dem_speed_multiplier_applied": False,
             "orography_speed_correction_applied": orographic_applied,
             "orography_source": "imported_WAsP_CFD_speedup" if orographic_applied else "none",
         },

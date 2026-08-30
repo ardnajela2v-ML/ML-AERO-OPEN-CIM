@@ -352,13 +352,8 @@ def enrich_sites(sites: List[dict], landcover_zoom: int = 11,
     def _z0_from_local_dem(lat: float, lon: float) -> Optional[float]:
         if math.isnan(lat) or math.isnan(lon):
             return None
-        d = 0.005
-        patch_lats = [lat - d, lat, lat + d]
-        patch_lons = [lon - d, lon, lon + d]
         try:
-            patch_elev = sample_grid_elevation(patch_lats, patch_lons)
-            slope_deg = _slope_grid_deg(patch_elev, patch_lats, patch_lons)
-            return float(_z0_from_slope_deg(slope_deg[1][1]))
+            return estimate_dem_slope_z0(lat, lon)
         except Exception:
             return None
 
@@ -537,6 +532,17 @@ def _slope_grid_deg(elev: List[List[float]], lats: List[float],
             slope = math.degrees(math.atan(math.sqrt(dz_dx * dz_dx + dz_dy * dz_dy)))
             out[j][i] = slope
     return out
+
+
+def estimate_dem_slope_z0(lat: float, lon: float, delta_deg: float = 0.005) -> float:
+    """Estimate the classic WindProPlatform roughness fallback from DEM slope."""
+
+    d = max(1.0e-5, float(delta_deg))
+    patch_lats = [float(lat) - d, float(lat), float(lat) + d]
+    patch_lons = [float(lon) - d, float(lon), float(lon) + d]
+    patch_elev = sample_grid_elevation(patch_lats, patch_lons)
+    slope_deg = _slope_grid_deg(patch_elev, patch_lats, patch_lons)
+    return float(_z0_from_slope_deg(slope_deg[1][1]))
 
 
 def sample_grid_z0(lats: List[float], lons: List[float],

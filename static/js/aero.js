@@ -6037,7 +6037,7 @@ function krig3SyncGenerationMode() {
   if (physical && !physical.checked) physical.checked = true;
   if (note) {
     note.textContent = advanced
-      ? 'Usa el hindcast MCP como ancla, calibra ERA5/MERRA-2 y conserva sus anomalías espaciales; requiere una corrida MCP publicada.'
+      ? 'Usa el hindcast MCP como ancla y aplica la cadena física clásica: neutralización, Kriging, rugosidad por píxel, respaldo de pendiente DEM y densidad por elevación.'
       : 'Kriging original con neutralización y reaplicación de rugosidad por píxel, topografía DEM y densidad del aire.';
   }
 }
@@ -7818,7 +7818,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const file = event.target.files?.[0];
     KRIG.orographicSpeedupGrid = null;
     if (!file) {
-      if (status) status.textContent = 'Sin capa externa: el DEM permanece como diagnóstico y no modifica velocidad.';
+      if (status) status.textContent = 'Sin capa externa: el DEM afecta la rugosidad de respaldo, pero no aplica aceleración orográfica directa.';
       return;
     }
     try {
