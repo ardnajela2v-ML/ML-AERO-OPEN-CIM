@@ -78,6 +78,26 @@ class WindMCPTests(unittest.TestCase):
             self.assertEqual(metadata["timezone_input"], "Etc/GMT+6")
             self.assertEqual(metadata["timezone_output"], "UTC")
 
+    def test_certe_uses_exact_measured_height_before_extrapolating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "M04_multiheight.txt"
+            path.write_text(
+                "YYYY MM DD hh mm WS_40m_mean WS_60m_mean WS_80mA_mean WD_78m_mean\n"
+                " Height 40 60 80 78\n"
+                " Units m/s m/s m/s deg\n"
+                "2018 01 01 00 00 4.0 6.0 8.0 350\n",
+                encoding="utf-8",
+            )
+            frame, metadata = read_certe_file(
+                str(path),
+                target_column="WS_80mA_mean",
+                target_height_m=60,
+            )
+            self.assertEqual(metadata["target_column"], "WS_60m_mean")
+            self.assertEqual(metadata["measurement_height_m"], 60.0)
+            self.assertEqual(metadata["target_column_selection"], "exact_height_auto_selected")
+            self.assertEqual(frame.iloc[0]["WS_60m_mean"], 6.0)
+
     def test_windnavigator_parser_extracts_height_and_utc(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "reference_ERA5.txt"

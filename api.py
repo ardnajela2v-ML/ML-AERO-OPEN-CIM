@@ -4,6 +4,7 @@ All scientific computation is delegated to core/ modules.
 """
 import os
 import io
+import copy
 import json
 import re
 import uuid
@@ -35,6 +36,16 @@ def _cached_power_curve(filepath):
     """Cachea PowerCurve.from_file para evitar releer CSVs idénticos."""
     from core.energy import PowerCurve
     return PowerCurve.from_file(filepath)
+
+
+def _power_curve_at_hub_height(turbine, requested_height):
+    """Return a request-local turbine honoring an explicit hub-height override."""
+
+    if requested_height in (None, ""):
+        return turbine
+    adjusted = copy.copy(turbine)
+    adjusted.hub_height_m = float(requested_height)
+    return adjusted
 
 
 @lru_cache(maxsize=4)
@@ -999,6 +1010,10 @@ def create_app():
             radius_km = float(body.get('radius_km', 200))
         except (TypeError, ValueError):
             return _err('target_height_m o radius_km inválidos')
+        if not 1 <= target_height <= 300:
+            return _err('target_height_m fuera de rango (1-300 m)')
+        if radius_km <= 0:
+            return _err('radius_km debe ser positivo')
         prior = sess.get('mcp_study') or {}
         selection_key = (observed_id, tuple(reference_ids), round(target_height, 4))
         prior_key = (prior.get('observed_station_id'), tuple(prior.get('reference_station_ids', [])), prior.get('target_height_m'))
@@ -1227,6 +1242,22 @@ def create_app():
         references = [index[value] for value in study['reference_station_ids'] if value in index]
         if not observed or not references:
             return _err('La selección MCP ya no es válida')
+        try:
+            target_height = float(body.get('target_height_m', study.get('target_height_m', 80)))
+        except (TypeError, ValueError):
+            return _err('target_height_m inválido')
+        if not 1 <= target_height <= 300:
+            return _err('target_height_m fuera de rango (1-300 m)')
+        if not np.isclose(float(study.get('target_height_m', 80)), target_height):
+            study = {
+                **study,
+                'study_revision': int(study.get('study_revision', 0)) + 1,
+                'target_height_m': target_height,
+                'updated_at': datetime.now(timezone.utc).isoformat(),
+            }
+            sess['mcp_study'] = study
+            for prior_run in (sess.get('mcp_runs') or {}).values():
+                prior_run['is_current_revision'] = False
         run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '_' + uuid.uuid4().hex[:8]
         run_dir = Path(Config.MCP_RUNS_FOLDER) / run_id
         power_curve_file = None
@@ -1253,7 +1284,7 @@ def create_app():
             'target_column': observed.get('target_column', body.get('target_column', 'WS_80mA_mean')),
             'observation_height_m': observed.get('measurement_height_m'),
             'observation_timezone': observed.get('timezone', 'UTC'),
-            'target_height_m': float(body.get('target_height_m', study.get('target_height_m', 80))),
+            'target_height_m': target_height,
             'train_year': train_year,
             'test_year': test_year,
             'ranking_year': train_year,
@@ -1326,7 +1357,13 @@ def create_app():
                 task.update(status='error', progress=100, message=str(error))
 
         _executor.submit(_run_mcp_thread)
-        return jsonify({'run_id': run_id, 'task_id': task_id, 'status': 'queued'}), 202
+        return jsonify({
+            'run_id': run_id,
+            'task_id': task_id,
+            'status': 'queued',
+            'study_revision': study_snapshot['study_revision'],
+            'target_height_m': target_height,
+        }), 202
 
     def _mcp_result_for_session(sess, run_id):
         record = (sess.get('mcp_runs') or {}).get(run_id)
@@ -2021,6 +2058,9 @@ def create_app():
                     rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
                     curve_points=pts,
                 )
+            turbine = _power_curve_at_hub_height(
+                turbine, turbine_cfg.get('hub_height_m')
+            )
 
             n_turbines = int(sim_cfg.get('n_turbines', 1))
             availability = float(sim_cfg.get('availability', 1.0))
@@ -2428,6 +2468,9 @@ def create_app():
                     hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
                     rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
                 )
+            turbine = _power_curve_at_hub_height(
+                turbine, turbine_cfg.get('hub_height_m')
+            )
 
             ws_col      = _energy_ws_col(sess, body)
             ws_height_m = _sess_ws_h(body, sess)
@@ -3199,6 +3242,9 @@ def create_app():
                     cut_out=float(t_cfg.get('cut_out', 25.0)),
                     hub_height_m=hub_h,
                 )
+            turbine = _power_curve_at_hub_height(
+                turbine, t_cfg.get('hub_height_m')
+            )
 
             df = analysis_df
             ws_col = _energy_ws_col(sess, body)
@@ -3499,9 +3545,11 @@ def create_app():
                     hub_height_m=hub_h,
                     rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
                 )
-            target_hub_h = body.get('hub_height_m', t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None)
-            if target_hub_h is not None:
-                turbine.hub_height_m = float(target_hub_h)
+            target_hub_h = body.get(
+                'hub_height_m',
+                t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None,
+            )
+            turbine = _power_curve_at_hub_height(turbine, target_hub_h)
             v_mean_rec = float(body.get('v_mean', 9.0))
             measurement_h_rec = _sess_ws_h(body, sess, 'measurement_height_m')
             if measurement_h_rec != 50.0 or body.get('measurement_height_m') is not None:
@@ -3575,9 +3623,11 @@ def create_app():
                     hub_height_m=hub_h,
                     rotor_diameter_m=float(t_cfg.get('rotor_diameter_m', 80)),
                 )
-            target_hub_h = body.get('hub_height_m', t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None)
-            if target_hub_h is not None:
-                turbine.hub_height_m = float(target_hub_h)
+            target_hub_h = body.get(
+                'hub_height_m',
+                t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None,
+            )
+            turbine = _power_curve_at_hub_height(turbine, target_hub_h)
 
             wind_grid  = body.get('wind_grid')  or None
             v_mean     = float(body.get('v_mean',     9.0))

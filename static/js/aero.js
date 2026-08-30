@@ -11736,9 +11736,38 @@ function bindMCPLab() {
   document.getElementById('btn-mcp-run')?.addEventListener('click', runMCPLab);
   document.getElementById('btn-mcp-publish')?.addEventListener('click', publishMCPRun);
   document.getElementById('btn-mcp-back-globe')?.addEventListener('click', restoreGlobeStage);
+  document.getElementById('mcp-target-height')?.addEventListener('change', async () => {
+    try {
+      await persistMCPTargetHeight();
+    } catch (e) {
+      toast(`No se pudo guardar la altura objetivo: ${e.message}`, 'error');
+    }
+  });
   document.querySelector('.nav-btn[data-module="mcp"]')?.addEventListener('click', () => {
     setTimeout(() => loadMCPStudy(), 30);
   });
+}
+
+async function persistMCPTargetHeight() {
+  const input = document.getElementById('mcp-target-height');
+  const targetHeight = Number(input?.value);
+  if (!Number.isFinite(targetHeight) || targetHeight < 1 || targetHeight > 300) {
+    throw new Error('La altura objetivo debe estar entre 1 y 300 m.');
+  }
+  if (!WP.mcpStudy) return targetHeight;
+  if (Math.abs(Number(WP.mcpStudy.target_height_m) - targetHeight) < 1e-9) {
+    return targetHeight;
+  }
+  const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'PUT', {
+    observed_station_id: WP.mcpStudy.observed_station_id,
+    reference_station_ids: WP.mcpStudy.reference_station_ids,
+    poi: WP.mcpStudy.poi,
+    radius_km: WP.mcpStudy.radius_km,
+    target_height_m: targetHeight,
+  });
+  WP.mcpStudy = study;
+  document.getElementById('mcp-study-revision').textContent = `Revisión ${study.study_revision}`;
+  return targetHeight;
 }
 
 async function loadMCPStudy() {
@@ -11798,13 +11827,17 @@ async function runMCPLab() {
   document.getElementById('btn-mcp-publish').disabled = true;
   document.getElementById('mcp-publish-status').textContent = 'No publicado';
   try {
+    const targetHeight = await persistMCPTargetHeight();
     const started = await api('/api/mcp/runs', 'POST', {
       session_id: WP.sessionId,
-      target_height_m: parseFloat(document.getElementById('mcp-target-height').value) || 80,
+      target_height_m: targetHeight,
       train_year: parseInt(document.getElementById('mcp-train-year').value) || 2018,
       test_year: parseInt(document.getElementById('mcp-test-year').value) || 2019,
       sector_count: parseInt(document.getElementById('mcp-sector-count')?.value) || 16,
     });
+    WP.mcpStudy.target_height_m = started.target_height_m;
+    WP.mcpStudy.study_revision = started.study_revision;
+    document.getElementById('mcp-study-revision').textContent = `Revisión ${started.study_revision}`;
     WP.mcpRunId = started.run_id;
     document.getElementById('mcp-run-status').textContent = 'Ejecutando';
     await pollMCPTask(started.task_id);
@@ -13018,13 +13051,16 @@ function globeUpdateContinueState() {
 async function continueGlobeToMCP() {
   if (!GLOBE.observedStation || !GLOBE.mcpReferences.size) return;
   const radius = parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM;
+  const inheritedHeight = Number(WP.referenceHeight);
+  const initialTargetHeight = Number.isFinite(inheritedHeight) && inheritedHeight >= 1 && inheritedHeight <= 300
+    ? inheritedHeight : 80;
   try {
     const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'PUT', {
       observed_station_id: globeSiteKey(GLOBE.observedStation),
       reference_station_ids: [...GLOBE.mcpReferences],
       poi: GLOBE.poi || { lat: GLOBE.observedStation.lat, lon: GLOBE.observedStation.lon },
       radius_km: radius,
-      target_height_m: 80,
+      target_height_m: initialTargetHeight,
     });
     WP.mcpStudy = study;
     if (GLOBE.mcpReferences.size === 1) toast('Una sola referencia es válida; se recomiendan varias para comparar.', 'warn');

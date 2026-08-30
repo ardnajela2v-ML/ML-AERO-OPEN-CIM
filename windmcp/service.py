@@ -619,6 +619,7 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         observation_files,
         target_column=target_column,
         timezone=config.observation_timezone,
+        target_height_m=config.target_height_m,
     )
     is_native_certe = bool(observation_metadata.get("files")) and all(
         row.get("format") == "certe" for row in observation_metadata.get("files", [])
@@ -648,7 +649,11 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     observation_valid = observations_qc.loc[observations_qc["quality_eligible"]].copy()
     observation_valid = observation_valid[[c for c in observations.columns if c in observation_valid.columns]]
 
-    observation_height = config.observation_height_m or observation_metadata.get("measurement_height_m")
+    # The height encoded by the actually selected column is authoritative.
+    # Fall back to the user declaration only when the column has no height.
+    observation_height = observation_metadata.get("measurement_height_m")
+    if observation_height is None:
+        observation_height = config.observation_height_m
     if observation_height is None:
         raise ValueError("The CERTE target column does not declare a measurement height")
     try:
@@ -1156,6 +1161,8 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     config_snapshot["run_id"] = run_id
     config_snapshot["output_dir"] = str(output_dir.resolve())
     config_snapshot["direction_sector_count"] = direction_sector_count
+    config_snapshot["effective_target_column"] = observation_metadata.get("target_column")
+    config_snapshot["effective_observation_height_m"] = observation_height
     result: Dict[str, Any] = {
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),

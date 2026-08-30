@@ -29,6 +29,53 @@ def _numericize(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _wind_speed_column_height(column: str) -> Optional[float]:
+    """Return the declared height for an observed mean-speed column."""
+
+    name = str(column).strip()
+    lower = name.lower()
+    is_mean_speed = (
+        (lower.startswith("ws_") and lower.endswith("_mean"))
+        or "wind_speed" in lower
+        or "windspeed" in lower
+    )
+    if not is_mean_speed:
+        return None
+    match = re.search(r"(?:^|_)(\d+(?:\.\d+)?)m(?:[a-z])?(?:_|$)", name, re.I)
+    return float(match.group(1)) if match else None
+
+
+def _select_observation_target_column(
+    columns: Iterable[object],
+    preferred: str,
+    target_height_m: Optional[float],
+) -> Tuple[str, str]:
+    """Prefer a real measurement at the requested height when one exists."""
+
+    names = [str(value).strip() for value in columns]
+    if target_height_m is None:
+        return preferred, "configured_column"
+    exact = [
+        name for name in names
+        if (height := _wind_speed_column_height(name)) is not None
+        and np.isclose(height, float(target_height_m), atol=1.0e-6)
+    ]
+    if preferred in exact:
+        return preferred, "exact_height_configured_column"
+    if exact:
+        # Prefer the unsuffixed sensor, then sensor A, then any other duplicate.
+        def priority(name: str) -> Tuple[int, str]:
+            lower = name.lower()
+            if re.search(r"\d+(?:\.\d+)?m_mean$", lower):
+                return (0, lower)
+            if re.search(r"\d+(?:\.\d+)?ma_mean$", lower):
+                return (1, lower)
+            return (2, lower)
+
+        return sorted(exact, key=priority)[0], "exact_height_auto_selected"
+    return preferred, "configured_column_requires_vertical_adjustment"
+
+
 def _ensure_utc_index(values: Iterable[object]) -> pd.DatetimeIndex:
     index = pd.to_datetime(values, errors="coerce", utc=True)
     if not isinstance(index, pd.DatetimeIndex):
@@ -66,6 +113,7 @@ def _read_generic_observation(
     source: Path,
     target_column: str,
     timezone: str,
+    target_height_m: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     """Read a user-provided tabular observation into the CERTE-compatible schema."""
     frame = pd.read_csv(source, sep=None, engine="python", na_values=["NaN", "nan", "", "-999", "-9999"])
@@ -77,6 +125,9 @@ def _read_generic_observation(
     if datetime_column is None:
         raise ValueError("User observation %s requires a timestamp/datetime column" % source.name)
     parsed = _localize_observation_timestamps(frame.pop(datetime_column), timezone)
+    target_column, target_selection = _select_observation_target_column(
+        frame.columns, target_column, target_height_m
+    )
     if target_column not in frame.columns:
         candidates = [
             column for column in frame.columns
@@ -93,6 +144,7 @@ def _read_generic_observation(
         "format": "user_observation",
         "filename": source.name,
         "target_column": target_column,
+        "target_column_selection": target_selection,
         "measurement_height_m": float(height_match.group(1)) if height_match else None,
         "rows": int(len(frame)),
         "timezone_input": timezone,
@@ -104,6 +156,7 @@ def read_certe_file(
     path: str,
     target_column: str = "WS_80mA_mean",
     timezone: str = "UTC",
+    target_height_m: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     """Read one CERTE monthly export with its two metadata rows."""
 
@@ -111,7 +164,9 @@ def read_certe_file(
     with source.open("r", encoding="utf-8", errors="ignore") as stream:
         first_line = stream.readline()
     if not {"YYYY", "MM", "DD", "hh", "mm"}.issubset(set(first_line.split())):
-        return _read_generic_observation(source, target_column, timezone)
+        return _read_generic_observation(
+            source, target_column, timezone, target_height_m=target_height_m
+        )
     frame = pd.read_csv(
         source,
         sep=r"\s+",
@@ -138,6 +193,9 @@ def read_certe_file(
     frame = _numericize(frame)
     frame.insert(0, "timestamp", timestamps)
     frame = frame.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+    target_column, target_selection = _select_observation_target_column(
+        frame.columns, target_column, target_height_m
+    )
     if target_column not in frame.columns:
         raise ValueError("Target column %r was not found in %s" % (target_column, source.name))
     height_match = re.search(r"_(\d+(?:\.\d+)?)m", target_column, re.I)
@@ -146,6 +204,7 @@ def read_certe_file(
         "format": "certe",
         "filename": source.name,
         "target_column": target_column,
+        "target_column_selection": target_selection,
         "measurement_height_m": measurement_height,
         "rows": int(len(frame)),
         "timezone_input": timezone,
@@ -158,6 +217,7 @@ def read_certe_files(
     paths: Sequence[str],
     target_column: str = "WS_80mA_mean",
     timezone: str = "UTC",
+    target_height_m: Optional[float] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     """Read and combine monthly CERTE files without silently filling gaps."""
 
@@ -166,7 +226,12 @@ def read_certe_files(
     frames: List[pd.DataFrame] = []
     files: List[Dict[str, object]] = []
     for path in paths:
-        frame, metadata = read_certe_file(path, target_column=target_column, timezone=timezone)
+        frame, metadata = read_certe_file(
+            path,
+            target_column=target_column,
+            timezone=timezone,
+            target_height_m=target_height_m,
+        )
         frames.append(frame)
         files.append(metadata)
     combined = pd.concat(frames, axis=0).sort_index()
@@ -182,6 +247,7 @@ def read_certe_files(
         "records_before_deduplication": records_before_dedup,
         "duplicates_removed": duplicates_removed,
         "target_column": target_column,
+        "target_column_selection": files[0].get("target_column_selection"),
         "measurement_height_m": files[0].get("measurement_height_m"),
         "profile_heights_m": [20.0, 40.0, 60.0, 80.0],
         # Campaign years follow the station logger clock.  After conversion to

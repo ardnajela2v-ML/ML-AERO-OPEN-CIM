@@ -5,12 +5,14 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
-from api import create_app
+from api import _power_curve_at_hub_height, create_app
 from config import Config
+from core.energy import PowerCurve
 from core.mcp_catalog import (
     M04_LATITUDE,
     M04_LONGITUDE,
@@ -124,6 +126,55 @@ class MCPIntegrationTests(unittest.TestCase):
             "target_height_m": 80,
         }).get_json()
         self.assertEqual(changed["study_revision"], 2)
+        changed_height = self.client.put(f"/api/sessions/{self.sid}/mcp-study", json={
+            "observed_station_id": observation_id,
+            "reference_station_ids": reference_ids,
+            "poi": {"lat": 16.55, "lon": -94.955},
+            "radius_km": 200,
+            "target_height_m": 60,
+        }).get_json()
+        self.assertEqual(changed_height["study_revision"], 3)
+        self.assertEqual(changed_height["target_height_m"], 60)
+        invalid_height = self.client.put(f"/api/sessions/{self.sid}/mcp-study", json={
+            "observed_station_id": observation_id,
+            "reference_station_ids": reference_ids,
+            "poi": {"lat": 16.55, "lon": -94.955},
+            "radius_km": 200,
+            "target_height_m": 0,
+        })
+        self.assertEqual(invalid_height.status_code, 400)
+
+    def test_explicit_hub_height_overrides_builtin_without_mutating_source(self):
+        original = PowerCurve.from_builtin("V150_4.5")
+        adjusted = _power_curve_at_hub_height(original, 120)
+        self.assertEqual(original.hub_height_m, 105)
+        self.assertEqual(adjusted.hub_height_m, 120)
+        self.assertIsNot(original, adjusted)
+
+    def test_run_target_height_is_persisted_in_study_snapshot(self):
+        catalog = self.client.get(f"/api/mcp/catalog?session_id={self.sid}").get_json()
+        observation_id = catalog["observations"][0]["station_id"]
+        reference_id = catalog["references"][0]["station_id"]
+        created = self.client.put(f"/api/sessions/{self.sid}/mcp-study", json={
+            "observed_station_id": observation_id,
+            "reference_station_ids": [reference_id],
+            "poi": {"lat": 16.55, "lon": -94.955},
+            "radius_km": 200,
+            "target_height_m": 80,
+        })
+        self.assertEqual(created.status_code, 200)
+        with patch("api.ThreadPoolExecutor.submit") as submit:
+            started = self.client.post("/api/mcp/runs", json={
+                "session_id": self.sid,
+                "target_height_m": 60,
+            })
+        self.assertEqual(started.status_code, 202, started.get_data(as_text=True))
+        self.assertEqual(started.get_json()["target_height_m"], 60)
+        self.assertEqual(started.get_json()["study_revision"], 2)
+        persisted = self.client.get(f"/api/sessions/{self.sid}/mcp-study").get_json()
+        self.assertEqual(persisted["target_height_m"], 60)
+        self.assertEqual(persisted["study_revision"], 2)
+        submit.assert_called_once()
 
     def test_park_configuration_enforces_commercial_mode_and_market_readiness(self):
         initial = self.client.get(
