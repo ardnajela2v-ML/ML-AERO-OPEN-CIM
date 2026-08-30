@@ -2474,6 +2474,18 @@
       <span class="badge badge--info" id="krig3-status">En espera</span>
     </div>
     <div class="card-body">
+      <div style="display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:.75rem;align-items:end;margin-bottom:.8rem;padding:.7rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
+        <div>
+          <label class="form-label" for="krig3-generation-mode">Método de generación del mapa</label>
+          <select class="form-select" id="krig3-generation-mode">
+            <option value="windpro_classic" selected>WindProPlatform clásico · terreno y rugosidad</option>
+            <option value="mcp_advanced">Downscaling MCP avanzado</option>
+          </select>
+        </div>
+        <p class="text-muted" id="krig3-generation-note" style="font-size:.75rem;margin:0">
+          Kriging original con neutralización y reaplicación de rugosidad por píxel, topografía DEM y densidad del aire.
+        </p>
+      </div>
       <div class="form-grid-4">
         <div><label class="form-label">Año</label>
           <select class="form-select" id="krig3-year">
@@ -2510,7 +2522,7 @@
           Click: popup · Shift+click: incluir/excluir · <b>Ctrl+arrastrar: selección rectangular</b> · ★ parque principal.
         </span>
         <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem;cursor:pointer" title="Aplica corrección log-altura por z₀ y altitud DEM píxel a píxel: produce además mapas de Topografía, Rugosidad, Densidad del aire y Viento neutralizado.">
-          <input type="checkbox" id="krig3-physical">
+          <input type="checkbox" id="krig3-physical" checked>
           Corrección física (z₀ + altitud)
         </label>
         <button class="btn-secondary" id="btn-krig3-select-all" type="button">Seleccionar todos</button>
@@ -2521,7 +2533,7 @@
         <div id="krig3-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
       </div>
       <p class="text-muted mt-1" id="krig3-progress-text" style="font-size:.75rem"></p>
-      <details id="krig3-downscaling-details" class="mt-2" style="border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
+      <details id="krig3-downscaling-details" class="mt-2" style="display:none;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
         <summary style="cursor:pointer;padding:.65rem .75rem;font-size:.82rem;font-weight:600">Downscaling MCP avanzado</summary>
         <div style="padding:0 .75rem .75rem;border-top:1px solid var(--border)">
           <div style="display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;margin-top:.65rem">
@@ -4105,6 +4117,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260830-classic-kriging-v1"></script>
+<script src="/static/js/aero.js?v=20260830-kriging-methods-v2"></script>
 </body>
 </html>

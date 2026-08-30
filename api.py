@@ -4493,6 +4493,10 @@ def create_app():
                         include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
                         progress_callback=cb,
                     )
+                result['map_method'] = (
+                    'mcp_advanced' if calibration_payload is not None
+                    else str(body.get('map_method') or 'windpro_classic')
+                )
                 if body.get('market_trajectories'):
                     result['market_configuration'] = {
                         'trajectories': body.get('market_trajectories'),

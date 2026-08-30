@@ -6012,6 +6012,36 @@ const KRIG_LAYERS = {
   terrain_complexity:{ unit: '%', title: 'RIX proxy · cribado DEM, no CFD' },
 };
 
+function krig3GenerationMode() {
+  return document.getElementById('krig3-generation-mode')?.value || 'windpro_classic';
+}
+
+function krig3AdvancedMcpRequested() {
+  return krig3GenerationMode() === 'mcp_advanced'
+    && !document.getElementById('krig3-manual-mode')?.checked;
+}
+
+function krig3SyncGenerationMode() {
+  const advanced = krig3GenerationMode() === 'mcp_advanced';
+  const details = document.getElementById('krig3-downscaling-details');
+  const layers = document.getElementById('krig3-advanced-layers');
+  const note = document.getElementById('krig3-generation-note');
+  const physical = document.getElementById('krig3-physical');
+  if (details) {
+    details.style.display = advanced ? '' : 'none';
+    details.open = advanced;
+  }
+  if (layers) layers.style.display = advanced ? '' : 'none';
+  // Ambos métodos generan por defecto el campo afectado por terreno. El
+  // usuario todavía puede desactivar la corrección física explícitamente.
+  if (physical && !physical.checked) physical.checked = true;
+  if (note) {
+    note.textContent = advanced
+      ? 'Usa el hindcast MCP como ancla, calibra ERA5/MERRA-2 y conserva sus anomalías espaciales; requiere una corrida MCP publicada.'
+      : 'Kriging original con neutralización y reaplicación de rugosidad por píxel, topografía DEM y densidad del aire.';
+  }
+}
+
 // Rampa RdYlBu reversed (azul→rojo)
 function krigColor(t) {
   const stops = [
@@ -6425,7 +6455,7 @@ async function krig3PlacePoi(latlng) {
   }).addTo(KRIG.map);
   KRIG.poiMarker.bindTooltip('Emplazamiento del parque', { direction: 'top', offset: [0, -42] });
   krig3InvalidateCalibration('cambió el emplazamiento');
-  if (WP.activeDataSource?.startsWith('mcp:') && !document.getElementById('krig3-manual-mode')?.checked) {
+  if (krig3AdvancedMcpRequested() && WP.activeDataSource?.startsWith('mcp:')) {
     await krig3LoadSites(true);
   }
   krig3FilterByRadius();
@@ -7211,16 +7241,17 @@ async function krig3LoadSites(force=false) {
   const map = krig3InitMap();
   try {
     const manual = !!document.getElementById('krig3-manual-mode')?.checked;
-    KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
+    const advancedRequested = krig3AdvancedMcpRequested();
+    KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && advancedRequested;
     const sourceBadge = document.getElementById('krig3-source-badge');
-    if (!KRIG.guidedMcp && !manual) {
+    if (advancedRequested && !KRIG.guidedMcp) {
       KRIG.sites = [];
       KRIG.selected.clear();
       if (sourceBadge) {
         sourceBadge.textContent = 'Falta publicar MCP';
         sourceBadge.className = 'badge badge--warning';
       }
-      throw new Error('Publica el hindcast en MCP Lab o activa explícitamente el modo manual heredado.');
+      throw new Error('Publica el hindcast en MCP Lab para usar Downscaling MCP avanzado, o selecciona WindProPlatform clásico.');
     }
     const year = parseInt(document.getElementById('krig3-year').value) || 2018;
     const htParam = WP.referenceHeight ? `&target_height_m=${WP.referenceHeight}` : '';
@@ -7245,7 +7276,9 @@ async function krig3LoadSites(force=false) {
     KRIG.principal = KRIG.sites.find(s => s.allowed_role === 'anchor')?.filename || null;
     krig3InvalidateCalibration('se recargó el catálogo espacial');
     if (sourceBadge) {
-      sourceBadge.textContent = KRIG.guidedMcp ? `Activo · ${WP.activeDataSource}` : 'Modo manual heredado';
+      sourceBadge.textContent = KRIG.guidedMcp
+        ? `Activo · ${WP.activeDataSource}`
+        : (manual ? 'Archivos sin calibración MCP' : 'WindProPlatform clásico');
       sourceBadge.className = `badge ${KRIG.guidedMcp ? 'badge--success' : 'badge--warning'}`;
     }
     // limpiar marcadores anteriores
@@ -7489,10 +7522,10 @@ async function krig3Run() {
     toast('Ya hay un Kriging ejecutándose. Espera a que termine.', 'warning');
     return;
   }
-  const manual = !!document.getElementById('krig3-manual-mode')?.checked;
-  KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
-  if (!KRIG.guidedMcp && !manual) {
-    toast('Publica una corrida MCP antes de continuar, o activa el modo manual heredado.', 'error');
+  const advancedRequested = krig3AdvancedMcpRequested();
+  KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && advancedRequested;
+  if (advancedRequested && !KRIG.guidedMcp) {
+    toast('Publica una corrida MCP antes de usar el downscaling avanzado, o selecciona WindProPlatform clásico.', 'error');
     return;
   }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
@@ -7511,6 +7544,7 @@ async function krig3Run() {
     model:            KRIG.guidedMcp ? 'auto' : document.getElementById('krig3-model').value,
     filenames:        Array.from(KRIG.selected),
     physical:         physical,
+    map_method:       KRIG.guidedMcp ? 'mcp_advanced' : 'windpro_classic',
     target_height_m:  wsH(),
   };
   if (KRIG.guidedMcp) {
@@ -7620,6 +7654,7 @@ async function krig3Poll() {
 document.addEventListener('DOMContentLoaded', () => {
   const bRun = document.getElementById('btn-krig3-run');
   if (bRun) bRun.addEventListener('click', krig3Run);
+  krig3SyncGenerationMode();
 
   // Tabs de capa (Velocidad / Inversión / VAN)
   document.querySelectorAll('.krig3-tab').forEach(b => {
@@ -7655,6 +7690,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Si cambia el año, recargar sitios (n_hours puede variar)
   const yearSel = document.getElementById('krig3-year');
   if (yearSel) yearSel.addEventListener('change', () => krig3LoadSites(true));
+  document.getElementById('krig3-generation-mode')?.addEventListener('change', () => {
+    krig3SyncGenerationMode();
+    krig3InvalidateCalibration('cambió el método de generación');
+    krig3LoadSites(true);
+  });
   document.getElementById('krig3-manual-mode')?.addEventListener('change', () => {
     krig3InvalidateCalibration('cambió el modo de cálculo');
     krig3LoadSites(true);
@@ -8195,8 +8235,7 @@ async function mcdaRunAnalysis() {
     : 'Buscando sitios candidatos interpolados dentro del área exploratoria…';
   try {
     mcdaClearSpatialMarkers();
-    const manual = !!document.getElementById('krig3-manual-mode')?.checked;
-    const guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && !manual;
+    const guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && krig3AdvancedMcpRequested();
     if (guidedMcp) {
       document.getElementById('mcda-progress-text').textContent =
         'Preparando la calibración MCP y sus campos espaciales…';
