@@ -118,17 +118,6 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     }
 
 
-def _count_candidates(max_n: int, demand_n: Optional[int] = None, limit: int = 16):
-    if max_n <= limit:
-        values = set(range(1, max_n + 1))
-    else:
-        values = set(np.rint(np.linspace(1, max_n, limit)).astype(int).tolist())
-    values.add(max_n)
-    if demand_n and 0 < demand_n <= max_n:
-        values.add(int(demand_n))
-    return sorted(values)
-
-
 def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder: str,
                          turbine_filenames: List[str], wind_grid=None,
                          exclusions=None, boundary_setback_m: float = 0.0,
@@ -168,7 +157,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
     cost_model = cost_model or CostModel.from_defaults()
     alternatives = []
     errors = []
-    for filename in turbine_filenames:
+    unique_filenames = []
+    seen_models = set()
+    for raw_filename in turbine_filenames:
+        filename = os.path.basename(str(raw_filename))
+        model_key = filename.casefold()
+        if model_key not in seen_models:
+            seen_models.add(model_key)
+            unique_filenames.append(filename)
+    for filename in unique_filenames:
         try:
             turbine = PowerCurve.from_file(os.path.join(turbines_folder, os.path.basename(filename)))
             if target_height_m:
@@ -188,81 +185,82 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             if max_n <= 0:
                 errors.append({'turbine': filename, 'reason': 'sin_layout_factible'})
                 continue
-            single = float(np.sum(turbine.power_kw_density_corrected(ws, rho))) / 1000.0
-            demand_n = math.ceil(demand_mwh / max(single, 1e-9)) if demand_mwh > 0 else None
-            for n_turbines in _count_candidates(max_n, demand_n):
-                layout = optimize_layout_structured(
-                    polygon, turbine, n_turbines, ws=ws, wd=wd, wind_grid=wind_grid,
-                    fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
-                    min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
-                    s_perp_range=tuple(s_perp_range), rho=rho,
-                    exclusion_polygons=exclusions, boundary_setback_m=setback,
-                    wake_model=wake_model,
-                )
-                if int(layout['n_placed']) != n_turbines:
-                    continue
-                sim = simulate_wind_farm(
-                    layout['layout_xy_m'], turbine, ws, wd, k_wake=k_wake, ct=ct,
-                    n_sectors=36, availability=availability,
-                    electrical_losses=electrical_losses, wake_model=wake_model,
-                    rho_override=rho,
-                )
-                if sim.get('error'):
-                    continue
-                other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
-                aep_p50 = float(sim['aep_mwh']) * other_survival
-                uncertainty_components = dict(uncertainty_components_pct or {
-                    'resource': 6.0, 'mcp': 4.0, 'wake': 3.0,
-                    'power_curve': 2.0, 'losses': 2.0,
-                })
-                if any(float(value) < 0 for value in uncertainty_components.values()):
-                    raise ValueError('Las incertidumbres no pueden ser negativas.')
-                uncertainty_components = {key: float(value) for key, value in uncertainty_components.items()}
-                uncertainty_pct = math.sqrt(sum(value ** 2 for value in uncertainty_components.values()))
-                aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * uncertainty_pct / 100.0))
-                collection_length = _collection_length_m(layout['layout_xy_m'])
-                econ = _economics(
-                    turbine, n_turbines, aep_p50, cost_model, discount_rate,
-                    project_years, price_usd_kwh, collection_length,
-                )
-                installed_mw = n_turbines * turbine.rated_power_kw / 1000.0
-                factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
-                area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
-                alternatives.append({
-                    'label': f'layout::{filename}::{n_turbines}',
-                    'site': f'Parque optimizado ({n_turbines}/{max_n} aeros)',
-                    'turbina': filename,
-                    'n_aerogeneradores': n_turbines,
-                    'max_n_fisico': max_n,
-                    'feasible': True,
-                    'layout_latlon': layout['layout_latlon'],
-                    'layout_xy_m': layout['layout_xy_m'],
-                    'layout_config': layout['layout_config'],
-                    'min_sep_m': layout['min_sep_m'],
-                    'area_km2': area_km2,
-                    'installed_mw': installed_mw,
-                    'aep_gross_mwh': sim['aep_gross_mwh'],
-                    'aep_mwh': aep_p50,
-                    'aep_p50_mwh': aep_p50,
-                    'aep_p90_mwh': aep_p90,
-                    'aep_uncertainty_pct': uncertainty_pct,
-                    'uncertainty_components_pct': uncertainty_components,
-                    'wake_loss_pct': sim['wake_loss_pct'],
-                    'curtailment_loss_pct': curtailment_loss * 100.0,
-                    'environmental_loss_pct': environmental_loss * 100.0,
-                    'factor_capacidad': factor_capacity,
-                    'collection_length_m': collection_length,
-                    'energy_density_mwh_km2': aep_p50 / area_km2,
-                    'civil_complexity_index': collection_length / max(n_turbines, 1),
-                    'iec_suitability_score': 0.5,
-                    'quality_level': 'prefeasibility',
-                    'quality_warnings': ['Ct genérico; falta clase IEC y turbulencia extrema del fabricante'],
-                    'bankable_ready': False,
-                    'bankable_missing': ['ct_curve', 'iec_class', 'extreme_wind',
-                                         'ambient_turbulence', 'certified_power_curve'],
-                    'wake_model': wake_model,
-                    **econ,
-                })
+            # Product rule: one alternative per turbine model, always using
+            # the physical maximum found for that model.
+            layout = optimize_layout_structured(
+                polygon, turbine, max_n, ws=ws, wd=wd, wind_grid=wind_grid,
+                fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
+                min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
+                s_perp_range=tuple(s_perp_range), rho=rho,
+                exclusion_polygons=exclusions, boundary_setback_m=setback,
+                wake_model=wake_model,
+            )
+            if int(layout['n_placed']) != max_n:
+                errors.append({'turbine': filename, 'reason': 'nmax_layout_incompleto'})
+                continue
+            sim = simulate_wind_farm(
+                layout['layout_xy_m'], turbine, ws, wd, k_wake=k_wake, ct=ct,
+                n_sectors=36, availability=availability,
+                electrical_losses=electrical_losses, wake_model=wake_model,
+                rho_override=rho,
+            )
+            if sim.get('error'):
+                errors.append({'turbine': filename, 'reason': sim.get('error')})
+                continue
+            other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
+            aep_p50 = float(sim['aep_mwh']) * other_survival
+            uncertainty_components = dict(uncertainty_components_pct or {
+                'resource': 6.0, 'mcp': 4.0, 'wake': 3.0,
+                'power_curve': 2.0, 'losses': 2.0,
+            })
+            if any(float(value) < 0 for value in uncertainty_components.values()):
+                raise ValueError('Las incertidumbres no pueden ser negativas.')
+            uncertainty_components = {key: float(value) for key, value in uncertainty_components.items()}
+            uncertainty_pct = math.sqrt(sum(value ** 2 for value in uncertainty_components.values()))
+            aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * uncertainty_pct / 100.0))
+            collection_length = _collection_length_m(layout['layout_xy_m'])
+            econ = _economics(
+                turbine, max_n, aep_p50, cost_model, discount_rate,
+                project_years, price_usd_kwh, collection_length,
+            )
+            installed_mw = max_n * turbine.rated_power_kw / 1000.0
+            factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
+            area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
+            alternatives.append({
+                'label': f'layout::{filename}::nmax',
+                'site': f'Parque de capacidad física máxima ({max_n}/{max_n} aeros)',
+                'turbina': filename,
+                'n_aerogeneradores': max_n,
+                'max_n_fisico': max_n,
+                'feasible': True,
+                'layout_latlon': layout['layout_latlon'],
+                'layout_xy_m': layout['layout_xy_m'],
+                'layout_config': layout['layout_config'],
+                'min_sep_m': layout['min_sep_m'],
+                'area_km2': area_km2,
+                'installed_mw': installed_mw,
+                'aep_gross_mwh': sim['aep_gross_mwh'],
+                'aep_mwh': aep_p50,
+                'aep_p50_mwh': aep_p50,
+                'aep_p90_mwh': aep_p90,
+                'aep_uncertainty_pct': uncertainty_pct,
+                'uncertainty_components_pct': uncertainty_components,
+                'wake_loss_pct': sim['wake_loss_pct'],
+                'curtailment_loss_pct': curtailment_loss * 100.0,
+                'environmental_loss_pct': environmental_loss * 100.0,
+                'factor_capacidad': factor_capacity,
+                'collection_length_m': collection_length,
+                'energy_density_mwh_km2': aep_p50 / area_km2,
+                'civil_complexity_index': collection_length / max(max_n, 1),
+                'iec_suitability_score': 0.5,
+                'quality_level': 'prefeasibility',
+                'quality_warnings': ['Ct genérico; falta clase IEC y turbulencia extrema del fabricante'],
+                'bankable_ready': False,
+                'bankable_missing': ['ct_curve', 'iec_class', 'extreme_wind',
+                                     'ambient_turbulence', 'certified_power_curve'],
+                'wake_model': wake_model,
+                **econ,
+            })
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
     ranking = rank_layout_alternatives(alternatives, weights=weights)
@@ -271,12 +269,14 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         'alternatives': alternatives,
         'ranking': ranking,
         'n_layout_alternatives': len(alternatives),
+        'n_requested_models': len(unique_filenames),
+        'n_valid_models': len(alternatives),
         'wind_summary': {'mean_speed_ms': mean_speed, 'weibull_k': weibull_k, 'rho': rho},
         'assumptions': {
             'wake_model': wake_model, 'k_wake': k_wake, 'ct': ct,
             'availability': availability, 'electrical_losses': electrical_losses,
             'commercialization_mode': commercialization_mode,
-            'count_search': 'all_up_to_16_else_16_evenly_spaced_plus_constraints',
+            'count_policy': 'exactly_nmax_one_alternative_per_turbine_model',
         },
         'methodology_references': [
             {'id': 'IEC-61400-1:2019', 'url': 'https://webstore.iec.ch/en/publication/26423'},

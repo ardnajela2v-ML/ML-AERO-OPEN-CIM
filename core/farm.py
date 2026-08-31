@@ -1012,6 +1012,13 @@ def optimize_layout_structured(
                 if not cands:
                     continue
 
+                # A requested farm size is a hard feasibility constraint. A
+                # configuration that fits fewer positions is not an
+                # alternative for that request, even if its smaller layout
+                # happens to have a higher aggregate score.
+                if n_turbines > 0 and len(cands) < n_turbines:
+                    continue
+
                 # Trim to n_turbines: prefer highest-wind-speed positions
                 if n_turbines > 0 and len(cands) > n_turbines:
                     sel = sorted(cands, key=lambda c: -c['v'])[:n_turbines]

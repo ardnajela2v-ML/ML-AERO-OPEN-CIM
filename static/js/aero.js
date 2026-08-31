@@ -8098,7 +8098,8 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
       fillColor: i < 5 ? '#facc15' : '#38bdf8',
       fillOpacity: 0.9,
     }).bindTooltip(
-      `#${i + 1} ${s.name}<br>${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>` +
+      `${i < 5 ? 'Muestra prioritaria del recurso' : 'Muestra interpolada del recurso'} #${i + 1}<br>` +
+      `${s.name}<br>${s.lat.toFixed(5)}°, ${s.lon.toFixed(5)}°<br>` +
       `${Number(s.v_mean || 0).toFixed(2)} m/s` +
       (s.dominant_direction_deg != null ? ` · Dir ${Number(s.dominant_direction_deg).toFixed(0)}°` : ''),
       { direction: 'top' }
@@ -8110,13 +8111,16 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
     const marker = L.circleMarker(point, {
       radius: 5, color: '#0f766e', weight: 2,
       fillColor: '#2dd4bf', fillOpacity: 0.95,
-    }).bindTooltip(`Aerogenerador ${i + 1}`, { direction: 'top' }).addTo(map);
+    }).bindTooltip(
+      `Aerogenerador ${i + 1} del layout TOPSIS ganador`,
+      { direction: 'top' }
+    ).addTo(map);
     MCDA.miniLayers.push(marker);
   });
 
   if (status) {
     status.textContent = orderedSites.length
-      ? `${orderedSites.length} puntos`
+      ? `${orderedSites.length} muestras de recurso · ${winningLayout.length} aeros ganadores`
       : (focusLayer ? 'Área enfocada' : 'Sin área');
   }
   if (orderedSites.length) {
@@ -8341,7 +8345,7 @@ async function mcdaPollStatus() {
       const nSites = MCDA.lastAnalysis.length;
       const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
-        ? `${r.result?.n_layout_alternatives || 0} layouts factibles · ${nSites} puntos de recurso`
+        ? `${r.result?.n_valid_models || 0} modelos válidos · 1 layout Nmax por modelo · ${nSites} muestras de recurso`
         : `${nSites} sitios candidatos · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
       toast('TOPSIS espacial completado.', 'success');
@@ -8415,7 +8419,7 @@ function mcdaRenderRanking(r) {
       ? `${a.site || ''}<br><span class="text-muted" style="font-size:.72rem">Mejor sitio: ${a.best_site}</span>`
       : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
     const layoutInfo = a.n_aerogeneradores != null
-      ? `<br><span class="text-muted" style="font-size:.72rem">${a.n_aerogeneradores}/${a.max_n_fisico} aeros · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}% · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
+      ? `<br><span class="text-muted" style="font-size:.72rem"><b>Nmax ${a.max_n_fisico}/${a.max_n_fisico}</b> aeros · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}% · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
         `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>`
       : '';
     return `<tr ${highlight}>

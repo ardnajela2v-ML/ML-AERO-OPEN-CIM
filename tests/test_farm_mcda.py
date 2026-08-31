@@ -76,7 +76,22 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertGreater(result['sensitivity_scenarios'], 1)
         self.assertIn('rank_sensitivity_min', result['ranking'][0])
 
-    def test_total_sale_with_zero_demand_still_builds_a_farm(self):
+    def test_layout_topsis_rejects_partial_capacity_and_duplicate_models(self):
+        full = self.alternative('full', 2.0)
+        full.update(turbina='modelo_a.csv', n_aerogeneradores=10, max_n_fisico=10)
+        partial = self.alternative('partial', 3.0)
+        partial.update(turbina='modelo_a.csv', n_aerogeneradores=9, max_n_fisico=10)
+        duplicate = self.alternative('duplicate', 4.0)
+        duplicate.update(turbina='modelo_a.csv', n_aerogeneradores=10, max_n_fisico=10)
+        result = rank_layout_alternatives([partial, full, duplicate])
+        self.assertEqual(result['n'], 1)
+        self.assertEqual(result['ranking'][0]['label'], 'full')
+        self.assertEqual(
+            {row['reason'] for row in result['excluded']},
+            {'layout_no_usa_nmax', 'modelo_duplicado'},
+        )
+
+    def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
             'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
             'sectorial': {'frequency_pct': [2, 2, 3, 4, 6, 8, 12, 18,
@@ -86,13 +101,35 @@ class LayoutTopsisTests(unittest.TestCase):
             sites, [
                 {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
                 {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
-            ], 'aerogeneradores', ['gamesa21_p2000_r45.csv'],
+            ], 'aerogeneradores', [
+                'gamesa21_p2000_r45.csv',
+                'acciona16_p1500_r38.5.csv',
+                'gamesa21_p2000_r45.csv',  # duplicate input must collapse
+            ],
             demand_mwh=0, commercialization_mode='total_sale',
             s_para_range=(5, 7), s_perp_range=(3, 4), project_years=20,
         )
-        self.assertGreater(result['n_layout_alternatives'], 0)
+        self.assertEqual(result['n_layout_alternatives'], 2)
+        self.assertEqual(result['n_requested_models'], 2)
+        self.assertEqual(result['n_valid_models'], 2)
+        self.assertEqual(len(result['alternatives']), 2)
+        self.assertEqual(len({row['turbina'] for row in result['alternatives']}), 2)
+        self.assertTrue(all(
+            row['n_aerogeneradores'] == row['max_n_fisico']
+            for row in result['alternatives']
+        ))
+        self.assertTrue(all(
+            len(row['layout_latlon']) == row['max_n_fisico']
+            for row in result['alternatives']
+        ))
+        self.assertEqual(result['ranking']['n'], 2)
+        self.assertEqual(len(result['ranking']['ranking']), 2)
+        self.assertEqual(
+            {row['turbina'] for row in result['ranking']['ranking']},
+            {row['turbina'] for row in result['alternatives']},
+        )
         winner = result['ranking']['ranking'][0]
-        self.assertGreater(winner['n_aerogeneradores'], 0)
+        self.assertEqual(winner['n_aerogeneradores'], winner['max_n_fisico'])
         self.assertGreater(winner['aep_mwh'], 0)
         self.assertGreater(winner['capex_usd'], 0)
         self.assertTrue(math.isfinite(winner['lcoe_usd_kwh']))

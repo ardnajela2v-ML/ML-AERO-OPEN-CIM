@@ -111,6 +111,38 @@ def rank_layout_alternatives(alternatives: List[Dict],
     """Rank complete, feasible farm layouts with transparent missing-data rules."""
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': []}
+
+    # Layout MCDA has one decision alternative per turbine model. Reject
+    # partial-capacity rows and collapse accidental duplicate full-capacity
+    # rows defensively so stale clients cannot reintroduce 9/10, 8/10, etc.
+    model_rows = {}
+    passthrough_rows = []
+    pre_excluded = []
+    for alt in alternatives:
+        model = alt.get('turbina')
+        n_used = alt.get('n_aerogeneradores')
+        n_max = alt.get('max_n_fisico')
+        if not model:
+            passthrough_rows.append(alt)
+            continue
+        model_key = str(model).casefold()
+        if n_used is None or n_max is None or int(n_used) != int(n_max):
+            pre_excluded.append({
+                'label': alt.get('label'), 'missing': [],
+                'reason': 'layout_no_usa_nmax',
+            })
+            continue
+        if model_key in model_rows:
+            pre_excluded.append({
+                'label': alt.get('label'), 'missing': [],
+                'reason': 'modelo_duplicado',
+            })
+            continue
+        model_rows[model_key] = alt
+    alternatives = passthrough_rows + list(model_rows.values())
+    if not alternatives:
+        return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': pre_excluded,
+                'note': 'No hay alternativas únicas que utilicen Nmax.'}
     raw_weights = dict(LAYOUT_WEIGHTS)
     if weights:
         for key, value in weights.items():
@@ -119,7 +151,7 @@ def rank_layout_alternatives(alternatives: List[Dict],
     if any(value < 0 for value in raw_weights.values()):
         raise ValueError('Los pesos TOPSIS no pueden ser negativos.')
 
-    valid, excluded = [], []
+    valid, excluded = [], list(pre_excluded)
     for alt in alternatives:
         missing = [key for key in raw_weights
                    if alt.get(key) is None or not np.isfinite(float(alt.get(key))) ]
