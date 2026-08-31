@@ -28,10 +28,13 @@ class MCPIntegrationTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.old_runs = Config.MCP_RUNS_FOLDER
         self.old_uploads = Config.MCP_UPLOAD_FOLDER
+        self.old_general_uploads = Config.UPLOAD_FOLDER
         Config.MCP_RUNS_FOLDER = str(Path(self.temporary.name) / "runs")
         Config.MCP_UPLOAD_FOLDER = str(Path(self.temporary.name) / "uploads")
+        Config.UPLOAD_FOLDER = str(Path(self.temporary.name) / "general_uploads")
         Path(Config.MCP_RUNS_FOLDER).mkdir(parents=True)
         Path(Config.MCP_UPLOAD_FOLDER).mkdir(parents=True)
+        Path(Config.UPLOAD_FOLDER).mkdir(parents=True)
         self.app = create_app()
         self.client = self.app.test_client()
         self.sid = self.client.post("/api/session/new", json={}).get_json()["session_id"]
@@ -39,7 +42,68 @@ class MCPIntegrationTests(unittest.TestCase):
     def tearDown(self):
         Config.MCP_RUNS_FOLDER = self.old_runs
         Config.MCP_UPLOAD_FOLDER = self.old_uploads
+        Config.UPLOAD_FOLDER = self.old_general_uploads
         self.temporary.cleanup()
+
+    def test_project_export_import_restores_data_configuration_and_client_state(self):
+        csv = (
+            "timestamp,wind_speed,wind_direction\n"
+            "2018-01-01 00:00:00,7.5,270\n"
+            "2018-01-01 01:00:00,8.0,275\n"
+            "2018-01-01 02:00:00,8.5,280\n"
+        ).encode()
+        uploaded = self.client.post('/api/data/upload', data={
+            'session_id': self.sid,
+            'source': 'auto',
+            'file': (io.BytesIO(csv), 'project_wind.csv'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(uploaded.status_code, 200, uploaded.get_data(as_text=True))
+        configured = self.client.put(
+            f'/api/sessions/{self.sid}/park-configuration',
+            json={
+                'commercialization_mode': 'total_sale',
+                'sale_scheme': 'ppa', 'project_horizon_years': 30,
+                'base_fx_mxn_usd': 18.5, 'base_interest_rate_pct': 9.0,
+            },
+        )
+        self.assertEqual(configured.status_code, 200, configured.get_data(as_text=True))
+
+        exported = self.client.post('/api/projects/export', json={
+            'session_id': self.sid,
+            'project_name': 'Istmo prueba',
+            'client_state': {
+                'schema_version': 1,
+                'krig': {'parkPoints': [[16.5, -95.0], [16.6, -95.0], [16.5, -94.9]]},
+            },
+        })
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn('Istmo_prueba.aeroproj', exported.headers['Content-Disposition'])
+
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'Istmo_prueba.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        restored = imported.get_json()
+        self.assertNotEqual(restored['session_id'], self.sid)
+        self.assertEqual(restored['project_name'], 'Istmo prueba')
+        self.assertEqual(restored['client_state']['krig']['parkPoints'][0], [16.5, -95.0])
+
+        park = self.client.get(
+            f"/api/sessions/{restored['session_id']}/park-configuration").get_json()
+        self.assertEqual(park['project_horizon_years'], 30)
+        self.assertEqual(park['sale_scheme'], 'ppa')
+        stats = self.client.post('/api/wind/stats', json={
+            'session_id': restored['session_id'],
+        })
+        self.assertEqual(stats.status_code, 200, stats.get_data(as_text=True))
+        self.assertEqual(stats.get_json()['overview']['n_obs'], 3)
+
+    def test_project_import_rejects_non_project_file(self):
+        response = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(b'not a zip'), 'fake.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('No se pudo abrir el proyecto', response.get_json()['error'])
 
     def test_catalog_uses_official_m04_raw_file_and_excludes_aliases(self):
         catalog = build_mcp_catalog(Config.DATA_FOLDER, Config.CERTE_FOLDER)

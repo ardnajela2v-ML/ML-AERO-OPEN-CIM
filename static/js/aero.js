@@ -149,6 +149,7 @@ function initDock() {
 document.addEventListener('DOMContentLoaded', async () => {
   initDock();
   await initSession();
+  bindProjectFiles();
   bindNavigation();
   bindThemeToggle();
   bindDataHub();
@@ -191,6 +192,153 @@ async function initSession() {
     document.getElementById('session-label').textContent = 'Sin conexión';
     toast('No se pudo conectar con el servidor. ¿Está running run.py?', 'error');
   }
+}
+
+function projectJsonClone(value) {
+  if (value == null) return value;
+  try { return JSON.parse(JSON.stringify(value)); }
+  catch (_) { return null; }
+}
+
+function collectProjectClientState() {
+  const controls = {};
+  document.querySelectorAll('input[id], select[id], textarea[id]').forEach(el => {
+    if (el.type === 'file' || el.type === 'password') return;
+    controls[el.id] = (el.type === 'checkbox' || el.type === 'radio')
+      ? { checked: !!el.checked }
+      : { value: el.value };
+  });
+  return {
+    schema_version: 1,
+    controls,
+    wp: projectJsonClone({
+      windStats: WP.windStats, technoResult: WP.technoResult,
+      energyResult: WP.energyResult, compareResult: WP.compareResult,
+      forecastResult: WP.forecastResult, technoActiveScenario: WP.technoActiveScenario,
+      technoScenarios: WP.technoScenarios, levParams: WP.levParams,
+      technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
+      referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
+      mcpRunId: WP.mcpRunId, activeDataSource: WP.activeDataSource,
+      parkConfiguration: WP.parkConfiguration,
+    }),
+    krig: projectJsonClone({
+      sites: KRIG.sites, selected: Array.from(KRIG.selected || []),
+      principal: KRIG.principal, result: KRIG.result, layerKey: KRIG.layerKey,
+      mode: KRIG.mode, parkPoints: KRIG.parkPoints, optimal: KRIG.optimal,
+      poi: KRIG.poi, calibrationId: KRIG.calibrationId,
+      calibrationSignature: KRIG.calibrationSignature,
+      calibration: KRIG.calibration,
+      orographicSpeedupGrid: KRIG.orographicSpeedupGrid,
+    }),
+    mcda: projectJsonClone({
+      lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
+      lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
+    }),
+    parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult }),
+    globe: projectJsonClone({
+      poi: GLOBE.poi, master: GLOBE.master,
+      observedStation: GLOBE.observedStation,
+      mcpReferences: Array.from(GLOBE.mcpReferences || []),
+      rotate: GLOBE.rotate, zoomScale: GLOBE.zoomScale, mode: GLOBE.mode,
+    }),
+  };
+}
+
+async function applyProjectClientState(state) {
+  if (!state || Number(state.schema_version || 1) !== 1) return;
+  Object.entries(state.controls || {}).forEach(([id, saved]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if ('checked' in saved) el.checked = !!saved.checked;
+    else if ('value' in saved) el.value = saved.value;
+  });
+  if (state.wp) Object.assign(WP, state.wp);
+  if (state.krig) {
+    Object.assign(KRIG, state.krig);
+    KRIG.selected = new Set(state.krig.selected || []);
+    if (Array.isArray(state.krig.parkPoints)) {
+      KRIG.parkPoints = state.krig.parkPoints;
+      try { krig3InitMap(); krig3RenderParkLayer(true); } catch (_) {}
+    }
+  }
+  if (state.mcda) Object.assign(MCDA, state.mcda);
+  if (state.parque) Object.assign(PARQUE, state.parque);
+  if (state.globe) {
+    Object.assign(GLOBE, state.globe);
+    GLOBE.mcpReferences = new Set(state.globe.mcpReferences || []);
+  }
+  if (WP.referenceHeight != null) applyReferenceHeightToUI(WP.referenceHeight);
+  try { await loadParkConfiguration({ quiet: true }); } catch (_) {}
+  try { await loadMCPStudy(); } catch (_) {}
+  if (MCDA.lastRanking) {
+    try { mcdaRenderRanking(MCDA.lastRanking); } catch (_) {}
+  }
+  if (MCDA.lastSpatial) {
+    try { mcdaRenderMiniMap(MCDA.lastSpatial); } catch (_) {}
+  }
+  updateExportSessionInfo();
+}
+
+async function exportProjectFile() {
+  if (!WP.sessionId) { toast('No hay una sesión activa para guardar.', 'warning'); return; }
+  const defaultName = `proyecto_aero_${new Date().toISOString().slice(0, 10)}`;
+  const projectName = window.prompt('Nombre del proyecto', defaultName);
+  if (projectName == null) return;
+  try {
+    toast('Empaquetando avances del proyecto…', 'info');
+    const response = await fetch('/api/projects/export', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: WP.sessionId,
+        project_name: projectName || defaultName,
+        client_state: collectProjectClientState(),
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename\*?=(?:UTF-8''|\")?([^";]+)/i);
+    const filename = match ? decodeURIComponent(match[1].replace(/"/g, '')) : `${defaultName}.aeroproj`;
+    downloadBlob(blob, filename);
+    toast(`Proyecto guardado: ${filename}`, 'success');
+  } catch (error) {
+    toast(`No se pudo guardar el proyecto: ${error.message}`, 'error');
+  }
+}
+
+async function importProjectFile(file) {
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    toast('Validando y restaurando proyecto…', 'info');
+    const restored = await apiFD('/api/projects/import', form);
+    WP.sessionId = restored.session_id;
+    document.getElementById('session-label').textContent = `Sesión ${restored.session_id}`;
+    document.getElementById('session-dot').classList.add('active');
+    await applyProjectClientState(restored.client_state || {});
+    setStatus(`Proyecto restaurado: ${restored.project_name}`);
+    toast(`Proyecto “${restored.project_name}” restaurado. Puedes continuar trabajando.`, 'success');
+  } catch (error) {
+    toast(`No se pudo abrir el proyecto: ${error.message}`, 'error');
+  }
+}
+
+function bindProjectFiles() {
+  const input = document.getElementById('project-file-input');
+  const openPicker = () => input?.click();
+  document.getElementById('btn-project-export')?.addEventListener('click', exportProjectFile);
+  document.getElementById('btn-project-export-center')?.addEventListener('click', exportProjectFile);
+  document.getElementById('btn-project-import')?.addEventListener('click', openPicker);
+  document.getElementById('btn-project-import-center')?.addEventListener('click', openPicker);
+  input?.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    input.value = '';
+    await importProjectFile(file);
+  });
 }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────

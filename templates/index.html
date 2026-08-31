@@ -60,6 +60,19 @@
     <button class="nav-btn" data-module="ai">AI Assistant</button>
   </nav>
   <div class="topbar-actions">
+    <button class="btn-icon" id="btn-project-export" type="button"
+            title="Guardar avances en un archivo de proyecto" aria-label="Exportar proyecto">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 16v4h14v-4"/>
+      </svg>
+    </button>
+    <button class="btn-icon" id="btn-project-import" type="button"
+            title="Abrir un proyecto guardado" aria-label="Importar proyecto">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+        <path d="M4 6h6l2 2h8v11H4z"/><path d="M12 11v6m0-6 3 3m-3-3-3 3"/>
+      </svg>
+    </button>
+    <input id="project-file-input" type="file" accept=".aeroproj,application/zip" hidden>
     <div class="session-badge" id="session-badge">
       <span class="dot" id="session-dot"></span>
       <span id="session-label">No session</span>
@@ -3988,6 +4001,20 @@
   <!-- Status info -->
   <div id="export-session-info" class="info-box amber" style="margin-bottom:1rem">
     Carga un archivo de datos y ejecuta los módulos para habilitar las exportaciones.
+  </div>
+
+  <div class="card" style="margin-bottom:1rem">
+    <div class="card-header"><span class="card-title">Continuidad del proyecto</span></div>
+    <div class="card-body">
+      <p class="text-muted" style="margin-top:0">
+        Guarda los datos, configuraciones, geometrías y resultados actuales en un archivo portátil
+        <code>.aeroproj</code>. Ábrelo posteriormente para continuar en una sesión nueva.
+      </p>
+      <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+        <button class="btn-primary" id="btn-project-export-center" type="button">↓ Guardar proyecto</button>
+        <button class="btn-secondary" id="btn-project-import-center" type="button">↑ Abrir proyecto</button>
+      </div>
+    </div>
   </div>
 
   <!-- ═══ REPORTE PROFESIONAL CIENTÍFICO-TÉCNICO ═══ -->

@@ -12,6 +12,7 @@ import time
 import logging
 import threading
 import traceback
+import zipfile
 import requests
 import numpy as np
 import pandas as pd
@@ -343,6 +344,94 @@ def create_app():
         if isinstance(obj, dict): return {k: numpy_to_python(v) for k, v in obj.items()}
         if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
         return obj
+
+    PROJECT_FORMAT = 'aero-open-cim-project'
+    PROJECT_FORMAT_VERSION = 1
+    PROJECT_SESSION_KEYS = {
+        'df', 'meta', 'wind_speed_col', 'wd_col', 'ws_height_m',
+        'extrapolation_method', 'qc_report', 'park_configuration',
+        'mcp_study', 'mcp_uploads', 'mcp_runs', 'data_sources',
+        'active_data_source', 'wind_stats', 'wind_advanced',
+        'hybrid_result', 'energy_summary', 'market', 'demand', 'pml',
+        'kriging_calibrations', 'active_kriging_calibration_id',
+    }
+
+    def _project_encode(value, archive, path='root', key_hint=''):
+        """Encode trusted session state as JSON plus compressed frame/file entries."""
+        safe_path = re.sub(r'[^A-Za-z0-9_.-]+', '_', path).strip('_') or 'value'
+        if isinstance(value, pd.DataFrame):
+            entry = f'frames/{safe_path}_{uuid.uuid4().hex[:8]}.json'
+            archive.writestr(entry, value.to_json(orient='table', date_format='iso'))
+            return {'__type__': 'dataframe', 'entry': entry}
+        if isinstance(value, pd.Series):
+            entry = f'frames/{safe_path}_{uuid.uuid4().hex[:8]}.json'
+            archive.writestr(entry, value.to_frame(name=value.name or 'value').to_json(
+                orient='table', date_format='iso'))
+            return {'__type__': 'series', 'entry': entry, 'name': value.name}
+        if isinstance(value, np.ndarray):
+            return {'__type__': 'ndarray', 'value': numpy_to_python(value.tolist())}
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, (np.integer, np.floating)):
+            return numpy_to_python(value)
+        if isinstance(value, (pd.Timestamp, datetime)):
+            return {'__type__': 'datetime', 'value': value.isoformat()}
+        if isinstance(value, Path):
+            value = str(value)
+        if isinstance(value, str) and (
+                key_hint == '_path' or key_hint == 'result_path'
+                or key_hint.endswith(('_artifact', '_csv', '_json'))) and os.path.isfile(value):
+            filename = secure_filename(Path(value).name) or 'artifact.bin'
+            entry = f'files/{uuid.uuid4().hex[:12]}_{filename}'
+            archive.write(value, entry)
+            return {'__type__': 'project_file', 'entry': entry, 'name': filename}
+        if isinstance(value, dict):
+            return {
+                str(key): _project_encode(
+                    item, archive, f'{path}.{key}',
+                    '_path' if key == '_paths' else str(key),
+                )
+                for key, item in value.items()
+                if str(key) != '_last_access'
+            }
+        if isinstance(value, (list, tuple, set)):
+            item_hint = '_path' if key_hint == '_path' else ''
+            return [
+                _project_encode(item, archive, f'{path}.{index}', item_hint)
+                for index, item in enumerate(value)
+            ]
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return numpy_to_python(value)
+        # Derived runtime objects (e.g. PowerCurve instances) are recomputed.
+        return {'__type__': 'omitted_runtime_object', 'class': type(value).__name__}
+
+    def _project_decode(value, archive, restore_dir: Path):
+        if isinstance(value, list):
+            return [_project_decode(item, archive, restore_dir) for item in value]
+        if not isinstance(value, dict):
+            return value
+        marker = value.get('__type__')
+        if marker in {'dataframe', 'series'}:
+            entry = str(value.get('entry', ''))
+            if not entry.startswith('frames/'):
+                raise ValueError('Referencia de tabla inválida en el proyecto.')
+            frame = pd.read_json(io.StringIO(archive.read(entry).decode('utf-8')), orient='table')
+            return frame.iloc[:, 0].rename(value.get('name')) if marker == 'series' else frame
+        if marker == 'ndarray':
+            return np.asarray(value.get('value', []))
+        if marker == 'datetime':
+            return pd.Timestamp(value.get('value'))
+        if marker == 'project_file':
+            entry = str(value.get('entry', ''))
+            if not entry.startswith('files/'):
+                raise ValueError('Referencia de archivo inválida en el proyecto.')
+            filename = secure_filename(str(value.get('name') or Path(entry).name)) or 'artifact.bin'
+            destination = restore_dir / (uuid.uuid4().hex[:10] + '_' + filename)
+            destination.write_bytes(archive.read(entry))
+            return str(destination.resolve())
+        if marker == 'omitted_runtime_object':
+            return None
+        return {key: _project_decode(item, archive, restore_dir) for key, item in value.items()}
 
     def _auto_detect_wd_col(df):
         """Return the best wind-direction column from df, or None."""
@@ -871,6 +960,86 @@ def create_app():
         with _sessions_lock:
             sessions[sid] = {'_last_access': time.time()}
         return jsonify({'session_id': sid})
+
+    @app.route('/api/projects/export', methods=['POST'])
+    def export_project():
+        body = request.get_json(silent=True) or {}
+        sid = body.get('session_id')
+        if not sid or sid not in sessions:
+            return _err('La sesión que se desea exportar no existe.', 404)
+        sess = get_session(sid)
+        project_name = str(body.get('project_name') or 'proyecto_eolico').strip()
+        safe_project_name = secure_filename(project_name) or 'proyecto_eolico'
+        client_state = body.get('client_state') or {}
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=6) as archive:
+            session_state = {
+                key: _project_encode(sess[key], archive, f'session.{key}', key)
+                for key in sorted(PROJECT_SESSION_KEYS)
+                if key in sess
+            }
+            manifest = {
+                'format': PROJECT_FORMAT,
+                'format_version': PROJECT_FORMAT_VERSION,
+                'application': 'AERO OPEN CIM',
+                'exported_at': datetime.now(timezone.utc).isoformat(),
+                'source_session_id': sid,
+                'project_name': project_name,
+                'session_state': session_state,
+                'client_state': numpy_to_python(client_state),
+            }
+            archive.writestr(
+                'manifest.json',
+                json.dumps(manifest, ensure_ascii=False, separators=(',', ':')),
+            )
+        stream.seek(0)
+        return send_file(
+            stream, mimetype='application/zip', as_attachment=True,
+            download_name=f'{safe_project_name}.aeroproj', max_age=0,
+        )
+
+    @app.route('/api/projects/import', methods=['POST'])
+    def import_project():
+        project_file = request.files.get('file')
+        if not project_file or not project_file.filename:
+            return _err('Selecciona un archivo .aeroproj.')
+        raw = project_file.read()
+        if not raw:
+            return _err('El archivo de proyecto está vacío.')
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw), 'r') as archive:
+                members = archive.infolist()
+                if len(members) > 5000:
+                    raise ValueError('El proyecto contiene demasiados archivos.')
+                if sum(member.file_size for member in members) > 500 * 1024 * 1024:
+                    raise ValueError('El proyecto descomprimido excede 500 MB.')
+                if archive.testzip() is not None:
+                    raise ValueError('El archivo está dañado (CRC inválido).')
+                manifest = json.loads(archive.read('manifest.json').decode('utf-8'))
+                if manifest.get('format') != PROJECT_FORMAT:
+                    raise ValueError('El archivo no es un proyecto de AERO OPEN CIM.')
+                if int(manifest.get('format_version', 0)) != PROJECT_FORMAT_VERSION:
+                    raise ValueError(
+                        f"Versión de proyecto no compatible: {manifest.get('format_version')}.")
+                sid = str(uuid.uuid4())
+                restore_dir = Path(Config.UPLOAD_FOLDER) / 'project_imports' / secure_filename(sid)
+                restore_dir.mkdir(parents=True, exist_ok=True)
+                restored = _project_decode(
+                    manifest.get('session_state') or {}, archive, restore_dir)
+        except (KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as error:
+            return _err('No se pudo abrir el proyecto: ' + str(error))
+        restored['_last_access'] = time.time()
+        with _sessions_lock:
+            sessions[sid] = restored
+        return jsonify({
+            'session_id': sid,
+            'project_name': manifest.get('project_name') or 'Proyecto restaurado',
+            'exported_at': manifest.get('exported_at'),
+            'format_version': PROJECT_FORMAT_VERSION,
+            'restored_keys': sorted(key for key in restored if not key.startswith('_')),
+            'client_state': manifest.get('client_state') or {},
+        }), 201
 
     # ─── MCP STUDY / CATALOG ─────────────────────────────────────────────────
 
