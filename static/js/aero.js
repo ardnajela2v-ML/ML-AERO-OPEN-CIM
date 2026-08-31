@@ -8445,6 +8445,7 @@ async function mcdaRunAnalysis() {
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
     turbine_filenames: turbineFilenames,
     commercialization_mode: marketInputs.trajectories?.commercialization_mode || 'total_sale',
+    cost_model: technoCollectCostModel(),
     min_spacing_d: safetyMinD,
     s_para_range: spacingRange(rowStartD, 10),
     s_perp_range: spacingRange(colStartD, 6),
@@ -8567,6 +8568,124 @@ async function mcdaRankNow() {
   }
 }
 
+function mcdaAuditEscape(value) {
+  return String(value ?? '—').replace(/[&<>'"]/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[ch]);
+}
+
+function mcdaAuditNumber(value, digits = 2) {
+  const number = Number(value);
+  return Number.isFinite(number)
+    ? number.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
+    : '—';
+}
+
+function mcdaAuditMoney(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? `$${Math.round(number).toLocaleString('en-US')}` : '—';
+}
+
+function mcdaAuditCard(title, rows) {
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:.65rem;min-width:260px;flex:1">
+    <div style="font-weight:700;margin-bottom:.4rem">${mcdaAuditEscape(title)}</div>
+    ${rows.map(([label, value]) => `<div style="display:flex;justify-content:space-between;gap:1rem;padding:.16rem 0;border-bottom:1px dotted var(--border)">
+      <span class="text-muted">${mcdaAuditEscape(label)}</span><span style="text-align:right">${value}</span>
+    </div>`).join('')}
+  </div>`;
+}
+
+function mcdaLayoutAuditHtml(a) {
+  const spec = a.turbine_specification || {};
+  const cap = a.capex_breakdown || {};
+  const econ = a.economic_assumptions || {};
+  const energy = a.energy_balance || {};
+  const losses = a.loss_assumptions || {};
+  const layout = a.layout_config || {};
+  const installedKw = Number(spec.rated_power_kw || 0) * Number(a.n_aerogeneradores || 0);
+  const basePerKw = installedKw > 0 ? Number(a.base_capex_usd || 0) / installedKw : null;
+  const cards = [
+    mcdaAuditCard('Capacidad y geometría', [
+      ['Modelo', mcdaAuditEscape(a.turbina)],
+      ['Cantidad final / Nmax', `<b>${mcdaAuditNumber(a.n_aerogeneradores, 0)} / ${mcdaAuditNumber(a.max_n_fisico, 0)}</b>`],
+      ['Potencia unitaria', `${mcdaAuditNumber(spec.rated_power_kw, 0)} kW`],
+      ['Potencia instalada', `${mcdaAuditNumber(installedKw / 1000, 3)} MW`],
+      ['Diámetro / buje', `${mcdaAuditNumber(spec.rotor_diameter_m, 1)} / ${mcdaAuditNumber(spec.hub_height_m, 1)} m`],
+      ['Área útil', `${mcdaAuditNumber(a.area_km2, 4)} km²`],
+      ['Separación layout', `${mcdaAuditNumber(layout.s_para_d, 2)}D × ${mcdaAuditNumber(layout.s_perp_d, 2)}D`],
+      ['Orientación / tipo', `${mcdaAuditNumber(layout.orientation_deg, 1)}° · ${mcdaAuditEscape(layout.layout_type)}`],
+      ['Colector MST', `${mcdaAuditNumber(a.collection_length_m, 1)} m`],
+    ]),
+    mcdaAuditCard('Energía y pérdidas', [
+      ['AEP bruto teórico', `${mcdaAuditNumber(energy.aep_gross_theoretical_mwh, 1)} MWh`],
+      ['AEP neto pre-estela', `${mcdaAuditNumber(energy.aep_net_pre_wake_mwh, 1)} MWh`],
+      ['AEP después de estela', `${mcdaAuditNumber(energy.aep_after_wake_operational_mwh, 1)} MWh`],
+      ['AEP P50 final', `${mcdaAuditNumber(energy.aep_p50_after_all_losses_mwh, 1)} MWh`],
+      ['AEP P90', `${mcdaAuditNumber(energy.aep_p90_mwh, 1)} MWh`],
+      ['Factor de capacidad', `${mcdaAuditNumber(Number(a.factor_capacidad) * 100, 2)}%`],
+      ['Estela', `${mcdaAuditNumber(losses.wake_loss_pct, 2)}%`],
+      ['Indisponibilidad', `${mcdaAuditNumber(losses.availability_loss_pct, 2)}%`],
+      ['Eléctricas / curtailment', `${mcdaAuditNumber(losses.electrical_loss_pct, 2)}% / ${mcdaAuditNumber(losses.curtailment_loss_pct, 2)}%`],
+      ['Incertidumbre combinada', `${mcdaAuditNumber(a.aep_uncertainty_pct, 2)}%`],
+    ]),
+    mcdaAuditCard('CAPEX auditable', [
+      ['Precio turbina configurado', `<b>${mcdaAuditMoney(econ.turbine_usd_per_kw)} /kW</b>`],
+      ['Participación turbinas', `${mcdaAuditNumber(Number(cap.turbines_pct) * 100, 2)}%`],
+      ['Costo unitario turbina', mcdaAuditMoney(cap.turbine_unit_usd)],
+      ['Total turbinas', mcdaAuditMoney(cap.turbines_total_usd)],
+      ['Obras civiles', mcdaAuditMoney(cap.civil_works_usd)],
+      ['Sistema eléctrico/red', mcdaAuditMoney(cap.electrical_usd)],
+      ['Instalación', mcdaAuditMoney(cap.installation_usd)],
+      ['Ingeniería/permisos', mcdaAuditMoney(cap.engineering_usd)],
+      ['Misceláneos/contingencia', mcdaAuditMoney(cap.miscellaneous_usd)],
+      ['CAPEX base', `<b>${mcdaAuditMoney(a.base_capex_usd)}</b>`],
+      ['Cable colector adicional', mcdaAuditMoney(a.collection_cable_cost_usd)],
+      ['CAPEX total', `<b>${mcdaAuditMoney(a.capex_usd)}</b>`],
+      ['CAPEX base implícito', `<b>${mcdaAuditMoney(basePerKw)} /kW instalado</b>`],
+      ['Control suma porcentajes', `${mcdaAuditNumber(Number(cap.pct_total_check) * 100, 2)}%`],
+    ]),
+    mcdaAuditCard('OPEX y finanzas', [
+      ['OPEX configurado', `${mcdaAuditNumber(Number(econ.opex_pct_capex) * 100, 3)}% del CAPEX/año`],
+      ['OPEX anual', `<b>${mcdaAuditMoney(a.opex_usd_anual)}</b>`],
+      ['OPEX anual por kW', `${mcdaAuditMoney(a.opex_usd_per_installed_kw_year)} /kW-año`],
+      ['OPEX vida sin descontar', mcdaAuditMoney(a.opex_lifetime_usd)],
+      ['OPEX valor presente', mcdaAuditMoney(a.opex_present_value_usd)],
+      ['Precio energía', `${mcdaAuditNumber(econ.price_usd_kwh, 4)} USD/kWh`],
+      ['Ingreso año 1', mcdaAuditMoney(a.annual_revenue_year1_usd)],
+      ['Tasa / horizonte', `${mcdaAuditNumber(Number(econ.discount_rate) * 100, 2)}% / ${mcdaAuditNumber(econ.project_years, 0)} años`],
+      ['VAN / ROI', `${mcdaAuditMoney(a.van_usd)} / ${mcdaAuditNumber(a.roi, 3)}`],
+      ['TIR / payback', `${a.irr == null ? '—' : mcdaAuditNumber(Number(a.irr) * 100, 2) + '%'} / ${mcdaAuditNumber(a.payback_years, 1)} años`],
+      ['LCOE', `${mcdaAuditNumber(a.lcoe_usd_kwh, 5)} USD/kWh`],
+      ['Origen modelo', mcdaAuditEscape(econ.cost_model_origin)],
+    ]),
+  ].join('');
+  const wakeRows = (a.wake_trials || []).map(trial =>
+    `<tr><td>${mcdaAuditNumber(trial.n, 0)}</td><td>${mcdaAuditNumber(trial.wake_loss_pct, 3)}%</td></tr>`).join('');
+  const cashRows = (a.cashflow_table || []).map(row => `<tr>
+    <td>${row.year}</td><td>${mcdaAuditNumber(row.energy_mwh, 1)}</td>
+    <td>${mcdaAuditMoney(row.revenue_usd)}</td><td>${mcdaAuditMoney(row.opex_usd)}</td>
+    <td>${mcdaAuditMoney(row.decommissioning_usd)}</td><td>${mcdaAuditMoney(row.net_cashflow_usd)}</td>
+    <td>${mcdaAuditMoney(row.pv_net_cashflow_usd)}</td><td>${mcdaAuditMoney(row.cumulative_undiscounted_usd)}</td>
+  </tr>`).join('');
+  return `<div style="padding:.8rem;background:var(--bg-secondary)">
+    <div style="display:flex;gap:.65rem;flex-wrap:wrap">${cards}</div>
+    <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Pruebas de cantidad y estela</summary>
+      <table class="tbl"><thead><tr><th>Turbinas</th><th>Pérdida estela</th></tr></thead><tbody>${wakeRows}</tbody></table>
+    </details>
+    <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Flujo de caja anual completo</summary>
+      <div style="overflow:auto"><table class="tbl"><thead><tr><th>Año</th><th>Energía MWh</th><th>Ingreso</th><th>OPEX</th><th>Desmant.</th><th>Flujo neto</th><th>VP flujo</th><th>Acumulado</th></tr></thead><tbody>${cashRows}</tbody></table></div>
+    </details>
+    <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Registro completo JSON (auditoría)</summary>
+      <pre style="white-space:pre-wrap;max-height:420px;overflow:auto;font-size:.68rem">${mcdaAuditEscape(JSON.stringify(a, null, 2))}</pre>
+    </details>
+  </div>`;
+}
+
+function mcdaToggleAudit(id) {
+  const row = document.getElementById(id);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
 function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
   const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
@@ -8575,7 +8694,7 @@ function mcdaRenderRanking(r) {
     body.innerHTML = '<tr><td colspan="10" class="text-muted">Sin resultados.</td></tr>';
     return;
   }
-  body.innerHTML = top.map(a => {
+  body.innerHTML = top.map((a, index) => {
     const medal = a.rank === 1 ? '🥇' : a.rank === 2 ? '🥈' : a.rank === 3 ? '🥉' : a.rank;
     const highlight = a.rank === 1 ? 'style="background:var(--green-dim)"' : '';
     const siteText = a.best_site
@@ -8583,7 +8702,8 @@ function mcdaRenderRanking(r) {
       : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
     const layoutInfo = a.n_aerogeneradores != null
       ? `<br><span class="text-muted" style="font-size:.72rem"><b>${a.n_aerogeneradores}/${a.max_n_fisico}</b> aeros (final/Nmax físico) · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}%/${Number(a.max_wake_loss_pct ?? 5).toFixed(1)}% máx. · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
-        `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>`
+        `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>` +
+        `<br><button class="btn-secondary" type="button" style="font-size:.68rem;padding:.2rem .45rem;margin-top:.3rem" onclick="mcdaToggleAudit('mcda-audit-${index}')">Ver todos los resultados y fórmulas</button>`
       : '';
     return `<tr ${highlight}>
       <td><strong>${medal}</strong></td>
@@ -8596,7 +8716,7 @@ function mcdaRenderRanking(r) {
       <td>${Number.isFinite(Number(a.lcoe_usd_kwh)) ? Number(a.lcoe_usd_kwh).toFixed(4) : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.roi)) ? Number(a.roi).toFixed(2) : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.capex_usd)) ? Math.round(a.capex_usd).toLocaleString() : 'No calculado'}</td>
-    </tr>`;
+    </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="10">${mcdaLayoutAuditHtml(a)}</td></tr>`;
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico
   syncTopsisWinnerToModules();

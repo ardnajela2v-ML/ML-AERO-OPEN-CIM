@@ -184,6 +184,23 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertGreater(winner['aep_mwh'], 0)
         self.assertGreater(winner['capex_usd'], 0)
         self.assertTrue(math.isfinite(winner['lcoe_usd_kwh']))
+        installed_kw = (
+            winner['turbine_specification']['rated_power_kw']
+            * winner['n_aerogeneradores']
+        )
+        expected_base_capex = (
+            installed_kw * winner['economic_assumptions']['turbine_usd_per_kw']
+            / winner['economic_assumptions']['turbines_pct']
+        )
+        self.assertAlmostEqual(winner['base_capex_usd'], expected_base_capex, delta=1.0)
+        self.assertAlmostEqual(
+            winner['opex_usd_anual'],
+            winner['capex_usd'] * winner['economic_assumptions']['opex_pct_capex'],
+            delta=1e-6,
+        )
+        self.assertEqual(len(winner['cashflow_table']), 20)
+        self.assertIn('base_capex', winner['economic_formulas'])
+        self.assertIn('aep_gross_theoretical_mwh', winner['energy_balance'])
 
     def test_zero_wake_limit_reduces_and_reoptimises_until_compliant(self):
         sites = [{

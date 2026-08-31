@@ -90,6 +90,9 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     pv_costs, pv_energy = capex, 0.0
     cumulative = -capex
     payback = None
+    cashflow_table = []
+    pv_opex = 0.0
+    pv_decommissioning = 0.0
     for year in range(1, project_years + 1):
         energy = aep_p50_mwh * ((1.0 - degradation_pct / 100.0) ** (year - 1))
         revenue = energy * 1000.0 * price_usd_kwh
@@ -100,13 +103,33 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         if payback is None and cumulative >= 0:
             payback = year
         factor = (1.0 + discount_rate) ** year
-        pv_costs += (annual_opex + terminal) / factor
+        discounted_opex = annual_opex / factor
+        discounted_terminal = terminal / factor
+        pv_opex += discounted_opex
+        pv_decommissioning += discounted_terminal
+        pv_costs += discounted_opex + discounted_terminal
         pv_energy += energy * 1000.0 / factor
+        cashflow_table.append({
+            'year': year,
+            'energy_mwh': energy,
+            'revenue_usd': revenue,
+            'opex_usd': annual_opex,
+            'decommissioning_usd': terminal,
+            'net_cashflow_usd': net,
+            'discount_factor': factor,
+            'pv_net_cashflow_usd': net / factor,
+            'cumulative_undiscounted_usd': cumulative,
+        })
     van = sum(value / ((1.0 + discount_rate) ** year) for year, value in enumerate(cashflows))
+    installed_kw = float(turbine.rated_power_kw) * int(n_turbines)
     return {
         'capex_usd': capex,
+        'base_capex_usd': float(cap['total_capex_usd']),
+        'capex_usd_per_installed_kw': capex / installed_kw if installed_kw > 0 else None,
         'opex_usd_anual': annual_opex,
+        'opex_usd_per_installed_kw_year': annual_opex / installed_kw if installed_kw > 0 else None,
         'opex_lifetime_usd': annual_opex * project_years,
+        'opex_present_value_usd': pv_opex,
         'van_usd': van,
         'roi': van / capex if capex > 0 else None,
         'irr': _irr(cashflows),
@@ -114,7 +137,19 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'lcoe_usd_kwh': pv_costs / pv_energy if pv_energy > 0 else None,
         'collection_cable_cost_usd': cable_cost,
         'decommissioning_usd': decommissioning,
+        'decommissioning_present_value_usd': pv_decommissioning,
+        'annual_revenue_year1_usd': aep_p50_mwh * 1000.0 * price_usd_kwh,
+        'cashflow_table': cashflow_table,
         'capex_breakdown': cap,
+        'economic_formulas': {
+            'turbines_total': 'rated_power_kw × n_turbines × turbine_usd_per_kw',
+            'base_capex': 'turbines_total_usd ÷ turbines_pct',
+            'capex': 'base_capex_usd + collection_cable_cost_usd',
+            'annual_opex': 'capex_usd × opex_pct_capex',
+            'annual_revenue': 'aep_p50_mwh × 1000 × price_usd_kwh',
+            'npv': 'Σ net_cashflow_t ÷ (1 + discount_rate)^t, incluyendo CAPEX en t=0',
+            'lcoe': 'PV(CAPEX + OPEX + desmantelamiento) ÷ PV(energía neta)',
+        },
     }
 
 
@@ -157,6 +192,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         if not 0.0 <= float(value) < 1.0:
             raise ValueError(f'{name} debe estar en el intervalo [0, 1).')
     ws, wd, mean_speed, weibull_k, rho = _joint_synthetic_wind(sites)
+    cost_model_origin = 'request' if cost_model is not None else 'default'
     cost_model = cost_model or CostModel.from_defaults()
     alternatives = []
     errors = []
@@ -288,6 +324,36 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'bankable_missing': ['ct_curve', 'iec_class', 'extreme_wind',
                                      'ambient_turbulence', 'certified_power_curve'],
                 'wake_model': wake_model,
+                'turbine_specification': {
+                    'rated_power_kw': float(turbine.rated_power_kw),
+                    'rotor_diameter_m': float(turbine.rotor_diameter_m),
+                    'hub_height_m': float(turbine.hub_height_m or 0.0),
+                },
+                'energy_balance': {
+                    'aep_gross_theoretical_mwh': sim['aep_gross_mwh'],
+                    'aep_net_pre_wake_mwh': sim.get('aep_net_pre_wake_mwh'),
+                    'aep_after_wake_operational_mwh': sim['aep_mwh'],
+                    'aep_p50_after_all_losses_mwh': aep_p50,
+                    'aep_p90_mwh': aep_p90,
+                },
+                'loss_assumptions': {
+                    'wake_loss_pct': sim['wake_loss_pct'],
+                    'availability_loss_pct': (1.0 - availability) * 100.0,
+                    'electrical_loss_pct': electrical_losses * 100.0,
+                    'curtailment_loss_pct': curtailment_loss * 100.0,
+                    'environmental_loss_pct': environmental_loss * 100.0,
+                    'loss_combination': 'multiplicativa, no suma aritmética',
+                },
+                'economic_assumptions': {
+                    **cost_model.to_dict(),
+                    'discount_rate': float(discount_rate),
+                    'project_years': int(project_years),
+                    'price_usd_kwh': float(price_usd_kwh),
+                    'degradation_pct_per_year': 0.3,
+                    'decommissioning_pct_capex': 3.0,
+                    'collection_cable_usd_per_m': 75.0,
+                    'cost_model_origin': cost_model_origin,
+                },
                 **econ,
             })
         except Exception as exc:
