@@ -121,9 +121,10 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
 def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder: str,
                          turbine_filenames: List[str], wind_grid=None,
                          exclusions=None, boundary_setback_m: float = 0.0,
-                         min_spacing_d: float = 3.0,
-                         s_para_range=(5, 6, 7, 8, 9, 10),
-                         s_perp_range=(3, 4, 5, 6),
+                         min_spacing_d: float = 2.0,
+                         s_para_range=(3, 4, 5, 6, 7, 8, 9, 10),
+                         s_perp_range=(2, 3, 4, 5, 6),
+                         max_wake_loss_pct: float = 5.0,
                          wake_model: str = 'gaussian', k_wake: float = 0.04,
                          ct: float = 0.8, availability: float = 0.97,
                          electrical_losses: float = 0.03,
@@ -145,6 +146,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         raise ValueError('wake_model debe ser gaussian o jensen.')
     if min_spacing_d < 2.0:
         raise ValueError('La separación mínima no puede ser menor que 2D.')
+    if not 0.0 <= float(max_wake_loss_pct) < 100.0:
+        raise ValueError('El límite de pérdida por estela debe estar en [0, 100).')
     if project_years <= 0 or discount_rate <= -1.0 or price_usd_kwh < 0:
         raise ValueError('Horizonte, tasa de descuento o precio de energía inválidos.')
     for name, value in {
@@ -179,33 +182,54 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 exclusion_polygons=exclusions, boundary_setback_m=setback,
                 wake_model=wake_model,
             )
-            max_n = int(capacity.get('max_n_fit') or capacity.get('n_placed') or 0)
+            physical_max_n = int(capacity.get('max_n_fit') or capacity.get('n_placed') or 0)
+            max_n = physical_max_n
             if grid_limit_mw and grid_limit_mw > 0:
                 max_n = min(max_n, int(math.floor(grid_limit_mw * 1000.0 / turbine.rated_power_kw)))
             if max_n <= 0:
                 errors.append({'turbine': filename, 'reason': 'sin_layout_factible'})
                 continue
-            # Product rule: one alternative per turbine model, always using
-            # the physical maximum found for that model.
-            layout = optimize_layout_structured(
-                polygon, turbine, max_n, ws=ws, wd=wd, wind_grid=wind_grid,
-                fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
-                min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
-                s_perp_range=tuple(s_perp_range), rho=rho,
-                exclusion_polygons=exclusions, boundary_setback_m=setback,
-                wake_model=wake_model,
-            )
-            if int(layout['n_placed']) != max_n:
-                errors.append({'turbine': filename, 'reason': 'nmax_layout_incompleto'})
-                continue
-            sim = simulate_wind_farm(
-                layout['layout_xy_m'], turbine, ws, wd, k_wake=k_wake, ct=ct,
-                n_sectors=36, availability=availability,
-                electrical_losses=electrical_losses, wake_model=wake_model,
-                rho_override=rho,
-            )
-            if sim.get('error'):
-                errors.append({'turbine': filename, 'reason': sim.get('error')})
+            # Select the largest exact-count layout whose whole-farm wake loss
+            # satisfies the configured limit. Every decrement is reoptimised;
+            # a subset of the denser layout is not assumed to be optimal.
+            layout = None
+            sim = None
+            selected_n = 0
+            wake_trials = []
+            for candidate_n in range(max_n, 0, -1):
+                candidate_layout = optimize_layout_structured(
+                    polygon, turbine, candidate_n, ws=ws, wd=wd, wind_grid=wind_grid,
+                    fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
+                    min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
+                    s_perp_range=tuple(s_perp_range), rho=rho,
+                    exclusion_polygons=exclusions, boundary_setback_m=setback,
+                    wake_model=wake_model,
+                )
+                if int(candidate_layout['n_placed']) != candidate_n:
+                    continue
+                candidate_sim = simulate_wind_farm(
+                    candidate_layout['layout_xy_m'], turbine, ws, wd,
+                    k_wake=k_wake, ct=ct, n_sectors=36,
+                    availability=availability,
+                    electrical_losses=electrical_losses,
+                    wake_model=wake_model, rho_override=rho,
+                )
+                if candidate_sim.get('error'):
+                    continue
+                trial_wake = float(candidate_sim.get('wake_loss_pct') or 0.0)
+                wake_trials.append({'n': candidate_n, 'wake_loss_pct': trial_wake})
+                if trial_wake <= float(max_wake_loss_pct) + 1e-9:
+                    layout = candidate_layout
+                    sim = candidate_sim
+                    selected_n = candidate_n
+                    break
+            if layout is None or sim is None or selected_n <= 0:
+                errors.append({
+                    'turbine': filename,
+                    'reason': 'sin_layout_que_cumpla_limite_estela',
+                    'max_wake_loss_pct': float(max_wake_loss_pct),
+                    'wake_trials': wake_trials,
+                })
                 continue
             other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
             aep_p50 = float(sim['aep_mwh']) * other_survival
@@ -220,18 +244,23 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * uncertainty_pct / 100.0))
             collection_length = _collection_length_m(layout['layout_xy_m'])
             econ = _economics(
-                turbine, max_n, aep_p50, cost_model, discount_rate,
+                turbine, selected_n, aep_p50, cost_model, discount_rate,
                 project_years, price_usd_kwh, collection_length,
             )
-            installed_mw = max_n * turbine.rated_power_kw / 1000.0
+            installed_mw = selected_n * turbine.rated_power_kw / 1000.0
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
             area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
             alternatives.append({
-                'label': f'layout::{filename}::nmax',
-                'site': f'Parque de capacidad física máxima ({max_n}/{max_n} aeros)',
+                'label': f'layout::{filename}::wake-optimal',
+                'site': f'Parque óptimo por estela ({selected_n}/{physical_max_n} aeros)',
                 'turbina': filename,
-                'n_aerogeneradores': max_n,
-                'max_n_fisico': max_n,
+                'n_aerogeneradores': selected_n,
+                'n_optimo_estela': selected_n,
+                'max_n_fisico': physical_max_n,
+                'max_n_tecnico': max_n,
+                'reducido_por_estela': selected_n < max_n,
+                'max_wake_loss_pct': float(max_wake_loss_pct),
+                'wake_trials': wake_trials,
                 'feasible': True,
                 'layout_latlon': layout['layout_latlon'],
                 'layout_xy_m': layout['layout_xy_m'],
@@ -251,7 +280,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'factor_capacidad': factor_capacity,
                 'collection_length_m': collection_length,
                 'energy_density_mwh_km2': aep_p50 / area_km2,
-                'civil_complexity_index': collection_length / max(max_n, 1),
+                'civil_complexity_index': collection_length / max(selected_n, 1),
                 'iec_suitability_score': 0.5,
                 'quality_level': 'prefeasibility',
                 'quality_warnings': ['Ct genérico; falta clase IEC y turbulencia extrema del fabricante'],
@@ -274,9 +303,12 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         'wind_summary': {'mean_speed_ms': mean_speed, 'weibull_k': weibull_k, 'rho': rho},
         'assumptions': {
             'wake_model': wake_model, 'k_wake': k_wake, 'ct': ct,
+            'max_wake_loss_pct': float(max_wake_loss_pct),
+            'min_spacing_d': float(min_spacing_d),
+            's_para_range': list(s_para_range), 's_perp_range': list(s_perp_range),
             'availability': availability, 'electrical_losses': electrical_losses,
             'commercialization_mode': commercialization_mode,
-            'count_policy': 'exactly_nmax_one_alternative_per_turbine_model',
+            'count_policy': 'largest_exact_count_with_wake_loss_at_or_below_limit',
         },
         'methodology_references': [
             {'id': 'IEC-61400-1:2019', 'url': 'https://webstore.iec.ch/en/publication/26423'},

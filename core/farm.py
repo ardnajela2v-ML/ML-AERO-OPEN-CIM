@@ -891,6 +891,27 @@ def _score_layout_fast(
     return score
 
 
+def _select_spread_candidates(candidates: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+    """Choose an exact-count, spatially spread subset; wind speed breaks ties."""
+    if n <= 0 or len(candidates) <= n:
+        return list(candidates)
+    remaining = list(candidates)
+    selected = [max(remaining, key=lambda c: c['v'])]
+    remaining.remove(selected[0])
+    while remaining and len(selected) < n:
+        def merit(candidate):
+            min_dist_sq = min(
+                (candidate['x'] - placed['x']) ** 2
+                + (candidate['y'] - placed['y']) ** 2
+                for placed in selected
+            )
+            return min_dist_sq, candidate['v']
+        chosen = max(remaining, key=merit)
+        selected.append(chosen)
+        remaining.remove(chosen)
+    return selected
+
+
 # ── Structured layout optimisation ───────────────────────────────────────────
 
 def optimize_layout_structured(
@@ -1089,8 +1110,11 @@ def optimize_layout_structured(
                 )
                 if len(cands) < target_n:
                     continue
-                sel = (sorted(cands, key=lambda c: -c['v'])[:target_n]
-                       if len(cands) > target_n else cands)
+                # When evaluating fewer turbines than available grid points,
+                # spread them across the usable polygon instead of taking a
+                # clustered highest-wind prefix. This reduces wake exposure;
+                # the subsequent energy score still decides among grids.
+                sel = _select_spread_candidates(cands, target_n)
                 layout_xy = [[c['x'], c['y']] for c in sel]
                 score = _score_layout_fast(
                     layout_xy, D, sector_dirs, sector_weights,

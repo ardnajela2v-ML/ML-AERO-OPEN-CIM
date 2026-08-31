@@ -123,8 +123,19 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['ranking'][0]['label'], 'full')
         self.assertEqual(
             {row['reason'] for row in result['excluded']},
-            {'layout_no_usa_nmax', 'modelo_duplicado'},
+            {'layout_no_usa_cantidad_optima', 'modelo_duplicado'},
         )
+
+    def test_wake_validated_lower_count_is_a_rankable_final_alternative(self):
+        constrained = self.alternative('wake-optimal', 2.0)
+        constrained.update(
+            turbina='modelo_a.csv', n_aerogeneradores=8,
+            n_optimo_estela=8, max_n_fisico=10,
+            wake_loss_pct=4.9, max_wake_loss_pct=5.0,
+        )
+        result = rank_layout_alternatives([constrained])
+        self.assertEqual(result['n'], 1)
+        self.assertEqual(result['ranking'][0]['n_aerogeneradores'], 8)
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
@@ -150,11 +161,16 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(len(result['alternatives']), 2)
         self.assertEqual(len({row['turbina'] for row in result['alternatives']}), 2)
         self.assertTrue(all(
-            row['n_aerogeneradores'] == row['max_n_fisico']
+            row['n_aerogeneradores'] == row['n_optimo_estela']
+            and row['n_aerogeneradores'] <= row['max_n_fisico']
             for row in result['alternatives']
         ))
         self.assertTrue(all(
-            len(row['layout_latlon']) == row['max_n_fisico']
+            len(row['layout_latlon']) == row['n_aerogeneradores']
+            for row in result['alternatives']
+        ))
+        self.assertTrue(all(
+            row['wake_loss_pct'] <= row['max_wake_loss_pct']
             for row in result['alternatives']
         ))
         self.assertEqual(result['ranking']['n'], 2)
@@ -164,10 +180,31 @@ class LayoutTopsisTests(unittest.TestCase):
             {row['turbina'] for row in result['alternatives']},
         )
         winner = result['ranking']['ranking'][0]
-        self.assertEqual(winner['n_aerogeneradores'], winner['max_n_fisico'])
+        self.assertEqual(winner['n_aerogeneradores'], winner['n_optimo_estela'])
         self.assertGreater(winner['aep_mwh'], 0)
         self.assertGreater(winner['capex_usd'], 0)
         self.assertTrue(math.isfinite(winner['lcoe_usd_kwh']))
+
+    def test_zero_wake_limit_reduces_and_reoptimises_until_compliant(self):
+        sites = [{
+            'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
+            'sectorial': {'frequency_pct': [6.25] * 16},
+        }]
+        result = analyze_park_layouts(
+            sites, [
+                {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
+                {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
+            ], 'aerogeneradores', ['gamesa21_p2000_r45.csv'],
+            min_spacing_d=2, s_para_range=(3, 4, 5),
+            s_perp_range=(2, 3, 4), max_wake_loss_pct=0.0,
+        )
+        row = result['alternatives'][0]
+        self.assertGreater(row['max_n_fisico'], 1)
+        self.assertLess(row['n_aerogeneradores'], row['max_n_fisico'])
+        self.assertEqual(row['wake_loss_pct'], 0.0)
+        self.assertTrue(row['reducido_por_estela'])
+        self.assertEqual(row['wake_trials'][-1]['n'], row['n_aerogeneradores'])
+        self.assertTrue(any(trial['wake_loss_pct'] > 0 for trial in row['wake_trials'][:-1]))
 
 
 if __name__ == '__main__':

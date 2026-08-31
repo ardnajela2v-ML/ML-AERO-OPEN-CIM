@@ -112,9 +112,9 @@ def rank_layout_alternatives(alternatives: List[Dict],
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': []}
 
-    # Layout MCDA has one decision alternative per turbine model. Reject
-    # partial-capacity rows and collapse accidental duplicate full-capacity
-    # rows defensively so stale clients cannot reintroduce 9/10, 8/10, etc.
+    # Layout MCDA has one decision alternative per turbine model. The accepted
+    # count is either physical Nmax or the largest lower count reoptimised to
+    # satisfy the whole-farm wake-loss limit. Reject arbitrary partial rows.
     model_rows = {}
     passthrough_rows = []
     pre_excluded = []
@@ -122,14 +122,17 @@ def rank_layout_alternatives(alternatives: List[Dict],
         model = alt.get('turbina')
         n_used = alt.get('n_aerogeneradores')
         n_max = alt.get('max_n_fisico')
+        n_optimal = alt.get('n_optimo_estela', n_max)
         if not model:
             passthrough_rows.append(alt)
             continue
         model_key = str(model).casefold()
-        if n_used is None or n_max is None or int(n_used) != int(n_max):
+        if (n_used is None or n_max is None or n_optimal is None
+                or int(n_used) != int(n_optimal)
+                or int(n_used) > int(n_max)):
             pre_excluded.append({
                 'label': alt.get('label'), 'missing': [],
-                'reason': 'layout_no_usa_nmax',
+                'reason': 'layout_no_usa_cantidad_optima',
             })
             continue
         if model_key in model_rows:
@@ -142,7 +145,7 @@ def rank_layout_alternatives(alternatives: List[Dict],
     alternatives = passthrough_rows + list(model_rows.values())
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': pre_excluded,
-                'note': 'No hay alternativas únicas que utilicen Nmax.'}
+                'note': 'No hay alternativas únicas con cantidad óptima validada.'}
     raw_weights = dict(LAYOUT_WEIGHTS)
     if weights:
         for key, value in weights.items():

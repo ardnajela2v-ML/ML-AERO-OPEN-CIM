@@ -2848,7 +2848,8 @@
         </div>
         <p class="text-muted" style="font-size:.72rem;margin-top:.35rem">
           Los puntos azules y amarillos no son aerogeneradores ni alternativas TOPSIS: son muestras del campo eólico usadas para caracterizar el terreno.
-          Nmax es la capacidad física máxima factible encontrada para cada modelo; cada fila del ranking utiliza Nmax/Nmax.
+          Nmax es la capacidad física máxima encontrada. La cantidad final es la mayor que, después de reoptimizar el acomodo,
+          mantiene la pérdida total por estela dentro del límite configurado; se muestra como cantidad final/Nmax físico.
         </p>
       </div>
 
@@ -2993,8 +2994,20 @@
         <div class="card-body" style="padding:.6rem">
           <div class="form-grid-2">
             <div>
-              <label class="form-label" title="IEA ≥ 3D; industria onshore 5–7D">Sep. mín. (×D)</label>
-              <input class="form-input" type="number" id="parque-min-sep-d" value="5" step="0.5" min="2" max="15">
+              <label class="form-label" title="Distancia euclidiana dura entre centros">Seguridad mínima (×D)</label>
+              <input class="form-input" type="number" id="parque-min-sep-d" value="2" step="0.5" min="2" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Separación inicial longitudinal entre filas; se prueban valores mayores">Entre filas desde (×D)</label>
+              <input class="form-input" type="number" id="parque-row-sep-d" value="3" step="0.5" min="2" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Separación inicial transversal entre columnas; se prueban valores mayores">Entre columnas desde (×D)</label>
+              <input class="form-input" type="number" id="parque-col-sep-d" value="2" step="0.5" min="2" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Si el parque excede este valor se reduce una turbina y se reoptimiza">Pérdida estela máxima (%)</label>
+              <input class="form-input" type="number" id="parque-max-wake-loss" value="5" step="0.5" min="0" max="30">
             </div>
             <div>
               <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">k estela (NOJ)</label>

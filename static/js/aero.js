@@ -8260,6 +8260,20 @@ async function mcdaRunAnalysis() {
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
+  const safetyMinD = Math.max(2, Number(document.getElementById('parque-min-sep-d')?.value) || 2);
+  const rowStartD = Math.max(safetyMinD, Number(document.getElementById('parque-row-sep-d')?.value) || 3);
+  const colStartD = Math.max(safetyMinD, Number(document.getElementById('parque-col-sep-d')?.value) || 2);
+  const wakeLimitRaw = Number(document.getElementById('parque-max-wake-loss')?.value);
+  const wakeLimitPct = Number.isFinite(wakeLimitRaw) ? Math.max(0, wakeLimitRaw) : 5;
+  const spacingRange = (start, conventionalMax) => {
+    const values = [];
+    const end = Math.max(start, conventionalMax);
+    for (let value = start; value <= end + 1e-9; value += 1) {
+      values.push(Number(value.toFixed(2)));
+    }
+    if (values[values.length - 1] < end) values.push(end);
+    return values;
+  };
   let exclusionPolygons = [];
   try {
     exclusionPolygons = areaMode ? mcdaExclusionPolygons() : [];
@@ -8283,9 +8297,10 @@ async function mcdaRunAnalysis() {
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
     turbine_filenames: turbineFilenames,
     commercialization_mode: marketInputs.trajectories?.commercialization_mode || 'total_sale',
-    min_spacing_d: Number(document.getElementById('parque-min-sep-d')?.value) || 3,
-    s_para_range: [5, 6, 7, 8, 9, 10],
-    s_perp_range: [3, 4, 5, 6],
+    min_spacing_d: safetyMinD,
+    s_para_range: spacingRange(rowStartD, 10),
+    s_perp_range: spacingRange(colStartD, 6),
+    max_wake_loss_pct: wakeLimitPct,
     wake_model: 'gaussian',
     k_wake: 0.04,
     ct: Number(document.getElementById('parque-ct')?.value) || 0.8,
@@ -8345,7 +8360,7 @@ async function mcdaPollStatus() {
       const nSites = MCDA.lastAnalysis.length;
       const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
-        ? `${r.result?.n_valid_models || 0} modelos válidos · 1 layout Nmax por modelo · ${nSites} muestras de recurso`
+        ? `${r.result?.n_valid_models || 0} modelos válidos · 1 layout óptimo dentro del límite de estela por modelo · ${nSites} muestras de recurso`
         : `${nSites} sitios candidatos · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
       toast('TOPSIS espacial completado.', 'success');
@@ -8419,7 +8434,7 @@ function mcdaRenderRanking(r) {
       ? `${a.site || ''}<br><span class="text-muted" style="font-size:.72rem">Mejor sitio: ${a.best_site}</span>`
       : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
     const layoutInfo = a.n_aerogeneradores != null
-      ? `<br><span class="text-muted" style="font-size:.72rem"><b>Nmax ${a.max_n_fisico}/${a.max_n_fisico}</b> aeros · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}% · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
+      ? `<br><span class="text-muted" style="font-size:.72rem"><b>${a.n_aerogeneradores}/${a.max_n_fisico}</b> aeros (final/Nmax físico) · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}%/${Number(a.max_wake_loss_pct ?? 5).toFixed(1)}% máx. · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
         `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>`
       : '';
     return `<tr ${highlight}>
