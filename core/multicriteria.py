@@ -103,11 +103,31 @@ LAYOUT_LABELS = {
     'energy_density_mwh_km2': 'Energía neta por km²',
     'collection_length_m': 'Red colectora (m)',
     'civil_complexity_index': 'Complejidad civil',
+    'unistmo_technology_preference_score': 'Preferencia tecnológica UNISTMO',
 }
+
+# Stakeholder-preference scenario kept separate from the balanced scientific
+# profile. The explicit preference criterion is intentionally dominant; it is
+# never included in the base ranking.
+UNISTMO_LAYOUT_WEIGHTS = {
+    'unistmo_technology_preference_score': 0.45,
+    'aep_p90_mwh': 0.15,
+    'van_usd': 0.10,
+    'lcoe_usd_kwh': 0.08,
+    'wake_loss_pct': 0.07,
+    'factor_capacidad': 0.05,
+    'capex_usd': 0.04,
+    'opex_lifetime_usd': 0.02,
+    'aep_uncertainty_pct': 0.02,
+    'energy_density_mwh_km2': 0.02,
+}
+
+LAYOUT_DIRECTION['unistmo_technology_preference_score'] = +1
 
 
 def rank_layout_alternatives(alternatives: List[Dict],
-                             weights: Optional[Dict[str, float]] = None):
+                             weights: Optional[Dict[str, float]] = None,
+                             profile: str = 'balanced_integral_v1'):
     """Rank complete, feasible farm layouts with transparent missing-data rules."""
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': []}
@@ -146,10 +166,14 @@ def rank_layout_alternatives(alternatives: List[Dict],
     if not alternatives:
         return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': pre_excluded,
                 'note': 'No hay alternativas únicas con cantidad óptima validada.'}
-    raw_weights = dict(LAYOUT_WEIGHTS)
+    if profile not in {'balanced_integral_v1', 'unistmo_v1'}:
+        raise ValueError(f'Perfil TOPSIS de layouts no reconocido: {profile}')
+    raw_weights = dict(
+        UNISTMO_LAYOUT_WEIGHTS if profile == 'unistmo_v1' else LAYOUT_WEIGHTS
+    )
     if weights:
         for key, value in weights.items():
-            if key in raw_weights:
+            if key in raw_weights and key in LAYOUT_DIRECTION:
                 raw_weights[key] = float(value)
     if any(value < 0 for value in raw_weights.values()):
         raise ValueError('Los pesos TOPSIS no pueden ser negativos.')
@@ -242,7 +266,7 @@ def rank_layout_alternatives(alternatives: List[Dict],
     return {'ranking': ranked, 'weights': effective_weights, 'n': len(ranked),
             'criteria': active, 'labels': LAYOUT_LABELS,
             'constant_criteria': constant, 'excluded': excluded,
-            'profile': 'balanced_integral_v1',
+            'profile': profile,
             'sensitivity_scenarios': len(scenarios)}
 
 

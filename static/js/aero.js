@@ -233,6 +233,7 @@ function collectProjectClientState() {
     mcda: projectJsonClone({
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
+      activeScenario: MCDA.activeScenario,
     }),
     parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult }),
     globe: projectJsonClone({
@@ -8026,6 +8027,7 @@ const MCDA = {
   lastRanking:  null,   // last TOPSIS result
   lastSpatial:  null,
   defaults:     null,
+  activeScenario: 'base',
   scope:        'area',
   miniMap:      null,
   miniBase:     null,
@@ -8044,7 +8046,8 @@ async function mcdaBuildWeightSliders() {
   const container = document.getElementById('mcda-weights');
   if (!container) return;
   const isLayout = MCDA.scope === 'area';
-  const weights = isLayout ? d.layout_weights : d.weights;
+  const scenario = isLayout ? (d.layout_scenarios?.[MCDA.activeScenario] || d.layout_scenarios?.base) : null;
+  const weights = isLayout ? (scenario?.weights || d.layout_weights) : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
   container.innerHTML = Object.entries(weights).map(([k, v]) => {
@@ -8196,7 +8199,7 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
   const status = document.getElementById('mcda-mini-status');
   const areaMode = MCDA.scope === 'area';
   if (title) title.textContent = areaMode
-    ? 'Mapa TOPSIS — parque dibujado'
+    ? `Mapa TOPSIS — ${MCDA.activeScenario === 'unistmo' ? 'Escenario UNISTMO' : 'base científico'}`
     : 'Mapa TOPSIS — exploración global';
 
   let focusLayer = null;
@@ -8327,6 +8330,8 @@ function mcdaRenderSpatialMarkers(result) {
 
 function mcdaUpdateScopeUi() {
   const areaMode = MCDA.scope === 'area';
+  const scenarioRow = document.getElementById('mcda-scenario-row');
+  if (scenarioRow) scenarioRow.style.display = areaMode ? '' : 'none';
   document.querySelectorAll('.mcda-subtab').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.scope === MCDA.scope);
   });
@@ -8363,6 +8368,9 @@ function mcdaSetScope(scope) {
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
   MCDA.lastSpatial = null;
+  MCDA.activeScenario = 'base';
+  const scenarioSelect = document.getElementById('mcda-ranking-scenario');
+  if (scenarioSelect) scenarioSelect.value = 'base';
   mcdaUpdateScopeUi();
   mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
@@ -8376,11 +8384,30 @@ function mcdaSetScope(scope) {
 
 async function mcdaResetWeights() {
   const d = await mcdaLoadDefaults();
-  const defaults = MCDA.scope === 'area' ? d.layout_weights : d.weights;
+  const defaults = MCDA.scope === 'area'
+    ? (d.layout_scenarios?.[MCDA.activeScenario]?.weights || d.layout_weights)
+    : d.weights;
   document.querySelectorAll('.mcda-w').forEach(el => {
     el.value = defaults[el.dataset.crit];
     el.nextElementSibling.textContent = (+el.value).toFixed(2);
   });
+}
+
+async function mcdaSetRankingScenario(scenario) {
+  MCDA.activeScenario = scenario === 'unistmo' ? 'unistmo' : 'base';
+  const help = document.getElementById('mcda-scenario-help');
+  if (help) help.textContent = MCDA.activeScenario === 'unistmo'
+    ? 'UNISTMO prioriza explícitamente el Gamesa 20 de 2 MW y rotor D80; es una preferencia del decisor, separada del ranking científico base.'
+    : 'El escenario base compara el desempeño integral sin preferencia de fabricante.';
+  await mcdaBuildWeightSliders();
+  const stored = MCDA.lastSpatial?.ranking_scenarios?.[MCDA.activeScenario];
+  if (stored) {
+    MCDA.lastRanking = stored;
+    MCDA.lastSpatial.ranking = stored;
+    mcdaRenderRanking(stored);
+    mcdaRenderSpatialMarkers(MCDA.lastSpatial);
+    mcdaRenderMiniMap(MCDA.lastSpatial);
+  }
 }
 
 async function mcdaRunAnalysis() {
@@ -8459,7 +8486,9 @@ async function mcdaRunAnalysis() {
     boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
   };
   if (areaMode) {
-    body.layout_weights = body.weights;
+    body.layout_weights = MCDA.activeScenario === 'base'
+      ? body.weights
+      : (MCDA.defaults?.layout_weights || body.weights);
     delete body.weights;
   }
   if (areaMode) body.polygon = parkPolygon;
@@ -8505,7 +8534,9 @@ async function mcdaPollStatus() {
     if (r.status === 'done') {
       MCDA.lastSpatial = r.result;
       MCDA.lastAnalysis = r.result?.sites || [];
-      MCDA.lastRanking = r.result?.ranking || null;
+      MCDA.lastRanking = r.result?.ranking_scenarios?.[MCDA.activeScenario]
+        || r.result?.ranking || null;
+      if (MCDA.lastSpatial && MCDA.lastRanking) MCDA.lastSpatial.ranking = MCDA.lastRanking;
       const nSites = MCDA.lastAnalysis.length;
       const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
@@ -8534,9 +8565,15 @@ async function mcdaRankNow() {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
         weights: mcdaGetWeights(),
+        profile: MCDA.activeScenario === 'unistmo' ? 'unistmo_v1' : 'balanced_integral_v1',
       });
       MCDA.lastRanking = r;
+      MCDA.lastSpatial.ranking = r;
+      MCDA.lastSpatial.ranking_scenarios = MCDA.lastSpatial.ranking_scenarios || {};
+      MCDA.lastSpatial.ranking_scenarios[MCDA.activeScenario] = r;
       mcdaRenderRanking(r);
+      mcdaRenderSpatialMarkers(MCDA.lastSpatial);
+      mcdaRenderMiniMap(MCDA.lastSpatial);
     } catch (e) {
       toast(`Error ranking: ${e.message}`, 'error');
     }
@@ -8785,6 +8822,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', mcdaRunAnalysis);
   if (bRe)  bRe.addEventListener('click', mcdaRankNow);
   if (bRst) bRst.addEventListener('click', mcdaResetWeights);
+  document.getElementById('mcda-ranking-scenario')?.addEventListener('change', event => {
+    mcdaSetRankingScenario(event.target.value);
+  });
   document.getElementById('btn-mcda-turbines-all')?.addEventListener('click', () => {
     document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = true; });
     mcdaUpdateTurbineCount();

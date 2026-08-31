@@ -13,6 +13,13 @@ from core.farm import optimize_layout_structured, simulate_wind_farm
 from core.multicriteria import rank_layout_alternatives
 
 
+def _unistmo_technology_preference(filename: str) -> float:
+    """Explicit stakeholder preference for Gamesa 2 MW / D80 in UNISTMO."""
+    model = os.path.basename(str(filename)).casefold().removesuffix('.csv')
+    tokens = set(model.replace('-', '_').split('_'))
+    return 1.0 if {'gamesa20', 'p2000', 'r40'} <= tokens else 0.0
+
+
 def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
     mean_speed = float(np.mean([float(s.get('v_mean') or 0.0) for s in sites]))
     weibull_k = float(np.mean([float(s.get('weibull_K') or 2.0) for s in sites]))
@@ -318,6 +325,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'energy_density_mwh_km2': aep_p50 / area_km2,
                 'civil_complexity_index': collection_length / max(selected_n, 1),
                 'iec_suitability_score': 0.5,
+                'unistmo_technology_preference_score': _unistmo_technology_preference(filename),
                 'quality_level': 'prefeasibility',
                 'quality_warnings': ['Ct genérico; falta clase IEC y turbulencia extrema del fabricante'],
                 'bankable_ready': False,
@@ -359,10 +367,17 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
     ranking = rank_layout_alternatives(alternatives, weights=weights)
+    unistmo_ranking = rank_layout_alternatives(
+        alternatives, profile='unistmo_v1'
+    )
     return {
         'analysis_kind': 'farm_layout_mcda_v2',
         'alternatives': alternatives,
         'ranking': ranking,
+        'ranking_scenarios': {
+            'base': ranking,
+            'unistmo': unistmo_ranking,
+        },
         'n_layout_alternatives': len(alternatives),
         'n_requested_models': len(unique_filenames),
         'n_valid_models': len(alternatives),

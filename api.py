@@ -101,7 +101,8 @@ from core.farm_mcda import analyze_park_layouts
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
-                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION)
+                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION,
+                                 UNISTMO_LAYOUT_WEIGHTS)
 from core.forecasting import (read_one_column, read_pml,
                                base_year_stats,
                                normalize_fixed_hourly_profile,
@@ -4810,6 +4811,18 @@ def create_app():
             'layout_weights': LAYOUT_WEIGHTS,
             'layout_labels': LAYOUT_LABELS,
             'layout_directions': LAYOUT_DIRECTION,
+            'layout_scenarios': {
+                'base': {
+                    'label': 'Escenario base científico',
+                    'profile': 'balanced_integral_v1',
+                    'weights': LAYOUT_WEIGHTS,
+                },
+                'unistmo': {
+                    'label': 'Escenario UNISTMO',
+                    'profile': 'unistmo_v1',
+                    'weights': UNISTMO_LAYOUT_WEIGHTS,
+                },
+            },
         })
 
     @app.route('/api/multicriteria/rank', methods=['POST'])
@@ -4822,11 +4835,13 @@ def create_app():
         body = request.get_json(silent=True) or {}
         weights = body.get('weights')
         mode = body.get('mode', 'pairs')
+        profile = body.get('profile', 'balanced_integral_v1')
 
         if 'alternatives' in body:
             if not isinstance(body['alternatives'], list):
                 return jsonify({'error': 'alternatives must be a list'}), 400
-            result = (rank_layout_alternatives(body['alternatives'], weights=weights)
+            result = (rank_layout_alternatives(body['alternatives'], weights=weights,
+                                               profile=profile)
                       if mode == 'layout_alternatives'
                       else topsis(body['alternatives'], weights=weights))
         elif 'sites_analysis' in body:

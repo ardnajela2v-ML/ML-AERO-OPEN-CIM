@@ -137,6 +137,27 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['n'], 1)
         self.assertEqual(result['ranking'][0]['n_aerogeneradores'], 8)
 
+    def test_unistmo_is_separate_and_explicitly_prefers_gamesa20_d80(self):
+        gamesa = self.alternative('gamesa', 1.0)
+        gamesa.update(
+            turbina='gamesa20_p2000_r40.csv', n_aerogeneradores=10,
+            max_n_fisico=10, unistmo_technology_preference_score=1.0,
+        )
+        competitor = self.alternative('competitor', 2.0)
+        competitor.update(
+            turbina='competitor_p2000_r40.csv', n_aerogeneradores=10,
+            max_n_fisico=10, unistmo_technology_preference_score=0.0,
+        )
+        base = rank_layout_alternatives([gamesa, competitor])
+        unistmo = rank_layout_alternatives(
+            [gamesa, competitor], profile='unistmo_v1')
+        self.assertEqual(base['ranking'][0]['turbina'], 'competitor_p2000_r40.csv')
+        self.assertEqual(unistmo['ranking'][0]['turbina'], 'gamesa20_p2000_r40.csv')
+        self.assertEqual(base['profile'], 'balanced_integral_v1')
+        self.assertEqual(unistmo['profile'], 'unistmo_v1')
+        self.assertNotIn('unistmo_technology_preference_score', base['criteria'])
+        self.assertIn('unistmo_technology_preference_score', unistmo['criteria'])
+
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
             'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
@@ -174,6 +195,8 @@ class LayoutTopsisTests(unittest.TestCase):
             for row in result['alternatives']
         ))
         self.assertEqual(result['ranking']['n'], 2)
+        self.assertEqual(result['ranking_scenarios']['base']['n'], 2)
+        self.assertEqual(result['ranking_scenarios']['unistmo']['n'], 2)
         self.assertEqual(len(result['ranking']['ranking']), 2)
         self.assertEqual(
             {row['turbina'] for row in result['ranking']['ranking']},
