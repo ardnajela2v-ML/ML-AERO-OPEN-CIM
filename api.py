@@ -96,9 +96,11 @@ from core.spatial_calibration import (METHOD as SPATIAL_CALIBRATION_METHOD,
 from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
                        recommend_n_turbines, optimize_layout_greedy,
                        optimize_layout_structured, energy_weighted_dominant_direction)
+from core.farm_mcda import analyze_park_layouts
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
-                                 CRITERION_DIRECTION)
+                                 CRITERION_DIRECTION, rank_layout_alternatives,
+                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION)
 from core.forecasting import (read_one_column, read_pml,
                                base_year_stats,
                                normalize_fixed_hourly_profile,
@@ -4636,6 +4638,9 @@ def create_app():
             'weights':    DEFAULT_WEIGHTS,
             'labels':     CRITERION_LABELS,
             'directions': CRITERION_DIRECTION,
+            'layout_weights': LAYOUT_WEIGHTS,
+            'layout_labels': LAYOUT_LABELS,
+            'layout_directions': LAYOUT_DIRECTION,
         })
 
     @app.route('/api/multicriteria/rank', methods=['POST'])
@@ -4652,7 +4657,9 @@ def create_app():
         if 'alternatives' in body:
             if not isinstance(body['alternatives'], list):
                 return jsonify({'error': 'alternatives must be a list'}), 400
-            result = topsis(body['alternatives'], weights=weights)
+            result = (rank_layout_alternatives(body['alternatives'], weights=weights)
+                      if mode == 'layout_alternatives'
+                      else topsis(body['alternatives'], weights=weights))
         elif 'sites_analysis' in body:
             if not isinstance(body['sites_analysis'], list):
                 return jsonify({'error': 'sites_analysis must be a completed analysis list'}), 400
@@ -4798,11 +4805,47 @@ def create_app():
                         turbine_filenames=turbine_files,
                         cost_model=cost_model,
                     )
-                ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
-                ranking['mode'] = mode
+                if scope == 'park':
+                    tasks[task_id]['progress'] = 82
+                    tasks[task_id]['message'] = 'Optimizando cantidades, separaciones y estelas del parque…'
+                    layout_result = analyze_park_layouts(
+                        sites=spatial['sites'], polygon=polygon,
+                        turbines_folder=Config.TURBINES_FOLDER,
+                        turbine_filenames=turbine_files or [],
+                        wind_grid=(field_bundle.get('wind') if calibration_payload is not None else None),
+                        exclusions=body.get('exclusion_polygons') or [],
+                        boundary_setback_m=float(body.get('boundary_setback_m') or 0.0),
+                        min_spacing_d=float(body.get('min_spacing_d') or 3.0),
+                        s_para_range=tuple(body.get('s_para_range') or (5, 6, 7, 8, 9, 10)),
+                        s_perp_range=tuple(body.get('s_perp_range') or (3, 4, 5, 6)),
+                        wake_model=body.get('wake_model') or 'gaussian',
+                        k_wake=float(body.get('k_wake') or 0.04),
+                        ct=float(body.get('ct') or 0.8),
+                        availability=float(body.get('availability') or 0.97),
+                        electrical_losses=float(body.get('electrical_losses') or 0.03),
+                        curtailment_loss=float(body.get('curtailment_loss') or 0.0),
+                        environmental_loss=float(body.get('environmental_loss') or 0.0),
+                        discount_rate=tasa,
+                        project_years=int(body.get('project_years') or 20),
+                        price_usd_kwh=price_usd_kwh,
+                        demand_mwh=demand_mwh,
+                        commercialization_mode=body.get('commercialization_mode') or 'total_sale',
+                        grid_limit_mw=(float(body['grid_limit_mw']) if body.get('grid_limit_mw') else None),
+                        target_height_m=(float(body['target_height_m']) if body.get('target_height_m') else None),
+                        cost_model=cost_model,
+                        uncertainty_components_pct=body.get('uncertainty_components_pct'),
+                        weights=body.get('layout_weights'),
+                    )
+                    ranking = layout_result['ranking']
+                    ranking['mode'] = 'layout_alternatives'
+                else:
+                    layout_result = None
+                    ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
+                    ranking['mode'] = mode
                 tasks[task_id]['result'] = numpy_to_python({
                     **spatial,
                     'ranking': ranking,
+                    **(layout_result or {}),
                     'market_configuration': {
                         'trajectories': body.get('market_trajectories') or {},
                         'equivalent_inputs': {

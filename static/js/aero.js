@@ -7895,9 +7895,13 @@ async function mcdaBuildWeightSliders() {
   const d = await mcdaLoadDefaults();
   const container = document.getElementById('mcda-weights');
   if (!container) return;
-  container.innerHTML = Object.entries(d.weights).map(([k, v]) => {
-    const dir = d.directions[k];
-    const label = d.labels[k];
+  const isLayout = MCDA.scope === 'area';
+  const weights = isLayout ? d.layout_weights : d.weights;
+  const directions = isLayout ? d.layout_directions : d.directions;
+  const labels = isLayout ? d.layout_labels : d.labels;
+  container.innerHTML = Object.entries(weights).map(([k, v]) => {
+    const dir = directions[k];
+    const label = labels[k];
     const hint = dir > 0 ? '↑ max' : '↓ min';
     return `
       <div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem">
@@ -7983,6 +7987,21 @@ function mcdaParkPolygon() {
   return KRIG.parkPoints.map(([lat, lon]) => ({ lat, lon }));
 }
 
+function mcdaExclusionPolygons() {
+  const raw = document.getElementById('mcda-exclusions')?.value?.trim();
+  if (!raw) return [];
+  const polygons = JSON.parse(raw);
+  if (!Array.isArray(polygons) || polygons.some(poly => !Array.isArray(poly) || poly.length < 3)) {
+    throw new Error('Las exclusiones deben ser una lista JSON de polígonos con al menos 3 puntos.');
+  }
+  polygons.forEach(poly => poly.forEach(point => {
+    if (!Number.isFinite(Number(point?.lat)) || !Number.isFinite(Number(point?.lon))) {
+      throw new Error('Cada punto de exclusión necesita lat y lon numéricos.');
+    }
+  }));
+  return polygons;
+}
+
 function mcdaClearSpatialMarkers() {
   if (KRIG.map && Array.isArray(KRIG.mcdaMarkers)) {
     KRIG.mcdaMarkers.forEach(m => KRIG.map.removeLayer(m));
@@ -8044,6 +8063,15 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
       }).addTo(map);
       MCDA.miniLayers.push(focusLayer);
     }
+    try {
+      mcdaExclusionPolygons().forEach(exclusion => {
+        const layer = L.polygon(exclusion.map(p => [p.lat, p.lon]), {
+          color: '#dc2626', weight: 2, dashArray: '5 4',
+          fillColor: '#ef4444', fillOpacity: 0.18,
+        }).addTo(map);
+        MCDA.miniLayers.push(layer);
+      });
+    } catch (_) { /* validation is shown before running */ }
   } else {
     const b = mcdaCurrentAreaBounds();
     if (b) {
@@ -8075,6 +8103,14 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
       (s.dominant_direction_deg != null ? ` · Dir ${Number(s.dominant_direction_deg).toFixed(0)}°` : ''),
       { direction: 'top' }
     ).addTo(map);
+    MCDA.miniLayers.push(marker);
+  });
+  const winningLayout = result?.ranking?.ranking?.[0]?.layout_latlon || [];
+  winningLayout.forEach((point, i) => {
+    const marker = L.circleMarker(point, {
+      radius: 5, color: '#0f766e', weight: 2,
+      fillColor: '#2dd4bf', fillOpacity: 0.95,
+    }).bindTooltip(`Aerogenerador ${i + 1}`, { direction: 'top' }).addTo(map);
     MCDA.miniLayers.push(marker);
   });
 
@@ -8124,6 +8160,17 @@ function mcdaRenderSpatialMarkers(result) {
     ).addTo(KRIG.map);
     KRIG.mcdaMarkers.push(marker);
   });
+  const winner = ranking[0];
+  (winner?.layout_latlon || []).forEach((point, i) => {
+    const marker = L.circleMarker(point, {
+      radius: 5, color: '#0f766e', weight: 2,
+      fillColor: '#2dd4bf', fillOpacity: 0.95,
+    }).bindPopup(
+      `<b>Layout TOPSIS ganador</b><br>Aerogenerador ${i + 1}<br>` +
+      `${winner.turbina} · ${winner.n_aerogeneradores}/${winner.max_n_fisico}`
+    ).addTo(KRIG.map);
+    KRIG.mcdaMarkers.push(marker);
+  });
 }
 
 function mcdaUpdateScopeUi() {
@@ -8140,7 +8187,7 @@ function mcdaUpdateScopeUi() {
     : '▶ Ejecutar análisis exploratorio';
   const help = document.getElementById('mcda-scope-help');
   if (help) help.textContent = areaMode
-    ? 'Modo parque: TOPSIS usa puntos interpolados dentro del polígono dibujado, con viento real corregido físicamente.'
+    ? 'Modo parque: optimiza cantidades y layouts factibles por turbina, calcula estelas, AEP y economía, y después aplica TOPSIS.'
     : 'Modo exploratorio: TOPSIS usa puntos interpolados dentro del recuadro y marca sitios candidatos en el mapa.';
   const info = document.getElementById('mcda-area-info');
   if (info) {
@@ -8165,6 +8212,7 @@ function mcdaSetScope(scope) {
   MCDA.lastRanking = null;
   MCDA.lastSpatial = null;
   mcdaUpdateScopeUi();
+  mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
   if (body) {
     body.innerHTML = '<tr><td colspan="10" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>';
@@ -8176,8 +8224,9 @@ function mcdaSetScope(scope) {
 
 async function mcdaResetWeights() {
   const d = await mcdaLoadDefaults();
+  const defaults = MCDA.scope === 'area' ? d.layout_weights : d.weights;
   document.querySelectorAll('.mcda-w').forEach(el => {
-    el.value = d.weights[el.dataset.crit];
+    el.value = defaults[el.dataset.crit];
     el.nextElementSibling.textContent = (+el.value).toFixed(2);
   });
 }
@@ -8207,6 +8256,13 @@ async function mcdaRunAnalysis() {
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
+  let exclusionPolygons = [];
+  try {
+    exclusionPolygons = areaMode ? mcdaExclusionPolygons() : [];
+  } catch (e) {
+    toast(e.message, 'warning');
+    return;
+  }
   const body = {
     scope:         areaMode ? 'park' : 'exploratory',
     year:          parseInt(document.getElementById('mcda-year').value),
@@ -8222,7 +8278,22 @@ async function mcdaRunAnalysis() {
     mode:          areaMode ? 'area_turbines' : document.getElementById('mcda-mode').value,
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
     turbine_filenames: turbineFilenames,
+    commercialization_mode: marketInputs.trajectories?.commercialization_mode || 'total_sale',
+    min_spacing_d: Number(document.getElementById('parque-min-sep-d')?.value) || 3,
+    s_para_range: [5, 6, 7, 8, 9, 10],
+    s_perp_range: [3, 4, 5, 6],
+    wake_model: 'gaussian',
+    k_wake: 0.04,
+    ct: Number(document.getElementById('parque-ct')?.value) || 0.8,
+    availability: (Number(document.getElementById('parque-avail')?.value) || 97) / 100,
+    electrical_losses: (Number(document.getElementById('parque-elec')?.value) || 3) / 100,
+    exclusion_polygons: exclusionPolygons,
+    boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
   };
+  if (areaMode) {
+    body.layout_weights = body.weights;
+    delete body.weights;
+  }
   if (areaMode) body.polygon = parkPolygon;
   else body.area_bounds = areaBounds;
   document.getElementById('mcda-status').textContent = 'Ejecutando…';
@@ -8270,7 +8341,7 @@ async function mcdaPollStatus() {
       const nSites = MCDA.lastAnalysis.length;
       const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
-        ? `${nSites} puntos del parque · ${nTurbs} evaluaciones`
+        ? `${r.result?.n_layout_alternatives || 0} layouts factibles · ${nSites} puntos de recurso`
         : `${nSites} sitios candidatos · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
       toast('TOPSIS espacial completado.', 'success');
@@ -8289,6 +8360,20 @@ async function mcdaPollStatus() {
 }
 
 async function mcdaRankNow() {
+  if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') {
+    try {
+      const r = await api('/api/multicriteria/rank', 'POST', {
+        alternatives: MCDA.lastSpatial.alternatives || [],
+        mode: 'layout_alternatives',
+        weights: mcdaGetWeights(),
+      });
+      MCDA.lastRanking = r;
+      mcdaRenderRanking(r);
+    } catch (e) {
+      toast(`Error ranking: ${e.message}`, 'error');
+    }
+    return;
+  }
   if (!Array.isArray(MCDA.lastAnalysis)) {
     toast('Espera a que termine el análisis antes de ranquear.', 'warning');
     return;
@@ -8329,17 +8414,21 @@ function mcdaRenderRanking(r) {
     const siteText = a.best_site
       ? `${a.site || ''}<br><span class="text-muted" style="font-size:.72rem">Mejor sitio: ${a.best_site}</span>`
       : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
+    const layoutInfo = a.n_aerogeneradores != null
+      ? `<br><span class="text-muted" style="font-size:.72rem">${a.n_aerogeneradores}/${a.max_n_fisico} aeros · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}% · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
+        `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>`
+      : '';
     return `<tr ${highlight}>
       <td><strong>${medal}</strong></td>
       <td title="${a.site||''}">${siteText}</td>
-      <td>${a.turbina||''}</td>
+      <td>${a.turbina||''}${layoutInfo}</td>
       <td><strong>${a.topsis_score.toFixed(4)}</strong></td>
       <td>${(a.factor_capacidad*100).toFixed(1)}%</td>
-      <td>${Math.round(a.aep_mwh).toLocaleString()}</td>
-      <td>${Math.round(a.van_usd).toLocaleString()}</td>
-      <td>${a.lcoe_usd_kwh.toFixed(4)}</td>
-      <td>${a.roi.toFixed(2)}</td>
-      <td>${Math.round(a.capex_usd).toLocaleString()}</td>
+      <td>${Number.isFinite(Number(a.aep_mwh)) ? Math.round(a.aep_mwh).toLocaleString() : 'No calculado'}</td>
+      <td>${Number.isFinite(Number(a.van_usd)) ? Math.round(a.van_usd).toLocaleString() : 'No calculado'}</td>
+      <td>${Number.isFinite(Number(a.lcoe_usd_kwh)) ? Number(a.lcoe_usd_kwh).toFixed(4) : 'No calculado'}</td>
+      <td>${Number.isFinite(Number(a.roi)) ? Number(a.roi).toFixed(2) : 'No calculado'}</td>
+      <td>${Number.isFinite(Number(a.capex_usd)) ? Math.round(a.capex_usd).toLocaleString() : 'No calculado'}</td>
     </tr>`;
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico

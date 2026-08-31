@@ -2747,9 +2747,9 @@
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Usa el campo Kriging geoespacial para evaluar coordenadas interpoladas, no las coordenadas de las estaciones.
-        En parque dibujado ranquea aerogeneradores; en exploración global ranquea sitios candidatos y combinaciones sitio × aerogenerador. Criterios:
-        Cp máx, horas cerca de v<sub>nominal</sub>, Factor de capacidad, AEP, consistencia direccional sectorial. Económicos: VAN, ROI, LCOE (min), CAPEX (min).
+        En parque dibujado genera layouts físicamente factibles para cada aerogenerador, determina su capacidad máxima,
+        simula estelas y pérdidas, calcula AEP P50/P90 y economía descontada, y después aplica TOPSIS. En exploración global
+        continúa comparando sitios candidatos interpolados. Los ceros no se usan como sustituto de datos ausentes.
       </p>
 
       <div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.75rem">
@@ -2782,6 +2782,13 @@
             <input class="form-input" type="number" id="mcda-price" value="0.20" step="0.01"></div>
           <div class="form-row"><label class="form-label">USD→MXN</label>
             <input class="form-input" type="number" id="mcda-fx" value="20" step="0.5"></div>
+          <div class="form-row"><label class="form-label">Retiro al lindero (m)</label>
+            <input class="form-input" type="number" id="mcda-boundary-setback" value="0" min="0" step="10"
+              title="Se aplicará como mínimo el radio del rotor para mantener el rotor dentro del predio."></div>
+          <div class="form-row"><label class="form-label">Exclusiones (JSON, opcional)</label>
+            <textarea class="form-input" id="mcda-exclusions" rows="3"
+              placeholder='[[{"lat":16.50,"lon":-95.00}, {"lat":16.51,"lon":-95.00}, {"lat":16.51,"lon":-94.99}]]'
+              title="Lista JSON de polígonos; cada polígono contiene al menos tres puntos lat/lon."></textarea></div>
           <div class="form-row mcda-exploratory-only" style="display:none"><label class="form-label">Modo ranking exploratorio</label>
             <select class="form-select" id="mcda-mode">
               <option value="pairs" selected>Todas las combinaciones</option>

@@ -67,6 +67,150 @@ CRITERION_LABELS = {
 }
 
 
+LAYOUT_WEIGHTS = {
+    'van_usd': 0.18,
+    'lcoe_usd_kwh': 0.12,
+    'capex_usd': 0.05,
+    'opex_lifetime_usd': 0.05,
+    'aep_p90_mwh': 0.15,
+    'wake_loss_pct': 0.08,
+    'factor_capacidad': 0.07,
+    'iec_suitability_score': 0.10,
+    'aep_uncertainty_pct': 0.06,
+    'curtailment_loss_pct': 0.04,
+    'energy_density_mwh_km2': 0.04,
+    'collection_length_m': 0.03,
+    'civil_complexity_index': 0.03,
+}
+
+LAYOUT_DIRECTION = {
+    'van_usd': +1, 'lcoe_usd_kwh': -1, 'capex_usd': -1,
+    'opex_lifetime_usd': -1, 'aep_p90_mwh': +1,
+    'wake_loss_pct': -1, 'factor_capacidad': +1,
+    'iec_suitability_score': +1, 'aep_uncertainty_pct': -1,
+    'curtailment_loss_pct': -1, 'energy_density_mwh_km2': +1,
+    'collection_length_m': -1, 'civil_complexity_index': -1,
+}
+
+LAYOUT_LABELS = {
+    'van_usd': 'VAN (USD)', 'lcoe_usd_kwh': 'LCOE (USD/kWh)',
+    'capex_usd': 'CAPEX (USD)', 'opex_lifetime_usd': 'OPEX de vida (USD)',
+    'aep_p90_mwh': 'AEP P90 (MWh)', 'wake_loss_pct': 'Pérdida por estela (%)',
+    'factor_capacidad': 'Factor de capacidad neto',
+    'iec_suitability_score': 'Aptitud IEC preliminar',
+    'aep_uncertainty_pct': 'Incertidumbre AEP (%)',
+    'curtailment_loss_pct': 'Curtailment (%)',
+    'energy_density_mwh_km2': 'Energía neta por km²',
+    'collection_length_m': 'Red colectora (m)',
+    'civil_complexity_index': 'Complejidad civil',
+}
+
+
+def rank_layout_alternatives(alternatives: List[Dict],
+                             weights: Optional[Dict[str, float]] = None):
+    """Rank complete, feasible farm layouts with transparent missing-data rules."""
+    if not alternatives:
+        return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': []}
+    raw_weights = dict(LAYOUT_WEIGHTS)
+    if weights:
+        for key, value in weights.items():
+            if key in raw_weights:
+                raw_weights[key] = float(value)
+    if any(value < 0 for value in raw_weights.values()):
+        raise ValueError('Los pesos TOPSIS no pueden ser negativos.')
+
+    valid, excluded = [], []
+    for alt in alternatives:
+        missing = [key for key in raw_weights
+                   if alt.get(key) is None or not np.isfinite(float(alt.get(key))) ]
+        if missing or not alt.get('feasible', True):
+            excluded.append({'label': alt.get('label'), 'missing': missing,
+                             'reason': alt.get('infeasibility_reason') or 'datos_incompletos'})
+        else:
+            valid.append(alt)
+    if not valid:
+        return {'ranking': [], 'weights': {}, 'n': 0, 'excluded': excluded,
+                'note': 'Ningún layout completo y factible pudo clasificarse.'}
+
+    active = []
+    constant = []
+    for key in raw_weights:
+        values = np.asarray([float(alt[key]) for alt in valid], dtype=float)
+        if np.ptp(values) <= 1e-12:
+            constant.append(key)
+        else:
+            active.append(key)
+    if not active:
+        ranked = [dict(alt, topsis_score=1.0, rank=i + 1) for i, alt in enumerate(valid)]
+        return {'ranking': ranked, 'weights': {}, 'n': len(ranked),
+                'excluded': excluded, 'constant_criteria': constant}
+
+    total = sum(raw_weights[key] for key in active)
+    effective_weights = {key: raw_weights[key] / total for key in active}
+    matrix = np.asarray([[float(alt[key]) for key in active] for alt in valid], dtype=float)
+    norms = np.linalg.norm(matrix, axis=0)
+    norms[norms == 0] = 1.0
+    weighted = matrix / norms * np.asarray([effective_weights[key] for key in active])
+    ideal = np.asarray([
+        weighted[:, j].max() if LAYOUT_DIRECTION[key] > 0 else weighted[:, j].min()
+        for j, key in enumerate(active)
+    ])
+    anti = np.asarray([
+        weighted[:, j].min() if LAYOUT_DIRECTION[key] > 0 else weighted[:, j].max()
+        for j, key in enumerate(active)
+    ])
+    d_ideal = np.linalg.norm(weighted - ideal, axis=1)
+    d_anti = np.linalg.norm(weighted - anti, axis=1)
+    denom = d_ideal + d_anti
+    scores = np.divide(d_anti, denom, out=np.ones_like(d_anti), where=denom > 0)
+    ranked = []
+    for idx, alt in enumerate(valid):
+        ranked.append(dict(alt, topsis_score=float(scores[idx]),
+                           dist_ideal=float(d_ideal[idx]), dist_antiideal=float(d_anti[idx])))
+    ranked.sort(key=lambda row: row['topsis_score'], reverse=True)
+    for idx, row in enumerate(ranked, 1):
+        row['rank'] = idx
+    # Local robustness audit: perturb each active weight ±10 %, renormalize,
+    # and report the observed rank interval and winner frequency.
+    normalized_matrix = matrix / norms
+    scenarios = [effective_weights]
+    for key in active:
+        for multiplier in (0.9, 1.1):
+            scenario = dict(effective_weights)
+            scenario[key] *= multiplier
+            scenario_total = sum(scenario.values())
+            scenarios.append({name: value / scenario_total for name, value in scenario.items()})
+    rank_history = {alt.get('label'): [] for alt in valid}
+    winner_counts = {alt.get('label'): 0 for alt in valid}
+    for scenario in scenarios:
+        scenario_weighted = normalized_matrix * np.asarray([scenario[key] for key in active])
+        scenario_ideal = np.asarray([
+            scenario_weighted[:, j].max() if LAYOUT_DIRECTION[key] > 0 else scenario_weighted[:, j].min()
+            for j, key in enumerate(active)
+        ])
+        scenario_anti = np.asarray([
+            scenario_weighted[:, j].min() if LAYOUT_DIRECTION[key] > 0 else scenario_weighted[:, j].max()
+            for j, key in enumerate(active)
+        ])
+        db = np.linalg.norm(scenario_weighted - scenario_ideal, axis=1)
+        da = np.linalg.norm(scenario_weighted - scenario_anti, axis=1)
+        scenario_scores = np.divide(da, db + da, out=np.ones_like(da), where=(db + da) > 0)
+        order = np.argsort(-scenario_scores)
+        for position, alt_idx in enumerate(order, 1):
+            rank_history[valid[alt_idx].get('label')].append(position)
+        winner_counts[valid[int(order[0])].get('label')] += 1
+    for row in ranked:
+        history = rank_history[row.get('label')]
+        row['rank_sensitivity_min'] = min(history)
+        row['rank_sensitivity_max'] = max(history)
+        row['winner_frequency'] = winner_counts[row.get('label')] / len(scenarios)
+    return {'ranking': ranked, 'weights': effective_weights, 'n': len(ranked),
+            'criteria': active, 'labels': LAYOUT_LABELS,
+            'constant_criteria': constant, 'excluded': excluded,
+            'profile': 'balanced_integral_v1',
+            'sensitivity_scenarios': len(scenarios)}
+
+
 def _normalize_weights(weights: Optional[Dict[str, float]]) -> Dict[str, float]:
     w = dict(DEFAULT_WEIGHTS)
     if weights:

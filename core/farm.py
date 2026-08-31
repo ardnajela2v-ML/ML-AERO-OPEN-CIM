@@ -1,11 +1,12 @@
 """
-Wind farm AEP simulation with Jensen wake model.
+Wind farm AEP simulation with Jensen and Gaussian engineering wake models.
 
 Given a layout of turbines (x, y in metres), a power curve, and a free-stream
 wind time series with directions, computes per-turbine production accounting
 for wake interactions using:
 
   - Jensen single-wake deficit (Jensen 1983)
+  - Bastankhah-Porté-Agel Gaussian deficit (2014)
   - Katic wake superposition (Katic, Højstrup, Jensen 1986)
 
 Outputs per-turbine AEP, total AEP, wake loss %, capacity factor, and the
@@ -70,9 +71,33 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     return max(0.0, min(1.0, deficit))
 
 
+def gaussian_deficit(distance_x_m: float, lateral_m: float,
+                     rotor_d_m: float, k: float = 0.04,
+                     ct: float = 0.8) -> float:
+    """Bastankhah-Porté-Agel Gaussian wake velocity deficit.
+
+    This engineering model is used for pre-feasibility comparisons. ``k`` is
+    the wake-expansion coefficient and must be calibrated with ambient
+    turbulence when site measurements are available.
+    """
+    if distance_x_m <= 0 or rotor_d_m <= 0:
+        return 0.0
+    ct = max(0.0, min(0.999, float(ct)))
+    sqrt_one_minus_ct = math.sqrt(max(1e-9, 1.0 - ct))
+    beta = 0.5 * (1.0 + sqrt_one_minus_ct) / sqrt_one_minus_ct
+    epsilon = 0.2 * math.sqrt(beta)
+    sigma_over_d = max(epsilon, float(k) * distance_x_m / rotor_d_m + epsilon)
+    radical = max(0.0, 1.0 - ct / (8.0 * sigma_over_d ** 2))
+    centre = 1.0 - math.sqrt(radical)
+    sigma_m = sigma_over_d * rotor_d_m
+    lateral = math.exp(-0.5 * (abs(lateral_m) / max(sigma_m, 1e-9)) ** 2)
+    return max(0.0, min(1.0, centre * lateral))
+
+
 def effective_wind_per_turbine(layout_xy: np.ndarray, v_free,
                                wind_dir_deg: float, rotor_d_m: float,
-                               k: float = 0.075, ct: float = 0.8) -> np.ndarray:
+                               k: float = 0.075, ct: float = 0.8,
+                               wake_model: str = 'jensen') -> np.ndarray:
     """
     Compute effective free-stream-equivalent wind speed at each turbine
     accounting for upstream wake superposition (Katic — sum-of-squares).
@@ -100,7 +125,8 @@ def effective_wind_per_turbine(layout_xy: np.ndarray, v_free,
                 continue
             dx = xi - rotated[j, 0]    # >0 if i is downwind of j
             dy = yi - rotated[j, 1]
-            d_eff = jensen_deficit(dx, dy, rotor_d_m, k=k, ct=ct)
+            deficit_fn = gaussian_deficit if wake_model == 'gaussian' else jensen_deficit
+            d_eff = deficit_fn(dx, dy, rotor_d_m, k=k, ct=ct)
             sq_sum += d_eff ** 2
         v_eff[i] = v_free_arr[i] * (1.0 - math.sqrt(sq_sum))
     return v_eff
@@ -206,7 +232,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        temperature_c=None,
                        pressure_pa=None,
                        humidity_pct=0.0,
-                       local_wind_multipliers: Optional[np.ndarray] = None) -> dict:
+                       local_wind_multipliers: Optional[np.ndarray] = None,
+                       wake_model: str = 'jensen',
+                       rho_override: Optional[float] = None) -> dict:
     """
     Compute farm AEP per turbine with wake effects.
 
@@ -248,7 +276,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
 
     # ── densidad del aire (escalar): media de la serie si hay temp+presión,
     # si no fallback a 1.225 con warning ──
-    if temperature_c is not None and pressure_pa is not None:
+    if rho_override is not None and math.isfinite(float(rho_override)) and float(rho_override) > 0:
+        rho_mean = float(rho_override)
+    elif temperature_c is not None and pressure_pa is not None:
         rho_arr = air_density(temperature_c, pressure_pa, humidity_pct)
         rho_mean = float(np.mean(rho_arr))
     else:
@@ -329,7 +359,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                 continue
             v_free_arr = v_free * local_wind_multipliers if local_wind_multipliers is not None else v_free
             v_eff = effective_wind_per_turbine(
-                layout, v_free_arr, wind_dir, rotor_d, k=k_wake, ct=ct)
+                layout, v_free_arr, wind_dir, rotor_d, k=k_wake, ct=ct,
+                wake_model=wake_model)
             p_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # con corrección de densidad
             e_per_turbine_kwh += p_kw * p_join * total_hours
 
@@ -395,6 +426,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'record_energy_mwh': round(e_total_kwh / 1000.0, 2),
         'record_energy_no_wake_mwh': round(e_free_total_kwh * survival / 1000.0, 2),
         'wake_loss_pct':  round(100.0 * wake_loss, 2),
+        'wake_model':     wake_model,
         'cf_pct':         round(100.0 * cf, 2),
         'flh':            round(e_total_annual_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
         'dominant_dir_deg': round(dom_dir, 1),
@@ -441,6 +473,33 @@ def _point_in_polygon_xy(x: float, y: float, poly_xs, poly_ys) -> bool:
             inside = not inside
         j = i
     return inside
+
+
+def _distance_to_polygon_edges_xy(x: float, y: float, poly_xs, poly_ys) -> float:
+    """Shortest Cartesian distance from a point to a polygon boundary."""
+    best = math.inf
+    for i in range(len(poly_xs)):
+        x1, y1 = float(poly_xs[i]), float(poly_ys[i])
+        x2, y2 = float(poly_xs[(i + 1) % len(poly_xs)]), float(poly_ys[(i + 1) % len(poly_ys)])
+        dx, dy = x2 - x1, y2 - y1
+        denom = dx * dx + dy * dy
+        t = 0.0 if denom <= 0 else max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / denom))
+        best = min(best, math.hypot(x - (x1 + t * dx), y - (y1 + t * dy)))
+    return best
+
+
+def _point_allowed_xy(x: float, y: float, poly_xs, poly_ys,
+                      exclusion_polys_xy=None, boundary_setback_m: float = 0.0) -> bool:
+    if not _point_in_polygon_xy(x, y, poly_xs, poly_ys):
+        return False
+    if boundary_setback_m > 0 and _distance_to_polygon_edges_xy(x, y, poly_xs, poly_ys) < boundary_setback_m:
+        return False
+    for ex_xs, ex_ys in exclusion_polys_xy or []:
+        if (_point_in_polygon_xy(x, y, ex_xs, ex_ys)
+                or (boundary_setback_m > 0
+                    and _distance_to_polygon_edges_xy(x, y, ex_xs, ex_ys) < boundary_setback_m)):
+            return False
+    return True
 
 
 def _sample_wind_grid(grid: Dict[str, Any], lat: float, lon: float) -> Optional[float]:
@@ -547,7 +606,10 @@ def optimize_layout_greedy(
         min_spacing_d: float = 5.0,
         grid_step_d: float = 1.5,
         k_wake: float = 0.075,
-        ct: float = 0.8) -> dict:
+        ct: float = 0.8,
+        exclusion_polygons=None,
+        boundary_setback_m: float = 0.0,
+        wake_model: str = 'jensen') -> dict:
     """
     Greedy Sequential Turbine Placement (GSP) within a park polygon.
 
@@ -597,6 +659,15 @@ def optimize_layout_greedy(
     lon0   = sum(lons_p) / len(lons_p)
 
     poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+    exclusion_polys_xy = []
+    for exclusion in exclusion_polygons or []:
+        ex_latlon = [
+            (float(p['lat']), float(p['lon'])) if isinstance(p, dict)
+            else (float(p[0]), float(p[1])) for p in exclusion
+        ]
+        if len(ex_latlon) >= 3:
+            exclusion_polys_xy.append(_latlon_to_xy(
+                [p[0] for p in ex_latlon], [p[1] for p in ex_latlon], lat0, lon0))
     xmin = min(poly_xs); xmax = max(poly_xs)
     ymin = min(poly_ys); ymax = max(poly_ys)
 
@@ -606,7 +677,8 @@ def optimize_layout_greedy(
     while x <= xmax + step_m * 0.1:
         y = ymin + step_m * 0.5
         while y <= ymax + step_m * 0.1:
-            if _point_in_polygon_xy(x, y, poly_xs, poly_ys):
+            if _point_allowed_xy(x, y, poly_xs, poly_ys, exclusion_polys_xy,
+                                 max(0.0, float(boundary_setback_m))):
                 lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
                 v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
                      if wind_grid else None)
@@ -644,7 +716,8 @@ def optimize_layout_greedy(
                 for pr in pts_rot:
                     dx = float(cand_rot[0]) - float(pr[0])
                     dy = float(cand_rot[1]) - float(pr[1])
-                    sq_sum += jensen_deficit(dx, dy, D, k=k_wake, ct=ct) ** 2
+                    deficit_fn = gaussian_deficit if wake_model == 'gaussian' else jensen_deficit
+                    sq_sum += deficit_fn(dx, dy, D, k=k_wake, ct=ct) ** 2
             v_eff = max(0.0, c['v'] * (1.0 - math.sqrt(sq_sum)))
             score = float(turbine.power_kw(v_eff))
             if score > best_score:
@@ -692,6 +765,10 @@ def optimize_layout_greedy(
         'installed_mw':      round(installed_kw / 1000.0, 3),
         'density_mw_km2':    round(
             installed_kw / 1000.0 / (area_m2 / 1e6) if area_m2 > 0 else 0.0, 3),
+        'max_n_fit':          n_placed,
+        'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
+        'exclusion_count':    len(exclusion_polys_xy),
+        'wake_model':         wake_model,
     }
 
 
@@ -705,6 +782,8 @@ def _build_structured_grid(
         s_para_d: float, s_perp_d: float,
         stagger: float,
         wind_grid, fallback_wind_ms: float,
+        exclusion_polys_xy=None,
+        boundary_setback_m: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """
     Generate candidate turbine positions on a structured grid aligned with
@@ -747,7 +826,9 @@ def _build_structured_grid(
         while c <= cross_max + 1.0:
             x = a * u_down[0] + (c + row_stag) * u_cross[0]
             y = a * u_down[1] + (c + row_stag) * u_cross[1]
-            if _point_in_polygon_xy(x, y, poly_xs, poly_ys):
+            if _point_allowed_xy(
+                    x, y, poly_xs, poly_ys, exclusion_polys_xy,
+                    boundary_setback_m):
                 lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
                 v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
                      if wind_grid else None)
@@ -781,6 +862,7 @@ def _score_layout_fast(
         sector_dirs: np.ndarray, sector_weights: np.ndarray,
         turbine: 'PowerCurve', k_wake: float, ct: float,
         v_mean: float, rho: float = 1.225,
+        wake_model: str = 'jensen',
 ) -> float:
     """
     Fast energy score: sector-weighted average farm power [kW].
@@ -795,7 +877,8 @@ def _score_layout_fast(
         if s_w <= 0.0:
             continue
         v_eff = effective_wind_per_turbine(arr, v_mean, float(s_dir), D,
-                                           k=k_wake, ct=ct)
+                                           k=k_wake, ct=ct,
+                                           wake_model=wake_model)
         p_kw  = turbine.power_kw_density_corrected(v_eff, rho)
         score += float(np.sum(p_kw)) * s_w
     return score
@@ -819,6 +902,9 @@ def optimize_layout_structured(
         stagger_options: Tuple = (0.0, 0.5),
         n_rose_sectors: int = 16,
         rho: float = 1.225,
+        exclusion_polygons=None,
+        boundary_setback_m: float = 0.0,
+        wake_model: str = 'jensen',
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -862,6 +948,17 @@ def optimize_layout_structured(
     lat0 = sum(lats_p) / len(lats_p)
     lon0 = sum(lons_p) / len(lons_p)
     poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+    exclusion_polys_xy = []
+    for exclusion in exclusion_polygons or []:
+        ex_latlon = [
+            (float(p['lat']), float(p['lon'])) if isinstance(p, dict)
+            else (float(p[0]), float(p[1]))
+            for p in exclusion
+        ]
+        if len(ex_latlon) >= 3:
+            ex_xs, ex_ys = _latlon_to_xy(
+                [p[0] for p in ex_latlon], [p[1] for p in ex_latlon], lat0, lon0)
+            exclusion_polys_xy.append((ex_xs, ex_ys))
 
     n_p = len(poly_xs)
     area_m2 = abs(sum(
@@ -909,7 +1006,8 @@ def optimize_layout_structured(
                 cands = _build_structured_grid(
                     poly_xs, poly_ys, lat0, lon0, D,
                     dom_dir, s_para_d, s_perp_d, stagger,
-                    wind_grid, v_mean,
+                    wind_grid, v_mean, exclusion_polys_xy,
+                    max(0.0, float(boundary_setback_m)),
                 )
                 if not cands:
                     continue
@@ -927,6 +1025,7 @@ def optimize_layout_structured(
                 score = _score_layout_fast(
                     layout_xy, D, sector_dirs, sector_weights,
                     turbine, k_wake, ct, v_mean, rho_val,
+                    wake_model=wake_model,
                 )
                 all_configs.append({
                     's_para_d':  float(s_para_d),
@@ -945,6 +1044,9 @@ def optimize_layout_structured(
             polygon_latlon, turbine, n_turbines,
             wind_grid=wind_grid, fallback_wind_ms=fallback_wind_ms,
             min_spacing_d=min_spacing_d, k_wake=k_wake, ct=ct,
+            exclusion_polygons=exclusion_polygons,
+            boundary_setback_m=boundary_setback_m,
+            wake_model=wake_model,
         )
         result['layout_config'] = {
             's_para_d': None, 's_perp_d': None, 'stagger': 0.0,
@@ -957,6 +1059,7 @@ def optimize_layout_structured(
         return result
 
     best = max(all_configs, key=lambda c: c['score_kw'])
+    capacity = max(all_configs, key=lambda c: (c['n_fit'], c['score_kw']))
     placed       = best['_candidates']
     layout_latlon = [[p['lat'], p['lon']] for p in placed]
     layout_xy_m   = [[p['x'],  p['y']]   for p in placed]
@@ -973,6 +1076,7 @@ def optimize_layout_structured(
         'n_placed':         n_placed,
         'n_requested':      int(n_turbines),
         'n_candidates':     len(placed),
+        'max_n_fit':        int(capacity['n_fit']),
         'layout_latlon':    layout_latlon,
         'layout_xy_m':      layout_xy_m,
         'wind_at_turbines': [round(p['v'], 3) for p in placed],
@@ -992,6 +1096,15 @@ def optimize_layout_structured(
             'layout_type':      'tresbolillo' if best['stagger'] >= 0.25 else 'alineado',
             'n_configs_tried':  len(all_configs),
         },
+        'capacity_config': {
+            's_para_d': capacity['s_para_d'],
+            's_perp_d': capacity['s_perp_d'],
+            'stagger': capacity['stagger'],
+            'n_fit': int(capacity['n_fit']),
+        },
+        'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
+        'exclusion_count': len(exclusion_polys_xy),
+        'wake_model': wake_model,
         'top_configs':          top5_clean,
         'sector_energy_pct':    [round(v, 2) for v in sector_energy_pct.tolist()],
         'sector_dirs_deg':      [round(v, 1) for v in sector_dirs.tolist()],
