@@ -784,6 +784,8 @@ def _build_structured_grid(
         wind_grid, fallback_wind_ms: float,
         exclusion_polys_xy=None,
         boundary_setback_m: float = 0.0,
+        along_offset_fraction: float = 0.0,
+        cross_offset_fraction: float = 0.0,
 ) -> List[Dict[str, Any]]:
     """
     Generate candidate turbine positions on a structured grid aligned with
@@ -812,9 +814,14 @@ def _build_structured_grid(
     along_proj = poly_arr @ u_down
     cross_proj = poly_arr @ u_cross
 
-    along_min = along_proj.min() - s_para_m
+    # The grid phase matters near an irregular boundary.  A single fixed
+    # origin can discard an otherwise feasible complete row/column, so the
+    # optimiser explores fractional translations of both grid axes.
+    along_min = (along_proj.min() - s_para_m
+                 + (float(along_offset_fraction) % 1.0) * s_para_m)
     along_max = along_proj.max() + s_para_m
-    cross_min = cross_proj.min() - s_perp_m
+    cross_min = (cross_proj.min() - s_perp_m
+                 + (float(cross_offset_fraction) % 1.0) * s_perp_m)
     cross_max = cross_proj.max() + s_perp_m
 
     candidates: List[Dict[str, Any]] = []
@@ -905,6 +912,8 @@ def optimize_layout_structured(
         exclusion_polygons=None,
         boundary_setback_m: float = 0.0,
         wake_model: str = 'jensen',
+        orientation_step_deg: float = 15.0,
+        grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -917,12 +926,15 @@ def optimize_layout_structured(
                   direction so each downwind turbine sits between two
                   upwind neighbours, avoiding direct wake exposure.
 
-    The grid is rotated to align rows perpendicular to the dominant wind
-    direction, which is computed as the energy-weighted maximum of the
-    16-sector wind rose (power × frequency per sector).
+      orientation — geometric rotations over 0–180° plus the dominant wind
+      grid phase  — fractional translations along both grid axes
 
-    After finding the best configuration, falls back to optimize_layout_greedy
-    if no valid structured layout could be built.
+    Nmax is found first with the minimum permitted row/column spacing across
+    all rotations, translations and stagger options.  A second pass optimises
+    energy without ever reducing the requested maximum-capacity turbine count.
+
+    If the exact requested count cannot be built, the function reports the
+    infeasibility instead of silently returning a smaller layout.
 
     Returns a dict compatible with optimize_layout_greedy output, plus:
       layout_config      — chosen (s_para_d, s_perp_d, stagger, dom_dir)
@@ -985,49 +997,100 @@ def optimize_layout_structured(
 
     sector_weights = sector_energy_pct / 100.0
 
-    # ── Search over configuration space ───────────────────────────────────
+    # ── Stage 1: geometric packing capacity (Nmax) ─────────────────────────
+    para_values = tuple(float(v) for v in s_para_range)
+    perp_values = tuple(float(v) for v in s_perp_range)
+    stagger_values = tuple(float(v) for v in stagger_options)
+    offset_values = tuple(dict.fromkeys(
+        round(float(v) % 1.0, 6) for v in grid_offset_fractions))
+    if not para_values or not perp_values or not stagger_values or not offset_values:
+        raise ValueError('El espacio de búsqueda del layout está vacío.')
+
+    step = float(orientation_step_deg)
+    if not math.isfinite(step) or step <= 0.0 or step > 90.0:
+        step = 15.0
+    raw_orientations = list(np.arange(0.0, 180.0, step)) + [dom_dir % 180.0]
+    orientations: List[float] = []
+    for angle in raw_orientations:
+        normalized = round(float(angle) % 180.0, 6)
+        if all(abs(normalized - existing) > 1e-5 for existing in orientations):
+            orientations.append(normalized)
+
+    valid_para_values = [v for v in para_values if v >= min_spacing_d]
+    valid_perp_values = [v for v in perp_values if v >= min_spacing_d]
+    if not valid_para_values or not valid_perp_values:
+        raise ValueError(
+            'Las separaciones configuradas son menores que la separación mínima.')
+    min_para_d = min(valid_para_values)
+    min_perp_d = min(valid_perp_values)
+    setback_m = max(0.0, float(boundary_setback_m))
+    capacity_seeds: List[Dict[str, Any]] = []
+
+    for orientation_deg in orientations:
+        for along_offset in offset_values:
+            for cross_offset in offset_values:
+                for stagger in stagger_values:
+                    min_diag_d = (math.hypot(stagger * min_perp_d, min_para_d)
+                                  if stagger > 0 else min_para_d)
+                    if min(min_perp_d, min_diag_d) < min_spacing_d:
+                        continue
+                    cands = _build_structured_grid(
+                        poly_xs, poly_ys, lat0, lon0, D,
+                        orientation_deg, min_para_d, min_perp_d, stagger,
+                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                        along_offset, cross_offset,
+                    )
+                    if cands:
+                        capacity_seeds.append({
+                            'orientation_deg': orientation_deg,
+                            'along_offset_fraction': along_offset,
+                            'cross_offset_fraction': cross_offset,
+                            'stagger': stagger,
+                            'n_fit': len(cands),
+                            '_candidates': cands,
+                        })
+
+    if not capacity_seeds:
+        raise ValueError(
+            'No se encontró ninguna posición factible con las separaciones y retiros indicados.')
+
+    capacity_seed = max(capacity_seeds, key=lambda c: c['n_fit'])
+    max_n_fit = int(capacity_seed['n_fit'])
+    target_n = int(n_turbines) if n_turbines > 0 else max_n_fit
+    if target_n > max_n_fit:
+        raise ValueError(
+            f'El polígono admite como máximo {max_n_fit} aerogeneradores; '
+            f'se solicitaron {target_n}.')
+
+    # ── Stage 2: best energy layout while preserving the exact target ─────
+    def half_turn_delta(angle: float, reference: float) -> float:
+        return abs(((angle - (reference % 180.0) + 90.0) % 180.0) - 90.0)
+
+    viable_seeds = [c for c in capacity_seeds if c['n_fit'] >= target_n]
+    viable_seeds.sort(key=lambda c: (
+        -c['n_fit'], half_turn_delta(c['orientation_deg'], dom_dir)))
+    # Bound runtime while retaining the densest phases and wind-aligned ones.
+    viable_seeds = viable_seeds[:48]
     all_configs: List[Dict[str, Any]] = []
 
-    for s_para_d in s_para_range:
-        for s_perp_d in s_perp_range:
-            for stagger in stagger_options:
-                # Minimum distance check for this configuration
-                # Same-row neighbour: s_perp_d × D
-                # Staggered next-row diagonal: sqrt((stagger × s_perp_d)² + s_para_d²) × D
-                min_same_row_d   = float(s_perp_d)
-                if stagger > 0:
-                    min_diag_d = math.hypot(stagger * s_perp_d, s_para_d)
-                else:
-                    min_diag_d = float(s_para_d)
-                effective_min_d  = min(min_same_row_d, min_diag_d)
-                if effective_min_d < min_spacing_d:
+    for seed in viable_seeds:
+        for s_para_d in para_values:
+            for s_perp_d in perp_values:
+                stagger = seed['stagger']
+                min_diag_d = (math.hypot(stagger * s_perp_d, s_para_d)
+                              if stagger > 0 else s_para_d)
+                if min(s_perp_d, min_diag_d) < min_spacing_d:
                     continue
-
                 cands = _build_structured_grid(
                     poly_xs, poly_ys, lat0, lon0, D,
-                    dom_dir, s_para_d, s_perp_d, stagger,
-                    wind_grid, v_mean, exclusion_polys_xy,
-                    max(0.0, float(boundary_setback_m)),
+                    seed['orientation_deg'], s_para_d, s_perp_d, stagger,
+                    wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                    seed['along_offset_fraction'], seed['cross_offset_fraction'],
                 )
-                if not cands:
+                if len(cands) < target_n:
                     continue
-
-                # A requested farm size is a hard feasibility constraint. A
-                # configuration that fits fewer positions is not an
-                # alternative for that request, even if its smaller layout
-                # happens to have a higher aggregate score.
-                if n_turbines > 0 and len(cands) < n_turbines:
-                    continue
-
-                # Trim to n_turbines: prefer highest-wind-speed positions
-                if n_turbines > 0 and len(cands) > n_turbines:
-                    sel = sorted(cands, key=lambda c: -c['v'])[:n_turbines]
-                else:
-                    sel = cands
-
-                if not sel:
-                    continue
-
+                sel = (sorted(cands, key=lambda c: -c['v'])[:target_n]
+                       if len(cands) > target_n else cands)
                 layout_xy = [[c['x'], c['y']] for c in sel]
                 score = _score_layout_fast(
                     layout_xy, D, sector_dirs, sector_weights,
@@ -1035,38 +1098,27 @@ def optimize_layout_structured(
                     wake_model=wake_model,
                 )
                 all_configs.append({
-                    's_para_d':  float(s_para_d),
-                    's_perp_d':  float(s_perp_d),
-                    'stagger':   float(stagger),
-                    'n_fit':     len(cands),
-                    'n_used':    len(sel),
-                    'score_kw':  round(score, 1),
+                    's_para_d': float(s_para_d),
+                    's_perp_d': float(s_perp_d),
+                    'stagger': stagger,
+                    'orientation_deg': seed['orientation_deg'],
+                    'along_offset_fraction': seed['along_offset_fraction'],
+                    'cross_offset_fraction': seed['cross_offset_fraction'],
+                    'n_fit': len(cands),
+                    'n_used': len(sel),
+                    'score_kw': round(score, 1),
                     '_layout_xy': layout_xy,
                     '_candidates': sel,
                 })
 
-    # ── Fall back to greedy if no structured config found ─────────────────
+    # Do not silently return a partial greedy layout: exact target capacity is
+    # a hard contract for the alternatives sent to TOPSIS.
     if not all_configs:
-        result = optimize_layout_greedy(
-            polygon_latlon, turbine, n_turbines,
-            wind_grid=wind_grid, fallback_wind_ms=fallback_wind_ms,
-            min_spacing_d=min_spacing_d, k_wake=k_wake, ct=ct,
-            exclusion_polygons=exclusion_polygons,
-            boundary_setback_m=boundary_setback_m,
-            wake_model=wake_model,
-        )
-        result['layout_config'] = {
-            's_para_d': None, 's_perp_d': None, 'stagger': 0.0,
-            'dominant_dir_deg': round(dom_dir, 1),
-            'layout_type': 'greedy_fallback',
-            'n_configs_tried': 0,
-        }
-        result['sector_energy_pct'] = [round(v, 2) for v in sector_energy_pct.tolist()]
-        result['sector_dirs_deg']   = [round(v, 1) for v in sector_dirs.tolist()]
-        return result
+        raise ValueError(
+            f'No se pudo construir un layout exacto de {target_n}/{target_n} '
+            'con las restricciones indicadas.')
 
     best = max(all_configs, key=lambda c: c['score_kw'])
-    capacity = max(all_configs, key=lambda c: (c['n_fit'], c['score_kw']))
     placed       = best['_candidates']
     layout_latlon = [[p['lat'], p['lon']] for p in placed]
     layout_xy_m   = [[p['x'],  p['y']]   for p in placed]
@@ -1083,7 +1135,7 @@ def optimize_layout_structured(
         'n_placed':         n_placed,
         'n_requested':      int(n_turbines),
         'n_candidates':     len(placed),
-        'max_n_fit':        int(capacity['n_fit']),
+        'max_n_fit':        max_n_fit,
         'layout_latlon':    layout_latlon,
         'layout_xy_m':      layout_xy_m,
         'wind_at_turbines': [round(p['v'], 3) for p in placed],
@@ -1099,15 +1151,21 @@ def optimize_layout_structured(
             's_para_d':         best['s_para_d'],
             's_perp_d':         best['s_perp_d'],
             'stagger':          best['stagger'],
+            'orientation_deg':  best['orientation_deg'],
+            'along_offset_fraction': best['along_offset_fraction'],
+            'cross_offset_fraction': best['cross_offset_fraction'],
             'dominant_dir_deg': round(dom_dir, 1),
             'layout_type':      'tresbolillo' if best['stagger'] >= 0.25 else 'alineado',
             'n_configs_tried':  len(all_configs),
         },
         'capacity_config': {
-            's_para_d': capacity['s_para_d'],
-            's_perp_d': capacity['s_perp_d'],
-            'stagger': capacity['stagger'],
-            'n_fit': int(capacity['n_fit']),
+            's_para_d': min_para_d,
+            's_perp_d': min_perp_d,
+            'stagger': capacity_seed['stagger'],
+            'orientation_deg': capacity_seed['orientation_deg'],
+            'along_offset_fraction': capacity_seed['along_offset_fraction'],
+            'cross_offset_fraction': capacity_seed['cross_offset_fraction'],
+            'n_fit': max_n_fit,
         },
         'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
         'exclusion_count': len(exclusion_polys_xy),

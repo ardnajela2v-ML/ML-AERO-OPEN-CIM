@@ -4,7 +4,12 @@ import unittest
 import numpy as np
 
 from core.energy import PowerCurve
-from core.farm import gaussian_deficit, optimize_layout_structured, simulate_wind_farm
+from core.farm import (
+    _build_structured_grid,
+    gaussian_deficit,
+    optimize_layout_structured,
+    simulate_wind_farm,
+)
 from core.farm_mcda import analyze_park_layouts
 from core.multicriteria import LAYOUT_WEIGHTS, rank_layout_alternatives
 
@@ -49,6 +54,36 @@ class FarmScientificModelTests(unittest.TestCase):
         self.assertGreaterEqual(result['boundary_setback_m'], 45)
         for lat, lon in result['layout_latlon']:
             self.assertFalse(16.503 < lat < 16.507 and -94.997 < lon < -94.993)
+
+    def test_capacity_search_moves_grid_origin_to_avoid_undercount(self):
+        # In this 1 km square, a boundary-anchored 5D x 3D grid fits only
+        # three valid centres after a 0.5D setback. A half-cell translation
+        # recovers a second complete row, proving that the phase is material.
+        args = dict(
+            poly_xs=[0.0, 1000.0, 1000.0, 0.0],
+            poly_ys=[0.0, 0.0, 1000.0, 1000.0],
+            lat0=0.0, lon0=0.0, D=100.0, dominant_dir_deg=0.0,
+            s_para_d=5.0, s_perp_d=3.0, stagger=0.0,
+            wind_grid=None, fallback_wind_ms=8.0,
+            boundary_setback_m=50.0,
+        )
+        fixed = _build_structured_grid(**args)
+        shifted = _build_structured_grid(
+            **args, along_offset_fraction=0.5, cross_offset_fraction=0.5)
+        self.assertEqual(len(fixed), 3)
+        self.assertEqual(len(shifted), 6)
+
+    def test_capacity_layout_uses_exact_discovered_nmax(self):
+        result = optimize_layout_structured(
+            self.polygon, self.turbine, 0,
+            ws=np.full(200, 8.0), wd=np.full(200, 270.0),
+            boundary_setback_m=45,
+            orientation_step_deg=30,
+            grid_offset_fractions=(0.0, 0.5),
+        )
+        self.assertEqual(result['n_placed'], result['max_n_fit'])
+        self.assertGreater(result['layout_config']['n_configs_tried'], 0)
+        self.assertIn('orientation_deg', result['capacity_config'])
 
 
 class LayoutTopsisTests(unittest.TestCase):
