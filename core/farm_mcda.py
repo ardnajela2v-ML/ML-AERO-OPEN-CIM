@@ -163,9 +163,9 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
 def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder: str,
                          turbine_filenames: List[str], wind_grid=None,
                          exclusions=None, boundary_setback_m: float = 0.0,
-                         min_spacing_d: float = 2.0,
+                         min_spacing_d: float = 3.0,
                          s_para_range=(3, 4, 5, 6, 7, 8, 9, 10),
-                         s_perp_range=(2, 3, 4, 5, 6),
+                         s_perp_range=(3, 4, 5, 6),
                          max_wake_loss_pct: float = 5.0,
                          wake_model: str = 'gaussian', k_wake: float = 0.04,
                          ct: float = 0.8, availability: float = 0.97,
@@ -186,8 +186,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         raise ValueError('El parque requiere un polígono con al menos tres vértices.')
     if wake_model not in {'gaussian', 'jensen'}:
         raise ValueError('wake_model debe ser gaussian o jensen.')
-    if min_spacing_d < 2.0:
-        raise ValueError('La separación mínima no puede ser menor que 2D.')
+    if min_spacing_d < 3.0:
+        raise ValueError('La separación mínima no puede ser menor que 3D.')
     if not 0.0 <= float(max_wake_loss_pct) < 100.0:
         raise ValueError('El límite de pérdida por estela debe estar en [0, 100).')
     if project_years <= 0 or discount_rate <= -1.0 or price_usd_kwh < 0:

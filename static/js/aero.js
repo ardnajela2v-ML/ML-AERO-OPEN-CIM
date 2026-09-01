@@ -8455,9 +8455,9 @@ async function mcdaRunAnalysis() {
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
-  const safetyMinD = Math.max(2, Number(document.getElementById('parque-min-sep-d')?.value) || 2);
+  const safetyMinD = Math.max(3, Number(document.getElementById('parque-min-sep-d')?.value) || 3);
   const rowStartD = Math.max(safetyMinD, Number(document.getElementById('parque-row-sep-d')?.value) || 3);
-  const colStartD = Math.max(safetyMinD, Number(document.getElementById('parque-col-sep-d')?.value) || 2);
+  const colStartD = Math.max(safetyMinD, Number(document.getElementById('parque-col-sep-d')?.value) || 3);
   const wakeLimitRaw = Number(document.getElementById('parque-max-wake-loss')?.value);
   const wakeLimitPct = Number.isFinite(wakeLimitRaw) ? Math.max(0, wakeLimitRaw) : 5;
   const spacingRange = (start, conventionalMax) => {
