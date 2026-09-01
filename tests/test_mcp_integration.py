@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import gzip
+import json
 import tempfile
 import time
 import unittest
@@ -97,6 +99,34 @@ class MCPIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(stats.status_code, 200, stats.get_data(as_text=True))
         self.assertEqual(stats.get_json()['overview']['n_obs'], 3)
+
+    def test_project_export_accepts_compressed_large_client_state(self):
+        payload = {
+            'session_id': self.sid,
+            'project_name': 'UNISTMO comprimido',
+            'client_state': {
+                'schema_version': 1,
+                'mcda': {'large_result': list(range(100_000))},
+            },
+        }
+        compressed = gzip.compress(
+            json.dumps(payload, separators=(',', ':')).encode('utf-8')
+        )
+        exported = self.client.post(
+            '/api/projects/export', data=compressed,
+            content_type='application/octet-stream',
+            headers={'X-Aero-Content-Encoding': 'gzip'},
+        )
+        self.assertEqual(exported.status_code, 200)
+        self.assertIn('UNISTMO_comprimido.aeroproj', exported.headers['Content-Disposition'])
+        self.assertLess(len(compressed), len(json.dumps(payload).encode('utf-8')))
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'UNISTMO_comprimido.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        restored = imported.get_json()
+        self.assertEqual(
+            restored['client_state']['mcda']['large_result'][-1], 99_999)
 
     def test_project_import_rejects_non_project_file(self):
         response = self.client.post('/api/projects/import', data={

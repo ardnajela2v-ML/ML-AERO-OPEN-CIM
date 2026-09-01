@@ -4,6 +4,7 @@ All scientific computation is delegated to core/ modules.
 """
 import os
 import io
+import gzip
 import copy
 import json
 import re
@@ -964,7 +965,18 @@ def create_app():
 
     @app.route('/api/projects/export', methods=['POST'])
     def export_project():
-        body = request.get_json(silent=True) or {}
+        if request.headers.get('X-Aero-Content-Encoding', '').casefold() == 'gzip':
+            try:
+                raw_body = gzip.decompress(request.get_data(cache=False))
+                if len(raw_body) > 500 * 1024 * 1024:
+                    return _err('El estado descomprimido del proyecto excede 500 MB.', 413)
+                body = json.loads(raw_body.decode('utf-8'))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                return _err(f'No se pudo leer el estado comprimido del proyecto: {exc}')
+        else:
+            body = request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            return _err('El estado del proyecto debe ser un objeto JSON.')
         sid = body.get('session_id')
         if not sid or sid not in sessions:
             return _err('La sesión que se desea exportar no existe.', 404)

@@ -287,13 +287,22 @@ async function exportProjectFile() {
   if (projectName == null) return;
   try {
     toast('Empaquetando avances del proyecto…', 'info');
+    const payload = JSON.stringify({
+      session_id: WP.sessionId,
+      project_name: projectName || defaultName,
+      client_state: collectProjectClientState(),
+    });
+    let requestBody = payload;
+    const requestHeaders = { 'Content-Type': 'application/json' };
+    if (typeof CompressionStream !== 'undefined') {
+      const compressedStream = new Blob([payload], { type: 'application/json' })
+        .stream().pipeThrough(new CompressionStream('gzip'));
+      requestBody = await new Response(compressedStream).blob();
+      requestHeaders['Content-Type'] = 'application/octet-stream';
+      requestHeaders['X-Aero-Content-Encoding'] = 'gzip';
+    }
     const response = await fetch('/api/projects/export', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: WP.sessionId,
-        project_name: projectName || defaultName,
-        client_state: collectProjectClientState(),
-      }),
+      method: 'POST', headers: requestHeaders, body: requestBody,
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
@@ -306,7 +315,18 @@ async function exportProjectFile() {
     downloadBlob(blob, filename);
     toast(`Proyecto guardado: ${filename}`, 'success');
   } catch (error) {
-    toast(`No se pudo guardar el proyecto: ${error.message}`, 'error');
+    let detail = error.message;
+    if (error instanceof TypeError && /fetch/i.test(error.message)) {
+      try {
+        const health = await fetch('/health', { cache: 'no-store' });
+        detail = health.ok
+          ? 'La conexión se interrumpió al transferir el proyecto. Intenta guardarlo nuevamente.'
+          : `El servidor respondió con HTTP ${health.status}.`;
+      } catch (_) {
+        detail = 'El servidor local no está respondiendo. Recarga la aplicación y vuelve a guardar.';
+      }
+    }
+    toast(`No se pudo guardar el proyecto: ${detail}`, 'error');
   }
 }
 
