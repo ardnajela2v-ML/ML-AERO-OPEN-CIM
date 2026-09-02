@@ -663,7 +663,7 @@ class TechnoEconomicAnalyzer:
                 annual_energy_kwh: float,
                 energy_price_usd_kwh: float = 0.07,
                 discount_rate_pct: float = 8.0,
-                project_years: int = 20,
+                project_years: int = 25,
                 usd_to_mxn: float = 1.0,
                 annual_energy_kwh_series: list = None,
                 energy_price_series_usd_kwh: list = None,

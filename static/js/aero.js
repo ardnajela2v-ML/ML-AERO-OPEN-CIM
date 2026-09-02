@@ -16,17 +16,19 @@ const WP = {
   compareResult:null,
   forecastResult:null,
   arenaCache: {},
-  technoActiveScenario: 'real',
+  technoActiveScenario: 'integrated',
   technoScenarios: {
-    real:      { inputs: null, result: null, leveraged: null },
-    ml:        { inputs: null, result: null, leveraged: null },
-    corrected: { inputs: null, result: null, leveraged: null },
+    integrated: { inputs: null, result: null, leveraged: null },
   },
+  technoInputsInitialized: false,
+  technoInputsDirty: false,
   levParams: { debt_ratio_pct: 70, interest_rate_pct: 8, loan_years: 15, equity_discount_rate_pct: 12 },
   technoFinalLoss: { enabled: false, pct: 3.0 },  // Pérdidas eléctricas aplicadas al AEP final (post-simulación)
   referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
   referenceMethod: 'hellmann', // método de extrapolación seleccionado
   mcpStudy: null,
+  reanalysisStudy: null,
+  studyMode: null,
   mcpRunId: null,
   activeDataSource: 'observed',
   parkConfiguration: null,
@@ -178,7 +180,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadParkConfiguration({ quiet: true });
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
-  setStatus('Plataforma iniciada — define el estudio en Globe y continúa a MCP Lab.');
+  setStatus('Plataforma iniciada — define el área en Globe; MCP sólo se usa cuando existe una estación real.');
 });
 
 // ─── SESSION ──────────────────────────────────────────────────────────────────
@@ -218,8 +220,9 @@ function collectProjectClientState() {
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
       referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
+      reanalysisStudy: WP.reanalysisStudy, studyMode: WP.studyMode,
       mcpRunId: WP.mcpRunId, activeDataSource: WP.activeDataSource,
-      parkConfiguration: WP.parkConfiguration,
+      parkConfiguration: WP.parkConfiguration, meta: WP.meta,
     }),
     krig: projectJsonClone({
       sites: KRIG.sites, selected: Array.from(KRIG.selected || []),
@@ -240,6 +243,7 @@ function collectProjectClientState() {
       poi: GLOBE.poi, master: GLOBE.master,
       observedStation: GLOBE.observedStation,
       mcpReferences: Array.from(GLOBE.mcpReferences || []),
+      studyMode: GLOBE.studyMode,
       rotate: GLOBE.rotate, zoomScale: GLOBE.zoomScale, mode: GLOBE.mode,
     }),
   };
@@ -253,7 +257,19 @@ async function applyProjectClientState(state) {
     if ('checked' in saved) el.checked = !!saved.checked;
     else if ('value' in saved) el.value = saved.value;
   });
-  if (state.wp) Object.assign(WP, state.wp);
+  if (state.wp) {
+    Object.assign(WP, state.wp);
+    // Migración de proyectos guardados con los tres escenarios tecnoeconómicos
+    // anteriores. Se conserva el resultado más completo dentro de la evaluación
+    // integral única.
+    const savedScenarios = state.wp.technoScenarios || {};
+    const integrated = savedScenarios.integrated
+      || savedScenarios.corrected || savedScenarios.ml || savedScenarios.real
+      || { inputs: null, result: null, leveraged: null };
+    WP.technoActiveScenario = 'integrated';
+    WP.technoScenarios = { integrated };
+    krig3ActivatePublishedSource();
+  }
   if (state.krig) {
     Object.assign(KRIG, state.krig);
     KRIG.selected = new Set(state.krig.selected || []);
@@ -267,6 +283,12 @@ async function applyProjectClientState(state) {
   if (state.globe) {
     Object.assign(GLOBE, state.globe);
     GLOBE.mcpReferences = new Set(state.globe.mcpReferences || []);
+    requestAnimationFrame(() => {
+      // Sincroniza también el DOM: un proyecto podía restaurar mode="leaflet"
+      // mientras la pantalla seguía visualmente en el globo 3D.
+      setGlobeMode(GLOBE.mode || 'globe');
+      if (GLOBE.poi) globeFilterByRadius();
+    });
   }
   if (WP.referenceHeight != null) applyReferenceHeightToUI(WP.referenceHeight);
   try { await loadParkConfiguration({ quiet: true }); } catch (_) {}
@@ -355,6 +377,7 @@ function bindProjectFiles() {
   document.getElementById('btn-project-export-center')?.addEventListener('click', exportProjectFile);
   document.getElementById('btn-project-import')?.addEventListener('click', openPicker);
   document.getElementById('btn-project-import-center')?.addEventListener('click', openPicker);
+  document.getElementById('btn-globe-import-project')?.addEventListener('click', openPicker);
   input?.addEventListener('change', async () => {
     const file = input.files?.[0];
     input.value = '';
@@ -665,7 +688,7 @@ async function runQC() {
   try {
     const targetCol = document.getElementById('target-col-select').value;
     const r = await api('/api/data/quality', 'POST', {
-      session_id: WP.sessionId, target_col: targetCol
+      session_id: WP.sessionId, data_source: WP.activeDataSource, target_col: targetCol
     });
 
     const rpt = r.report;
@@ -754,12 +777,16 @@ async function buildFeatures() {
   try {
     const r = await api('/api/features/build', 'POST', {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       target_col: targetCol,
       horizons: horizons,
       test_frac: testFrac,
     });
 
     const sum = r.summary;
+    const sourceLabel = r.data_source?.kind === 'mcp'
+      ? `reconstrucción histórica MCP (${r.data_source.label || r.data_source.source_id})`
+      : (r.data_source?.label || 'fuente observada');
     const el = document.getElementById('features-summary');
     el.classList.remove('hidden');
     el.innerHTML = Object.entries(sum).map(([h, s]) => `
@@ -773,6 +800,7 @@ async function buildFeatures() {
         <div class="feat-item">μ_test: <strong>${s.target_mean_test} m/s</strong></div>
       </div>
     `).join('<hr style="border-color:var(--border);margin:8px 0;">');
+    setStatus(`Features construidas desde ${sourceLabel}.`);
 
     // populate horizon selects
     ['train-horizon', 'fc-horizon-select'].forEach(id => {
@@ -893,6 +921,9 @@ function applyParkConfiguration(config) {
     ? `Revisión ${config.configuration_revision}` : 'Configuración nueva';
   updateParkCommercialControls();
   renderParkConfigurationReadiness();
+  if (!WP.technoInputsDirty && !WP.technoScenarios.integrated?.result) {
+    requestAnimationFrame(() => technoPullProjectInputs({ force: true }));
+  }
 }
 
 async function loadParkConfiguration({ quiet = false } = {}) {
@@ -1845,7 +1876,8 @@ async function runEnergy() {
   setStatus('Ejecutando simulación energética…');
   try {
     const r = await api('/api/energy/compute', 'POST', {
-      session_id: WP.sessionId, turbine: turbineCfg, simulation: simCfg
+      session_id: WP.sessionId, data_source: WP.activeDataSource,
+      turbine: turbineCfg, simulation: simCfg
     });
 
     // KPIs
@@ -2020,6 +2052,7 @@ async function compareTurbines() {
   try {
     const r = await api('/api/energy/compare_turbines', 'POST', {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       ws_height_m: wsH(),
     });
 
@@ -2257,6 +2290,7 @@ async function runFarmSimulation() {
   try {
     const r = await api('/api/farm/simulate', 'POST', {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       layout: turbines,
       turbine: turbineCfg,
       ws_height_m: wsH(),
@@ -2401,7 +2435,9 @@ async function calcOverviewStats() {
   setStatus('Calculando estadísticas del sitio…');
   document.getElementById('overview-status').textContent = 'Calculando…';
   try {
-    const r = await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
+    const r = await api('/api/wind/stats', 'POST', {
+      session_id: WP.sessionId, data_source: WP.activeDataSource,
+    });
     WP.windStats = r;
     renderOverviewKPIs(r.overview);
     renderDailyTS(r.overview?.daily_series);
@@ -2719,7 +2755,9 @@ async function calcWindAnalysis() {
   document.getElementById('wind-status').textContent = 'Calculando…';
   try {
     WP.windStats = null; // force fresh fetch
-    const r = await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
+    const r = await api('/api/wind/stats', 'POST', {
+      session_id: WP.sessionId, data_source: WP.activeDataSource,
+    });
     WP.windStats = r;
     renderWindRose(r.rose);
     renderDiurnal(r.diurnal);
@@ -2909,7 +2947,15 @@ function renderWindRose(rose) {
   document.getElementById('rose-dom').textContent =
     `${dominantLabel} · ${rose.dominant_pct}%`;
   const legendEl = document.getElementById('rose-legend');
-  if (legendEl) legendEl.innerHTML = '<span style="opacity:.75">Frecuencia direccional de la fuente activa · la dirección observada se conserva y sólo los huecos usan MCP corregido.</span>';
+  if (legendEl) {
+    const kind = WP.windStats?.data_source?.kind;
+    const note = kind === 'reanalysis_area'
+      ? 'Dirección circular combinada de los nodos ERA5/MERRA-2 del área · sin MCP.'
+      : kind === 'mcp'
+        ? 'La dirección observada se conserva y sólo los huecos usan MCP corregido.'
+        : 'Dirección registrada por la fuente observada activa.';
+    legendEl.innerHTML = `<span style="opacity:.75">Frecuencia direccional de la fuente activa · ${note}</span>`;
+  }
   renderDirectionalRoseChart('chart-rose', rose, 'Fuente activa', false);
 }
 
@@ -3080,8 +3126,20 @@ function renderMonthlyWS(c) {
 // ─── TECNOECONÓMICO MODULE ────────────────────────────────────────────────────
 function bindTechno() {
   document.getElementById('btn-calc-techno').addEventListener('click', calcTechnoEconomic);
-  document.querySelectorAll('[data-te-scenario]').forEach(btn => {
-    btn.addEventListener('click', () => technoSwitchScenario(btn.dataset.teScenario));
+  document.getElementById('btn-te-pull-inputs')?.addEventListener('click', () => {
+    technoPullProjectInputs({ force: true });
+    toast('Parámetros actualizados desde las secciones anteriores.', 'success');
+  });
+  [
+    'te-turbine','te-nturbines','te-demand','te-price','te-price-escalation',
+    'te-inflation','te-rate','te-years','te-fx','te-price-mode','te-rate-mode',
+    'te-fx-mode','cm-turbine-usd-kw','cm-turbines-pct','cm-civil-pct',
+    'cm-elec-pct','cm-install-pct','cm-eng-pct','cm-misc-pct','cm-opex-pct',
+  ].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const eventName = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(eventName, () => { WP.technoInputsDirty = true; });
   });
   // Modelo económico: refrescar badge total CAPEX % al editar cualquier input
   ['cm-turbines-pct','cm-civil-pct','cm-elec-pct','cm-install-pct','cm-eng-pct','cm-misc-pct']
@@ -3098,10 +3156,11 @@ function bindTechno() {
       const clone = opt.cloneNode(true);
       document.getElementById('te-turbine').appendChild(clone);
     });
+    if (!WP.technoInputsDirty && !technoCurrentScenario()?.result) {
+      technoPullProjectInputs({ force: true });
+    }
   });
   technoRefreshScenarioView();
-  const cmpBtn = document.getElementById('btn-te-compare');
-  if (cmpBtn) cmpBtn.addEventListener('click', renderTechnoCompare);
   const cmpTurb = document.getElementById('btn-te-compare-turbines');
   if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
   const levBtn = document.getElementById('btn-lev-from-scenario');
@@ -3159,15 +3218,21 @@ function bindTechno() {
   // Sync TOPSIS winner on TE tab activation (in case TOPSIS ran before)
   document.querySelectorAll('.nav-btn[data-module="techno"]').forEach(btn => {
     btn.addEventListener('click', () => {
-      requestAnimationFrame(() => syncTopsisWinnerToModules());
+      requestAnimationFrame(() => {
+        syncTopsisWinnerToModules();
+        if (!WP.technoInputsDirty && !technoCurrentScenario()?.result) {
+          technoPullProjectInputs({ force: true });
+        }
+        else technoRefreshScenarioView();
+      });
     });
   });
 }
 
 async function onTechnoLossChange() {
-  // Re-render escenario con la analysis ajustada
+  // Re-renderiza la evaluación con el análisis ajustado.
   renderTechnoScenarioResult();
-  // Si el escenario activo tiene financiamiento calculado, recalcular con cifras ajustadas
+  // Si existe financiamiento calculado, se recalcula con las cifras ajustadas.
   const sc = technoCurrentScenario();
   if (sc?.leveraged && sc?.result?.analysis) {
     await calcLeveragedForScenario(WP.technoActiveScenario, WP.levParams);
@@ -3299,7 +3364,7 @@ function technoAdjustedAnalysis(a) {
   const factor     = 1 - lossPct / 100;
   const esc        = escPct / 100;
   const infl       = inflPct / 100;
-  const N          = a.project_years || 20;
+  const N          = a.project_years || 25;
   const capexTotal = a.capex?.total_capex_usd || 0;
   const opex       = a.annual_opex_usd || 0;
   const baseRev    = (a.annual_revenue_usd || 0) * factor;   // revenue año 1 (post-pérdidas)
@@ -3390,7 +3455,7 @@ function technoAdjustedAnalysis(a) {
 }
 
 function technoCurrentScenario() {
-  return WP.technoScenarios[WP.technoActiveScenario] || WP.technoScenarios.real;
+  return WP.technoScenarios.integrated;
 }
 
 function technoCollectCostModel() {
@@ -3443,7 +3508,7 @@ function technoCollectInputs() {
     priceEscalation: parseFloat(document.getElementById('te-price-escalation')?.value) || 0,
     inflation: parseFloat(document.getElementById('te-inflation')?.value) || 0,
     rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
-    years: parseInt(document.getElementById('te-years')?.value) || 20,
+    years: parseInt(document.getElementById('te-years')?.value) || 25,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
     priceMode: document.getElementById('te-price-mode')?.value || 'fixed',
     rateMode:  document.getElementById('te-rate-mode')?.value  || 'fixed',
@@ -3552,16 +3617,16 @@ function _pmlToUsdKwh(val, fxScalar, unit = '') {
 }
 
 /**
- * Construye la serie anual (length nYears) para un parámetro según mode/escenario.
+ * Construye la serie anual (length nYears) para un parámetro de la evaluación integral.
  * - mode='fixed' → null (backend usa escalar)
- * - mode='arena' + scenario in {real, corrected} → media histórica para todos los años
- * - mode='arena' + scenario='ml' → trayectoria publicada desde el año 1
+ * - mode='arena' → trayectoria publicada desde el año 1; si no existe,
+ *   conserva la media histórica para todo el horizonte.
  * Devuelve { series, baseline, hourly } donde:
  *   series = array length nYears (en unidades del backend) o null
  *   baseline = valor escalar año 1 (mostrado al usuario)
  *   hourly  = (solo para 'price') array de 8760 en USD/kWh para year-1 weighting
  */
-function technoBuildParamSeries(paramKey, mode, scenarioKey, nYears, fxScalar) {
+function technoBuildParamSeries(paramKey, mode, _scenarioKey, nYears, fxScalar) {
   if (mode !== 'arena') return { series: null, baseline: null, hourly: null };
   const raw = _arenaRawValues(paramKey);
   const annualProjection = _arenaProjectionAnnual(paramKey);
@@ -3588,23 +3653,21 @@ function technoBuildParamSeries(paramKey, mode, scenarioKey, nYears, fxScalar) {
   }
 
   const series = new Array(nYears).fill(baseline);
-  if (scenarioKey === 'ml' || scenarioKey === 'corrected') {
-    const annual = annualProjection;
-    if (annual && annual.length) {
-      // La trayectoria publicada comienza en el año 1 del proyecto y se usa
-      // completa; no se inserta un año histórico constante delante.
-      for (let i = 0; i < nYears; i++) {
-        let v = Number(annual[Math.min(i, annual.length - 1)]);
-        if (!Number.isFinite(v)) continue;
-        if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit);
-        if (Number.isFinite(v)) series[i] = v;
-      }
-      baseline = series[0];
-      if (paramKey === 'price' && hourly?.length) {
-        const hourlyMean = _arrMean(hourly);
-        if (hourlyMean && Number.isFinite(hourlyMean) && Number.isFinite(baseline)) {
-          hourly = hourly.map(value => Number(value) * baseline / hourlyMean);
-        }
+  const annual = annualProjection;
+  if (annual && annual.length) {
+    // La trayectoria publicada comienza en el año 1 del proyecto y se usa
+    // completa; no se inserta un año histórico constante delante.
+    for (let i = 0; i < nYears; i++) {
+      let v = Number(annual[Math.min(i, annual.length - 1)]);
+      if (!Number.isFinite(v)) continue;
+      if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit);
+      if (Number.isFinite(v)) series[i] = v;
+    }
+    baseline = series[0];
+    if (paramKey === 'price' && hourly?.length) {
+      const hourlyMean = _arrMean(hourly);
+      if (hourlyMean && Number.isFinite(hourlyMean) && Number.isFinite(baseline)) {
+        hourly = hourly.map(value => Number(value) * baseline / hourlyMean);
       }
     }
   }
@@ -3617,7 +3680,7 @@ function technoBuildParamSeries(paramKey, mode, scenarioKey, nYears, fxScalar) {
  */
 function technoUpdateModeHints() {
   const fxScalar = parseFloat(document.getElementById('te-fx')?.value) || 18;
-  const scenarioKey = WP.technoActiveScenario || 'real';
+  const scenarioKey = 'integrated';
   const fmt = (v, dec=4) => Number.isFinite(v) ? Number(v).toLocaleString('es-MX', {maximumFractionDigits: dec}) : '—';
 
   const cfg = [
@@ -3634,7 +3697,7 @@ function technoUpdateModeHints() {
       else el.textContent = '';
       return;
     }
-    const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 20, fxScalar);
+    const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 25, fxScalar);
     if (!built.series) {
       const srcLabel = c.key === 'price' ? 'PML/PRECIO' : c.key.toUpperCase();
       el.innerHTML = `<span style="color:#d97706">⚠ No hay trayectoria publicada para ${srcLabel}. Configura o estima la variable en Configuración del parque.</span>`;
@@ -3643,9 +3706,9 @@ function technoUpdateModeHints() {
     const hAvg = built.series.length > 1
       ? built.series.slice(1).reduce((a,b)=>a+b,0) / (built.series.length - 1)
       : built.baseline;
-    const tag = scenarioKey === 'ml' || scenarioKey === 'corrected'
-      ? `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> · Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> (trayectoria validada)`
-      : `Todos los años: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> (media de ${built.hourly ? '8760 horario' : 'histórico'} Configuración del parque)`;
+    const tag = `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> · ` +
+      `Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> ` +
+      `(${_arenaProjectionAnnual(c.key)?.length ? 'trayectoria publicada' : 'media histórica'})`;
     el.innerHTML = tag;
   });
 }
@@ -3671,10 +3734,28 @@ function technoWindAnnualSeries() {
   return vals.length ? vals : null;
 }
 
-function technoScenarioDefaults(key) {
+function technoWindResultCompatible(source) {
+  if (!WP.activeDataSource || WP.activeDataSource === 'observed') return true;
+  if (WP.activeDataSource.startsWith('mcp:')
+      && document.getElementById('krig3-manual-mode')?.checked) return true;
+  const sourceId = typeof source === 'string' ? source : source?.source_id;
+  return sourceId === WP.activeDataSource;
+}
+
+function technoCompatibleWinner() {
+  return technoWindResultCompatible(MCDA.lastSpatial?.data_source)
+    ? (MCDA.lastRanking?.ranking?.[0] || null) : null;
+}
+
+function technoCompatibleParkResult() {
+  return technoWindResultCompatible(PARQUE.result?.data_source)
+    ? PARQUE.result : null;
+}
+
+function technoIntegratedDefaults() {
   const base = technoCollectInputs();
   const configuredHorizon = Number(WP.parkConfiguration?.project_horizon_years) || 25;
-  if (key === 'ml' || key === 'corrected') base.years = configuredHorizon;
+  base.years = configuredHorizon;
   const marketInputs = parkEquivalentDesignInputs();
   const demand = technoBestAnnualValue('demand');
   const pml = technoBestAnnualValue('pml');
@@ -3687,39 +3768,54 @@ function technoScenarioDefaults(key) {
   else if (rate != null) base.rate = Number(rate).toFixed(2);
   if (marketInputs.price_mxn_per_usd != null) base.fx = Number(marketInputs.price_mxn_per_usd).toFixed(2);
   else if (fx != null) base.fx = Number(fx).toFixed(2);
-  if (key === 'ml' || key === 'corrected') {
-    if (parkMarketTrajectory('pml')?.length) base.priceMode = 'arena';
-    if (parkMarketTrajectory('interest')?.length) base.rateMode = 'arena';
-    if (parkMarketTrajectory('fx')?.length) base.fxMode = 'arena';
+  if (parkMarketTrajectory('pml')?.length) base.priceMode = 'arena';
+  if (parkMarketTrajectory('interest')?.length) base.rateMode = 'arena';
+  if (parkMarketTrajectory('fx')?.length) base.fxMode = 'arena';
+
+  const winner = technoCompatibleWinner();
+  const parkResult = technoCompatibleParkResult();
+  if (winner?.turbina) base.turbine = winner.turbina;
+  if (Number(winner?.n_aerogeneradores) > 0) base.nTurbines = Number(winner.n_aerogeneradores);
+  else if (parkResult?.turbine?.name) base.turbine = parkResult.turbine.name;
+  if (!Number(winner?.n_aerogeneradores) && parkResult?.turbines?.length) {
+    base.nTurbines = parkResult.turbines.length;
   }
-  if (key === 'corrected' && PARQUE.result?.turbine?.name) base.turbine = PARQUE.result.turbine.name;
-  if (key === 'corrected' && PARQUE.result?.turbines?.length) base.nTurbines = PARQUE.result.turbines.length;
   return base;
 }
 
-function technoSwitchScenario(key) {
-  WP.technoScenarios[WP.technoActiveScenario].inputs = technoCollectInputs();
-  WP.technoActiveScenario = key || 'real';
-  document.querySelectorAll('[data-te-scenario]').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.teScenario === WP.technoActiveScenario);
-  });
-  const scenario = technoCurrentScenario();
-  technoApplyInputs(scenario.inputs || technoScenarioDefaults(WP.technoActiveScenario));
+function technoPullProjectInputs({ force = false } = {}) {
+  if (WP.technoInputsInitialized && !force) return;
+  technoApplyInputs(technoIntegratedDefaults());
+  WP.technoInputsInitialized = true;
+  WP.technoInputsDirty = false;
+  WP.technoScenarios.integrated.inputs = technoCollectInputs();
   technoUpdateModeHints();
   technoRefreshScenarioView();
 }
 
 function technoRefreshScenarioView() {
-  const key = WP.technoActiveScenario;
   const badge = document.getElementById('te-scenario-badge');
   const status = document.getElementById('te-scenario-status');
-  const meta = {
-    real: ['Base', 'Viento real de la estación meteorológica cargado en Data Hub. Demanda/PML/FX pueden capturarse o venir del archivo cargado.'],
-    ml: ['ML 25 años', 'Usa las trayectorias publicadas en Configuración del parque para viento, demanda, PML, tasa de interés y tipo de cambio.'],
-    corrected: ['ML + Kriging', 'Usa la predicción ML y prioriza el AEP/layout corregido de Parque/Kriging cuando existe una optimización vigente.'],
-  };
-  if (badge) badge.textContent = meta[key]?.[0] || 'Escenario';
-  if (status) status.innerHTML = `<p class="text-muted" style="font-size:.8rem">${meta[key]?.[1] || ''}</p>`;
+  const winner = technoCompatibleWinner();
+  const parkResult = technoCompatibleParkResult();
+  const sources = [];
+  if (winner) sources.push(`TOPSIS: ${winner.turbina || 'alternativa ganadora'}${winner.n_aerogeneradores ? ` · ${winner.n_aerogeneradores} aeros` : ''}`);
+  else if (parkResult?.turbines?.length) sources.push(`Parque: ${parkResult.turbines.length} aeros`);
+  if (WP.activeDataSource?.startsWith('mcp:') && !document.getElementById('krig3-manual-mode')?.checked
+      && ((MCDA.lastRanking && !winner) || (PARQUE.result && !parkResult))) {
+    sources.push('Resultados eólicos anteriores omitidos: pertenecen a otra fuente');
+  }
+  if (WP.parkConfiguration) sources.push(`Configuración comercial: revisión ${WP.parkConfiguration.configuration_revision || 0}`);
+  if (technoWindAnnualSeries()?.length) sources.push('Recurso: trayectoria eólica publicada');
+  else if (WP.activeDataSource?.startsWith('mcp:')) sources.push(`Recurso: reconstrucción histórica MCP (${WP.activeDataSource})`);
+  else if (WP.studyMode === 'reanalysis_only') sources.push(`Recurso: ERA5/MERRA-2 del área (${WP.activeDataSource}) · sin MCP`);
+  else sources.push('Recurso: serie observada activa');
+  const trajectoryNames = ['pml', 'interest', 'fx'].filter(key => parkMarketTrajectory(key)?.length);
+  if (trajectoryNames.length) sources.push(`Trayectorias: ${trajectoryNames.join(', ')}`);
+  if (badge) badge.textContent = 'Integral';
+  if (status) status.innerHTML =
+    `<p style="font-size:.8rem;margin:0 0 .35rem">${sources.map(mcdaAuditEscape).join(' · ')}</p>` +
+    '<p class="text-muted" style="font-size:.72rem;margin:0">Los valores se heredan al entrar o al pulsar «Actualizar insumos»; después pueden editarse libremente.</p>';
   renderTechnoLayoutPreview();
   renderTechnoScenarioResult();
 }
@@ -3797,15 +3893,20 @@ function renderTechnoScenarioResult() {
   renderTechnoSummaryCard(adjR.analysis, scenario.leveraged);
   renderTechnoEnergyLab(r.energy_lab);
 
-  // Badge de viento de estación — solo visible en escenario "real" (sin predicción)
+  // Badge de viento de estación cuando la evaluación integral usa esa fuente.
   const windBadge = document.getElementById('te-wind-station-badge');
   if (windBadge) {
     const ws = r.wind_source;
-    if (WP.technoActiveScenario === 'real' && ws?.source === 'session') {
+    if (ws?.source === 'session') {
       const rawM  = ws.raw_mean_ms  != null ? ws.raw_mean_ms.toFixed(2)  + ' m/s' : '—';
       const hubM  = ws.hub_mean_ms  != null ? ws.hub_mean_ms.toFixed(2)  + ' m/s' : '—';
       const nRec  = ws.n_rows       != null ? ws.n_rows.toLocaleString() + ' reg.' : '';
-      windBadge.textContent = `⬢ Estación · med. medición: ${rawM} · med. hub: ${hubM}${nRec ? ' · ' + nRec : ''}`;
+      const sourceLabel = ws.data_source?.kind === 'mcp'
+        ? `Reconstrucción MCP · ${ws.data_source.label || ws.data_source.source_id}`
+        : ws.data_source?.kind === 'reanalysis_area'
+          ? `Reanálisis del área · ${ws.data_source.label || ws.data_source.source_id} · sin MCP`
+          : 'Estación observada';
+      windBadge.textContent = `⬢ ${sourceLabel} · media fuente: ${rawM} · media hub: ${hubM}${nRec ? ' · ' + nRec : ''}`;
       windBadge.style.display = '';
     } else {
       windBadge.style.display = 'none';
@@ -3852,17 +3953,20 @@ function renderTechnoLayoutPreview() {
 
 async function calcTechnoEconomic() {
   if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
-  const scenarioKey = WP.technoActiveScenario;
+  const scenarioKey = 'integrated';
   setStatus('Calculando análisis tecnoeconómico…');
   try {
     const inputs = technoCollectInputs();
-    // For ML scenario: send full 25-year annual series so backend uses per-year AEP.
-    // For corrected scenario: keep single mean (Kriging AEP overrides energy anyway).
-    const windSeries = scenarioKey === 'ml' ? technoWindAnnualSeries() : null;
-    const windMean = windSeries
-      ? null
-      : (scenarioKey === 'ml' || scenarioKey === 'corrected' ? technoBestAnnualValue('wind') : null);
-    const parkAep = scenarioKey === 'corrected' ? PARQUE.result?.aep_mwh : null;
+    // Una sola evaluación, con precedencia trazable de recurso:
+    // parque/TOPSIS compatible → trayectoria anual → fuente eólica activa
+    // (hindcast MCP publicado o, sólo en modo manual, serie observada).
+    const winner = technoCompatibleWinner();
+    const parkResult = technoCompatibleParkResult();
+    const parkAepValue = winner?.aep_p50_mwh ?? winner?.aep_mwh ?? parkResult?.aep_mwh;
+    const parkAep = Number.isFinite(Number(parkAepValue)) && Number(parkAepValue) > 0
+      ? Number(parkAepValue) : null;
+    const windSeries = parkAep == null ? technoWindAnnualSeries() : null;
+    const windMean = parkAep == null && !windSeries ? technoBestAnnualValue('wind') : null;
 
     // ── Modos 8760 / Predicción ML para precio, tasa y FX ─────────────────
     const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : 18;
@@ -3881,6 +3985,7 @@ async function calcTechnoEconomic() {
 
     const body = {
       session_id:    WP.sessionId,
+      data_source:   WP.activeDataSource,
       scenario:      scenarioKey,
       n_turbines:    inputs.nTurbines,
       ws_height_m:   wsH(),
@@ -3909,8 +4014,9 @@ async function calcTechnoEconomic() {
       }
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
-    WP.technoScenarios[scenarioKey].inputs = inputs;
-    WP.technoScenarios[scenarioKey].result = r;
+    WP.technoScenarios.integrated.inputs = inputs;
+    WP.technoScenarios.integrated.result = r;
+    WP.technoInputsDirty = false;
     WP.technoResult = r;
     renderTechnoScenarioResult();
     if (r.n_turbines_needed > 0 && r.n_turbines_needed !== inputs.nTurbines) {
@@ -4009,9 +4115,9 @@ function renderTornadoChart(tornado, metric) {
     data: {
       labels,
       datasets: [
-        { label: 'Reducción (peor escenario)', data: loVals.map(v => v < 0 ? v : 0),
+        { label: 'Reducción (caso adverso)', data: loVals.map(v => v < 0 ? v : 0),
           backgroundColor: 'rgba(239,68,68,.75)', borderRadius: 3 },
-        { label: 'Aumento (mejor escenario)', data: hiVals.map(v => v > 0 ? v : 0),
+        { label: 'Aumento (caso favorable)', data: hiVals.map(v => v > 0 ? v : 0),
           backgroundColor: 'rgba(34,197,94,.75)', borderRadius: 3 },
         { label: 'Cambio positivo bajo', data: loVals.map(v => v > 0 ? v : 0),
           backgroundColor: 'rgba(34,197,94,.45)', borderRadius: 3 },
@@ -4250,6 +4356,8 @@ function renderCapexChart(capex) {
 
 function renderCashflowChart(table) {
   if (!table?.length) return;
+  const title = document.getElementById('te-cashflow-chart-title');
+  if (title) title.textContent = `Flujo de caja acumulado (${table.length} años)`;
   destroyChart('chart-cashflow');
   const ctx = document.getElementById('chart-cashflow')?.getContext('2d');
   if (!ctx) return;
@@ -4719,6 +4827,7 @@ async function compareTurbinesTE() {
   try {
     const r = await api('/api/energy/compare_turbines', 'POST', {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       ws_height_m: wsH(),
     });
     const tbody = document.getElementById('te-comp-tbody');
@@ -4741,12 +4850,12 @@ async function compareTurbinesTE() {
 
 // ─── LEVERAGED FINANCIAL ANALYSIS ────────────────────────────────────────────
 
-const _LEV_NAMES = { real: 'Sin predicción', ml: 'Con predicción ML', corrected: 'Viento corregido' };
+const _LEV_NAMES = { integrated: 'Evaluación integral' };
 
 function showFinancingModal(scenarioKey) {
   const res = WP.technoScenarios[scenarioKey]?.result;
   if (!res?.analysis) {
-    toast('Calcula primero el escenario activo antes de incluir financiamiento', 'warn');
+    toast('Calcula primero la evaluación integral antes de incluir financiamiento', 'warn');
     return;
   }
   const a   = technoAdjustedAnalysis(res.analysis);
@@ -4760,7 +4869,7 @@ function showFinancingModal(scenarioKey) {
   document.getElementById('fin-equity-rate').value   = p.equity_discount_rate_pct;
 
   document.getElementById('fin-modal-desc').textContent =
-    `Escenario activo: ${_LEV_NAMES[scenarioKey] || scenarioKey}`;
+    `Base financiera: ${_LEV_NAMES[scenarioKey] || 'Evaluación integral'}`;
   document.getElementById('fin-modal-base-info').innerHTML =
     `CAPEX <strong>$${fmt(a.capex?.total_capex_usd)} USD</strong> · Ingreso anual <strong>$${fmt(a.annual_revenue_usd)} USD</strong> · OPEX <strong>$${fmt(a.annual_opex_usd)} USD</strong> · <strong>${a.project_years || '—'} años</strong>`;
 
@@ -4801,7 +4910,7 @@ async function calcLeveragedForScenario(scenarioKey, params) {
     capex_usd:                a.capex?.total_capex_usd,
     annual_revenue_usd:       a.annual_revenue_usd,
     annual_opex_usd:          a.annual_opex_usd,
-    project_years:            a.project_years || parseInt(document.getElementById('te-years')?.value) || 20,
+    project_years:            a.project_years || parseInt(document.getElementById('te-years')?.value) || 25,
     debt_ratio_pct:           params.debt_ratio_pct,
     interest_rate_pct:        params.interest_rate_pct,
     loan_years:               params.loan_years,
@@ -4812,7 +4921,7 @@ async function calcLeveragedForScenario(scenarioKey, params) {
   try {
     const r = await api('/api/energy/leveraged', 'POST', body);
     WP.technoScenarios[scenarioKey].leveraged = r;
-    // Only render if this scenario is still active
+    // Renderiza el financiamiento de la evaluación integral única.
     if (WP.technoActiveScenario === scenarioKey) renderTechnoLeveraged(r);
     toast('Análisis apalancado completado', 'success');
     setStatus('Análisis apalancado completado.');
@@ -4925,7 +5034,7 @@ function renderTechnoLeveraged(r) {
   const compareBody = document.getElementById('te-lev-compare-tbody');
   if (compareBody && _sc?.result?.analysis) {
     const adjA   = technoAdjustedAnalysis(_sc.result.analysis);
-    const nYrs   = adjA.project_years || (_sc.inputs?.years) || 20;
+    const nYrs   = adjA.project_years || (_sc.inputs?.years) || 25;
     const rProj  = ((adjA.discount_rate_pct  ?? (_sc.inputs?.rate ?? 8)) / 100);
     const rEq    = (r.inputs?.equity_discount_rate_pct ?? WP.levParams.equity_discount_rate_pct ?? 12) / 100;
     const infl   = ((_sc.inputs?.inflation ?? 0) / 100);
@@ -5160,7 +5269,9 @@ async function exportData(type) {
       csvText = buildForecastCsv(WP.forecastResult);
       filename = 'forecast_backtest.csv';
     } else if (type === 'climatology') {
-      const r = WP.windStats || await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
+      const r = WP.windStats || await api('/api/wind/stats', 'POST', {
+        session_id: WP.sessionId, data_source: WP.activeDataSource,
+      });
       WP.windStats = r;
       csvText = buildClimatologyCsv(r.climatology);
       filename = 'climatology.csv';
@@ -5168,7 +5279,9 @@ async function exportData(type) {
       csvText = buildTechnoCsv(WP.technoResult);
       filename = 'techno_economic.csv';
     } else if (type === 'wind_stats') {
-      const r = WP.windStats || await api('/api/wind/stats', 'POST', { session_id: WP.sessionId });
+      const r = WP.windStats || await api('/api/wind/stats', 'POST', {
+        session_id: WP.sessionId, data_source: WP.activeDataSource,
+      });
       WP.windStats = r;
       csvText = buildWindStatsCsv(r);
       filename = 'wind_statistics.csv';
@@ -5523,87 +5636,6 @@ function renderCashflowTable(table, leveraged = null) {
   }).join('');
 }
 
-function renderTechnoCompare() {
-  const tbody = document.getElementById('te-compare-tbody');
-  if (!tbody) return;
-  const keys = ['real', 'ml', 'corrected'];
-  const labels = { real: 'Sin predicción', ml: 'ML 25 años', corrected: 'Corregido + ML' };
-  const results = keys.map(k => WP.technoScenarios[k]?.result || null);
-  if (results.every(r => !r)) {
-    tbody.innerHTML = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:1.5rem">Calcula al menos un escenario y presiona «Actualizar comparativo».</td></tr>';
-    return;
-  }
-
-  const fmtM = v => v != null ? '$' + Math.abs(v).toLocaleString('es-MX', { maximumFractionDigits: 0 }) : '—';
-  const fmtN = (v, dec = 2) => v != null ? Number(v).toFixed(dec) : '—';
-  const sign = v => v == null ? '—' : (v >= 0 ? '+' : '-');
-
-  const metrics = [
-    { label: 'VAN / NPV (USD)', get: a => a?.npv_usd, fmt: v => (v >= 0 ? '+' : '-') + fmtM(v), best: 'max', highlight: true },
-    { label: 'LCOE (USD/kWh)', get: a => a?.lcoe_usd_kwh, fmt: v => fmtN(v, 4), best: 'min' },
-    { label: 'VAE (USD/año)', get: a => a?.vae_usd, fmt: v => sign(v) + fmtM(v), best: 'max' },
-    { label: 'Payback (años)', get: a => a?.payback_years, fmt: v => v ? fmtN(v, 1) + ' años' : '> proyecto', best: 'min' },
-    { label: 'Factor capacidad (%)', get: a => a?.capacity_factor_pct, fmt: v => fmtN(v, 2) + '%', best: 'max' },
-    { label: 'Energía anual (MWh)', get: a => a?.annual_energy_mwh, fmt: v => fmtN(v, 0), best: 'max' },
-    { label: 'Ingresos anuales (USD)', get: a => a?.annual_revenue_usd, fmt: fmtM, best: 'max' },
-    { label: 'CAPEX total (USD)', get: a => a?.capex?.total_capex_usd, fmt: fmtM, best: 'min' },
-    { label: 'Potencia instalada (MW)', get: a => a?.capex?.installed_mw, fmt: v => fmtN(v, 2) + ' MW', best: null },
-    { label: 'Turbinas usadas', get: a => a?.capex?.n_turbines, fmt: v => v ?? '—', best: null },
-  ];
-
-  const rows = metrics.map(m => {
-    const vals = results.map(r => r?.analysis ? m.get(r.analysis) : null);
-    const finite = vals.filter(v => v != null && Number.isFinite(v));
-    let bestVal = null;
-    if (m.best === 'max' && finite.length) bestVal = Math.max(...finite);
-    if (m.best === 'min' && finite.length) bestVal = Math.min(...finite);
-    const bestIdx = bestVal != null ? vals.findIndex(v => v === bestVal) : -1;
-    const bestLabel = bestIdx >= 0 ? labels[keys[bestIdx]] : '—';
-    const cells = vals.map((v, i) => {
-      const isBest = m.best && i === bestIdx;
-      const style = isBest ? ' style="color:var(--accent);font-weight:700;text-align:center"' : ' style="text-align:center"';
-      return `<td${style}>${v != null ? m.fmt(v) : '<span class="text-muted">—</span>'}</td>`;
-    }).join('');
-    const hl = m.highlight ? ' style="font-weight:700"' : '';
-    return `<tr><td${hl}>${m.label}</td>${cells}<td style="text-align:center;color:var(--accent)">${bestLabel}</td></tr>`;
-  }).join('');
-
-  // Viabilidad row
-  const viabilityRow = keys.map((k, i) => {
-    const r = results[i];
-    if (!r) return '<td style="text-align:center">—</td>';
-    const ok = r.analysis?.is_viable;
-    return `<td style="text-align:center"><span class="badge ${ok ? 'badge--success' : 'badge--error'}">${ok ? '✓ Viable' : '✗ No viable'}</span></td>`;
-  }).join('');
-  tbody.innerHTML = `<tr><td><strong>Viabilidad</strong></td>${viabilityRow}<td style="text-align:center">—</td></tr>${rows}`;
-
-  // Gráfica de barras VAN + LCOE por escenario
-  destroyChart('chart-te-compare');
-  const ctx = document.getElementById('chart-te-compare')?.getContext('2d');
-  if (!ctx) return;
-  const npvVals = keys.map((k, i) => { const a = results[i]?.analysis; return a?.npv_usd != null ? Math.round(a.npv_usd / 1e6 * 100) / 100 : null; });
-  const lcoeVals = keys.map((k, i) => { const a = results[i]?.analysis; return a?.lcoe_usd_kwh != null ? Number(a.lcoe_usd_kwh) : null; });
-  WP.charts['chart-te-compare'] = new Chart(ctx, {
-    data: {
-      labels: keys.map(k => labels[k]),
-      datasets: [
-        { type: 'bar', label: 'VAN (M USD)', data: npvVals, backgroundColor: npvVals.map(v => v == null ? '#5558' : v >= 0 ? acc() + 'bb' : '#ef4444bb'), borderRadius: 6, yAxisID: 'y1' },
-        { type: 'line', label: 'LCOE (USD/kWh)', data: lcoeVals, borderColor: acc2(), backgroundColor: 'transparent', pointRadius: 6, pointStyle: 'circle', borderWidth: 2.5, yAxisID: 'y2' },
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
-      scales: {
-        x: { grid: { color: gridColor() } },
-        y1: { type: 'linear', position: 'left', title: { display: true, text: 'VAN (M USD)' }, grid: { color: gridColor() } },
-        y2: { type: 'linear', position: 'right', title: { display: true, text: 'LCOE USD/kWh' }, grid: { display: false } },
-      }
-    }
-  });
-}
-
 // ─── RECURSO AVANZADO (Windographer-style) ────────────────────────────────────
 
 function bindAdvanced() {
@@ -5620,7 +5652,8 @@ async function runAdvanced() {
     const orogFactor = parseFloat(document.getElementById('adv-orog-factor')?.value ?? '0.15') || 0.15;
     const zScale     = parseFloat(document.getElementById('adv-z-scale')?.value)     || 80;
     const r = await api('/api/wind/advanced', 'POST', {
-      session_id: WP.sessionId, ws_height: wsHAdv, z_hub: zHub,
+      session_id: WP.sessionId, data_source: WP.activeDataSource,
+      ws_height: wsHAdv, z_hub: zHub,
       orog_factor: orogFactor, z_scale: zScale,
     });
     WP.advancedResult = r;
@@ -5983,6 +6016,7 @@ async function runHybrid() {
   try {
     const body = {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       lat: parseFloat(document.getElementById('hyb-lat').value) || 20,
       load: {
         annual_kwh:   parseFloat(document.getElementById('hyb-load-kwh').value)  || 1e6,
@@ -6186,12 +6220,34 @@ function krig3GenerationMode() {
 }
 
 function krig3AdvancedMcpRequested() {
-  return krig3GenerationMode() === 'mcp_advanced'
-    && !document.getElementById('krig3-manual-mode')?.checked;
+  if (WP.studyMode === 'reanalysis_only') return false;
+  const manual = !!document.getElementById('krig3-manual-mode')?.checked;
+  return !manual && (
+    krig3GenerationMode() === 'mcp_advanced'
+    || WP.activeDataSource?.startsWith('mcp:')
+  );
+}
+
+function krig3ActivatePublishedSource() {
+  if (WP.studyMode === 'reanalysis_only') {
+    const mode = document.getElementById('krig3-generation-mode');
+    if (mode) mode.value = 'windpro_classic';
+    requestAnimationFrame(() => krig3SyncGenerationMode());
+    return;
+  }
+  if (!WP.activeDataSource?.startsWith('mcp:')) return;
+  if (document.getElementById('krig3-manual-mode')?.checked) return;
+  const mode = document.getElementById('krig3-generation-mode');
+  if (mode) mode.value = 'mcp_advanced';
+  requestAnimationFrame(() => krig3SyncGenerationMode());
 }
 
 function krig3SyncGenerationMode() {
-  const advanced = krig3GenerationMode() === 'mcp_advanced';
+  const modeSelect = document.getElementById('krig3-generation-mode');
+  const advancedOption = modeSelect?.querySelector('option[value="mcp_advanced"]');
+  if (advancedOption) advancedOption.disabled = WP.studyMode === 'reanalysis_only';
+  if (WP.studyMode === 'reanalysis_only' && modeSelect) modeSelect.value = 'windpro_classic';
+  const advanced = WP.studyMode !== 'reanalysis_only' && krig3GenerationMode() === 'mcp_advanced';
   const details = document.getElementById('krig3-downscaling-details');
   const layers = document.getElementById('krig3-advanced-layers');
   const note = document.getElementById('krig3-generation-note');
@@ -6205,9 +6261,25 @@ function krig3SyncGenerationMode() {
   // usuario todavía puede desactivar la corrección física explícitamente.
   if (physical && !physical.checked) physical.checked = true;
   if (note) {
-    note.textContent = advanced
+    note.textContent = WP.studyMode === 'reanalysis_only'
+      ? 'Estudio sin estación observada: interpolación espacial con las referencias ERA5/MERRA-2 del radio. No se ejecuta MCP ni se simula una observación.'
+      : advanced
       ? 'Usa el hindcast MCP como ancla y aplica la cadena física clásica: neutralización, Kriging, rugosidad por píxel, respaldo de pendiente DEM y densidad por elevación.'
       : 'Kriging original con neutralización y reaplicación de rugosidad por píxel, topografía DEM y densidad del aire.';
+  }
+  const studyBadge = document.getElementById('krig3-study-source');
+  if (studyBadge) {
+    if (WP.studyMode === 'reanalysis_only') {
+      const count = WP.reanalysisStudy?.reference_stations?.length || 0;
+      studyBadge.textContent = `ERA5/MERRA-2 · ${count} nodos · sin MCP`;
+      studyBadge.className = 'badge badge--warning';
+    } else if (WP.activeDataSource?.startsWith('mcp:')) {
+      studyBadge.textContent = 'Estación real · reconstrucción MCP';
+      studyBadge.className = 'badge badge--success';
+    } else {
+      studyBadge.textContent = 'Fuente observada / clásica';
+      studyBadge.className = 'badge badge--info';
+    }
   }
 }
 
@@ -7200,7 +7272,9 @@ function krig3UpdateSelectionInfo() {
   const principalLabel = principalSite
     ? `principal: <b>${principalSite.display_name || principalSite.filename}</b>`
     : '<span style="color:#f59e0b">sin parque principal</span>';
-  el.innerHTML = KRIG.guidedMcp
+  el.innerHTML = WP.studyMode === 'reanalysis_only'
+    ? `${sel}/${total} nodos ERA5/MERRA-2 del área · <b>sin ancla observada y sin MCP</b>`
+    : KRIG.guidedMcp
     ? `${sel}/${total} nodos virtuales seleccionados · ancla: <b>OBS · MCP M04</b>`
     : `${sel}/${total} sitios seleccionados · ${principalLabel}`;
 }
@@ -7441,13 +7515,29 @@ async function krig3LoadSites(force=false) {
     }
     const r = await api(url, 'GET');
     KRIG.sites = r.sites || [];
+    if (WP.studyMode === 'reanalysis_only') {
+      const allowedFiles = new Set();
+      (WP.reanalysisStudy?.reference_stations || []).forEach(station => {
+        if (station.primary_file_id) allowedFiles.add(station.primary_file_id);
+        (station.file_ids || []).forEach(value => allowedFiles.add(value));
+      });
+      KRIG.sites = KRIG.sites.filter(site =>
+        ['era5', 'merra2'].includes(String(site.source || '').toLowerCase())
+        && (!allowedFiles.size || allowedFiles.has(site.filename))
+      );
+      if (KRIG.sites.length < 3) {
+        throw new Error('El estudio de reanálisis no tiene tres series compatibles disponibles para Diseño.');
+      }
+    }
     KRIG.selected = new Set(KRIG.sites.filter(s => s.allowed_role !== 'anchor').map(s => s.filename));
     KRIG.principal = KRIG.sites.find(s => s.allowed_role === 'anchor')?.filename || null;
     krig3InvalidateCalibration('se recargó el catálogo espacial');
     if (sourceBadge) {
       sourceBadge.textContent = KRIG.guidedMcp
         ? `Activo · ${WP.activeDataSource}`
-        : (manual ? 'Archivos sin calibración MCP' : 'WindProPlatform clásico');
+        : (WP.studyMode === 'reanalysis_only'
+          ? 'ERA5/MERRA-2 del área · sin MCP'
+          : (manual ? 'Archivos sin calibración MCP' : 'WindProPlatform clásico'));
       sourceBadge.className = `badge ${KRIG.guidedMcp ? 'badge--success' : 'badge--warning'}`;
     }
     // limpiar marcadores anteriores
@@ -7716,10 +7806,14 @@ async function krig3Run() {
     map_method:       KRIG.guidedMcp ? 'mcp_advanced' : 'windpro_classic',
     target_height_m:  wsH(),
   };
+  if (WP.studyMode === 'reanalysis_only') {
+    body.session_id = WP.sessionId;
+    body.data_source = WP.activeDataSource;
+  }
   if (KRIG.guidedMcp) {
     body.session_id = WP.sessionId;
     body.data_source = WP.activeDataSource;
-    body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 20);
+    body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 25);
     if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
   }
   if (principal) {
@@ -8505,6 +8599,10 @@ async function mcdaRunAnalysis() {
     exclusion_polygons: exclusionPolygons,
     boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
   };
+  if (WP.activeDataSource) {
+    body.session_id = WP.sessionId;
+    body.data_source = WP.activeDataSource;
+  }
   if (areaMode) {
     body.layout_weights = MCDA.activeScenario === 'base'
       ? body.weights
@@ -8527,12 +8625,10 @@ async function mcdaRunAnalysis() {
     if (guidedMcp) {
       document.getElementById('mcda-progress-text').textContent =
         'Preparando la calibración MCP y sus campos espaciales…';
-      body.session_id = WP.sessionId;
-      body.data_source = WP.activeDataSource;
       body.calibration_id = await krig3EnsureCalibration();
       body.target_height_m = Number(wsH());
       body.physical = !!document.getElementById('krig3-physical')?.checked;
-      body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 20);
+      body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 25);
       if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
     }
     const r = await api('/api/multicriteria/spatial', 'POST', body);
@@ -8783,6 +8879,7 @@ function syncTopsisWinnerToModules() {
   if (typeof MCDA === 'undefined' || !MCDA.lastRanking) return;
   const ranking = MCDA.lastRanking.ranking || [];
   if (!ranking.length) return;
+  if (!technoCompatibleWinner()) return;
 
   // Unique turbines by key, sorted by TOPSIS score
   const seen = new Set();
@@ -8819,7 +8916,14 @@ function syncTopsisWinnerToModules() {
     teSelect.appendChild(matchOpt);
   }
 
-  teSelect.value = winnerKey;
+  if (!WP.technoInputsDirty && !technoCurrentScenario()?.result) {
+    teSelect.value = winnerKey;
+    const winnerCount = Number(winner.n_aerogeneradores);
+    const teCount = document.getElementById('te-nturbines');
+    if (teCount && Number.isFinite(winnerCount) && winnerCount > 0) {
+      teCount.value = String(Math.round(winnerCount));
+    }
+  }
 
   // Badge below the select
   const badge = document.getElementById('te-turbine-topsis-badge');
@@ -9249,6 +9353,7 @@ async function parqueRecalcEditedLayout() {
     electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
     session_id:        WP.sessionId,
+    data_source:       WP.activeDataSource,
   };
   const btn = document.getElementById('btn-parque-recalc-edit');
   if (btn) btn.textContent = '⏳ Recalculando…';
@@ -9570,8 +9675,9 @@ async function parqueUpdateRecommendation() {
   const hubHeight = parseFloat(document.getElementById('parque-ws-h')?.value) || 110;
   const turbineCfg = { builtin_model: turbineKey, hub_height_m: hubHeight };
   // Mean wind speed: use MCDA/kriging polygon mean if available
-  let vMean = 9.0, wK = 2.0;
-  if (typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length) {
+  let vMean = null, wK = null;
+  const hasSpatialWind = typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length;
+  if (hasSpatialWind) {
     const v_vals = MCDA.lastAnalysis.map(s => s.v_mean || 0).filter(v => v > 0);
     if (v_vals.length) vMean = v_vals.reduce((a, b) => a + b, 0) / v_vals.length;
     const k_vals = MCDA.lastAnalysis.map(s => s.weibull_K || 0).filter(k => k > 0);
@@ -9581,8 +9687,10 @@ async function parqueUpdateRecommendation() {
   try {
     const r = await api('/api/farm/recommend', 'POST', {
       session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
       turbine: turbineCfg, demand_mwh: demand,
-      v_mean: vMean, weibull_k: wK,
+      ...(Number.isFinite(vMean) ? { v_mean: vMean } : {}),
+      ...(Number.isFinite(wK) ? { weibull_k: wK } : {}),
       hub_height_m: hubHeight,
       measurement_height_m: wsH(),
       availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
@@ -9645,6 +9753,7 @@ async function parqueOptimize() {
     hub_height_m:      hubHeight,
     measurement_height_m: wsH(),
     session_id:        WP.sessionId,
+    data_source:       WP.activeDataSource,
   };
 
   const progWrap = document.getElementById('parque-progress-wrap');
@@ -10518,7 +10627,7 @@ async function runDemandArena() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar arena (Anual)';
+    btn.disabled = false; btn.textContent = 'Cargar y entrenar modelos (anual)';
   }
 }
 
@@ -11679,7 +11788,8 @@ async function runWindAnnualForecast() {
   setStatus('Calculando proyección anual de viento…');
   try {
     const fc = await api('/api/wind/annual_forecast', 'POST', {
-      session_id: WP.sessionId, ws_col: 'wind_speed', growth: 0.005, horizon: 25,
+      session_id: WP.sessionId, data_source: WP.activeDataSource,
+      ws_col: 'wind_speed', growth: 0.005, horizon: 25,
     });
     WP.arenaCache.wind = fc;
     renderForecastFutureChart('wind');
@@ -11765,7 +11875,7 @@ function populateForecastStudioSelect(key) {
   if (!sel) return;
 
   if (!targetCache || !targetCache.fitted || Object.keys(targetCache.fitted).length === 0) {
-    sel.innerHTML = '<option value="">Aún no hay modelos entrenados en Arena</option>';
+    sel.innerHTML = '<option value="">Aún no hay modelos entrenados</option>';
     return;
   }
   
@@ -12208,6 +12318,18 @@ async function persistMCPTargetHeight() {
 
 async function loadMCPStudy() {
   if (!WP.sessionId) return;
+  if (WP.studyMode === 'reanalysis_only') {
+    WP.mcpStudy = null;
+    document.getElementById('mcp-study-revision').textContent = 'MCP desactivado';
+    document.getElementById('btn-mcp-run').disabled = true;
+    document.getElementById('mcp-study-observation').innerHTML =
+      '<span class="text-muted">Este proyecto se inició sin estación observada.</span>';
+    document.getElementById('mcp-study-references').innerHTML =
+      '<span class="text-muted">Las referencias se usan directamente en el estudio espacial de Diseño.</span>';
+    document.getElementById('mcp-progress-message').textContent =
+      'MCP requiere una estación real. Regresa a Globe y selecciona o carga una observación para activarlo.';
+    return;
+  }
   try {
     const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'GET');
     WP.mcpStudy = study;
@@ -12602,6 +12724,25 @@ async function publishMCPRun() {
   try {
     const published = await api(`/api/mcp/runs/${encodeURIComponent(WP.mcpRunId)}/publish`, 'POST', { session_id: WP.sessionId });
     WP.activeDataSource = published.source_id;
+    krig3ActivatePublishedSource();
+    WP.windStats = null;
+    WP.energyResult = null;
+    WP.compareResult = null;
+    WP.forecastResult = null;
+    if (WP.arenaCache) delete WP.arenaCache.wind;
+    WP.technoResult = null;
+    WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
+    WP.technoInputsInitialized = false;
+    WP.technoInputsDirty = false;
+    KRIG.calibrationId = null;
+    KRIG.calibrationSignature = null;
+    KRIG.calibration = null;
+    KRIG.result = null;
+    MCDA.lastSpatial = null;
+    MCDA.lastAnalysis = null;
+    MCDA.lastRanking = null;
+    PARQUE.result = null;
+    PARQUE.optResult = null;
     WP.referenceHeight = published.target_height_m || WP.referenceHeight || 80;
     applyReferenceHeightToUI(WP.referenceHeight);
     document.getElementById('mcp-publish-status').textContent = 'Publicado';
@@ -12637,6 +12778,7 @@ const GLOBE = {
   master: null,
   observedStation: null,
   mcpReferences: new Set(),
+  studyMode: null,
   mcpCatalog: null,
   collapsed: false,
   collapsedOnce: false,
@@ -12682,6 +12824,7 @@ async function bindGlobeStage() {
   bindGlobeBackButton();
   bindGlobeModeSwitch();
   document.getElementById('btn-globe-continue-mcp')?.addEventListener('click', continueGlobeToMCP);
+  document.getElementById('btn-globe-continue-reanalysis')?.addEventListener('click', continueGlobeToReanalysis);
 
   // Auto-advance loader → app after 2.4s
   setTimeout(() => switchToGlobeApp(), 2400);
@@ -13279,6 +13422,7 @@ function clearGlobePoi() {
   GLOBE.master = null;
   GLOBE.observedStation = null;
   GLOBE.mcpReferences.clear();
+  GLOBE.studyMode = null;
   document.getElementById('btn-globe-clear-poi')?.classList.remove('is-visible');
   document.getElementById('globe-panel')?.classList.remove('is-open');
   const status = document.getElementById('globe-status');
@@ -13343,11 +13487,20 @@ function globeRenderStationList() {
   if (!GLOBE.visibleSites.length) {
     list.innerHTML = '<div class="globe-panel__empty">Sin estaciones a este radio. Aumenta el radio o usa "+ Cargar mi propio archivo".</div>';
     if (title) title.textContent = '0 puntos';
+    const sub = document.getElementById('globe-panel-sub');
+    if (sub) sub.textContent = 'No hay estaciones observadas ni referencias de reanálisis dentro del radio actual.';
+    globeUpdateContinueState();
     return;
   }
   if (title) title.textContent = `${GLOBE.visibleSites.length} puntos cercanos`;
   const observed = GLOBE.visibleSites.filter(s => s.data_kind === 'observed');
   const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
+  const sub = document.getElementById('globe-panel-sub');
+  if (sub) sub.textContent = GLOBE.observedStation
+    ? 'Estación real seleccionada: el estudio continuará por MCP con las referencias elegidas.'
+    : (references.length >= 3
+      ? 'Sin estación real puedes estudiar el área con ERA5/MERRA-2. Ese flujo no ejecuta MCP ni simula una observación.'
+      : 'Elige una estación observada o amplía el radio hasta reunir al menos tres referencias ERA5/MERRA-2.');
   const row = s => {
     const key = globeSiteKey(s);
     const isMaster = (GLOBE.master === key);
@@ -13464,8 +13617,9 @@ async function handleGlobeStationPick(identifier) {
                GLOBE.sites.find(s => globeSiteKey(s) === identifier);
   if (!site) return;
   if (site.data_kind === 'observed') {
-    GLOBE.master = identifier;
-    GLOBE.observedStation = site;
+    const deselect = GLOBE.master === identifier;
+    GLOBE.master = deselect ? null : identifier;
+    GLOBE.observedStation = deselect ? null : site;
   } else if (GLOBE.mcpReferences.has(identifier)) {
     GLOBE.mcpReferences.delete(identifier);
   } else {
@@ -13476,12 +13630,21 @@ async function handleGlobeStationPick(identifier) {
 
 function globeUpdateContinueState() {
   const btn = document.getElementById('btn-globe-continue-mcp');
+  const rawBtn = document.getElementById('btn-globe-continue-reanalysis');
   if (!btn) return;
   const ready = !!GLOBE.observedStation && GLOBE.mcpReferences.size > 0;
   btn.disabled = !ready;
   btn.textContent = ready
     ? `Continuar a MCP Lab (${GLOBE.mcpReferences.size} referencia${GLOBE.mcpReferences.size === 1 ? '' : 's'}) →`
     : 'Selecciona observación y referencias';
+  if (rawBtn) {
+    const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
+    rawBtn.style.display = GLOBE.poi && !GLOBE.observedStation ? '' : 'none';
+    rawBtn.disabled = references.length < 3;
+    rawBtn.textContent = references.length >= 3
+      ? `Preparar Recurso Eólico con ${references.length} reanálisis →`
+      : `Se requieren 3 reanálisis (${references.length} disponibles)`;
+  }
 }
 
 async function continueGlobeToMCP() {
@@ -13499,12 +13662,94 @@ async function continueGlobeToMCP() {
       target_height_m: initialTargetHeight,
     });
     WP.mcpStudy = study;
+    WP.studyMode = 'mcp_observed';
+    GLOBE.studyMode = 'mcp_observed';
     if (GLOBE.mcpReferences.size === 1) toast('Una sola referencia es válida; se recomiendan varias para comparar.', 'warn');
     collapseGlobeStage();
     document.querySelector('.nav-btn[data-module="mcp"]')?.click();
     await loadMCPStudy();
   } catch (e) {
     toast(`No se pudo crear el estudio MCP: ${e.message}`, 'error');
+  }
+}
+
+async function continueGlobeToReanalysis() {
+  if (!GLOBE.poi || GLOBE.observedStation) return;
+  const references = GLOBE.visibleSites.filter(site => site.data_kind === 'reanalysis');
+  if (references.length < 3) {
+    toast('Amplía el radio: se requieren al menos tres referencias ERA5/MERRA-2.', 'warn');
+    return;
+  }
+  const radius = parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM;
+  const inheritedHeight = Number(WP.referenceHeight);
+  const targetHeight = Number.isFinite(inheritedHeight) && inheritedHeight >= 1 && inheritedHeight <= 300
+    ? inheritedHeight : 80;
+  const actionButton = document.getElementById('btn-globe-continue-reanalysis');
+  if (actionButton) {
+    actionButton.disabled = true;
+    actionButton.textContent = `Preparando ${references.length} series ERA5/MERRA-2…`;
+  }
+  try {
+    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/reanalysis-study`, 'PUT', {
+      reference_station_ids: references.map(globeSiteKey),
+      poi: GLOBE.poi,
+      radius_km: radius,
+      target_height_m: targetHeight,
+    });
+    WP.reanalysisStudy = study;
+    WP.studyMode = 'reanalysis_only';
+    GLOBE.studyMode = 'reanalysis_only';
+    WP.activeDataSource = study.active_data_source || study.source_id;
+    WP.mcpStudy = null;
+    WP.mcpRunId = null;
+    WP.referenceHeight = study.target_height_m || targetHeight;
+    WP.meta = {
+      display_name: 'Recurso de reanálisis del área',
+      format: 'reanalysis_area',
+      reanalysis_type: 'ERA5 + MERRA-2',
+      latitude: study.poi.lat,
+      longitude: study.poi.lon,
+      wind_height_m: WP.referenceHeight,
+      station_count: study.reference_stations?.length || references.length,
+      aggregation_method: study.published_source?.aggregation_method,
+    };
+    applyReferenceHeightToUI(WP.referenceHeight);
+    WP.windStats = null;
+    WP.energyResult = null;
+    WP.compareResult = null;
+    WP.forecastResult = null;
+    if (WP.arenaCache) delete WP.arenaCache.wind;
+    WP.technoResult = null;
+    WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
+    WP.technoInputsInitialized = false;
+    WP.technoInputsDirty = false;
+    MCDA.lastSpatial = null;
+    MCDA.lastAnalysis = null;
+    MCDA.lastRanking = null;
+    PARQUE.result = null;
+    PARQUE.optResult = null;
+    KRIG.guidedMcp = false;
+    KRIG.sites = [];
+    KRIG.selected.clear();
+    KRIG.principal = null;
+    KRIG.result = null;
+    KRIG.poi = { ...GLOBE.poi };
+    KRIG._appliedGlobePoi = null;
+    krig3InvalidateCalibration('se cambió a un estudio sin estación observada');
+    const mode = document.getElementById('krig3-generation-mode');
+    if (mode) mode.value = 'windpro_classic';
+    const manual = document.getElementById('krig3-manual-mode');
+    if (manual) manual.checked = false;
+    const radiusInput = document.getElementById('krig3-poi-radius');
+    if (radiusInput) radiusInput.value = String(radius);
+    krig3SyncGenerationMode();
+    collapseGlobeStage();
+    document.querySelector('.nav-btn[data-module="resumen"]')?.click();
+    toast(`Recurso del área preparado con ${references.length} referencias ERA5/MERRA-2. MCP se omitió.`, 'success');
+    if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
+  } catch (e) {
+    toast(`No se pudo crear el estudio de reanálisis: ${e.message}`, 'error');
+    globeUpdateContinueState();
   }
 }
 
@@ -14233,7 +14478,7 @@ async function handleGlobeOwnFile(file, source) {
     }
     document.getElementById('globe-modal')?.classList.remove('is-open');
     await globeFilterByRadius();
-    toast(`${row.display_name} añadido al estudio MCP`, response.warning ? 'warn' : 'success');
+    toast(`${row.display_name} añadido como ${kind === 'observed' ? 'estación observada para MCP' : 'referencia de reanálisis del área'}`, response.warning ? 'warn' : 'success');
   } catch (e) {
     toast(`No se pudo registrar el archivo: ${e.message}`, 'error');
   }
@@ -14328,7 +14573,7 @@ function resetSimulationState() {
   if (vSub) vSub.textContent = 'Calcula el análisis para ver la evaluación del recurso';
   vCta?.setAttribute('disabled', '');
   if (title) title.textContent = '— sin datos —';
-  if (sub)   sub.textContent   = 'Publica un hindcast en MCP Lab o usa datos observados en modo manual.';
+  if (sub)   sub.textContent   = 'Usa una estación real con MCP o un recurso de área ERA5/MERRA-2 sin MCP.';
 
   // 5) Reset visual de KPIs principales
   ['kv-mean','kv-max','kv-weibull','kv-pd','kv-ext','kv-near-mean','kv-temp','kv-pres','kv-nobs'].forEach(id => {
@@ -14352,7 +14597,7 @@ function resetSimulationState() {
   // 7) Sub-tab por defecto = Recurso
   switchResumenTab?.('recurso');
 
-  setStatus?.('Globe reiniciado — selecciona una estación para nuevo análisis.');
+  setStatus?.('Globe reiniciado — selecciona un área y decide si existe una estación real.');
 }
 
 // ──────────────────────────── MODO 2D LEAFLET ────────────────────────────────
@@ -14367,7 +14612,8 @@ function bindGlobeModeSwitch() {
 
 function setGlobeMode(mode) {
   if (mode !== 'globe' && mode !== 'leaflet') return;
-  if (GLOBE.mode === mode) return;
+  // Debe ser idempotente. Aunque el estado ya diga "leaflet", todavía puede
+  // faltar sincronizar la clase visual o inicializar el mapa (p. ej. al importar).
   GLOBE.mode = mode;
   const app = document.getElementById('globe-app');
   app?.classList.toggle('is-mode-leaflet', mode === 'leaflet');
@@ -14377,6 +14623,11 @@ function setGlobeMode(mode) {
   if (mode === 'leaflet') {
     initGlobeLeaflet();
     GLOBE.autoSpin = false;
+    requestAnimationFrame(() => {
+      GLOBE.leafletMap?.invalidateSize();
+      leafletRenderPoi();
+      leafletRenderStations();
+    });
   } else {
     GLOBE.autoSpin = !GLOBE.poi;
   }
@@ -14543,7 +14794,10 @@ async function switchTo2DAt(lat, lon, km = 100) {
   setGlobeMode('leaflet');
   // Esperar a que invalidateSize del init tome efecto
   await new Promise(r => setTimeout(r, 80));
-  if (!GLOBE.leafletMap) return;
+  if (!GLOBE.leafletMap) {
+    toast('No fue posible inicializar el mapa 2D de precisión.', 'error');
+    return;
+  }
   GLOBE.leafletMap.invalidateSize();
   leafletFlyToRadius(lat, lon, km);
 }
@@ -14609,6 +14863,7 @@ function bindResumenUnified() {
 // (polígono del parque, selección, vista del mapa, parámetros editados, etc.)
 // hasta que el usuario reinicie el diseño manualmente.
 async function krig3AutoFitFromGlobe() {
+  krig3ActivatePublishedSource();
   if (typeof krig3InitMap !== 'function') return;
   const map = krig3InitMap();
   if (!map) return;
@@ -14859,6 +15114,9 @@ function updateResumenHeader() {
   title.textContent = name;
   if (sub) {
     const parts = [];
+    const source = WP.windStats?.data_source;
+    if (source?.kind === 'mcp') parts.push(`Reconstrucción histórica MCP · ${source.label || source.source_id}`);
+    else if (source?.label) parts.push(source.label);
     if (meta.reanalysis_type || meta.format) parts.push((meta.reanalysis_type || meta.format).toUpperCase());
     if (meta.latitude != null && meta.longitude != null)
       parts.push(`${(+meta.latitude).toFixed(3)}°, ${(+meta.longitude).toFixed(3)}°`);

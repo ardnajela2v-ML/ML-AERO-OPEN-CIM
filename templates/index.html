@@ -139,6 +139,9 @@
       <div class="globe-brand__kicker">AERO OPEN CIM · GLOBE</div>
       <div class="globe-brand__title">Selecciona un sitio para iniciar el estudio</div>
       <div class="globe-brand__hint">Arrastra para rotar · Rueda para acercar · Selecciona observación y referencias</div>
+      <button class="globe-project-import" id="btn-globe-import-project" type="button">
+        ↑ Importar proyecto .aeroproj
+      </button>
     </div>
 
     <!-- Search bar -->
@@ -184,6 +187,10 @@
       <button class="globe-panel__upload" id="btn-globe-open-upload" type="button">
         + Cargar mi propio archivo
       </button>
+      <button class="btn-secondary" id="btn-globe-continue-reanalysis" type="button" disabled
+              style="display:none;margin:10px 14px 0;width:calc(100% - 28px)">
+        Preparar Recurso Eólico con reanálisis →
+      </button>
       <button class="btn-primary" id="btn-globe-continue-mcp" type="button" disabled
               style="margin:10px 14px 14px;width:calc(100% - 28px)">
         Continuar a MCP Lab →
@@ -196,8 +203,8 @@
       <div class="globe-modal__card">
         <button class="globe-modal__close" id="btn-globe-modal-close" type="button" aria-label="Cerrar">✕</button>
         <div class="globe-modal__kicker">CARGAR ARCHIVO PROPIO</div>
-        <div class="globe-modal__title">Añadir datos al estudio MCP</div>
-        <div class="globe-modal__desc">Declara si el archivo es una observación local o una referencia de reanálisis.</div>
+        <div class="globe-modal__title">Añadir datos al estudio eólico</div>
+        <div class="globe-modal__desc">Una observación activa MCP; sin ella, las referencias alimentan directamente el recurso del área.</div>
         <div class="globe-modal__zone" id="globe-upload-zone">
           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
@@ -430,7 +437,7 @@
   <div style="position:relative;background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border);border-radius:16px;padding:2rem;width:min(480px,96vw);box-shadow:var(--shadow,0 24px 64px rgba(0,0,0,.55))">
     <div style="font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:.4rem">ANÁLISIS FINANCIERO</div>
     <h2 style="font-size:1.15rem;font-weight:700;margin:0 0 .25rem;color:var(--text-primary)">Parámetros de financiamiento</h2>
-    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="fin-modal-desc">Escenario activo: —</p>
+    <p style="font-size:.8rem;color:var(--text-muted);margin:0 0 1.25rem" id="fin-modal-desc">Base financiera: evaluación integral</p>
 
     <div id="fin-modal-base-info" style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:.75rem 1rem;margin-bottom:1.2rem;font-size:.78rem;line-height:1.7;color:var(--text-secondary)">—</div>
 
@@ -458,7 +465,7 @@
     </div>
 
     <div style="font-size:.75rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:1.4rem;line-height:1.6">
-      Los parámetros ingresados se usarán para el escenario activo. Puedes recalcular con diferentes valores en cualquier momento.
+      Los parámetros ingresados se usarán en la evaluación integral. Puedes recalcular con diferentes valores en cualquier momento.
     </div>
 
     <div style="display:flex;gap:.75rem">
@@ -730,7 +737,7 @@
 
 </section>
 
-<!-- ╔══════════════════ MODEL ARENA ══════════════════╗ -->
+<!-- ╔════════════ CENTRO DE CONFIGURACIÓN DEL PARQUE ════════════╗ -->
 <section class="module" id="mod-models">
   <div class="module-header">
     <h1 class="module-title">Centro de configuración del parque eólico</h1>
@@ -1020,7 +1027,7 @@
             </div>
           </div>
           <div style="display: flex; gap: 8px; margin-top: 1rem;">
-            <button class="btn-primary" id="btn-dem-train" style="flex: 1;">Cargar y entrenar arena (Anual)</button>
+            <button class="btn-primary" id="btn-dem-train" style="flex: 1;">Cargar y entrenar modelos (anual)</button>
             <button class="btn-secondary" id="btn-dem-train-hourly" style="flex: 1;">Entrenar Perfil Horario (8760 pts)</button>
           </div>
         </div>
@@ -1061,7 +1068,7 @@
       <div class="cb" style="overflow-x:auto">
         <table class="tbl" id="dem-compare-tbl">
           <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
-          <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena la arena.</td></tr></tbody>
+          <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena los modelos.</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -1298,7 +1305,7 @@
     
   <div class="toolbar mb-3">
     <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <label class="form-label">Seleccionar modelo entrenado</label>
       <select class="form-select" id="fs-demand-model-select">
         <option value="">Aún no hay modelos entrenados</option>
       </select>
@@ -1409,7 +1416,7 @@
     
   <div class="toolbar mb-3">
     <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <label class="form-label">Seleccionar modelo entrenado</label>
       <select class="form-select" id="fs-pml-model-select">
         <option value="">Aún no hay modelos entrenados</option>
       </select>
@@ -1520,7 +1527,7 @@
     
   <div class="toolbar mb-3">
     <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <label class="form-label">Seleccionar modelo entrenado</label>
       <select class="form-select" id="fs-interest-model-select">
         <option value="">Aún no hay modelos entrenados</option>
       </select>
@@ -1581,7 +1588,7 @@
     
   <div class="toolbar mb-3">
     <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado en Arena</label>
+      <label class="form-label">Seleccionar modelo entrenado</label>
       <select class="form-select" id="fs-fx-model-select">
         <option value="">Aún no hay modelos entrenados</option>
       </select>
@@ -2135,7 +2142,7 @@
     <div>
       <div class="resumen-kicker">SITIO SELECCIONADO</div>
       <h1 class="module-title" id="resumen-site-title">— sin datos —</h1>
-      <p class="resumen-sub" id="resumen-site-sub">Publica un hindcast en MCP Lab o usa datos observados en modo manual.</p>
+      <p class="resumen-sub" id="resumen-site-sub">Usa una estación real con MCP o un recurso de área ERA5/MERRA-2 sin MCP.</p>
     </div>
     <div class="resumen-verdict" id="resumen-verdict">
       <div class="resumen-verdict__kicker">VEREDICTO</div>
@@ -2349,7 +2356,7 @@
     <div class="cb" style="padding:.8rem 1rem">
       <strong id="adv-ti-provenance-title">Turbulencia: esperando cálculo</strong>
       <div class="text-muted" id="adv-ti-provenance" style="margin-top:.3rem;line-height:1.45">
-        La TI medida se obtendrá de la media y desviación estándar CERTE de cada ventana nativa; la serie horaria MCP se mantendrá separada.
+        La TI medida sólo se obtiene de CERTE nativo. Las fuentes horarias MCP o de reanálisis muestran variabilidad interhoraria, no TI medida.
       </div>
     </div>
   </div>
@@ -2484,7 +2491,10 @@
   <div class="card">
     <div class="card-header">
       <span class="card-title">Parámetros</span>
-      <span class="badge badge--info" id="krig3-status">En espera</span>
+      <span style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap">
+        <span class="badge badge--info" id="krig3-study-source">Fuente sin definir</span>
+        <span class="badge badge--info" id="krig3-status">En espera</span>
+      </span>
     </div>
     <div class="card-body">
       <div style="display:grid;grid-template-columns:minmax(220px,360px) 1fr;gap:.75rem;align-items:end;margin-bottom:.8rem;padding:.7rem .8rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-elev)">
@@ -3476,20 +3486,19 @@
 <section class="module" id="mod-techno">
   <div class="module-header">
     <h1 class="module-title">Evaluación Tecnoeconómica</h1>
-    <p class="module-desc">Escenarios independientes: viento real · predicción ML 25 años · predicción corregida con Kriging/Parque.</p>
-  </div>
-
-  <div class="tabs">
-    <button class="tab-btn active" data-te-scenario="real">Sin predicción</button>
-    <button class="tab-btn" data-te-scenario="ml">Con predicción ML</button>
-    <button class="tab-btn" data-te-scenario="corrected">Viento corregido + predicción</button>
+    <p class="module-desc">Evaluación integral del proyecto con insumos heredados, casos financieros y análisis de sensibilidad.</p>
   </div>
 
   <div class="grid-2 mt-2">
     <div class="card">
-      <div class="card-header"><span class="card-title">Fuente de datos del escenario</span><span class="badge badge--info" id="te-scenario-badge">Base</span></div>
+      <div class="card-header">
+        <span class="card-title">Insumos heredados del proyecto</span>
+        <span class="badge badge--info" id="te-scenario-badge">Integral</span>
+        <button class="btn-secondary" id="btn-te-pull-inputs" type="button"
+          style="margin-left:auto;font-size:.72rem;padding:.22rem .65rem">Actualizar insumos</button>
+      </div>
       <div class="card-body" id="te-scenario-status">
-        <p class="text-muted" style="font-size:.8rem">Viento real de la estación meteorológica cargado en Data Hub.</p>
+        <p class="text-muted" style="font-size:.8rem">Se priorizan el parque/TOPSIS, la configuración comercial y las trayectorias publicadas; todos los valores permanecen editables.</p>
       </div>
     </div>
     <div class="card">
@@ -3562,7 +3571,8 @@
           </div>
           <div>
             <label class="form-label">Vida del proyecto (años)</label>
-            <input type="number" class="form-input" id="te-years" value="20" min="5" max="40">
+            <input type="number" class="form-input" id="te-years" value="25" min="5" max="40">
+            <small class="text-muted" style="font-size:.7rem">Valor base: 25 años; editable para evaluar otro horizonte.</small>
           </div>
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
@@ -3623,14 +3633,14 @@
           <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
         </details>
 
-        <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular Análisis Tecnoeconómico</button>
+        <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular evaluación integral y sensibilidades</button>
       </div>
     </div>
 
     <!-- ── ANÁLISIS DE RIESGO ── -->
     <div class="card" id="te-risk-card" style="display:none">
       <div class="card-header">
-        <span class="card-title">Análisis de Riesgo Financiero</span>
+        <span class="card-title">Casos y sensibilidades de la evaluación integral</span>
         <button id="btn-calc-sensitivity" class="btn-secondary" style="font-size:.75rem;padding:.25rem .8rem;margin-left:auto">
           &#x27F3; Recalcular
         </button>
@@ -3666,7 +3676,7 @@
           <div id="risk-heatmap-container" style="overflow-x:auto">
             <canvas id="risk-heatmap-canvas" style="display:block"></canvas>
           </div>
-          <div style="font-size:.68rem;color:var(--text-muted);margin-top:.3rem">Verde = VAN positivo · Rojo = VAN negativo · Cada celda = un escenario</div>
+          <div style="font-size:.68rem;color:var(--text-muted);margin-top:.3rem">Verde = VAN positivo · Rojo = VAN negativo · Cada celda = un caso precio–tasa de la misma evaluación.</div>
         </div>
 
         <!-- ML Regimes (shown only if price data available) -->
@@ -3798,7 +3808,7 @@
       <div class="chart-box"><canvas id="chart-capex"></canvas></div>
     </div>
     <div class="card">
-      <div class="card-header"><span class="card-title">Flujo de caja acumulado (20 años)</span></div>
+      <div class="card-header"><span class="card-title" id="te-cashflow-chart-title">Flujo de caja acumulado (25 años)</span></div>
       <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
     </div>
   </div>
@@ -3843,35 +3853,6 @@
           <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
           <tbody></tbody>
         </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- Comparativo de escenarios -->
-  <div class="card mt-2" id="te-compare-card">
-    <div class="card-header">
-      <span class="card-title">Comparativo de escenarios</span>
-      <button class="btn-secondary" id="btn-te-compare" style="margin-left:auto;font-size:.75rem;padding:.25rem .75rem">Actualizar comparativo</button>
-    </div>
-    <div class="card-body" style="overflow-x:auto">
-      <table class="data-table" id="te-compare-table">
-        <thead>
-          <tr>
-            <th>Indicador</th>
-            <th style="text-align:center">Sin predicción<br><small class="text-muted">Viento real</small></th>
-            <th style="text-align:center">Con predicción ML<br><small class="text-muted">Forecast 25 años</small></th>
-            <th style="text-align:center">Corregido + predicción<br><small class="text-muted">Kriging / Parque</small></th>
-            <th style="text-align:center">Mejor escenario</th>
-          </tr>
-        </thead>
-        <tbody id="te-compare-tbody">
-          <tr><td colspan="5" class="text-muted" style="text-align:center;padding:1.5rem">Calcula al menos un escenario y presiona «Actualizar comparativo».</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="card-body" style="padding-top:0">
-      <div id="te-compare-chart-wrap" style="height:220px;position:relative">
-        <canvas id="chart-te-compare"></canvas>
       </div>
     </div>
   </div>
@@ -3931,7 +3912,7 @@
     </div>
   </div>
 
-  <!-- ══ Análisis Apalancado (inline, por escenario) ══ -->
+  <!-- ══ Análisis Apalancado de la evaluación integral ══ -->
   <div id="te-lev-section" style="display:none">
 
     <div class="grid-2 mt-2">

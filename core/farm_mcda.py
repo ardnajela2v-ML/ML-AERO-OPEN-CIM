@@ -172,7 +172,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          electrical_losses: float = 0.03,
                          curtailment_loss: float = 0.0,
                          environmental_loss: float = 0.0,
-                         discount_rate: float = 0.08, project_years: int = 20,
+                         discount_rate: float = 0.08, project_years: int = 25,
                          price_usd_kwh: float = 0.20, demand_mwh: float = 0.0,
                          commercialization_mode: str = 'total_sale',
                          grid_limit_mw: Optional[float] = None,

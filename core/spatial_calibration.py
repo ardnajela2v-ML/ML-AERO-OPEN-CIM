@@ -799,7 +799,7 @@ def build_calibrated_maps(
     discount_rate: float = 0.08,
     price_usd_kwh: float = 0.20,
     fx_mxn_per_usd: float = 20.0,
-    project_years: int = 20,
+    project_years: int = 25,
     cost_model: Any = None,
     terrain_timeout_s: float = 20.0,
     orographic_speedup_grid: Sequence[Sequence[float]] | None = None,

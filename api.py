@@ -303,20 +303,27 @@ def create_app():
         return df.copy(), meta
 
     def _df_cache_signature(sess, extra=None):
+        extra = extra or {}
+        source_id = extra.get('data_source') or sess.get('active_data_source') or 'observed'
+        source = (sess.get('data_sources') or {}).get(source_id)
+        active_df = source.get('df') if source is not None else sess.get('df')
         meta = sess.get('meta') or {}
-        if meta.get('cache_key'):
+        if source_id == 'observed' and meta.get('cache_key'):
             base = meta['cache_key']
-        elif 'df' in sess:
-            df = sess['df']
+        elif active_df is not None:
+            df = active_df
             base = stable_hash({
                 'shape': getattr(df, 'shape', None),
                 'columns': list(getattr(df, 'columns', [])),
                 'index_start': str(df.index[0]) if len(df.index) else None,
                 'index_end': str(df.index[-1]) if len(df.index) else None,
+                'source_id': source_id,
+                'run_id': (source or {}).get('run_id'),
+                'study_revision': (source or {}).get('study_revision'),
             })
         else:
             base = 'no-dataframe'
-        return stable_hash({'base': base, 'extra': extra or {}})
+        return stable_hash({'base': base, 'source_id': source_id, 'extra': extra})
 
     def _array_cache_signature(values, extra=None):
         arr = np.asarray(values, dtype=np.float64)
@@ -352,7 +359,8 @@ def create_app():
     PROJECT_SESSION_KEYS = {
         'df', 'meta', 'wind_speed_col', 'wd_col', 'ws_height_m',
         'extrapolation_method', 'qc_report', 'park_configuration',
-        'mcp_study', 'mcp_uploads', 'mcp_runs', 'data_sources',
+        'mcp_study', 'reanalysis_study', 'active_study_mode',
+        'mcp_uploads', 'mcp_runs', 'data_sources',
         'active_data_source', 'wind_stats', 'wind_advanced',
         'hybrid_result', 'energy_summary', 'market', 'demand', 'pml',
         'kriging_calibrations', 'active_kriging_calibration_id',
@@ -483,8 +491,9 @@ def create_app():
         source_id = body.get('data_source') or sess.get('active_data_source')
         if source_id and source_id != 'observed':
             source = (sess.get('data_sources') or {}).get(source_id)
-            if source is not None:
-                return source.get('df')
+            # Nunca degradar silenciosamente a la medición cuando se pidió un
+            # hindcast concreto: una fuente ausente debe detener el cálculo.
+            return source.get('df') if source is not None else None
         observed_source = (sess.get('data_sources') or {}).get('observed')
         if source_id == 'observed' and observed_source is not None:
             return observed_source.get('df')
@@ -495,6 +504,19 @@ def create_app():
         body = body or {}
         source_id = body.get('data_source') or sess.get('active_data_source') or 'observed'
         return source_id, (sess.get('data_sources') or {}).get(source_id)
+
+    def _analysis_source_info(sess, body=None):
+        """Compact, serializable provenance for every wind-consuming result."""
+        source_id, source = _analysis_source_record(sess, body)
+        frame = _analysis_df(sess, body)
+        return {
+            'source_id': source_id,
+            'kind': (source or {}).get('kind') or ('observed' if source_id == 'observed' else 'unknown'),
+            'label': (source or {}).get('label') or ('Datos observados/manuales' if source_id == 'observed' else source_id),
+            'run_id': (source or {}).get('run_id'),
+            'study_revision': (source or {}).get('study_revision'),
+            'rows': int(len(frame)) if frame is not None else 0,
+        }
 
     def _long_term_wind_summary(df, speed_col='wind_speed'):
         """Climatology, IAV, anomalies, extremes and Weibull for a published source."""
@@ -1085,6 +1107,190 @@ def create_app():
             result['reference_stations'].append(reference)
         return result
 
+    def _reanalysis_study_payload(sess):
+        study = sess.get('reanalysis_study')
+        if not study:
+            return None
+        index = _mcp_index(sess)
+        poi = study['poi']
+        result = dict(study)
+        result['reference_stations'] = []
+        for value in study['reference_station_ids']:
+            record = index.get(value)
+            if not record:
+                continue
+            reference = _public_station(record)
+            reference['distance_km'] = round(_haversine_km(
+                float(poi['lat']), float(poi['lon']),
+                float(reference['latitude']), float(reference['longitude']),
+            ), 3)
+            result['reference_stations'].append(reference)
+        result['study_mode'] = 'reanalysis_only'
+        source_id = study.get('source_id')
+        source = (sess.get('data_sources') or {}).get(source_id) if source_id else None
+        result['active_data_source'] = source_id
+        if source:
+            result['published_source'] = {
+                k: numpy_to_python(v) for k, v in source.items()
+                if k != 'df' and not str(k).startswith('_')
+            }
+        return result
+
+    def _build_reanalysis_area_source(index, reference_ids, poi,
+                                      target_height, study_revision):
+        """Create one canonical hourly area resource without an MCP anchor.
+
+        Providers receive equal total weight when both ERA5 and MERRA-2 are
+        present. Nodes within a provider are weighted by distance to the POI.
+        Missing timestamps are renormalized row by row.
+        """
+        nodes = []
+        failures = []
+        for station_id in reference_ids:
+            record = index[station_id]
+            paths = list(record.get('_paths') or [])
+            try:
+                if not paths:
+                    raise ValueError('sin archivo de serie asociado')
+                reference = read_reference_files(paths)[0]
+                frame = resample_hourly(reference.frame)
+                speed = pd.to_numeric(frame.get('wind_speed_ref'), errors='coerce')
+                source_height = float(
+                    reference.metadata.get('wind_height_m')
+                    or record.get('measurement_height_m')
+                    or (record.get('measurement_heights') or [50])[0]
+                )
+                if not np.isclose(source_height, target_height):
+                    speed = pd.Series(
+                        extrapolate_wind_hellmann(
+                            speed.to_numpy(dtype=float), source_height, target_height),
+                        index=speed.index,
+                    )
+                valid = speed.notna()
+                if int(valid.sum()) < 24:
+                    raise ValueError('menos de 24 registros horarios válidos')
+                distance = _haversine_km(
+                    poi['lat'], poi['lon'], float(record['latitude']),
+                    float(record['longitude']))
+                nodes.append({
+                    'station_id': station_id,
+                    'provider': record['provider'],
+                    'display_name': record.get('display_name') or station_id,
+                    'distance_km': float(distance),
+                    'source_height_m': source_height,
+                    'speed': speed,
+                    'direction': pd.to_numeric(
+                        frame.get('wind_direction_ref'), errors='coerce')
+                        if 'wind_direction_ref' in frame else None,
+                    'temperature': pd.to_numeric(
+                        frame.get('temperature_ref'), errors='coerce')
+                        if 'temperature_ref' in frame else None,
+                    'pressure': pd.to_numeric(
+                        frame.get('pressure_ref_kpa'), errors='coerce') * 10.0
+                        if 'pressure_ref_kpa' in frame else None,
+                })
+            except Exception as error:
+                failures.append({'station_id': station_id, 'error': str(error)})
+        if len(nodes) < 3:
+            detail = '; '.join(
+                f"{row['station_id']}: {row['error']}" for row in failures[:3])
+            raise ValueError(
+                'No se pudieron construir tres series de reanálisis válidas'
+                + (f': {detail}' if detail else ''))
+
+        providers = sorted({node['provider'] for node in nodes})
+        weights = {}
+        for provider in providers:
+            group = [node for node in nodes if node['provider'] == provider]
+            raw = {
+                node['station_id']: 1.0 / (25.0 + node['distance_km'])
+                for node in group
+            }
+            total = sum(raw.values()) or 1.0
+            provider_share = 1.0 / len(providers)
+            for station_id, value in raw.items():
+                weights[station_id] = provider_share * value / total
+
+        def weighted_mean(field):
+            series = {
+                node['station_id']: node[field]
+                for node in nodes if node.get(field) is not None
+            }
+            if not series:
+                return None
+            matrix = pd.concat(series, axis=1).sort_index()
+            column_weights = pd.Series(
+                {column: weights[column] for column in matrix.columns})
+            numerator = matrix.mul(column_weights, axis=1).sum(axis=1, min_count=1)
+            denominator = matrix.notna().mul(column_weights, axis=1).sum(axis=1)
+            return numerator.div(denominator.where(denominator > 0))
+
+        canonical = pd.DataFrame()
+        canonical['wind_speed'] = weighted_mean('speed')
+        direction_series = {
+            node['station_id']: node['direction']
+            for node in nodes if node.get('direction') is not None
+        }
+        if direction_series:
+            radians = {
+                key: np.deg2rad(value) for key, value in direction_series.items()
+            }
+            sin_matrix = pd.concat({
+                key: np.sin(value) for key, value in radians.items()}, axis=1)
+            cos_matrix = pd.concat({
+                key: np.cos(value) for key, value in radians.items()}, axis=1)
+            dir_weights = pd.Series({
+                column: weights[column] for column in sin_matrix.columns})
+            sin_den = sin_matrix.notna().mul(dir_weights, axis=1).sum(axis=1)
+            cos_den = cos_matrix.notna().mul(dir_weights, axis=1).sum(axis=1)
+            sin_mean = sin_matrix.mul(dir_weights, axis=1).sum(
+                axis=1, min_count=1).div(sin_den.where(sin_den > 0))
+            cos_mean = cos_matrix.mul(dir_weights, axis=1).sum(
+                axis=1, min_count=1).div(cos_den.where(cos_den > 0))
+            canonical['wind_direction'] = (
+                np.rad2deg(np.arctan2(sin_mean, cos_mean)) % 360.0)
+        temperature = weighted_mean('temperature')
+        if temperature is not None:
+            canonical['temperature'] = temperature
+        pressure = weighted_mean('pressure')
+        if pressure is not None:
+            canonical['pressure'] = pressure
+        canonical = canonical.replace([np.inf, -np.inf], np.nan)
+        canonical = canonical.dropna(subset=['wind_speed']).sort_index()
+        canonical.index.name = 'timestamp'
+        if len(canonical) < 24:
+            raise ValueError('La fuente combinada no alcanza 24 horas válidas')
+
+        source_id = f'reanalysis-area:r{study_revision}'
+        node_summary = [{
+            'station_id': node['station_id'],
+            'display_name': node['display_name'],
+            'provider': node['provider'],
+            'distance_km': round(node['distance_km'], 3),
+            'source_height_m': node['source_height_m'],
+            'weight': round(weights[node['station_id']], 8),
+        } for node in nodes]
+        return source_id, {
+            'source_id': source_id,
+            'label': 'Reanálisis representativo del área · ERA5/MERRA-2',
+            'kind': 'reanalysis_area',
+            'study_mode': 'reanalysis_only',
+            'study_revision': study_revision,
+            'rows': int(len(canonical)),
+            'period_start': canonical.index.min().isoformat(),
+            'period_end': canonical.index.max().isoformat(),
+            'target_height_m': float(target_height),
+            'poi': dict(poi),
+            'providers': providers,
+            'node_count': len(nodes),
+            'nodes': node_summary,
+            'failed_nodes': failures,
+            'aggregation_method': 'provider_balanced_inverse_distance_hourly_v1',
+            'is_mcp': False,
+            'long_term_statistics': _long_term_wind_summary(canonical),
+            'df': canonical,
+        }
+
     @app.route('/api/mcp/catalog', methods=['GET'])
     def mcp_catalog():
         sid = request.args.get('session_id')
@@ -1212,9 +1418,129 @@ def create_app():
             'created_at': datetime.now(timezone.utc).isoformat(),
         }
         sess['mcp_study'] = study
+        sess['active_study_mode'] = 'mcp_observed'
         for run in (sess.get('mcp_runs') or {}).values():
             run['is_current_revision'] = run.get('study_revision') == study['study_revision']
         return jsonify(_mcp_study_payload(sess))
+
+    @app.route('/api/sessions/<sid>/reanalysis-study', methods=['GET', 'PUT'])
+    def reanalysis_study(sid):
+        """Área sin estación observada: conserva únicamente nodos ERA5/MERRA-2.
+
+        Es deliberadamente independiente de MCP: no fabrica una observación ni
+        publica un hindcast calibrado cuando no existe medición local.
+        """
+        sess = get_session(sid)
+        if request.method == 'GET':
+            payload = _reanalysis_study_payload(sess)
+            if payload is None:
+                return jsonify({'error': 'No hay estudio de reanálisis en la sesión'}), 404
+            return jsonify(payload)
+
+        body = request.get_json(silent=True) or {}
+        reference_ids = list(dict.fromkeys(
+            str(value).strip() for value in body.get('reference_station_ids', [])
+            if str(value).strip()
+        ))
+        if len(reference_ids) < 3:
+            return _err('Se requieren al menos tres referencias ERA5/MERRA-2')
+        index = _mcp_index(sess)
+        invalid = [
+            value for value in reference_ids
+            if value not in index
+            or index[value].get('data_kind') != 'reanalysis'
+            or index[value].get('provider') not in {'ERA5', 'MERRA2'}
+        ]
+        if invalid:
+            return _err('Referencias de reanálisis inválidas: ' + ', '.join(invalid))
+        poi = body.get('poi') or {}
+        try:
+            poi = {'lat': float(poi['lat']), 'lon': float(poi['lon'])}
+            radius_km = float(body.get('radius_km', 200))
+            target_height = float(body.get('target_height_m', 80))
+        except (KeyError, TypeError, ValueError):
+            return _err('POI, radius_km o target_height_m inválido')
+        if not all(np.isfinite(value) for value in (
+                poi['lat'], poi['lon'], radius_km, target_height)):
+            return _err('POI, radius_km o target_height_m debe ser finito')
+        if not (-90 <= poi['lat'] <= 90 and -180 <= poi['lon'] <= 180):
+            return _err('Coordenadas del POI fuera de rango')
+        if radius_km <= 0:
+            return _err('radius_km debe ser positivo')
+        if not 1 <= target_height <= 300:
+            return _err('target_height_m fuera de rango (1-300 m)')
+        outside = [
+            value for value in reference_ids
+            if _haversine_km(
+                poi['lat'], poi['lon'], float(index[value]['latitude']),
+                float(index[value]['longitude'])
+            ) > radius_km + 1e-6
+        ]
+        if outside:
+            return _err('Hay referencias fuera del radio del estudio: ' + ', '.join(outside))
+
+        prior = sess.get('reanalysis_study') or {}
+        selection_key = (
+            tuple(reference_ids), round(poi['lat'], 6), round(poi['lon'], 6),
+            round(radius_km, 4), round(target_height, 4),
+        )
+        prior_poi = prior.get('poi') or {}
+        prior_key = (
+            tuple(prior.get('reference_station_ids', [])),
+            round(float(prior_poi.get('lat', 999)), 6),
+            round(float(prior_poi.get('lon', 999)), 6),
+            round(float(prior.get('radius_km', 0)), 4),
+            round(float(prior.get('target_height_m', 0)), 4),
+        )
+        revision = int(prior.get('study_revision', 0)) + (
+            0 if prior and selection_key == prior_key else 1)
+        revision = max(revision, 1)
+        source_id = f'reanalysis-area:r{revision}'
+        source_record = (sess.get('data_sources') or {}).get(source_id)
+        if not prior or selection_key != prior_key or source_record is None:
+            try:
+                source_id, source_record = _build_reanalysis_area_source(
+                    index, reference_ids, poi, target_height, revision)
+            except Exception as error:
+                return _err('No se pudo preparar el recurso del área: ' + str(error))
+        study = {
+            'study_revision': revision,
+            'study_mode': 'reanalysis_only',
+            'reference_station_ids': reference_ids,
+            'poi': poi,
+            'radius_km': radius_km,
+            'target_height_m': target_height,
+            'source_id': source_id,
+            'created_at': datetime.now(timezone.utc).isoformat(),
+        }
+        sess.setdefault('data_sources', {})[source_id] = source_record
+        sess['reanalysis_study'] = study
+        sess['active_study_mode'] = 'reanalysis_only'
+        sess['active_data_source'] = source_id
+        sess['ws_height_m'] = target_height
+        sess['meta'] = {
+            **(sess.get('meta') or {}),
+            'display_name': 'Recurso de reanálisis del área',
+            'format': 'reanalysis_area',
+            'reanalysis_type': 'ERA5 + MERRA-2',
+            'latitude': poi['lat'],
+            'longitude': poi['lon'],
+            'wind_height_m': target_height,
+            'station_count': source_record['node_count'],
+            'aggregation_method': source_record['aggregation_method'],
+            'data_source': source_id,
+        }
+        for stale_key in (
+            'qc_report', 'qc_flags', 'features', 'features_data_source',
+            'features_cache_hit', 'features_cache_key', 'wind_stats',
+            'wind_advanced', 'df_energy', 'energy_summary', 'hybrid_result',
+        ):
+            sess.pop(stale_key, None)
+        for stale_key in list(sess):
+            if stale_key.startswith('results_h') or stale_key.startswith('split_h'):
+                sess.pop(stale_key, None)
+        arena_store.pop(sid, None)
+        return jsonify(_reanalysis_study_payload(sess))
 
     def _default_park_configuration():
         return {
@@ -1686,6 +2012,19 @@ def create_app():
             logger.exception('No se pudo registrar la fuente observada de la corrida %s', run_id)
         sess['active_data_source'] = source_id
         sess['ws_height_m'] = source_record['target_height_m'] or sess.get('ws_height_m', 80)
+        # Todo derivado eólico previo queda obsoleto al cambiar la fuente base.
+        # Se conserva la medición y la reconstrucción registradas, pero se exige
+        # recalcular QC, features/modelos, energía y resultados posteriores.
+        for stale_key in (
+            'qc_report', 'qc_flags', 'features', 'features_data_source',
+            'features_cache_hit', 'features_cache_key', 'wind_stats',
+            'wind_advanced', 'df_energy', 'energy_summary', 'hybrid_result',
+        ):
+            sess.pop(stale_key, None)
+        for stale_key in list(sess):
+            if stale_key.startswith('results_h') or stale_key.startswith('split_h'):
+                sess.pop(stale_key, None)
+        arena_store.pop(sid, None)
         record['published_source_id'] = source_id
         return jsonify({
             k: numpy_to_python(v) for k, v in source_record.items()
@@ -1925,7 +2264,8 @@ def create_app():
                 }
 
             return jsonify({'report': numpy_to_python(report), 'chart': ts_chart,
-                            'columns_report': columns_report})
+                            'columns_report': columns_report,
+                            'data_source': _analysis_source_info(sess, body)})
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
@@ -1940,16 +2280,18 @@ def create_app():
         horizons_h   = body.get('horizons', [1, 6, 24])
         test_frac    = float(body.get('test_frac', 0.2))
         sess = get_session(sid)
-
-        if 'df' not in sess:
+        df = _analysis_df(sess, body)
+        if df is None:
             return jsonify({'error': 'No data loaded.'}), 400
 
         try:
+            source_info = _analysis_source_info(sess, body)
             feature_params = {
                 'target_col': target_col,
                 'horizons_h': horizons_h,
                 'lags': Config.DEFAULT_LAG_HOURS,
                 'rolling_windows': Config.DEFAULT_ROLLING_WINDOWS,
+                'data_source': source_info['source_id'],
             }
             cache_parts = (
                 'features-v1',
@@ -1959,7 +2301,7 @@ def create_app():
             def compute_features():
                 fe = FeatureEngineer()
                 with timed('build features', logger):
-                    return fe.build(sess['df'], target_col=target_col,
+                    return fe.build(df, target_col=target_col,
                                     horizons_h=horizons_h)
 
             feat_dict, cache_hit = get_or_compute('features', cache_parts, compute_features)
@@ -1969,6 +2311,7 @@ def create_app():
             sess['horizons']   = horizons_h
             sess['features_cache_hit'] = bool(cache_hit)
             sess['features_cache_key'] = stable_hash(cache_parts)
+            sess['features_data_source'] = source_info
 
             # return summary
             summary = {}
@@ -1984,7 +2327,8 @@ def create_app():
                     'target_mean_test':  round(float(np.mean(y[split:])), 3),
                 }
             return jsonify({'summary': summary, 'horizons': horizons_h,
-                            'cache_hit': bool(cache_hit)})
+                            'cache_hit': bool(cache_hit),
+                            'data_source': source_info})
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
@@ -2046,6 +2390,7 @@ def create_app():
                             'feature_importance': res.get('feature_importance', [])[:10],
                             'cache_hit': True,
                         }
+                    out['_data_source'] = sess.get('features_data_source')
                     tasks[task_id]['result'] = out
                     tasks[task_id]['status'] = 'done'
                     tasks[task_id]['progress'] = 100
@@ -2085,6 +2430,7 @@ def create_app():
                         'type': res.get('type', 'ml'),
                         'feature_importance': res.get('feature_importance', [])[:10],
                     }
+                out['_data_source'] = sess.get('features_data_source')
                 tasks[task_id]['result'] = out
                 tasks[task_id]['status'] = 'done'
                 tasks[task_id]['progress'] = 100
@@ -2162,6 +2508,7 @@ def create_app():
 
         step = max(1, len(idx) // 2000)
         return jsonify(numpy_to_python({
+            'data_source': sess.get('features_data_source'),
             'model': model_name,
             'horizon_h': horizon_h,
             'labels':  idx[::step],
@@ -2200,7 +2547,11 @@ def create_app():
             rows.append(m)
 
         rows.sort(key=lambda x: x['rmse'])
-        return jsonify({'rows': numpy_to_python(rows), 'best': rows[0]['label'] if rows else None})
+        return jsonify({
+            'rows': numpy_to_python(rows),
+            'best': rows[0]['label'] if rows else None,
+            'data_source': sess.get('features_data_source'),
+        })
 
     # ─── ENERGY MODULE ────────────────────────────────────────────────────────
 
@@ -2310,6 +2661,7 @@ def create_app():
             ts_labels = [str(t) for t in df_sim.index[::step]]
 
             return jsonify(numpy_to_python({
+                'data_source': _analysis_source_info(sess, source_body),
                 'summary': summary,
                 'aep': aep,
                 'monthly': monthly,
@@ -2371,7 +2723,10 @@ def create_app():
             # extrapolate to each turbine's hub height
             comp = TurbineComparator()
             results = comp.compare(turbines, ws, dt_h=1.0)
-            return jsonify({'comparison': numpy_to_python(results)})
+            return jsonify({
+                'comparison': numpy_to_python(results),
+                'data_source': _analysis_source_info(sess, body),
+            })
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
@@ -2418,6 +2773,7 @@ def create_app():
             result, cache_hit = get_or_compute('wind_stats', cache_parts, compute_stats)
             result = dict(result)
             result['cache_hit'] = bool(cache_hit)
+            result['data_source'] = _analysis_source_info(sess, body)
             sess['wind_stats'] = result
             return jsonify(result)
         except Exception as e:
@@ -2459,7 +2815,21 @@ def create_app():
                 'source_kind': 'modelled_not_measured',
                 'reason': 'No existe una reconstrucción histórica de turbulencia publicada para esta fuente.',
             }
+            if (source_record or {}).get('kind') == 'reanalysis_area':
+                ti_warning = (
+                    'La fuente ERA5/MERRA-2 del área es horaria y no contiene '
+                    'desviación estándar nativa de 10 minutos; se reporta sólo '
+                    'variabilidad interhoraria, no TI medida.')
+            elif (source_record or {}).get('kind') == 'mcp':
+                ti_warning = (
+                    'TI medida sólo desde CERTE nativo de 10 min. La serie MCP '
+                    'horaria se muestra separadamente como variabilidad interhoraria.')
+            else:
+                ti_warning = (
+                    'La TI sólo se considera medida cuando la fuente conserva '
+                    'media y desviación estándar nativas de 10 minutos.')
             result = {
+                'data_source': _analysis_source_info(sess, body),
                 # Backward-compatible key. It remains explicitly a variability
                 # proxy and is never used as measured TI when CERTE is present.
                 'wind_speed_variability': hourly_variability,
@@ -2473,10 +2843,7 @@ def create_app():
                     'historical_model': numpy_to_python(historical_turbulence),
                     'hourly_variability': hourly_variability,
                 },
-                'ti_warning': (
-                    'TI medida sólo desde CERTE nativo de 10 min. La serie MCP horaria '
-                    'se muestra separadamente como variabilidad interhoraria.'
-                ),
+                'ti_warning': ti_warning,
                 'shear':                  numpy_to_python(compute_wind_shear(
                                               df, ws_col, ws_h,
                                               orog_factor=orog_factor, z_scale=z_scale,
@@ -2584,6 +2951,7 @@ def create_app():
                 'battery_kwh': batt_kwh, 'diesel_kw': diesel_kw,
                 'load_annual_kwh': annual_kwh, 'profile': profile_t,
             }
+            result['data_source'] = _analysis_source_info(sess, body)
             sess['hybrid_result'] = result
             return jsonify(numpy_to_python(result))
 
@@ -2625,7 +2993,7 @@ def create_app():
         rated_kw = float(turbine_cfg.get('rated_power_kw', 2000))
         hub_h    = float(turbine_cfg.get('hub_height_m', 80))
         d_rate   = float(fin_cfg.get('discount_rate_pct', 8.0)) / 100.0
-        n_yrs    = int(fin_cfg.get('project_years', 20))
+        n_yrs    = int(fin_cfg.get('project_years', 25))
         err = _validate_ranges(discount_rate=d_rate, n_years=n_yrs,
                                rated_power_kw=rated_kw, hub_height_m=hub_h)
         if err is not None:
@@ -2713,6 +3081,7 @@ def create_app():
                         'La serie horaria de viento no tiene datos válidos para el análisis tecno-económico '
                         f'({wind_info.get("reason", "invalid_session_wind")}).'
                     )
+            wind_info['data_source'] = _analysis_source_info(sess, body)
 
             # air density — pressure ya viene en Pa (data.py normaliza)
             rho = air_density()
@@ -2759,7 +3128,7 @@ def create_app():
             # como display equivalente. Antes el FX multiplicaba los flujos
             # internamente y mezclaba unidades en las llaves *_usd.
             fx_mxn_per_usd = float(fin_cfg.get('usd_to_mxn', 1.0))
-            _project_years = int(fin_cfg.get('project_years', 20))
+            _project_years = int(fin_cfg.get('project_years', 25))
             _annual_energy_series_kwh = None
             if _per_yr_kwh_per_turbine:
                 _annual_energy_series_kwh = [v * n_turbines for v in _per_yr_kwh_per_turbine]
@@ -2983,7 +3352,7 @@ def create_app():
             capex          = float(body['capex_usd'])
             annual_revenue = float(body['annual_revenue_usd'])
             annual_opex    = float(body['annual_opex_usd'])
-            project_years  = int(body.get('project_years', 20))
+            project_years  = int(body.get('project_years', 25))
             equity_rate    = float(body.get('equity_discount_rate_pct', 12)) / 100.0
             debt_ratio     = float(body.get('debt_ratio_pct', 70)) / 100.0
             interest_rate  = float(body.get('interest_rate_pct', 8)) / 100.0
@@ -3148,12 +3517,9 @@ def create_app():
         n_turb     = int(body.get('n_turbines', 1))
         base_price = float(fin_cfg.get('energy_price_usd_kwh', 0.07))
         base_rate  = float(fin_cfg.get('discount_rate_pct', 8.0))
-        base_years = int(fin_cfg.get('project_years', 20))
-        base_fx    = float(fin_cfg.get('usd_to_mxn', 1.0))
+        base_years = int(fin_cfg.get('project_years', 25))
         base_escal = float(fin_cfg.get('price_escalation_pct', 0.0))
         base_infl  = float(fin_cfg.get('annual_inflation_pct', 0.0))
-        cost_mdl   = CostModel.from_dict(fin_cfg.get('cost_model'))
-
         # Optional leveraged config — when present, the heatmap/tornado return
         # equity NPV (apalancado) instead of project NPV, and the rate axis
         # represents the equity discount rate.
@@ -3169,19 +3535,11 @@ def create_app():
 
         def _run(price=None, rate=None, aep_scale=1.0, escal=None, capex_mult=1.0):
             cm = CostModel.from_dict(fin_cfg.get('cost_model'))
-            # apply capex multiplier via OPEX/CAPEX override
+            # El CAPEX es lineal respecto al costo USD/kW del aerogenerador.
+            # Aplicar aquí el multiplicador hace que el analizador recalcule de
+            # forma coherente CAPEX, OPEX, flujos, VAN, payback y LCOE.
             if capex_mult != 1.0:
-                cm2_dict = cm.to_dict() if hasattr(cm, 'to_dict') else {}
-                # scale all percentage cost items
-                for k in ['turbine_pct','civil_pct','electrical_pct','installation_pct','engineering_pct','misc_pct']:
-                    if k in cm2_dict:
-                        cm2_dict[k] = float(cm2_dict[k])
-                try:
-                    from core.cost_model import CostModel as CM2
-                    cm = CM2.from_dict(cm2_dict)
-                    cm._capex_mult = capex_mult
-                except Exception:
-                    pass
+                cm.turbine_usd_per_kw *= float(capex_mult)
             tea = TechnoEconomicAnalyzer(cost_model=cm)
             p   = base_price if price is None else price
             r   = base_rate  if rate  is None else rate
@@ -3203,7 +3561,9 @@ def create_app():
                 energy_price_usd_kwh=p,
                 discount_rate_pct=project_disc,
                 project_years=base_years,
-                usd_to_mxn=base_fx,
+                # Mantener las métricas en USD, igual que el cálculo principal.
+                # El FX se conserva como parámetro de visualización equivalente.
+                usd_to_mxn=1.0,
                 energy_price_series_usd_kwh=price_series,
                 annual_inflation_pct=base_infl,
             )
@@ -3213,15 +3573,8 @@ def create_app():
             payback = float(payback) if payback is not None and np.isfinite(float(payback)) else base_years * 2
 
             capex_total = float((res.get('capex') or {}).get('total_capex_usd', 0) or 0)
-            capex_total *= capex_mult
             annual_revenue = float(res.get('annual_revenue_usd', 0) or 0)
             annual_opex    = float(res.get('annual_opex_usd', 0) or 0)
-
-            # Correct for capex multiplier in project NPV (no apalancado)
-            if capex_mult != 1.0 and not lev_cfg:
-                capex_base = float((res.get('capex') or {}).get('total_capex_usd', 0) or 0)
-                delta_capex = capex_base * (capex_mult - 1.0)
-                npv -= delta_capex  # higher capex ↓ NPV
 
             # ── Modo apalancado: reemplazar npv por VAN equity ───────────
             if lev_cfg and capex_total > 0:
@@ -3474,6 +3827,8 @@ def create_app():
                 pressure_pa=pressure_pa,
             )
             result['turbine'] = turbine.to_dict()
+            result['data_source'] = _analysis_source_info(sess, body)
+            wind_info['data_source'] = result['data_source']
             result['wind_source'] = wind_info.get('source')
             result['wind_diagnostics'] = wind_info
             return jsonify(numpy_to_python(result))
@@ -3734,7 +4089,23 @@ def create_app():
                 t_cfg.get('hub_height_m') if 'hub_height_m' in t_cfg else None,
             )
             turbine = _power_curve_at_hub_height(turbine, target_hub_h)
-            v_mean_rec = float(body.get('v_mean', 9.0))
+            source_info = _analysis_source_info(sess, body) if sid else None
+            requested_mean = body.get('v_mean')
+            used_active_source = requested_mean is None and bool(sid)
+            weibull_k_rec = float(body.get('weibull_k', 2.0))
+            if requested_mean is None and sid:
+                source_df = _analysis_df(sess, body)
+                source_ws_col = _energy_ws_col(sess, body)
+                source_values = (
+                    pd.to_numeric(source_df[source_ws_col], errors='coerce').dropna()
+                    if source_df is not None and source_ws_col in source_df.columns else pd.Series(dtype=float)
+                )
+                requested_mean = float(source_values.mean()) if not source_values.empty else 9.0
+                _, source_record = _analysis_source_record(sess, body)
+                source_weibull = ((source_record or {}).get('long_term_statistics') or {}).get('weibull') or {}
+                if source_weibull.get('k') is not None:
+                    weibull_k_rec = float(source_weibull['k'])
+            v_mean_rec = float(requested_mean if requested_mean is not None else 9.0)
             measurement_h_rec = _sess_ws_h(body, sess, 'measurement_height_m')
             if measurement_h_rec != 50.0 or body.get('measurement_height_m') is not None:
                 measurement_h = measurement_h_rec
@@ -3745,13 +4116,19 @@ def create_app():
                 turbine=turbine,
                 demand_mwh=float(body.get('demand_mwh', 5000)),
                 v_mean=v_mean_rec,
-                weibull_k=float(body.get('weibull_k', 2.0)),
+                weibull_k=weibull_k_rec,
                 rho=float(body.get('rho', 1.225)),
                 availability=float(body.get('availability', 0.97)),
                 electrical_losses=float(body.get('electrical_losses', 0.03)),
                 avg_wake_loss=float(body.get('avg_wake_loss', 0.08)),
             )
             result['turbine'] = turbine.to_dict()
+            result['data_source'] = source_info
+            result['wind_input'] = {
+                'mean_ms_at_hub': round(v_mean_rec, 4),
+                'weibull_k': round(weibull_k_rec, 4),
+                'source': 'active_project_source' if used_active_source else 'provided_spatial_mean',
+            }
             return jsonify(result)
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -3942,10 +4319,16 @@ def create_app():
                 )
             if sim_result:
                 sim_result['turbine'] = turbine.to_dict()
+                sim_result['data_source'] = _analysis_source_info(sess, body)
+                wind_info['data_source'] = sim_result['data_source']
                 sim_result['wind_source'] = wind_info.get('source')
                 sim_result['wind_diagnostics'] = wind_info
 
-            result = {**opt, 'turbine': turbine.to_dict()}
+            result = {
+                **opt,
+                'turbine': turbine.to_dict(),
+                'data_source': _analysis_source_info(sess, body),
+            }
             if sim_result:
                 result['simulation'] = sim_result
             return jsonify(numpy_to_python(result))
@@ -3981,9 +4364,13 @@ def create_app():
                 'coverage_hours': info['coverage_hours'],
                 'annualization': info['annualization'],
             }))
-        if 'df' not in sess:
-            return _err('No hay datos en la sesión')
-        df = sess['df']
+        # La demanda es opcional y la fuente eólica activa puede ser un recurso
+        # de área ERA5/MERRA-2 sin existir una serie observada en sess['df'].
+        # En ese caso se inspecciona la fuente activa y se responde found=false,
+        # sin bloquear la configuración del parque.
+        df = _analysis_df(sess, body)
+        if df is None:
+            return jsonify({'found': False, 'columns': []})
 
         # Priority: exact column names common in Mexican energy datasets
         priority_exact = [
@@ -4047,10 +4434,15 @@ def create_app():
         key_map = {'energy': 'df_energy', 'raw': 'df'}
         df_key  = key_map.get(dataset, 'df')
 
-        if df_key not in sess:
+        if dataset == 'raw':
+            # "Raw" significa aquí la fuente eólica de trabajo publicada. En
+            # modo sólo reanálisis no existe deliberadamente sess['df'].
+            df = _analysis_df(sess, body)
+        else:
+            df = sess.get(df_key)
+        if df is None:
             return jsonify({'error': f'Dataset "{dataset}" not available.'}), 400
-
-        df = sess[df_key].copy()
+        df = df.copy()
         if isinstance(df.index, pd.DatetimeIndex):
             df = df.reset_index()
 
@@ -4071,8 +4463,10 @@ def create_app():
         meta = sess.get('meta', {})
         qc = sess.get('qc_report', {})
         estats = sess.get('energy_summary', {})
+        active_frame = _analysis_df(sess)
         brief = {
-            'has_data': 'df' in sess,
+            'has_data': active_frame is not None,
+            'data_source': _analysis_source_info(sess),
             'has_models': any(k.startswith('results_h') for k in sess),
             'date_range': meta.get('date_range'),
             'n_rows': meta.get('n_rows'),
@@ -4169,7 +4563,7 @@ def create_app():
         estats = sess.get('energy_summary', {})
 
         # ── contextual responses based on loaded data ──
-        has_data   = 'df' in sess
+        has_data   = _analysis_df(sess) is not None
         has_models = any(k.startswith('results_h') for k in sess)
         has_energy = 'energy_summary' in sess
 
@@ -4180,7 +4574,7 @@ def create_app():
                 dr = meta.get('date_range', ['?', '?'])
                 return (f"Se han cargado {n:,} registros desde {dr[0]} hasta {dr[1]}. "
                         f"Columnas: {', '.join(cols[:8])}{'...' if len(cols) > 8 else ''}.")
-            return "No hay datos cargados aún. Ve a Data Hub y sube un archivo CSV/TXT."
+            return "No hay una fuente eólica activa. Importa datos o selecciona un área con reanálisis en Globe Map."
 
         if any(w in ql for w in ['calidad', 'qc', 'faltantes', 'missing', 'outlier']):
             if qc:
@@ -4225,7 +4619,7 @@ def create_app():
                         sign = '+' if skill > 0 else ''
                         return base + f"Skill vs persistencia: {sign}{skill*100:.1f}%."
                     return base + f"Skill: {skill}."
-            return "Entrena los modelos en Model Arena primero."
+            return "Entrena los modelos en Configuración del parque primero."
 
         if any(w in ql for w in ['energía', 'energia', 'aep', 'potencia', 'factor de capacidad', 'cf']):
             if has_energy:
@@ -4644,6 +5038,10 @@ def create_app():
         (viento, inversión, VAN).
         """
         body = request.get_json(silent=True) or {}
+        source_info = None
+        if body.get('session_id'):
+            source_info = _analysis_source_info(
+                get_session(str(body['session_id'])), body)
         calibration_payload = None
         if body.get('calibration_id'):
             sid = body.get('session_id')
@@ -4697,7 +5095,7 @@ def create_app():
                         discount_rate=float(body.get('tasa', 0.08)),
                         price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
                         fx_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
-                        project_years=int(body.get('project_years', 20)),
+                        project_years=int(body.get('project_years', 25)),
                         cost_model=CostModel.from_dict(body.get('cost_model')),
                         orographic_speedup_grid=body.get('orographic_speedup_grid'),
                         progress_callback=cb,
@@ -4731,6 +5129,8 @@ def create_app():
                     'mcp_advanced' if calibration_payload is not None
                     else str(body.get('map_method') or 'windpro_classic')
                 )
+                if source_info is not None:
+                    result['data_source'] = source_info
                 if body.get('market_trajectories'):
                     result['market_configuration'] = {
                         'trajectories': body.get('market_trajectories'),
@@ -4884,6 +5284,10 @@ def create_app():
         exploratory rectangle (scope=exploratory).
         """
         body = request.get_json(silent=True) or {}
+        source_info = None
+        if body.get('session_id'):
+            source_info = _analysis_source_info(
+                get_session(str(body['session_id'])), body)
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None
         bounds = body.get('area_bounds') or body.get('bounds') or None
@@ -4963,7 +5367,7 @@ def create_app():
                         demand_mwh=demand_mwh, discount_rate=tasa,
                         price_usd_kwh=price_usd_kwh,
                         fx_mxn_per_usd=price_mxn_per_usd,
-                        project_years=int(body.get('project_years', 20)),
+                        project_years=int(body.get('project_years', 25)),
                         cost_model=cost_model,
                         orographic_speedup_grid=body.get('orographic_speedup_grid'),
                         progress_callback=calibration_progress,
@@ -5023,7 +5427,7 @@ def create_app():
                         curtailment_loss=float(body.get('curtailment_loss') or 0.0),
                         environmental_loss=float(body.get('environmental_loss') or 0.0),
                         discount_rate=tasa,
-                        project_years=int(body.get('project_years') or 20),
+                        project_years=int(body.get('project_years') or 25),
                         price_usd_kwh=price_usd_kwh,
                         demand_mwh=demand_mwh,
                         commercialization_mode=body.get('commercialization_mode') or 'total_sale',
@@ -5041,6 +5445,7 @@ def create_app():
                     ranking['mode'] = mode
                 tasks[task_id]['result'] = numpy_to_python({
                     **spatial,
+                    **({'data_source': source_info} if source_info is not None else {}),
                     'ranking': ranking,
                     **(layout_result or {}),
                     'market_configuration': {
@@ -6345,6 +6750,7 @@ def create_app():
 
             raw_values = [float(x) for x in series.values] if include_raw else []
             return jsonify(numpy_to_python({
+                'data_source': _analysis_source_info(sess, body),
                 'horizon_years': horizon,
                 'growth_seed':   growth,
                 'history_years': [int(base_year - len(annual_hist) + 1 + i) for i in range(len(annual_hist))],

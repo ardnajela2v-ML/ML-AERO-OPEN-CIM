@@ -3,7 +3,7 @@ import unittest
 
 import numpy as np
 
-from core.energy import PowerCurve
+from core.energy import PowerCurve, TechnoEconomicAnalyzer
 from core.farm import (
     _build_structured_grid,
     gaussian_deficit,
@@ -84,6 +84,13 @@ class FarmScientificModelTests(unittest.TestCase):
         self.assertEqual(result['n_placed'], result['max_n_fit'])
         self.assertGreater(result['layout_config']['n_configs_tried'], 0)
         self.assertIn('orientation_deg', result['capacity_config'])
+
+    def test_technoeconomic_default_project_life_is_25_years(self):
+        result = TechnoEconomicAnalyzer().analyze(
+            self.turbine, n_turbines=1, annual_energy_kwh=4_000_000,
+        )
+        self.assertEqual(result['project_years'], 25)
+        self.assertEqual(len(result['cashflow_table']), 25)
 
 
 class LayoutTopsisTests(unittest.TestCase):
@@ -245,6 +252,8 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertTrue(row['reducido_por_estela'])
         self.assertEqual(row['wake_trials'][-1]['n'], row['n_aerogeneradores'])
         self.assertTrue(any(trial['wake_loss_pct'] > 0 for trial in row['wake_trials'][:-1]))
+        self.assertEqual(row['economic_assumptions']['project_years'], 25)
+        self.assertEqual(len(row['cashflow_table']), 25)
 
     def test_park_topsis_rejects_spacing_below_three_diameters(self):
         sites = [{

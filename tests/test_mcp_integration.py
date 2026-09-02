@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -237,6 +238,154 @@ class MCPIntegrationTests(unittest.TestCase):
             "target_height_m": 0,
         })
         self.assertEqual(invalid_height.status_code, 400)
+
+    def test_reanalysis_only_study_is_independent_from_mcp_and_restorable(self):
+        catalog = self.client.get(f"/api/mcp/catalog?session_id={self.sid}").get_json()
+        references = catalog["references"][:3]
+        self.assertEqual(len(references), 3)
+        reference_ids = [row["station_id"] for row in references]
+        poi = {
+            "lat": references[0]["latitude"],
+            "lon": references[0]["longitude"],
+        }
+
+        insufficient = self.client.put(
+            f"/api/sessions/{self.sid}/reanalysis-study",
+            json={
+                "reference_station_ids": reference_ids[:2],
+                "poi": poi, "radius_km": 20_000, "target_height_m": 100,
+            },
+        )
+        self.assertEqual(insufficient.status_code, 400)
+
+        call_index = {'value': 0}
+
+        def fake_reference_files(_paths):
+            offset = call_index['value']
+            call_index['value'] += 1
+            timestamps = pd.date_range(
+                '2018-01-01', periods=24 * 40, freq='h', tz='UTC')
+            frame = pd.DataFrame({
+                'wind_speed_ref': 6.0 + offset + np.sin(np.arange(len(timestamps)) / 24),
+                'wind_direction_ref': (240 + offset * 10 + np.arange(len(timestamps)) % 30) % 360,
+                'temperature_ref': 24.0 + offset,
+                'pressure_ref_kpa': 99.0 - offset * 0.2,
+            }, index=timestamps)
+            return [SimpleNamespace(
+                frame=frame, metadata={'wind_height_m': 50.0})]
+
+        with patch('api.read_reference_files', side_effect=fake_reference_files):
+            created = self.client.put(
+                f"/api/sessions/{self.sid}/reanalysis-study",
+                json={
+                    "reference_station_ids": reference_ids,
+                    "poi": poi, "radius_km": 20_000, "target_height_m": 100,
+                },
+            )
+        self.assertEqual(created.status_code, 200, created.get_data(as_text=True))
+        payload = created.get_json()
+        self.assertEqual(payload["study_mode"], "reanalysis_only")
+        self.assertEqual(payload["study_revision"], 1)
+        self.assertEqual(len(payload["reference_stations"]), 3)
+        self.assertNotIn("observed_station", payload)
+        self.assertTrue(all("distance_km" in row for row in payload["reference_stations"]))
+        self.assertTrue(payload['active_data_source'].startswith('reanalysis-area:'))
+        self.assertEqual(payload['published_source']['kind'], 'reanalysis_area')
+        self.assertEqual(payload['published_source']['node_count'], 3)
+        self.assertFalse(payload['published_source']['is_mcp'])
+        self.assertAlmostEqual(
+            sum(row['weight'] for row in payload['published_source']['nodes']),
+            1.0, places=6)
+
+        unchanged = self.client.put(
+            f"/api/sessions/{self.sid}/reanalysis-study",
+            json={
+                "reference_station_ids": reference_ids,
+                "poi": poi, "radius_km": 20_000, "target_height_m": 100,
+            },
+        ).get_json()
+        self.assertEqual(unchanged["study_revision"], 1)
+        self.assertEqual(
+            self.client.get(f"/api/sessions/{self.sid}/mcp-study").status_code,
+            404,
+        )
+        resource = self.client.post('/api/wind/stats', json={
+            'session_id': self.sid,
+        })
+        self.assertEqual(resource.status_code, 200, resource.get_data(as_text=True))
+        self.assertEqual(resource.get_json()['data_source']['kind'], 'reanalysis_area')
+        advanced = self.client.post('/api/wind/advanced', json={
+            'session_id': self.sid,
+        })
+        self.assertEqual(advanced.status_code, 200, advanced.get_data(as_text=True))
+        self.assertEqual(advanced.get_json()['data_source']['kind'], 'reanalysis_area')
+        self.assertIn('no TI medida', advanced.get_json()['ti_warning'])
+
+        quality = self.client.post('/api/data/quality', json={
+            'session_id': self.sid,
+        })
+        self.assertEqual(quality.status_code, 200, quality.get_data(as_text=True))
+        self.assertEqual(quality.get_json()['data_source']['kind'], 'reanalysis_area')
+
+        features = self.client.post('/api/features/build', json={
+            'session_id': self.sid,
+            'target_col': 'wind_speed',
+            'horizons': [1],
+            'test_frac': 0.2,
+        })
+        self.assertEqual(features.status_code, 200, features.get_data(as_text=True))
+        self.assertEqual(features.get_json()['data_source']['kind'], 'reanalysis_area')
+
+        optional_demand = self.client.post('/api/farm/session_demand', json={
+            'session_id': self.sid,
+        })
+        self.assertEqual(
+            optional_demand.status_code, 200,
+            optional_demand.get_data(as_text=True),
+        )
+        self.assertFalse(optional_demand.get_json()['found'])
+
+        raw_export = self.client.post('/api/export/csv', json={
+            'session_id': self.sid,
+            'dataset': 'raw',
+        })
+        self.assertEqual(raw_export.status_code, 200, raw_export.get_data(as_text=True))
+        raw_export.close()
+
+        exported = self.client.post('/api/projects/export', json={
+            'session_id': self.sid,
+            'project_name': 'Área sólo reanálisis',
+            'client_state': {
+                'schema_version': 1,
+                'wp': {
+                    'studyMode': 'reanalysis_only',
+                    'activeDataSource': payload['active_data_source'],
+                },
+            },
+        })
+        self.assertEqual(exported.status_code, 200)
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'area.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        restored = imported.get_json()
+        self.assertIn('reanalysis_study', restored['restored_keys'])
+        self.assertIn('active_study_mode', restored['restored_keys'])
+        self.assertEqual(
+            restored['client_state']['wp']['activeDataSource'],
+            payload['active_data_source'])
+        restored_study = self.client.get(
+            f"/api/sessions/{restored['session_id']}/reanalysis-study"
+        )
+        self.assertEqual(restored_study.status_code, 200)
+        self.assertEqual(restored_study.get_json()['study_mode'], 'reanalysis_only')
+        restored_resource = self.client.post('/api/wind/stats', json={
+            'session_id': restored['session_id'],
+        })
+        self.assertEqual(restored_resource.status_code, 200)
+        self.assertEqual(
+            restored_resource.get_json()['data_source']['kind'],
+            'reanalysis_area')
 
     def test_explicit_hub_height_overrides_builtin_without_mutating_source(self):
         original = PowerCurve.from_builtin("V150_4.5")
@@ -579,21 +728,73 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertTrue(spatial_payload["mcp_selection_independent"])
         wind = self.client.post("/api/wind/stats", json={
             "session_id": self.sid,
-            "data_source": source_id,
         })
         self.assertEqual(wind.status_code, 200, wind.get_data(as_text=True))
-        self.assertIsNotNone(wind.get_json()["rose"])
+        wind_payload = wind.get_json()
+        self.assertIsNotNone(wind_payload["rose"])
+        self.assertEqual(wind_payload["data_source"]["source_id"], source_id)
+        self.assertEqual(wind_payload["data_source"]["kind"], "mcp")
+
+        features = self.client.post("/api/features/build", json={
+            "session_id": self.sid,
+            "target_col": "wind_speed",
+            "horizons": [1],
+            "test_frac": 0.2,
+        })
+        self.assertEqual(features.status_code, 200, features.get_data(as_text=True))
+        self.assertEqual(features.get_json()["data_source"]["source_id"], source_id)
+
         energy = self.client.post("/api/energy/compute", json={
             "session_id": self.sid,
-            "data_source": source_id,
             "turbine": {"builtin_model": "V150_4.5"},
             "simulation": {"n_turbines": 1, "ws_height_m": 80},
         })
         self.assertEqual(energy.status_code, 200, energy.get_data(as_text=True))
-        aep = energy.get_json()["aep"]
+        energy_payload = energy.get_json()
+        self.assertEqual(energy_payload["data_source"]["source_id"], source_id)
+        aep = energy_payload["aep"]
         self.assertIn("percentile_definition", aep)
         self.assertGreaterEqual(aep["aep_p50_mwh"], aep["aep_p75_mwh"])
         self.assertGreaterEqual(aep["aep_p75_mwh"], aep["aep_p90_mwh"])
+
+        farm = self.client.post("/api/farm/simulate", json={
+            "session_id": self.sid,
+            "layout": [[0, 0]],
+            "turbine": {"builtin_model": "V150_4.5"},
+            "ws_height_m": 80,
+        })
+        self.assertEqual(farm.status_code, 200, farm.get_data(as_text=True))
+        self.assertEqual(farm.get_json()["data_source"]["source_id"], source_id)
+
+        recommendation = self.client.post("/api/farm/recommend", json={
+            "session_id": self.sid,
+            "turbine": {"builtin_model": "V150_4.5"},
+            "demand_mwh": 10_000,
+            "measurement_height_m": 80,
+        })
+        self.assertEqual(
+            recommendation.status_code, 200,
+            recommendation.get_data(as_text=True),
+        )
+        recommendation_payload = recommendation.get_json()
+        self.assertEqual(recommendation_payload["data_source"]["source_id"], source_id)
+        self.assertEqual(
+            recommendation_payload["wind_input"]["source"],
+            "active_project_source",
+        )
+
+        techno = self.client.post("/api/energy/techno_economic", json={
+            "session_id": self.sid,
+            "scenario": "integrated",
+            "n_turbines": 1,
+            "turbine": {"builtin_model": "V150_4.5"},
+            "financial": {"project_years": 25},
+        })
+        self.assertEqual(techno.status_code, 200, techno.get_data(as_text=True))
+        self.assertEqual(
+            techno.get_json()["wind_source"]["data_source"]["source_id"],
+            source_id,
+        )
 
 
 if __name__ == "__main__":
