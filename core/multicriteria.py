@@ -336,22 +336,31 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None,
     criteria = list(w.keys())
     n = len(alternatives)
 
-    # Build decision matrix (n × m). NaN/Inf y None → 0.0 (neutral).
-    M = np.zeros((n, len(criteria)), dtype=float)
+    # Build decision matrix (n × m). Valores ausentes/no finitos quedan NaN
+    # por ahora — NUNCA se rellenan con 0.0: en un criterio de costo (CAPEX,
+    # LCOE) un 0.0 se interpretaría como "el más barato posible" y premiaría
+    # el dato faltante con el mejor rank.
+    M = np.full((n, len(criteria)), np.nan, dtype=float)
     for i, alt in enumerate(alternatives):
         for j, c in enumerate(criteria):
             v = alt.get(c)
-            v = 0.0 if (v is None or (isinstance(v, float) and not np.isfinite(v))) else float(v)
-            M[i, j] = v
+            if v is not None and isinstance(v, (int, float)) and np.isfinite(v):
+                M[i, j] = float(v)
 
-    # Apply direction: invert minimization columns so all are "higher is better"
-    for j, c in enumerate(criteria):
-        if CRITERION_DIRECTION[c] < 0:
-            col = M[:, j]
-            col_max = col.max() if col.size else 0
-            M[:, j] = (col_max + 1e-9) - col   # simple reflection
+    # Imputar NaN con la media de la columna (valor neutral respecto a las
+    # demás alternativas) en vez de 0.0. Columna 100% ausente -> 0 (no aporta
+    # ni penaliza, ver col_norms==0 más abajo).
+    col_means = np.nanmean(M, axis=0)
+    col_means = np.where(np.isnan(col_means), 0.0, col_means)
+    nan_rows, nan_cols = np.where(np.isnan(M))
+    if nan_rows.size:
+        M[nan_rows, nan_cols] = col_means[nan_cols]
 
-    # Vector normalization (Euclidean) per column
+    # Vector normalization (Euclidean) per column — sobre los valores crudos,
+    # SIN reflejar los criterios de costo. Reflejar antes de normalizar
+    # (col_max - col) hace que el peso efectivo de un criterio de costo
+    # dependa de col_max, es decir, de la peor alternativa del conjunto: al
+    # agregar/quitar una alternativa dominada, el ranking se puede invertir.
     col_norms = np.linalg.norm(M, axis=0)
     col_norms[col_norms == 0] = 1e-12
     R = M / col_norms
@@ -360,9 +369,11 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None,
     W = np.array([w[c] for c in criteria])
     V = R * W
 
-    # Ideal and anti-ideal solutions (all columns are now max-is-best)
-    V_best  = V.max(axis=0)
-    V_worst = V.min(axis=0)
+    # Ideal y anti-ideal por criterio, respetando su dirección: en criterios
+    # de beneficio el ideal es el máximo; en criterios de costo, el mínimo.
+    is_cost = np.array([CRITERION_DIRECTION[c] < 0 for c in criteria])
+    V_best  = np.where(is_cost, V.min(axis=0), V.max(axis=0))
+    V_worst = np.where(is_cost, V.max(axis=0), V.min(axis=0))
 
     dist_best  = np.sqrt(((V - V_best)  ** 2).sum(axis=1))
     dist_worst = np.sqrt(((V - V_worst) ** 2).sum(axis=1))
