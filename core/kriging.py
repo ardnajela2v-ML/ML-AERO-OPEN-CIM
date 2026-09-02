@@ -239,13 +239,75 @@ def _find_data_start(path: str) -> int:
     return 0  # fallback: intentar desde la línea 0
 
 
+def _parse_header_columns(path: str, data_start_line: int):
+    """Lee la fila de encabezado real (justo antes de data_start_line) y
+    devuelve (idx, z_ref_m) donde idx mapea 'dt'/'ws'/'wd'/'t2m'/'p0m' a la
+    posición de columna 0-indexada, y z_ref_m es la altura de medición del
+    viento leída del propio encabezado (p.ej. 'Speed_100m' -> 100.0).
+
+    MERRA-2 trae dos columnas de temperatura (Temperature_10m y
+    Temperature_2m); se prioriza siempre la de 2 m, que es la que usa el
+    cálculo de densidad del aire.
+
+    Devuelve (None, None) si el encabezado no se puede parsear (formato
+    desconocido) — el llamador debe usar un fallback posicional explícito.
+    """
+    if data_start_line <= 0:
+        return None, None
+    header_idx = data_start_line - 1
+    try:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+            for i, line in enumerate(fh):
+                if i == header_idx:
+                    header_line = line
+                    break
+            else:
+                return None, None
+    except OSError:
+        return None, None
+
+    cols = [c.strip() for c in re.split(r'\t+', header_line.strip())]
+    if len(cols) < 2:
+        cols = [c.strip() for c in re.split(r'\s{2,}', header_line.strip())]
+
+    idx: Dict[str, int] = {}
+    z_ref = None
+    for i, c in enumerate(cols):
+        cl = c.lower()
+        if cl.startswith('date'):
+            idx['dt'] = i
+        elif 'speed' in cl:
+            idx['ws'] = i
+            m = re.search(r'_(\d+)\s*m', c, re.IGNORECASE)
+            if m:
+                z_ref = float(m.group(1))
+        elif 'direction' in cl:
+            idx['wd'] = i
+        elif 'temperature_2m' in cl.replace(' ', ''):
+            idx['t2m'] = i  # siempre gana sobre Temperature_10m
+        elif 'temp' in cl and 't2m' not in idx:
+            idx['t2m'] = i  # fallback si sólo hay una columna de temperatura
+        elif 'pressure' in cl:
+            idx['p0m'] = i
+
+    if not {'dt', 'ws', 'wd', 't2m', 'p0m'}.issubset(idx):
+        return None, None
+    return idx, z_ref
+
+
 def read_wind_file(path: str, year: Optional[int] = None):
     """
     Lee un archivo Windnavigator (MERRA-2/ERA5) con pandas — 20-50x más rápido
     que la versión regex sobre el contenido completo.
 
-    Devuelve dict con claves: name, lat, lon, ws, wd, t2m, p0m, n, year.
-    Mantiene la misma interfaz que la versión anterior.
+    MERRA-2 y ERA5 tienen distinto número de columnas (6 vs 5: MERRA-2 trae
+    Temperature_10m Y Temperature_2m, ERA5 sólo Temperature_2m) y distinta
+    altura de referencia de viento (50 m vs 100 m). Las columnas se localizan
+    por NOMBRE leyendo el encabezado real del archivo — nunca por posición
+    fija — para no mezclar presión con temperatura entre formatos.
+
+    Devuelve dict con claves: name, lat, lon, ws, wd, t2m, p0m, n, year,
+    z_ref (altura de medición del viento en m, específica del archivo).
     """
     fname = os.path.basename(path)
     coords = parse_coords_from_filename(fname)
@@ -254,30 +316,31 @@ def read_wind_file(path: str, year: Optional[int] = None):
     lat, lon = coords
 
     skip = _find_data_start(path)
-    try:
-        df = pd.read_csv(
-            path,
-            skiprows=skip,
-            sep=r'\s+',          # columnas separadas por espacios/tabs
-            header=None,
-            usecols=[0, 1, 2, 4, 5],  # datetime, WS, WD, T2M, P0M
-            names=['dt', 'ws', 'wd', 't2m', 'p0m'],
-            na_values=['-', 'nan', 'NaN', ''],
-            on_bad_lines='skip',
-            engine='c',
-            dtype={'ws': 'float32', 'wd': 'float32', 't2m': 'float32', 'p0m': 'float32'},
-        )
-    except Exception:
-        # Fallback: sin usecols (el archivo puede tener menos columnas)
-        df = pd.read_csv(
-            path, skiprows=skip, sep=r'\s+', header=None,
-            na_values=['-', 'nan', ''], on_bad_lines='skip', engine='c',
-        )
-        df.columns = list(range(df.shape[1]))
-        df = df.rename(columns={0: 'dt', 1: 'ws'})
-        df['wd'] = df.get(2, pd.Series(np.nan, index=df.index)).astype('float32')
-        df['t2m'] = df.get(4, pd.Series(15.0, index=df.index)).astype('float32')
-        df['p0m'] = df.get(5, pd.Series(101.3, index=df.index)).astype('float32')
+    idx, z_ref = _parse_header_columns(path, skip)
+
+    df = pd.read_csv(
+        path, skiprows=skip, sep=r'\s+', header=None,
+        na_values=['-', 'nan', 'NaN', ''], on_bad_lines='skip', engine='c',
+    )
+    df.columns = list(range(df.shape[1]))
+
+    if idx is None:
+        # Fallback posicional: el encabezado no se pudo leer. Se infiere el
+        # layout por el número de columnas presentes en los datos (ERA5=5,
+        # MERRA-2=6) en vez de asumir siempre el layout de 6 columnas.
+        log.warning('read_wind_file: encabezado no reconocido en %s, usando fallback posicional', fname)
+        if df.shape[1] >= 6:
+            idx = {'dt': 0, 'ws': 1, 'wd': 2, 't2m': 4, 'p0m': 5}  # MERRA-2-like
+            z_ref = z_ref or 50.0
+        else:
+            idx = {'dt': 0, 'ws': 1, 'wd': 2, 't2m': 3, 'p0m': 4}  # ERA5-like
+            z_ref = z_ref or 100.0
+
+    df = df.rename(columns={idx['dt']: 'dt', idx['ws']: 'ws', idx['wd']: 'wd',
+                             idx['t2m']: 't2m', idx['p0m']: 'p0m'})
+    df = df[['dt', 'ws', 'wd', 't2m', 'p0m']].copy()
+    for c in ('ws', 'wd', 't2m', 'p0m'):
+        df[c] = pd.to_numeric(df[c], errors='coerce').astype('float32')
 
     # Filtrar filas cuya primera columna no parece fecha ISO
     mask_date = df['dt'].astype(str).str.match(r'\d{4}-\d{2}-\d{2}')
@@ -296,6 +359,7 @@ def read_wind_file(path: str, year: Optional[int] = None):
         'p0m':  df['p0m'].to_numpy(dtype=float),
         'n':    len(df),
         'year': year,
+        'z_ref': float(z_ref) if z_ref is not None else Z_REF,
     }
 
 
@@ -370,13 +434,20 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
     hub_height_m: altura del rotor de la PowerCurve activa. Fallback Z_TGT=80 m.
     z0: rugosidad del terreno. Fallback Z0=0.03 (campo abierto/costa).
     Sierra Norte Oaxaca: usar Z0=0.1-0.5.
+
+    La altura de referencia de la extrapolación (z_ref) se toma de
+    site['z_ref'] — poblada por read_wind_file a partir del propio
+    encabezado del archivo (50 m en MERRA-2, 100 m en ERA5) — nunca de una
+    constante fija, porque mezclar ambas alturas invierte el signo de la
+    corrección logarítmica.
     """
     z_tgt = float(hub_height_m) if hub_height_m is not None else Z_TGT
     z0_eff = float(z0) if z0 is not None else Z0
+    z_ref = float(site.get('z_ref') or Z_REF)
     ws = site['ws']; wd = site.get('wd'); t2m = site['t2m']; p0m = site['p0m']
     if ws.size == 0:
         return None
-    wsp = ws * (math.log(z_tgt / z0_eff) / math.log(Z_REF / z0_eff))
+    wsp = ws * (math.log(z_tgt / z0_eff) / math.log(z_ref / z0_eff))
     T = t2m + 273.15
     P = p0m * 1000.0
     rho = P / (R_ESP * T)
