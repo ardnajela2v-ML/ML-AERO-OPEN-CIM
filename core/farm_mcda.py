@@ -9,7 +9,11 @@ import numpy as np
 
 from core.cost_model import CostModel
 from core.energy import PowerCurve
-from core.farm import optimize_layout_structured, simulate_wind_farm
+from core.farm import (
+    gaussian_min_valid_distance_d,
+    optimize_layout_structured,
+    simulate_wind_farm,
+)
 from core.multicriteria import rank_layout_alternatives
 
 
@@ -340,6 +344,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'bankable_missing': ['ct_curve', 'iec_class', 'extreme_wind',
                                      'ambient_turbulence', 'certified_power_curve'],
                 'wake_model': wake_model,
+                'wake_model_validity': sim.get('wake_model_validity'),
                 'turbine_specification': {
                     'rated_power_kw': float(turbine.rated_power_kw),
                     'rotor_diameter_m': float(turbine.rotor_diameter_m),
@@ -392,6 +397,18 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         'wind_summary': {'mean_speed_ms': mean_speed, 'weibull_k': weibull_k, 'rho': rho},
         'assumptions': {
             'wake_model': wake_model, 'k_wake': k_wake, 'ct': ct,
+            'wake_model_validity': {
+                'near_wake_policy': (
+                    'reject_material_interaction_outside_domain'
+                    if wake_model == 'gaussian' else 'not_applicable'
+                ),
+                'minimum_valid_x_over_d': (
+                    round(gaussian_min_valid_distance_d(k=k_wake, ct=ct), 6)
+                    if wake_model == 'gaussian' else 0.0
+                ),
+                'ct_source': 'constant_user_input',
+                'ct_curve_available': False,
+            },
             'max_wake_loss_pct': float(max_wake_loss_pct),
             'min_spacing_d': float(min_spacing_d),
             's_para_range': list(s_para_range), 's_perp_range': list(s_perp_range),

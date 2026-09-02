@@ -7597,6 +7597,7 @@ function mcdaLayoutAuditHtml(a) {
   const costBenchmark = MCDA.lastSpatial?.design_cost_benchmark || {};
   const energy = a.energy_balance || {};
   const losses = a.loss_assumptions || {};
+  const wakeValidity = a.wake_model_validity || {};
   const layout = a.layout_config || {};
   const installedKw = Number(spec.rated_power_kw || 0) * Number(a.n_aerogeneradores || 0);
   const basePerKw = installedKw > 0 ? Number(a.base_capex_usd || 0) / installedKw : null;
@@ -7620,6 +7621,9 @@ function mcdaLayoutAuditHtml(a) {
       ['AEP P90', `${mcdaAuditNumber(energy.aep_p90_mwh, 1)} MWh`],
       ['Factor de capacidad', `${mcdaAuditNumber(Number(a.factor_capacidad) * 100, 2)}%`],
       ['Estela', `${mcdaAuditNumber(losses.wake_loss_pct, 2)}%`],
+      ['Dominio estela', wakeValidity.model === 'gaussian'
+        ? `Gaussiano x/D ≥ ${mcdaAuditNumber(wakeValidity.minimum_valid_x_over_d, 3)} · Ct constante`
+        : 'Jensen · no aplica umbral gaussiano'],
       ['Indisponibilidad', `${mcdaAuditNumber(losses.availability_loss_pct, 2)}%`],
       ['Eléctricas / curtailment', `${mcdaAuditNumber(losses.electrical_loss_pct, 2)}% / ${mcdaAuditNumber(losses.curtailment_loss_pct, 2)}%`],
       ['Incertidumbre combinada', `${mcdaAuditNumber(a.aep_uncertainty_pct, 2)}%`],

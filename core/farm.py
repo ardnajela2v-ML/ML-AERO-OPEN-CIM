@@ -21,6 +21,10 @@ from typing import List, Tuple, Optional, Dict, Any
 from core.energy import PowerCurve, air_density
 
 
+class WakeModelDomainError(ValueError):
+    """Raised when a layout requests a wake model outside its valid domain."""
+
+
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
 def _rotate_to_wind_axis(layout_xy: np.ndarray, wind_dir_deg: float):
@@ -48,8 +52,8 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     lateral_m:    perpendicular distance to wake centreline.
     rotor_d_m:    rotor diameter of the upwind turbine.
     k:            wake decay (0.04 offshore, 0.05–0.075 onshore).
-    ct:           thrust coefficient. ct=0.8 es CONSERVADOR para velocidades cercanas a
-                  cut-in (Ct real ≈ 0.8 en parcial-load, baja a ~0.1 cerca de rated).
+    ct:           thrust coefficient. ct=0.8 es CONSERVADOR en carga parcial;
+                  el Ct real suele bajar al alcanzar y superar la potencia nominal.
                   Sobreestima estela a v alta. Para mayor precisión pasar Ct(v) del fabricante.
 
     Returns delta_v / v_freestream (0 if not in wake).
@@ -71,6 +75,18 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     return max(0.0, min(1.0, deficit))
 
 
+def gaussian_min_valid_distance_d(k: float = 0.04, ct: float = 0.8) -> float:
+    """Minimum x/D where the Bastankhah centreline radical is real."""
+    k = float(k)
+    if not math.isfinite(k) or k <= 0:
+        raise ValueError('k_wake debe ser positivo para el modelo gaussiano.')
+    ct = max(0.0, min(0.999, float(ct)))
+    sqrt_one_minus_ct = math.sqrt(max(1e-9, 1.0 - ct))
+    beta = 0.5 * (1.0 + sqrt_one_minus_ct) / sqrt_one_minus_ct
+    epsilon = 0.2 * math.sqrt(beta)
+    return max(0.0, (math.sqrt(ct / 8.0) - epsilon) / k)
+
+
 def gaussian_deficit(distance_x_m: float, lateral_m: float,
                      rotor_d_m: float, k: float = 0.04,
                      ct: float = 0.8) -> float:
@@ -79,15 +95,37 @@ def gaussian_deficit(distance_x_m: float, lateral_m: float,
     This engineering model is used for pre-feasibility comparisons. ``k`` is
     the wake-expansion coefficient and must be calibrated with ambient
     turbulence when site measurements are available.
+
+    Bastankhah & Porté-Agel (2014), Renewable Energy 70, 116–123,
+    https://doi.org/10.1016/j.renene.2014.01.002
     """
-    if distance_x_m <= 0 or rotor_d_m <= 0:
+    if distance_x_m <= 0:
         return 0.0
+    if rotor_d_m <= 0:
+        raise ValueError('rotor_d_m debe ser positivo.')
     ct = max(0.0, min(0.999, float(ct)))
     sqrt_one_minus_ct = math.sqrt(max(1e-9, 1.0 - ct))
     beta = 0.5 * (1.0 + sqrt_one_minus_ct) / sqrt_one_minus_ct
     epsilon = 0.2 * math.sqrt(beta)
-    sigma_over_d = max(epsilon, float(k) * distance_x_m / rotor_d_m + epsilon)
-    radical = max(0.0, 1.0 - ct / (8.0 * sigma_over_d ** 2))
+    min_x_over_d = gaussian_min_valid_distance_d(k=k, ct=ct)
+    x_over_d = float(distance_x_m) / float(rotor_d_m)
+    if x_over_d < min_x_over_d:
+        # The Gaussian has infinite mathematical support. Ignore only a tail
+        # whose maximum possible deficit at the validity boundary is <0.01%;
+        # a material near-wake interaction must not be fabricated by clipping.
+        sigma_boundary_m = math.sqrt(ct / 8.0) * float(rotor_d_m)
+        boundary_tail = math.exp(
+            -0.5 * (abs(float(lateral_m)) / max(sigma_boundary_m, 1e-9)) ** 2)
+        if boundary_tail <= 1e-4:
+            return 0.0
+        raise WakeModelDomainError(
+            'Bastankhah-Porté-Agel fuera de dominio en la estela cercana: '
+            f'x/D={x_over_d:.3f}, requiere x/D>={min_x_over_d:.3f} '
+            f'para Ct={ct:.3f} y k={float(k):.4f}. '
+            'Aumenta la separación, usa Jensen o aporta un modelo de estela cercana.'
+        )
+    sigma_over_d = float(k) * x_over_d + epsilon
+    radical = 1.0 - ct / (8.0 * sigma_over_d ** 2)
     centre = 1.0 - math.sqrt(radical)
     sigma_m = sigma_over_d * rotor_d_m
     lateral = math.exp(-0.5 * (abs(lateral_m) / max(sigma_m, 1e-9)) ** 2)
@@ -255,6 +293,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                Norte de Oaxaca, valles centrales).
 
     Returns dict with per-turbine AEP, totals, wake_loss%, CF%, dominant dir.
+    For the Gaussian model, material interactions before the first real-valued
+    Bastankhah solution are rejected instead of clipping the radical to zero.
     """
     layout = np.asarray(layout_xy, dtype=float)
     n = len(layout)
@@ -270,6 +310,19 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         )
 
     rotor_d = float(turbine.rotor_diameter_m or 80.0)
+    wake_model_validity = {
+        'model': wake_model,
+        'near_wake_policy': (
+            'reject_material_interaction_outside_domain'
+            if wake_model == 'gaussian' else 'not_applicable'
+        ),
+        'minimum_valid_x_over_d': (
+            round(gaussian_min_valid_distance_d(k=k_wake, ct=ct), 6)
+            if wake_model == 'gaussian' else 0.0
+        ),
+        'ct_source': 'constant_user_input',
+        'ct_curve_available': False,
+    }
     n_samples = len(ws)
     if n_samples == 0:
         return {'error': 'No wind data'}
@@ -427,6 +480,7 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'record_energy_no_wake_mwh': round(e_free_total_kwh * survival / 1000.0, 2),
         'wake_loss_pct':  round(100.0 * wake_loss, 2),
         'wake_model':     wake_model,
+        'wake_model_validity': wake_model_validity,
         'cf_pct':         round(100.0 * cf, 2),
         'flh':            round(e_total_annual_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
         'dominant_dir_deg': round(dom_dir, 1),

@@ -6,8 +6,10 @@ import numpy as np
 from core.energy import PowerCurve, TechnoEconomicAnalyzer
 from core.cost_model import CostModel, get_design_cost_benchmark
 from core.farm import (
+    WakeModelDomainError,
     _build_structured_grid,
     gaussian_deficit,
+    gaussian_min_valid_distance_d,
     optimize_layout_structured,
     simulate_wind_farm,
 )
@@ -38,6 +40,22 @@ class FarmScientificModelTests(unittest.TestCase):
         )
         self.assertGreater(aligned['wake_loss_pct'], crosswind['wake_loss_pct'])
         self.assertLessEqual(aligned['aep_mwh'], aligned['aep_gross_mwh'])
+        self.assertEqual(
+            aligned['wake_model_validity']['near_wake_policy'],
+            'reject_material_interaction_outside_domain',
+        )
+
+    def test_gaussian_near_wake_domain_is_not_clipped_to_full_deficit(self):
+        minimum = gaussian_min_valid_distance_d(k=0.04, ct=0.8)
+        self.assertAlmostEqual(minimum, 1.546, places=3)
+        with self.assertRaisesRegex(WakeModelDomainError, 'fuera de dominio'):
+            gaussian_deficit(100.0, 0.0, 100.0, k=0.04, ct=0.8)
+        self.assertGreater(
+            gaussian_deficit(minimum * 100.0, 0.0, 100.0, k=0.04, ct=0.8),
+            0.99,
+        )
+        # A cross-wind pair in the immaterial Gaussian tail is not rejected.
+        self.assertEqual(gaussian_deficit(100.0, 300.0, 100.0, k=0.04, ct=0.8), 0.0)
 
     def test_layout_respects_exclusion_and_rotor_setback(self):
         exclusion = [[
