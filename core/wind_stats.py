@@ -637,11 +637,18 @@ def _calc_hub(z_hub, z_ref, V_ref, alpha, z0_eff, ws_series):
     v_log  = V_ref * sf_log
 
     rho = 1.225  # kg/m³ — ISA sea level
-    pd_hell = 0.5 * rho * v_hell ** 3
-    pd_log  = 0.5 * rho * v_log  ** 3
 
-    # Scale the full series to hub height (power law — α fitted from site data)
-    ws_hub = ws_series.dropna() * sf_hell
+    # Densidad de potencia = ½ρ·E[v³], NUNCA ½ρ·(E[v])³ — E[v³] ≠ (E[v])³.
+    # Usar el cubo de la media subestima la PD real (el Energy Pattern
+    # Factor E[v³]/(E[v])³ suele ser 1.5-2 para Weibull con K típico de
+    # sitio eólico), así que se promedia sobre la serie completa extrapolada
+    # a hub, no sobre el escalar V_ref.
+    ws_dropna  = ws_series.dropna()
+    ws_hub     = ws_dropna * sf_hell
+    ws_hub_log = ws_dropna * sf_log
+    pd_hell = float(0.5 * rho * np.mean(np.power(ws_hub, 3)))
+    pd_log  = float(0.5 * rho * np.mean(np.power(ws_hub_log, 3)))
+
     hub_mean  = float(ws_hub.mean())
     hub_above = float((ws_hub >= 3.0).mean() * 100)   # capacity factor proxy: % ≥ 3 m/s cut-in
 
