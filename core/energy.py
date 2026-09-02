@@ -665,10 +665,7 @@ class TechnoEconomicAnalyzer:
                 discount_rate_pct: float = 8.0,
                 project_years: int = 25,
                 usd_to_mxn: float = 1.0,
-                annual_energy_kwh_series: list = None,
                 energy_price_series_usd_kwh: list = None,
-                discount_rate_series_pct: list = None,
-                usd_to_mxn_series: list = None,
                 year1_revenue_override_usd: float = None,
                 annual_inflation_pct: float = 0.0) -> dict:
         """
@@ -676,12 +673,8 @@ class TechnoEconomicAnalyzer:
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
 
         annual_energy_kwh: representative annual park energy (used for summary KPIs)
-        annual_energy_kwh_series: optional per-year energy list (ML forecast series).
-            When provided, NPV/LCOE/cashflows use year-specific AEP values.
-        energy_price_series_usd_kwh / discount_rate_series_pct / usd_to_mxn_series:
-            optional per-year arrays (length ≤ project_years). When provided,
-            override the corresponding scalar for each year (cashflow + NPV use
-            cumulative compounding for variable discount).
+        energy_price_series_usd_kwh: optional per-year price array used by the
+            fixed PML profile. Discount rate and FX remain scalar inputs.
         year1_revenue_override_usd: optional override for year-1 revenue (already
             in USD, FX-adjusted). Used when revenue is computed via hourly
             weighting (8760 PML × FX × dispatched energy). Bypasses
@@ -718,9 +711,7 @@ class TechnoEconomicAnalyzer:
         total_energy_kwh = 0.0
         payback_years = float('inf')
         discount_factor = 1.0  # cumulative Π(1+r_i)
-        rates_used = []
         prices_used = []
-        fx_used = []
         opex_used = []
         # LCOE = PV(costos) / PV(energía) — NUNCA (CAPEX + ΣOPEX) / Σenergía
         # sin descontar: eso subestima el LCOE (el denominador crece más
@@ -729,17 +720,12 @@ class TechnoEconomicAnalyzer:
         pv_energy_lcoe = 0.0
 
         for yr in range(1, project_years + 1):
-            if annual_energy_kwh_series and yr <= len(annual_energy_kwh_series):
-                yr_energy_kwh = float(annual_energy_kwh_series[yr - 1])
-            else:
-                yr_energy_kwh = annual_energy_kwh
+            yr_energy_kwh = annual_energy_kwh
             yr_price = _at(energy_price_series_usd_kwh, yr - 1, energy_price_usd_kwh)
-            yr_rate  = _at(discount_rate_series_pct,    yr - 1, discount_rate_pct)
-            yr_fx    = _at(usd_to_mxn_series,           yr - 1, usd_to_mxn)
+            yr_rate = discount_rate_pct
+            yr_fx = usd_to_mxn
             r_y = yr_rate / 100.0
             prices_used.append(yr_price)
-            rates_used.append(yr_rate)
-            fx_used.append(yr_fx)
             yr_opex = annual_opex * ((1.0 + inflation) ** (yr - 1))
             opex_used.append(yr_opex)
 
@@ -783,9 +769,8 @@ class TechnoEconomicAnalyzer:
         # El valor acumulado simple (sum FC_equity - equity_inicial) NO es el VAN; es el
         # retorno acumulado sin descontar. Ver corrección en chapter_aero.tex tabs kpis/post_apal.
 
-        # Mean rate for VAE / LCOE (when variable)
-        r_mean = (sum(rates_used) / len(rates_used) / 100.0) if rates_used else (discount_rate_pct / 100.0)
-        # VAE — annual equivalent value (uses mean rate when variable)
+        r_mean = discount_rate_pct / 100.0
+        # VAE — annual equivalent value
         vae = (npv * r_mean / (1 - (1 + r_mean) ** -project_years)
                if r_mean > 0 else npv / project_years)
 
@@ -804,8 +789,6 @@ class TechnoEconomicAnalyzer:
         # Indicates whether series-based variable params were used
         used_variable_params = bool(
             (energy_price_series_usd_kwh and len(energy_price_series_usd_kwh) > 0) or
-            (discount_rate_series_pct and len(discount_rate_series_pct) > 0) or
-            (usd_to_mxn_series and len(usd_to_mxn_series) > 0) or
             (year1_revenue_override_usd is not None) or
             (annual_inflation_pct != 0)
         )

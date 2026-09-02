@@ -47,8 +47,7 @@
     </button>
     <button class="nav-btn" data-module="mcp">MCP Lab</button>
     <button class="nav-btn active" data-module="resumen">Recurso Eólico</button>
-    <button class="nav-btn" data-module="models">Configuración del parque</button>
-    <button class="nav-btn" data-module="forecast" style="display:none" hidden>Forecast Studio</button>
+    <button class="nav-btn" data-module="park-config">Configuración del parque</button>
     <button class="nav-btn" data-module="kriging">Diseño y optimización del parque eólico</button>
     <button class="nav-btn" data-module="parque" style="display:none" hidden>Parque</button>
     <button class="nav-btn" data-module="techno">Evaluación Tecnoeconómica</button>
@@ -611,11 +610,11 @@
   <!-- ═══ DATOS DE MERCADO ═══════════════════════════════════════════════════ -->
   <div class="card mt-3" id="market-data-panel">
     <div class="card-header">
-      <span class="card-title">Datos de Mercado (Demanda, PML, Tasas, FX)</span>
+      <span class="card-title">Datos comerciales (Demanda y PML)</span>
       <span class="badge badge--info" id="market-file-count">Cargando…</span>
     </div>
     <div class="card-body">
-      <p class="text-muted mb-2" style="font-size:.8rem">Selecciona archivos históricos para cada variable. Se usarán como insumos trazables en Configuración del parque.</p>
+      <p class="text-muted mb-2" style="font-size:.8rem">Carga la demanda cuando aplique autoconsumo y el PML horario fijo del proyecto.</p>
 
       <!-- DEMANDA -->
       <div class="market-data-row mb-3" style="border-left:3px solid var(--accent);padding-left:12px;">
@@ -667,56 +666,6 @@
         </div>
       </div>
 
-      <!-- TASA DE INTERÉS -->
-      <div class="market-data-row mb-3" style="border-left:3px solid #8b5cf6;padding-left:12px;">
-        <div class="form-grid-4" style="align-items:end">
-          <div style="grid-column:span 2">
-            <label class="form-label">Tasa de Interés (%)</label>
-            <select class="form-select" id="market-interest-select" style="width:100%">
-              <option value="">— Selecciona archivo de tasa —</option>
-            </select>
-          </div>
-          <div>
-            <button class="btn-primary" id="btn-load-market-interest">Cargar</button>
-          </div>
-          <div>
-            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
-              Subir archivo
-              <input type="file" id="market-interest-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
-            </label>
-          </div>
-        </div>
-        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
-          <span class="badge badge--warn" id="market-interest-badge" style="display:none"></span>
-          <span class="text-muted" id="market-interest-info" style="font-size:.75rem">Sin datos cargados</span>
-        </div>
-      </div>
-
-      <!-- TIPO DE CAMBIO -->
-      <div class="market-data-row mb-3" style="border-left:3px solid #10b981;padding-left:12px;">
-        <div class="form-grid-4" style="align-items:end">
-          <div style="grid-column:span 2">
-            <label class="form-label">Tipo de Cambio USD/MXN</label>
-            <select class="form-select" id="market-fx-select" style="width:100%">
-              <option value="">— Selecciona archivo de tipo de cambio —</option>
-            </select>
-          </div>
-          <div>
-            <button class="btn-primary" id="btn-load-market-fx">Cargar</button>
-          </div>
-          <div>
-            <label class="btn-secondary" style="cursor:pointer;display:inline-block;text-align:center">
-              Subir archivo
-              <input type="file" id="market-fx-upload" accept=".csv,.txt,.tsv,.dat,.xlsx" hidden>
-            </label>
-          </div>
-        </div>
-        <div class="flex-end mt-1" style="gap:8px;flex-wrap:wrap;">
-          <span class="badge badge--warn" id="market-fx-badge" style="display:none"></span>
-          <span class="text-muted" id="market-fx-info" style="font-size:.75rem">Sin datos cargados</span>
-        </div>
-      </div>
-
       <!-- Vista previa de datos de mercado -->
       <div class="grid-2 mt-2">
         <div class="card">
@@ -738,14 +687,14 @@
 </section>
 
 <!-- ╔════════════ CENTRO DE CONFIGURACIÓN DEL PARQUE ════════════╗ -->
-<section class="module" id="mod-models">
+<section class="module" id="mod-park-config">
   <div class="module-header">
     <h1 class="module-title">Centro de configuración del parque eólico</h1>
     <p class="module-desc">Define el esquema comercial, los archivos de demanda y precios, y los valores base financieros del proyecto.</p>
   </div>
 
   <!-- ═══ TAB: CONFIGURACIÓN DEL PROYECTO ══════════════════════════════════ -->
-  <div id="arena-project-tab" class="tab-content active">
+  <div id="park-project-panel" class="tab-content active">
     <div class="card card--accent mb-3">
       <div class="card-header">
         <span class="card-title">1 · Esquema comercial</span>
@@ -847,803 +796,7 @@
     </div>
   </div>
 
-  <!-- ═══ TAB: VIENTO ═══════════════════════════════════════════════════════ -->
-  <div id="arena-wind-tab" class="tab-content">
 
-    <div class="card mb-3">
-      <div class="card-header"><span class="card-title">Configuración de Features</span></div>
-      <div class="card-body">
-        <div class="form-grid-4">
-          <div>
-            <label class="form-label">Columna objetivo</label>
-            <select class="form-select" id="target-col-select"><option value="wind_speed">wind_speed</option></select>
-          </div>
-          <div>
-            <label class="form-label">Hold-out test (%)</label>
-            <input type="number" class="form-input" id="test-frac" value="20" min="10" max="40">
-          </div>
-          <div>
-            <label class="form-label">Horizontes (h)</label>
-            <input type="text" class="form-input" id="horizons-input" value="1,6,24" placeholder="1,6,24,72">
-          </div>
-          <div class="flex-end">
-            <button class="btn-primary" id="btn-build-features">Generar Features</button>
-          </div>
-        </div>
-        <div id="features-summary" class="features-summary mt-2 hidden"></div>
-      </div>
-    </div>
-
-    <div class="card mb-3">
-      <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
-      <div class="card-body">
-        <div class="kpi-grid" id="wind-kpis"><span class="text-muted">Sin datos cargados.</span></div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Configuración de Entrenamiento</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <label class="form-label">Horizonte de pronóstico</label>
-            <select class="form-select" id="train-horizon">
-              <option value="1">h = +1h (muy corto plazo)</option>
-              <option value="6" selected>h = +6h (corto plazo) — recomendado</option>
-              <option value="24">h = +24h (día siguiente)</option>
-              <option value="72">h = +72h (3 días)</option>
-            </select>
-            <p class="text-muted" style="font-size:.68rem;line-height:1.45;margin-top:.35rem">
-              En el Istmo la autocorrelación de viento a 1h es &gt; 0.93, por lo que persistencia ya
-              da R² ≈ 0.91–0.95 y ningún ML la supera. Para ver ganancia real en Skill vs Pers usa
-              <strong>h = 6 ó 24h</strong>. Modelos recomendados: <strong>LightGBM, XGBoost, Random
-              Forest</strong>. Evita Ridge/Linear en h ≥ 24h (extrapolan mal).
-            </p>
-          </div>
-          <div class="model-checklist mt-2">
-            <p class="text-muted mb-1">Modelos a entrenar <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
-            <div class="model-tags" id="model-tag-list">
-              <span class="model-tag active" data-model="persistence">Persistencia</span>
-              <span class="model-tag active" data-model="climatology">Climatología</span>
-              <span class="model-tag" data-model="arima">ARIMA</span>
-              <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag" data-model="xgboost">XGBoost</span>
-              <span class="model-tag active" data-model="lightgbm">LightGBM</span>
-              <span class="model-tag active" data-model="ridge">Ridge LR</span>
-              <span class="model-tag" data-model="mlp">MLP</span>
-              <span class="model-tag" data-model="svr">SVR</span>
-            </div>
-            <div style="display:flex;gap:.5rem;margin-top:.5rem">
-              <button class="btn-sm" id="btn-models-all">Todos</button>
-              <button class="btn-sm" id="btn-models-fast">Solo rápidos</button>
-              <button class="btn-sm" id="btn-models-ml">Solo ML</button>
-            </div>
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-train">
-            <span id="btn-train-label">Entrenar modelos seleccionados</span>
-          </button>
-          <div class="progress-bar-container mt-2 hidden" id="train-progress-container">
-            <div class="progress-bar" id="train-progress-bar" style="width:0%"></div>
-            <span class="progress-label" id="train-progress-label">Iniciando...</span>
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Feature Importance</span></div>
-        <div class="card-body" style="height:280px;">
-          <canvas id="fi-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
-        <span class="cbadge b" id="wind-prediction-badge">—</span>
-        <button class="btn-secondary" id="btn-run-wind-annual" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Calcular proyección</button>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="wind-prediction-chart"></canvas></div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Proyección Anual a 25 años</span>
-        <span class="cbadge g" id="wind-25y-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="wind-25y-chart"></canvas></div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Tabla Comparativa de Modelos</span>
-        <span class="cbadge g" id="best-model-badge">—</span>
-      </div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="comparison-table">
-          <thead><tr>
-            <th>Modelo</th><th>Tipo</th><th>RMSE</th><th>MAE</th><th>R²</th><th>nRMSE</th><th>sMAPE</th>
-            <th title="Mejora relativa vs ŷ(t+h)=y(t). 0% = igual que persistencia; &gt;0 = mejor.">Skill vs Pers</th>
-            <th title="Mejora relativa vs media histórica (climatología). Equivale a R² cuando no hay sesgo.">Skill vs Clim</th>
-          </tr></thead>
-          <tbody id="comparison-tbody"><tr><td colspan="9" class="ks" style="text-align:center;padding:1.5rem">Entrena los modelos primero</td></tr></tbody>
-        </table>
-        <p class="text-muted mt-2" style="font-size:.72rem;line-height:1.5">
-          <strong>Skill vs Pers</strong> = 1 − MSE(modelo)/MSE(persistencia). En horizontes cortos (h=1h) la
-          persistencia tiene R² ≈ 0.9–0.95 en el Istmo, por lo que un modelo con R² alto puede tener Skill ≈ 0%
-          (empata persistencia, no es un bug). En h ≥ 6h la persistencia se degrada y el Skill refleja la mejora real.
-          <strong>Skill vs Clim</strong> mide qué tanto mejor eres que predecir la media histórica.
-        </p>
-      </div>
-    </div>
-
-    <div class="card mt-3" id="fi-table-card" style="display:none">
-      <div class="ch">
-        <span class="ct">Importancia de variables · GBM (top 10)</span>
-        <span class="cbadge b">Feature importance</span>
-      </div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="fi-tbl">
-          <thead><tr><th>#</th><th>Variable</th><th>Importancia</th><th>%</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ TAB: DEMANDA ══════════════════════════════════════════════════════ -->
-  <div id="arena-demand-tab" class="tab-content">
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Configuración</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <label class="form-label">Serie de demanda</label>
-            <select class="form-select" id="dem-preset" data-market-category="demand">
-              <option value="">Cargando archivos…</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Tasa anual de crecimiento histórica supuesta (CAGR base)</label>
-            <input type="number" class="form-input" id="dem-growth" step="0.005" min="0" max="0.10" value="0.025">
-            <span class="text-muted" style="font-size:.7rem">Referencia: PRODESEN ~2.5–3.0 % anual.</span>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Horizonte de proyección (años)</label>
-            <input type="number" class="form-input" id="dem-horizon" min="5" max="40" value="25">
-          </div>
-          <div class="model-checklist mt-2">
-            <p class="text-muted mb-1">Modelos de tendencia <span style="font-size:.6rem;color:var(--text-muted);margin-left:.4rem">(clic para activar/desactivar)</span></p>
-            <div class="model-tags" id="dem-model-tags">
-              <span class="model-tag active" data-model="linear">Lineal</span>
-              <span class="model-tag active" data-model="polynomial">Polinómico</span>
-              <span class="model-tag active" data-model="exponential">Exponencial</span>
-              <span class="model-tag active" data-model="logarithmic">Logarítmico</span>
-              <span class="model-tag active" data-model="logistic">Logístico</span>
-              <span class="model-tag active" data-model="holt_winters">Holt-Winters</span>
-              <span class="model-tag active" data-model="arima">ARIMA</span>
-              <span class="model-tag active" data-model="random_forest">Random Forest</span>
-              <span class="model-tag active" data-model="gradient_boost">Gradient Boost</span>
-              <span class="model-tag active" data-model="mlp">MLP (Red Neuronal)</span>
-            </div>
-          </div>
-          <div style="display: flex; gap: 8px; margin-top: 1rem;">
-            <button class="btn-primary" id="btn-dem-train" style="flex: 1;">Cargar y entrenar modelos (anual)</button>
-            <button class="btn-secondary" id="btn-dem-train-hourly" style="flex: 1;">Entrenar Perfil Horario (8760 pts)</button>
-          </div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
-        <div class="card-body">
-          <div class="kpi-grid" id="dem-kpis"><span class="text-muted">Sin datos cargados.</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Predicción Anual (Histórico + Proyección)</span>
-        <span class="cbadge b" id="dem-prediction-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="dem-prediction-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Proyección Anual a 25 años</span>
-        <span class="cbadge g" id="dem-best-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="dem-projection-chart"></canvas></div>
-    </div>
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Perfil diurno del año base</span></div>
-        <div class="card-body" style="height:260px"><canvas id="dem-profile-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Curva de duración de carga</span></div>
-        <div class="card-body" style="height:260px"><canvas id="dem-duration-chart"></canvas></div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch"><span class="ct">Tabla Comparativa de Modelos</span></div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="dem-compare-tbl">
-          <thead><tr><th>Modelo</th><th>R²</th><th>RMSE</th><th>MAPE</th><th>CAGR proyectada</th><th>Total año final</th></tr></thead>
-          <tbody><tr><td colspan="6" class="ks" style="text-align:center;padding:1.5rem">Carga una serie y entrena los modelos.</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ TAB: PML ══════════════════════════════════════════════════════════ -->
-  <div id="arena-pml-tab" class="tab-content">
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">PML observado · año base 2018</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <label class="form-label">Serie de PML</label>
-            <select class="form-select" id="pml-preset" data-market-category="pml">
-              <option value="">Cargando archivos…</option>
-            </select>
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-pml-load-fixed">Cargar y usar PML 2018</button>
-          <p class="text-muted mt-2" style="font-size:.72rem;line-height:1.55">
-            El precio no se entrena ni se predice. Se replica el perfil horario observado de venta durante toda la vida del proyecto, sin inflación ni escalamiento del PML.
-          </p>
-          <div class="alert mt-2" id="pml-fixed-status" style="display:none"></div>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
-        <div class="card-body">
-          <div class="kpi-grid" id="pml-kpis"><span class="text-muted">Sin datos cargados.</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Serie temporal PML · 2018</span>
-        <span class="cbadge b" id="pml-series-badge">Sin cargar</span>
-      </div>
-      <div class="cb" style="height:300px"><canvas id="pml-series-chart"></canvas></div>
-    </div>
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Perfil horario del PML (año base)</span></div>
-        <div class="card-body" style="height:260px"><canvas id="pml-diurnal-chart"></canvas></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Curva de duración del precio</span></div>
-        <div class="card-body" style="height:260px"><canvas id="pml-duration-chart"></canvas></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ TAB: TASA DE INTERÉS ════════════════════════════════════════════ -->
-  <div id="arena-interest-tab" class="tab-content">
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Configuración</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <label class="form-label">Serie Histórica</label>
-            <select class="form-select" id="interest-preset" data-market-category="interest">
-              <option value="">Cargando archivos…</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Horizonte de proyección (años)</label>
-            <input type="number" class="form-input" id="interest-horizon" min="5" max="40" value="25">
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-interest-train">Estimar tasa del proyecto · 25 años</button>
-          <p class="text-muted mt-2" style="font-size:.7rem;line-height:1.45">Selección automática entre reversión a la media, ARIMA y Holt amortiguado usando ventanas recientes de 8, 10 y 15 años.</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
-        <div class="card-body">
-          <div class="kpi-grid" id="interest-kpis"><span class="text-muted">Sin datos cargados.</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Estimación futura del proyecto · 25 años</span>
-        <span class="cbadge g" id="interest-25y-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="interest-25y-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch"><span class="ct">Hitos de la trayectoria seleccionada</span></div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="interest-milestone-tbl">
-          <thead><tr><th>Año proyecto</th><th>Año calendario</th><th>Tasa estimada</th><th>Modelo / ventana</th></tr></thead>
-          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1.5rem">Ejecuta la estimación.</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ TAB: TIPO DE CAMBIO ═════════════════════════════════════════════ -->
-  <div id="arena-fx-tab" class="tab-content">
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Configuración</span></div>
-        <div class="card-body">
-          <div class="form-row">
-            <label class="form-label">Serie Histórica</label>
-            <select class="form-select" id="fx-preset" data-market-category="fx">
-              <option value="">Cargando archivos…</option>
-            </select>
-          </div>
-          <div class="form-row">
-            <label class="form-label">Horizonte de proyección (años)</label>
-            <input type="number" class="form-input" id="fx-horizon" min="5" max="40" value="25">
-          </div>
-          <button class="btn-primary mt-3 w-full" id="btn-fx-train">Estimar USD/MXN del proyecto · 25 años</button>
-          <p class="text-muted mt-2" style="font-size:.7rem;line-height:1.45">Entrenamiento mensual con ventanas recientes de 5, 8 y 10 años. El histórico completo se conserva para consulta, pero los años noventa no gobiernan la proyección.</p>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Resumen Estadístico</span></div>
-        <div class="card-body">
-          <div class="kpi-grid" id="fx-kpis"><span class="text-muted">Sin datos cargados.</span></div>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch">
-        <span class="ct">Estimación futura del proyecto · 25 años</span>
-        <span class="cbadge g" id="fx-25y-badge">—</span>
-      </div>
-      <div class="cb" style="height:340px"><canvas id="fx-25y-chart"></canvas></div>
-    </div>
-    <div class="card mt-3">
-      <div class="ch"><span class="ct">Hitos de la trayectoria seleccionada</span></div>
-      <div class="cb" style="overflow-x:auto">
-        <table class="tbl" id="fx-milestone-tbl">
-          <thead><tr><th>Año proyecto</th><th>Año calendario</th><th>USD/MXN</th><th>Modelo / ventana</th></tr></thead>
-          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1.5rem">Ejecuta la estimación.</td></tr></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-</section>
-
-<!-- ╔══════════════════ FORECAST STUDIO ══════════════════╗ -->
-<section class="module" id="mod-forecast" hidden style="display:none">
-  <div class="module-header">
-    <h2 class="module-title" style="font-size:1.2rem">Forecast Studio</h2>
-    <p class="module-desc">Visualiza predicciones, bandas de incertidumbre, análisis de residuos y estabilidad temporal.</p>
-  </div>
-
-  <div class="tabs">
-    <button class="tab-btn active" data-tab="fs-wind">Viento</button>
-    <button class="tab-btn" data-tab="fs-demand">Demanda (Anual)</button>
-    <button class="tab-btn" data-tab="fs-demand_hourly">Demanda (Horaria)</button>
-    <button class="tab-btn" data-tab="fs-pml">PML (Anual)</button>
-    <button class="tab-btn" data-tab="fs-pml_hourly">PML (Horaria)</button>
-    <button class="tab-btn" data-tab="fs-interest">Tasa de Interés</button>
-    <button class="tab-btn" data-tab="fs-fx">Tipo de Cambio</button>
-  </div>
-
-  <div id="fs-wind-tab" class="tab-content active">
-    
-  <div class="toolbar mb-3">
-    <div class="toolbar-group">
-      <label class="form-label">Horizonte</label>
-      <select class="form-select" id="fc-horizon-select">
-        <option value="1">+1h</option>
-        <option value="6">+6h</option>
-        <option value="24">+24h</option>
-        <option value="72">+72h</option>
-      </select>
-    </div>
-    <div class="toolbar-group">
-      <label class="form-label">Modelo</label>
-      <select class="form-select" id="fc-model-select">
-        <option value="lightgbm">LightGBM</option>
-        <option value="xgboost">XGBoost</option>
-        <option value="random_forest">Random Forest</option>
-      </select>
-    </div>
-    <button class="btn-primary" id="btn-load-forecast">Cargar Predicciones</button>
-  </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-wind" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-wind-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-wind-main-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-wind-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-wind-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-wind-future-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-wind-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-wind-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Velocidad</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-wind-binned-bias-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-wind-stability-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-demand-tab" class="tab-content">
-    
-  <div class="toolbar mb-3">
-    <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado</label>
-      <select class="form-select" id="fs-demand-model-select">
-        <option value="">Aún no hay modelos entrenados</option>
-      </select>
-    </div>
-  </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-demand" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-demand-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-demand-main-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-demand-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-demand-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-demand-future-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-demand-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-demand-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-demand-binned-bias-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Perfil Horario Real (datos del archivo)</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-demand-raw-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-demand_hourly-tab" class="tab-content">
-    <div class="toolbar mb-3">
-      <div class="toolbar-group">
-        <label class="form-label">Seleccionar modelo entrenado (Horario)</label>
-        <select class="form-select" id="fs-demand_hourly-model-select">
-          <option value="">Aún no hay modelos entrenados</option>
-        </select>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho (8760 horas)</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-demand_hourly" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-demand_hourly-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-demand_hourly-main-chart"></canvas>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-demand_hourly-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-demand_hourly-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-demand_hourly-future-chart"></canvas>
-      </div>
-    </div>
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-demand_hourly-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-demand_hourly-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-demand_hourly-binned-bias-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-pml-tab" class="tab-content">
-    
-  <div class="toolbar mb-3">
-    <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado</label>
-      <select class="form-select" id="fs-pml-model-select">
-        <option value="">Aún no hay modelos entrenados</option>
-      </select>
-    </div>
-  </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-pml" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-pml-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-pml-main-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-pml-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-pml-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-pml-future-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-pml-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-pml-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-pml-binned-bias-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Perfil Horario Real (datos del archivo)</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-pml-raw-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-pml_hourly-tab" class="tab-content">
-    <div class="toolbar mb-3">
-      <div class="toolbar-group">
-        <label class="form-label">Seleccionar modelo entrenado (Horario)</label>
-        <select class="form-select" id="fs-pml_hourly-model-select">
-          <option value="">Aún no hay modelos entrenados</option>
-        </select>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho (8760 horas)</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-pml_hourly" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-pml_hourly-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-pml_hourly-main-chart"></canvas>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-pml_hourly-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-pml_hourly-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-pml_hourly-future-chart"></canvas>
-      </div>
-    </div>
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-pml_hourly-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-pml_hourly-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-pml_hourly-binned-bias-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-interest-tab" class="tab-content">
-    
-  <div class="toolbar mb-3">
-    <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado</label>
-      <select class="form-select" id="fs-interest-model-select">
-        <option value="">Aún no hay modelos entrenados</option>
-      </select>
-    </div>
-  </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-interest" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-interest-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-interest-main-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-interest-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-interest-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-interest-future-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-interest-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-interest-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-interest-binned-bias-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-interest-stability-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div id="fs-fx-tab" class="tab-content">
-    
-  <div class="toolbar mb-3">
-    <div class="toolbar-group">
-      <label class="form-label">Seleccionar modelo entrenado</label>
-      <select class="form-select" id="fs-fx-model-select">
-        <option value="">Aún no hay modelos entrenados</option>
-      </select>
-    </div>
-  </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Observado vs Predicho</span>
-        <button class="btn-secondary" id="btn-reset-zoom-fs-fx" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button>
-        <span class="cbadge" style="margin-left:8px;opacity:.75">scroll para zoom · drag para pan</span>
-        <div class="metric-pills" id="fs-fx-metric-pills"></div>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-fx-main-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Predicción Futura (25 años)</span>
-        <span class="cbadge g" id="fs-fx-future-badge">—</span>
-        <button class="btn-secondary" id="btn-download-fs-fx-future" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px">Descargar CSV</button>
-      </div>
-      <div class="card-body" style="height:320px;">
-        <canvas id="fs-fx-future-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="grid-2 mt-3">
-      <div class="card">
-        <div class="card-header"><span class="card-title">Scatter: Obs vs Pred</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-fx-scatter-chart"></canvas>
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Distribución de Residuos</span></div>
-        <div class="card-body" style="height:250px;">
-          <canvas id="fs-fx-residual-hist-chart"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Valor Observado</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-fx-binned-bias-chart"></canvas>
-      </div>
-    </div>
-
-    <div class="card mt-3">
-      <div class="card-header"><span class="card-title">Estabilidad Temporal (RMSE)</span></div>
-      <div class="card-body" style="height:220px;">
-        <canvas id="fs-fx-stability-chart"></canvas>
-      </div>
-    </div>
-  </div>
 </section>
 
 <!-- ╔══════════════════ ENERGY LAB ══════════════════╗ -->
@@ -1912,77 +1065,6 @@
   </div>
 </section>
 
-<!-- ╔══════════════════ VALIDATION ══════════════════╗ -->
-<section class="module" id="mod-validation">
-  <div class="module-header">
-    <h1 class="module-title">Validación y exportación</h1>
-    <p class="module-desc">Análisis científico riguroso, métricas de validación, descargas y reporte técnico de la sesión activa.</p>
-  </div>
-
-  <div class="grid-3">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Métricas Seleccionadas</span></div>
-      <div class="card-body" id="val-metrics-body">
-        <p class="text-muted">Entrena modelos para ver métricas.</p>
-      </div>
-    </div>
-    <div class="card col-span-2">
-      <div class="card-header"><span class="card-title">Cobertura del Intervalo de Predicción</span></div>
-      <div class="card-body">
-        <div id="calib-display" class="calib-display">
-          <div class="calib-item">
-            <span class="calib-label">Cobertura nominal</span>
-            <span class="calib-val" id="calib-nominal">80%</span>
-          </div>
-          <div class="calib-item">
-            <span class="calib-label">Cobertura empírica</span>
-            <span class="calib-val" id="calib-empirical">—</span>
-          </div>
-          <div class="calib-item">
-            <span class="calib-label">Error de calibración</span>
-            <span class="calib-val" id="calib-error">—</span>
-          </div>
-          <div class="calib-item">
-            <span class="calib-label">Sharpness (ancho medio)</span>
-            <span class="calib-val" id="calib-sharp">—</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-3">
-    <div class="card">
-      <div class="card-header"><span class="card-title">QQ Plot de Residuos</span></div>
-      <div class="card-body" style="height:260px;">
-        <canvas id="qq-chart"></canvas>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Sesgo Agrupado por Velocidad</span></div>
-      <div class="card-body" style="height:260px;">
-        <canvas id="val-bias-chart"></canvas>
-      </div>
-    </div>
-  </div>
-
-  <div class="card mt-3">
-    <div class="card-header"><span class="card-title">Declaración de Validez Científica</span></div>
-    <div class="card-body">
-      <div class="sci-statement" id="sci-statement">
-        <ul class="sci-list" id="sci-list">
-          <li class="sci-item">Separación cronológica estricta: 80% entrenamiento / 20% test (futuro absoluto)</li>
-          <li class="sci-item">Sin data leakage: todas las features son información pasada al momento de predicción</li>
-          <li class="sci-item">Baseline de comparación: persistencia (estándar de la industria)</li>
-          <li class="sci-item">Skill score de Murphy: mide mejora real sobre el baseline</li>
-          <li class="sci-item">Intervalos de predicción con cobertura empírica verificada</li>
-          <li class="sci-item">Estabilidad temporal evaluada por periodos mensuales</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- ╔══════════════════ AI ASSISTANT ══════════════════╗ -->
 <section class="module" id="mod-ai">
   <div class="module-header">
@@ -1996,13 +1078,12 @@
         <div class="ai-avatar">AO</div>
         <div class="ai-bubble">
           Hola. Soy el asistente de AERO OPEN CIM. Mis respuestas se basan en los datos y resultados de tu sesión actual.
-          Puedes preguntarme sobre: calidad de datos, distribución Weibull, modelos y métricas, energía y factor de capacidad, validación científica, horizontes de pronóstico.
+          Puedes preguntarme sobre calidad de datos, distribución Weibull, recurso eólico, energía, factor de capacidad y evaluación tecnoeconómica.
         </div>
       </div>
     </div>
 
     <div class="ai-chips" id="ai-chips">
-      <button class="chip" data-q="¿Cuál es el mejor modelo?">¿Mejor modelo?</button>
       <button class="chip" data-q="¿Cómo están la calidad y los datos faltantes?">Calidad de datos</button>
       <button class="chip" data-q="¿Cuál es el parámetro k de Weibull?">Distribución Weibull</button>
       <button class="chip" data-q="¿Cuál es el factor de capacidad y el AEP?">Factor de capacidad</button>
@@ -2148,7 +1229,7 @@
       <div class="resumen-verdict__kicker">VEREDICTO</div>
       <div class="resumen-verdict__value" id="resumen-verdict-value">—</div>
       <div class="resumen-verdict__sub" id="resumen-verdict-sub">Calcula el análisis para ver la evaluación del recurso</div>
-      <button class="resumen-verdict__cta" id="btn-go-to-arena" type="button" disabled>
+      <button class="resumen-verdict__cta" id="btn-go-to-park-config" type="button" disabled>
         Continuar a Configuración del parque →
       </button>
     </div>
@@ -2189,24 +1270,11 @@
     <div class="kpi go"><div class="kl">Registros</div><div class="kv" id="kv-nobs">—</div><div class="ks" id="ks-nobs"></div></div>
   </div>
 
-  <!-- 2/3 + 1/3: daily TS + model comparison table -->
-  <div class="g21">
+  <!-- Serie diaria del recurso -->
+  <div>
     <div class="card">
       <div class="ch"><span class="ct">Serie temporal · velocidad media diaria</span><button class="btn-secondary" id="btn-reset-zoom-daily" type="button" style="font-size:.7rem;padding:2px 8px;margin-left:8px;display:none">Reset Zoom</button><span class="cbadge" id="badge-daily-ts">m/s · scroll para zoom · drag para pan</span></div>
       <div class="cbox" style="height:320px"><canvas id="chart-daily-ts"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="ch"><span class="ct">Comparación de modelos ML</span><span class="cbadge g" id="badge-best-model">—</span></div>
-      <div class="cb">
-        <table class="tbl" id="overview-model-tbl">
-          <thead><tr><th>Modelo</th><th>RMSE</th><th>R²</th><th>Skill</th></tr></thead>
-          <tbody><tr><td colspan="4" class="ks" style="text-align:center;padding:1rem">Entrena modelos primero</td></tr></tbody>
-        </table>
-        <div style="margin-top:.9rem">
-          <div class="kl" style="margin-bottom:.4rem">RMSE por modelo (m/s)</div>
-          <div style="height:110px;position:relative"><canvas id="chart-model-bar-overview"></canvas></div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -3542,7 +2610,7 @@
             <div style="display:flex;gap:.4rem;align-items:stretch">
               <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa el PML publicado en Configuración del parque">
                 <option value="fixed" selected>Fijo</option>
-                <option value="arena">8760</option>
+                <option value="pml8760">PML 8760</option>
               </select>
               <input type="number" class="form-input" id="te-price" value="0.07" step="0.01" style="flex:1">
             </div>
@@ -3560,14 +2628,8 @@
           </div>
           <div>
             <label class="form-label">Tasa de descuento (%)</label>
-            <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-rate-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa la trayectoria de tasa publicada">
-                <option value="fixed" selected>Fijo</option>
-                <option value="arena">8760</option>
-              </select>
-              <input type="number" class="form-input" id="te-rate" value="8" step="0.5" style="flex:1">
-            </div>
-            <small class="text-muted" id="te-rate-mode-hint" style="font-size:.7rem"></small>
+            <input type="number" class="form-input" id="te-rate" value="8" step="0.5">
+            <small class="text-muted" style="font-size:.7rem">Valor escalar manual para toda la evaluación.</small>
           </div>
           <div>
             <label class="form-label">Vida del proyecto (años)</label>
@@ -3576,14 +2638,8 @@
           </div>
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
-            <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-fx-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa la trayectoria USD/MXN publicada">
-                <option value="fixed" selected>Fijo</option>
-                <option value="arena">8760</option>
-              </select>
-              <input type="number" class="form-input" id="te-fx" value="18" step="0.5" placeholder="ej. 18 = $1 USD = $18 MXN" style="flex:1">
-            </div>
-            <small class="text-muted" id="te-fx-mode-hint" style="font-size:.7rem">Análisis siempre en USD; FX solo muestra equivalente MXN bajo cada KPI.</small>
+            <input type="number" class="form-input" id="te-fx" value="18" step="0.5" placeholder="ej. 18 = $1 USD = $18 MXN">
+            <small class="text-muted" style="font-size:.7rem">Valor escalar manual; el análisis se calcula en USD y muestra su equivalente MXN.</small>
           </div>
         </div>
 
@@ -4024,14 +3080,13 @@
       <h2 class="sci-report-banner__title">Reporte Profesional Científico-Técnico</h2>
       <p class="sci-report-banner__desc">
         Documento integral de los resultados de simulación de cada módulo activo:
-        recurso eólico, modelado predictivo, forecast, kriging, optimización de parque,
+        recurso eólico, configuración comercial, kriging, optimización de parque,
         análisis tecnoeconómico apalancado y validación. Incluye metodología,
         métricas, tablas y figuras listo para imprimir o exportar a PDF.
       </p>
       <div class="sci-report-banner__chips">
         <span class="sci-chip">Recurso eólico</span>
         <span class="sci-chip">Configuración del parque</span>
-        <span class="sci-chip">Forecast Studio</span>
         <span class="sci-chip">Kriging</span>
         <span class="sci-chip">Parque</span>
         <span class="sci-chip">Tecnoeconómico</span>
@@ -4064,18 +3119,6 @@
       <button class="btn-primary" style="width:100%" onclick="exportData('energy')">&#8595; monthly_energy.csv</button>
     </div>
     <div class="export-card">
-      <div class="export-icon">&#129302;</div>
-      <h4>Métricas de modelos ML</h4>
-      <p>MAE, RMSE, R², sMAPE, nRMSE, skill vs persistencia por modelo y horizonte.</p>
-      <button class="btn-primary" style="width:100%" onclick="exportData('metrics')">&#8595; model_metrics.csv</button>
-    </div>
-    <div class="export-card">
-      <div class="export-icon">&#128202;</div>
-      <h4>Backtest: observado vs predicho</h4>
-      <p>Serie de test set con observado, predicción GBM y persistencia.</p>
-      <button class="btn-primary" style="width:100%" onclick="exportData('forecast')">&#8595; forecast_backtest.csv</button>
-    </div>
-    <div class="export-card">
       <div class="export-icon">&#127973;</div>
       <h4>Climatología mensual</h4>
       <p>Media, desviación estándar y percentiles por mes (ene–dic).</p>
@@ -4105,9 +3148,6 @@
       <p>Guarda cualquier tabla del panel en formato texto plano, CSV o imagen PNG.</p>
       <select class="form-select" id="export-table-select" style="width:100%;margin-bottom:.6rem">
         <option value="quality-tbl">Calidad por variable</option>
-        <option value="comparison-table">Tabla comparativa de modelos</option>
-        <option value="fi-tbl">Importancia de variables</option>
-        <option value="overview-model-tbl">Comparación de modelos (Resumen)</option>
         <option value="turbine-comp-table">Comparador de aerogeneradores</option>
         <option value="sector-tbl">Análisis sectorial</option>
         <option value="return-tbl">Períodos de retorno</option>

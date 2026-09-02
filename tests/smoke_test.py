@@ -7,8 +7,6 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import io
-import json
-import time
 import numpy as np
 import pandas as pd
 import requests
@@ -88,47 +86,21 @@ def run():
         print(f'     QC overall={d["report"]["overall"]}, '
               f'Weibull k={d["report"].get("weibull",{}).get("k","—")}')
 
-    # ── build features ──
-    r = requests.post(f'{BASE}/api/features/build',
-                      json={'session_id': sid, 'target_col': 'wind_speed',
-                            'horizons': [1, 6, 24], 'test_frac': 0.2})
-    d = ok('feature engineering', r)
-    if d:
-        s1 = d['summary']['1']
-        print(f'     h=1h: {s1["n_samples"]} samples, {s1["n_features"]} features')
-
-    # ── train models (h=1) ──
-    r = requests.post(f'{BASE}/api/models/train',
-                      json={'session_id': sid, 'horizon_h': 1})
-    d = ok('start training h=1', r)
+    # ── fixed PML + manual financial inputs ──
+    r = requests.post(f'{BASE}/api/pml/load',
+                      json={'session_id': sid, 'preset': 'pml_ipo'})
+    d = ok('publish fixed PML 2018', r)
     if not d: return
-    task_id = d['task_id']
-
-    print('     waiting for training...', end='', flush=True)
-    for _ in range(90):
-        time.sleep(2)
-        r = requests.get(f'{BASE}/api/models/status/{task_id}')
-        s = r.json()
-        print(f'.', end='', flush=True)
-        if s['status'] == 'done':
-            print(f' done ({s["progress"]}%)')
-            break
-        if s['status'] == 'error':
-            print(f' ERROR: {s["message"]}'); return
-
-    # ── comparison table ──
-    r = requests.post(f'{BASE}/api/forecast/comparison',
-                      json={'session_id': sid, 'horizon_h': 1})
-    d = ok('comparison table', r)
-    if d:
-        print(f'     best={d["best"]}, rows={len(d["rows"])}')
-        best = d['rows'][0]
-        print(f'     {best["label"]}: RMSE={best["rmse"]}, R2={best["r2"]}, skill={best.get("skill_vs_persistence")}')
-
-    # ── predictions ──
-    r = requests.post(f'{BASE}/api/forecast/predictions',
-                      json={'session_id': sid, 'horizon_h': 1})
-    d = ok('predictions', r)
+    r = requests.put(f'{BASE}/api/sessions/{sid}/park-configuration', json={
+        'commercialization_mode': 'total_sale',
+        'sale_scheme': 'spot_pml',
+        'project_horizon_years': 25,
+        'base_fx_mxn_usd': 20.0,
+        'base_interest_rate_pct': 10.0,
+    })
+    d = ok('park commercial configuration', r)
+    if d and not d['ready_for_design']:
+        print('  ✗  configuration is not ready for design'); return
 
     # ── energy simulation ──
     r = requests.post(f'{BASE}/api/energy/compute', json={
@@ -157,9 +129,25 @@ def run():
         for t in d['comparison']:
             print(f'     #{t["rank"]} {t["name"]}: CF={t["capacity_factor_pct"]}%')
 
+    # ── techno-economic evaluation with scalar FX/rate ──
+    r = requests.post(f'{BASE}/api/energy/techno_economic', json={
+        'session_id': sid,
+        'n_turbines': 5,
+        'turbine': {'builtin_model': 'V150_4.5'},
+        'financial': {
+            'energy_price_usd_kwh': 0.07,
+            'discount_rate_pct': 10.0,
+            'project_years': 25,
+            'usd_to_mxn': 20.0,
+            'energy_price_series_usd_kwh': [0.07] * 25,
+            'price_hourly_year1_usd_kwh': [0.07] * 8760,
+        },
+    })
+    ok('techno-economic evaluation', r)
+
     # ── AI assistant ──
     r = requests.post(f'{BASE}/api/ai/chat',
-                      json={'session_id': sid, 'question': '¿Cuál es el mejor modelo?'})
+                      json={'session_id': sid, 'question': '¿Cuál es el factor de capacidad?'})
     d = ok('AI assistant', r)
     if d:
         print(f'     AI: {d["answer"][:120]}…')

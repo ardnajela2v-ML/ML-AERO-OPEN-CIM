@@ -1,7 +1,7 @@
 """
 Modelo económico central de WindPro Platform.
 
-Toda la plataforma (Tecno-Económico, Kriging clásico, Model Arena, Forecast Studio,
+Toda la plataforma (Tecno-Económico, Kriging clásico,
 Parque) lee de aquí los valores base de CAPEX y OPEX. Cada parámetro lleva su rango
 [min, max] para análisis de sensibilidad posterior — los rangos NO se usan en los
 cálculos directos, solo el `value`.

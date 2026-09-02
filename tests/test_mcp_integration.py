@@ -6,6 +6,7 @@ import json
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -23,9 +24,6 @@ from core.mcp_catalog import (
     build_mcp_catalog,
     classify_file,
 )
-from core.forecasting import forecast_fx_recent
-
-
 class MCPIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -47,6 +45,22 @@ class MCPIntegrationTests(unittest.TestCase):
         Config.MCP_UPLOAD_FOLDER = self.old_uploads
         Config.UPLOAD_FOLDER = self.old_general_uploads
         self.temporary.cleanup()
+
+    def test_obsolete_arena_and_forecast_routes_are_not_registered(self):
+        post_routes = (
+            "/api/features/build", "/api/models/train",
+            "/api/forecast/predictions", "/api/forecast/comparison",
+            "/api/demand/load", "/api/demand/forecast",
+            "/api/demand/forecast_hourly", "/api/pml/forecast",
+            "/api/pml/forecast_hourly", "/api/interest/forecast",
+            "/api/fx/forecast", "/api/wind/annual_forecast",
+        )
+        for route in post_routes:
+            with self.subTest(route=route):
+                response = self.client.post(route, json={"session_id": self.sid})
+                self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.client.get("/api/models/status/dead-task").status_code, 404)
+        self.assertEqual(self.client.get("/api/market/list_presets").status_code, 404)
 
     def test_project_export_import_restores_data_configuration_and_client_state(self):
         csv = (
@@ -135,6 +149,41 @@ class MCPIntegrationTests(unittest.TestCase):
         }, content_type='multipart/form-data')
         self.assertEqual(response.status_code, 400)
         self.assertIn('No se pudo abrir el proyecto', response.get_json()['error'])
+
+    def test_project_import_ignores_legacy_arena_market_models(self):
+        manifest = {
+            'format': 'aero-open-cim-project',
+            'format_version': 1,
+            'project_name': 'Proyecto anterior',
+            'session_state': {
+                'park_configuration': {
+                    'commercialization_mode': 'total_sale',
+                    'base_fx_mxn_usd': 19.5,
+                    'base_interest_rate_pct': 9.5,
+                    'market_models': {
+                        'pml': {'mode': 'fixed_2018_profile', 'annual': [1.2]},
+                        'demand': {'best_model': 'linear', 'annual': [100.0]},
+                        'interest': {'best_model': 'arima', 'annual': [9.0]},
+                        'fx': {'best_model': 'holt', 'annual': [20.0]},
+                    },
+                },
+            },
+            'client_state': {'schema_version': 1, 'wp': {'arenaCache': {'fx': {}}}},
+        }
+        archive_bytes = io.BytesIO()
+        with zipfile.ZipFile(archive_bytes, 'w') as archive:
+            archive.writestr('manifest.json', json.dumps(manifest))
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(archive_bytes.getvalue()), 'legacy.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        imported_payload = imported.get_json()
+        self.assertEqual(imported_payload['client_state']['wp'], {})
+        restored_sid = imported_payload['session_id']
+        park = self.client.get(
+            f'/api/sessions/{restored_sid}/park-configuration').get_json()
+        self.assertEqual(set(park['market_models']), {'pml'})
+        self.assertEqual(park['market_models']['pml']['mode'], 'fixed_2018_profile')
 
     def test_catalog_uses_official_m04_raw_file_and_excludes_aliases(self):
         catalog = build_mcp_catalog(Config.DATA_FOLDER, Config.CERTE_FOLDER)
@@ -327,15 +376,6 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(quality.status_code, 200, quality.get_data(as_text=True))
         self.assertEqual(quality.get_json()['data_source']['kind'], 'reanalysis_area')
 
-        features = self.client.post('/api/features/build', json={
-            'session_id': self.sid,
-            'target_col': 'wind_speed',
-            'horizons': [1],
-            'test_frac': 0.2,
-        })
-        self.assertEqual(features.status_code, 200, features.get_data(as_text=True))
-        self.assertEqual(features.get_json()['data_source']['kind'], 'reanalysis_area')
-
         optional_demand = self.client.post('/api/farm/session_demand', json={
             'session_id': self.sid,
         })
@@ -466,45 +506,13 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(pml_data["mode"], "fixed_2018_profile")
         self.assertEqual(len(pml_data["profile_2018"]), 8760)
         self.assertEqual(pml_data["normalization"]["venta"]["filled_hours"], 1)
-        legacy_pml = self.client.post("/api/pml/forecast", json={
-            "session_id": self.sid, "preset": "pml_ipo",
-        })
-        self.assertEqual(legacy_pml.status_code, 410)
-
-        fx = self.client.post("/api/fx/forecast", json={
-            "session_id": self.sid,
-            "preset": "usdmxn",
-            "horizon": 5,
-        })
-        self.assertEqual(fx.status_code, 200, fx.get_data(as_text=True))
-        fx_data = fx.get_json()
-        self.assertEqual(fx_data["selection_basis"], "recent_windows_rolling_holdout")
-        self.assertTrue(fx_data["validation"]["available"])
-        self.assertTrue(fx_data["projection_policy"]["applied"])
-        self.assertGreaterEqual(fx_data["projection_policy"]["training_window_years"], 5)
-        self.assertGreaterEqual(int(fx_data["training_start"][:4]), 2015)
-        fx_path = fx_data["projection"][fx_data["best_model"]]["annual"]
-        self.assertEqual(len(fx_path), 5)
-        self.assertTrue(all(value > 0 for value in fx_path))
-
-        interest = self.client.post("/api/interest/forecast", json={
-            "session_id": self.sid,
-            "preset": "tiie_28d",
-            "horizon": 5,
-        })
-        self.assertEqual(interest.status_code, 200, interest.get_data(as_text=True))
-        interest_data = interest.get_json()
-        self.assertEqual(interest_data["selection_basis"], "recent_window_chronological_holdout")
-        self.assertTrue(interest_data["projection_policy"]["applied"])
-
         ready = self.client.get(
             f"/api/sessions/{self.sid}/park-configuration"
         ).get_json()
         self.assertTrue(ready["ready_for_design"])
-        self.assertEqual(set(ready["market_models"]), {"pml", "fx", "interest"})
+        self.assertEqual(set(ready["market_models"]), {"pml"})
         self.assertEqual(ready["market_models"]["pml"]["mode"], "fixed_2018_profile")
         self.assertEqual(len(set(np.round(ready["market_models"]["pml"]["annual"], 12))), 1)
-        self.assertEqual(len(ready["market_models"]["fx"]["annual"]), 5)
 
         files = self.client.get("/api/market/list_files").get_json()
         demand_file = files["grouped"]["demand"][0]["filename"]
@@ -555,20 +563,94 @@ class MCPIntegrationTests(unittest.TestCase):
                 places=3,
             )
 
-    def test_fx_recent_forecast_is_independent_from_distant_history(self):
-        index = pd.date_range("2005-01-31", "2024-12-31", freq="ME")
+    def test_current_commercial_design_energy_and_techno_flow(self):
+        index = pd.date_range('2024-01-01', periods=240, freq='1h')
         phase = np.arange(len(index), dtype=float)
-        values = 15.0 + 0.025 * phase + 0.7 * np.sin(phase / 9.0)
-        original = pd.Series(values, index=index)
-        altered = original.copy()
-        altered.loc[altered.index.year <= 2012] *= 4.0
+        wind_csv = pd.DataFrame({
+            'timestamp': index,
+            'wind_speed': 8.0 + 1.5 * np.sin(phase / 12.0),
+            'wind_direction': (phase * 11.0) % 360.0,
+        }).to_csv(index=False).encode()
+        uploaded = self.client.post('/api/data/upload', data={
+            'session_id': self.sid,
+            'source': 'auto',
+            'file': (io.BytesIO(wind_csv), 'active_flow_wind.csv'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(uploaded.status_code, 200, uploaded.get_data(as_text=True))
 
-        base = forecast_fx_recent(original, horizon_years=5)
-        changed = forecast_fx_recent(altered, horizon_years=5)
-        self.assertEqual(base["best_model"], changed["best_model"])
-        base_path = base["projection"][base["best_model"]]["annual"]
-        changed_path = changed["projection"][changed["best_model"]]["annual"]
-        np.testing.assert_allclose(base_path, changed_path, rtol=0, atol=1e-10)
+        files = self.client.get('/api/market/list_files').get_json()['grouped']
+        for category in ('demand', 'pml'):
+            loaded = self.client.post('/api/market/load_file', json={
+                'session_id': self.sid,
+                'filename': files[category][0]['filename'],
+                'category': category,
+            })
+            self.assertEqual(loaded.status_code, 200, loaded.get_data(as_text=True))
+
+        pml = self.client.post('/api/pml/load', json={
+            'session_id': self.sid,
+            'preset': 'session_market_pml',
+        })
+        self.assertEqual(pml.status_code, 200, pml.get_data(as_text=True))
+        pml_profile = np.asarray(pml.get_json()['profile_2018'], dtype=float)
+        self.assertEqual(len(pml_profile), 8760)
+
+        configured = self.client.put(
+            f'/api/sessions/{self.sid}/park-configuration', json={
+                'commercialization_mode': 'self_consumption_surplus',
+                'sale_scheme': 'spot_pml',
+                'project_horizon_years': 25,
+                'base_fx_mxn_usd': 20.0,
+                'base_interest_rate_pct': 10.0,
+            })
+        self.assertEqual(configured.status_code, 200, configured.get_data(as_text=True))
+        config = configured.get_json()
+        self.assertTrue(config['ready_for_design'])
+        self.assertEqual(set(config['market_models']), {'pml'})
+
+        design = self.client.post('/api/farm/recommend', json={
+            'session_id': self.sid,
+            'turbine': {'builtin_model': 'V150_4.5'},
+            'demand_mwh': config['annual_demand_mwh'],
+            'v_mean': 8.0,
+            'weibull_k': 2.0,
+            'measurement_height_m': 80,
+        })
+        self.assertEqual(design.status_code, 200, design.get_data(as_text=True))
+        self.assertGreaterEqual(design.get_json()['n_turbines'], 1)
+
+        energy = self.client.post('/api/energy/compute', json={
+            'session_id': self.sid,
+            'turbine': {'builtin_model': 'V150_4.5'},
+            'simulation': {'n_turbines': 2, 'ws_height_m': 80},
+        })
+        self.assertEqual(energy.status_code, 200, energy.get_data(as_text=True))
+        annual_mwh = energy.get_json()['summary']['energy_net_mwh']
+        normalized_price = np.nan_to_num(
+            pml_profile / max(float(np.nanmean(pml_profile)), 1e-9) * 0.07,
+            nan=0.07, posinf=0.07, neginf=0.07,
+        ).tolist()
+        techno = self.client.post('/api/energy/techno_economic', json={
+            'session_id': self.sid,
+            'n_turbines': 2,
+            'annual_energy_mwh': annual_mwh,
+            'turbine': {'builtin_model': 'V150_4.5'},
+            'financial': {
+                'demand_mwh': config['annual_demand_mwh'],
+                'energy_price_usd_kwh': 0.07,
+                'energy_price_series_usd_kwh': [0.07] * 25,
+                'price_hourly_year1_usd_kwh': normalized_price,
+                'discount_rate_pct': 10.0,
+                'project_years': 25,
+                'usd_to_mxn': 20.0,
+            },
+        })
+        self.assertEqual(techno.status_code, 200, techno.get_data(as_text=True))
+        analysis = techno.get_json()['analysis']
+        self.assertEqual(analysis['discount_rate_pct'], 10.0)
+        self.assertEqual(analysis['fx_mxn_per_usd'], 20.0)
+        self.assertNotIn('discount_rate_series_pct', analysis)
+        self.assertNotIn('fx_mxn_per_usd_series', analysis)
 
     def test_farm_recommend_preserves_session_height_handoff(self):
         response = self.client.post("/api/farm/recommend", json={
@@ -734,15 +816,6 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(wind_payload["rose"])
         self.assertEqual(wind_payload["data_source"]["source_id"], source_id)
         self.assertEqual(wind_payload["data_source"]["kind"], "mcp")
-
-        features = self.client.post("/api/features/build", json={
-            "session_id": self.sid,
-            "target_col": "wind_speed",
-            "horizons": [1],
-            "test_frac": 0.2,
-        })
-        self.assertEqual(features.status_code, 200, features.get_data(as_text=True))
-        self.assertEqual(features.get_json()["data_source"]["source_id"], source_id)
 
         energy = self.client.post("/api/energy/compute", json={
             "session_id": self.sid,

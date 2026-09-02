@@ -8,14 +8,9 @@
 const WP = {
   sessionId: null,
   charts: {},
-  trainTaskId: null,
-  trainPollInterval: null,
   windStats:    null,
   technoResult: null,
   energyResult: null,
-  compareResult:null,
-  forecastResult:null,
-  arenaCache: {},
   technoActiveScenario: 'integrated',
   technoScenarios: {
     integrated: { inputs: null, result: null, leveraged: null },
@@ -155,13 +150,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindNavigation();
   bindThemeToggle();
   bindDataHub();
-  bindModelArena();
-  bindForecastStudio();
-  bindForecastTabs();
-  bindDemandArena();
-  bindPMLArena();
-  bindInterestArena();
-  bindFxArena();
   bindParkConfiguration();
   bindEnergyLab();
   bindAI();
@@ -176,7 +164,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindMCPLab();
   await loadPresetFiles();   // populate preset file dropdown
   await loadMarketFiles();   // populate market data selectors
-  await loadMarketPresets(); // populate dem/pml/interest/fx preset dropdowns
   await loadParkConfiguration({ quiet: true });
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
@@ -215,8 +202,7 @@ function collectProjectClientState() {
     controls,
     wp: projectJsonClone({
       windStats: WP.windStats, technoResult: WP.technoResult,
-      energyResult: WP.energyResult, compareResult: WP.compareResult,
-      forecastResult: WP.forecastResult, technoActiveScenario: WP.technoActiveScenario,
+      energyResult: WP.energyResult, technoActiveScenario: WP.technoActiveScenario,
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
       referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
@@ -388,15 +374,12 @@ function bindProjectFiles() {
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function bindNavigation() {
   const moduleGroups = {
-    models: ['models'],
-    forecast: ['models'],
     kriging: ['kriging', 'parque'],
     parque: ['kriging', 'parque'],
     validation: ['validation', 'export'],
     export: ['validation', 'export']
   };
   const primaryModule = {
-    forecast: 'models',
     parque: 'kriging',
     export: 'validation'
   };
@@ -767,104 +750,6 @@ function populateQualityTable(cols) {
   }).join('');
 }
 
-async function buildFeatures() {
-  const horizons = document.getElementById('horizons-input').value
-    .split(',').map(s => parseInt(s.trim())).filter(n => !isNaN(n));
-  const testFrac = parseInt(document.getElementById('test-frac').value) / 100;
-  const targetCol = document.getElementById('target-col-select').value;
-
-  setStatus('Generando features…');
-  try {
-    const r = await api('/api/features/build', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      target_col: targetCol,
-      horizons: horizons,
-      test_frac: testFrac,
-    });
-
-    const sum = r.summary;
-    const sourceLabel = r.data_source?.kind === 'mcp'
-      ? `reconstrucción histórica MCP (${r.data_source.label || r.data_source.source_id})`
-      : (r.data_source?.label || 'fuente observada');
-    const el = document.getElementById('features-summary');
-    el.classList.remove('hidden');
-    el.innerHTML = Object.entries(sum).map(([h, s]) => `
-      <div class="feat-row">
-        <div class="feat-item">h=+${h}h</div>
-        <div class="feat-item">Muestras: <strong>${s.n_samples.toLocaleString()}</strong></div>
-        <div class="feat-item">Features: <strong>${s.n_features}</strong></div>
-        <div class="feat-item">Train: <strong>${s.n_train.toLocaleString()}</strong></div>
-        <div class="feat-item">Test: <strong>${s.n_test.toLocaleString()}</strong></div>
-        <div class="feat-item">μ_train: <strong>${s.target_mean_train} m/s</strong></div>
-        <div class="feat-item">μ_test: <strong>${s.target_mean_test} m/s</strong></div>
-      </div>
-    `).join('<hr style="border-color:var(--border);margin:8px 0;">');
-    setStatus(`Features construidas desde ${sourceLabel}.`);
-
-    // populate horizon selects
-    ['train-horizon', 'fc-horizon-select'].forEach(id => {
-      const sel = document.getElementById(id);
-      if (!sel) return;
-      sel.innerHTML = horizons.map(h =>
-        `<option value="${h}">h = +${h}h</option>`).join('');
-    });
-
-    toast(`Features generadas para ${horizons.length} horizonte(s)`, 'success');
-    setStatus(`Features listas — ${Object.keys(sum).length} horizontes`);
-  } catch (e) {
-    toast(`Error generando features: ${e.message}`, 'error');
-  }
-}
-
-// ─── CENTRO DE MODELAJE ──────────────────────────────────────────────────────
-const FAST_MODELS = ['persistence','climatology','ridge','lightgbm','random_forest'];
-const ML_MODELS   = ['random_forest','xgboost','lightgbm','ridge','mlp','svr'];
-
-function bindModelArena() {
-  // Tab switching (same pattern as Energy Lab)
-  document.querySelectorAll('#mod-models .tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tabName = btn.dataset.tab;
-      document.querySelectorAll('#mod-models .tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('#mod-models .tab-content').forEach(c => c.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(`${tabName}-tab`).classList.add('active');
-    });
-  });
-
-  document.getElementById('btn-build-features').addEventListener('click', buildFeatures);
-  document.getElementById('btn-train').addEventListener('click', trainModels);
-  document.getElementById('btn-run-wind-annual')?.addEventListener('click', runWindAnnualForecast);
-
-  // chip toggle
-  document.getElementById('model-tag-list').addEventListener('click', e => {
-    const tag = e.target.closest('[data-model]');
-    if (!tag) return;
-    tag.classList.toggle('active');
-    updateTrainBtnLabel();
-  });
-
-  // preset buttons
-  document.getElementById('btn-models-all').addEventListener('click', () => {
-    document.querySelectorAll('#model-tag-list [data-model]').forEach(t => t.classList.add('active'));
-    updateTrainBtnLabel();
-  });
-  document.getElementById('btn-models-fast').addEventListener('click', () => {
-    document.querySelectorAll('#model-tag-list [data-model]').forEach(t => {
-      t.classList.toggle('active', FAST_MODELS.includes(t.dataset.model));
-    });
-    updateTrainBtnLabel();
-  });
-  document.getElementById('btn-models-ml').addEventListener('click', () => {
-    document.querySelectorAll('#model-tag-list [data-model]').forEach(t => {
-      t.classList.toggle('active', ML_MODELS.includes(t.dataset.model));
-    });
-    updateTrainBtnLabel();
-  });
-}
-
-// ─── CONFIGURACIÓN TÉCNICO-COMERCIAL DEL PARQUE ─────────────────────────────
 function bindParkConfiguration() {
   const commercial = document.getElementById('park-commercial-mode');
   commercial?.addEventListener('change', updateParkCommercialControls);
@@ -944,7 +829,7 @@ async function saveParkConfiguration({ quiet = false } = {}) {
   try {
     const config = await api(`/api/sessions/${WP.sessionId}/park-configuration`, 'PUT', payload);
     applyParkConfiguration(config);
-    krig3PullParamsFromArena();
+    krig3PullProjectParams();
     if (!quiet) toast('Configuración del parque guardada', 'success');
     return config;
   } catch (error) {
@@ -1054,779 +939,6 @@ function renderParkConfigurationReadiness() {
     : 'Carga el archivo de precios y captura tipo de cambio y tasa; en autoconsumo también carga la demanda.';
 }
 
-function getSelectedModels() {
-  return [...document.querySelectorAll('#model-tag-list [data-model].active')]
-    .map(t => t.dataset.model);
-}
-
-function updateTrainBtnLabel() {
-  const sel = getSelectedModels();
-  const lbl = document.getElementById('btn-train-label');
-  if (lbl) lbl.textContent = sel.length === 9
-    ? 'Entrenar todos los modelos'
-    : `Entrenar ${sel.length} modelo${sel.length !== 1 ? 's' : ''}`;
-}
-
-async function trainModels() {
-  const horizonH = parseInt(document.getElementById('train-horizon').value);
-  const selectedModels = getSelectedModels();
-  if (!selectedModels.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
-
-  const btn = document.getElementById('btn-train');
-  const lbl = document.getElementById('btn-train-label');
-  btn.disabled = true;
-  if (lbl) lbl.textContent = 'Entrenando…';
-
-  const progContainer = document.getElementById('train-progress-container');
-  const progBar       = document.getElementById('train-progress-bar');
-  const progLabel     = document.getElementById('train-progress-label');
-  progContainer.classList.remove('hidden');
-  progBar.style.width = '0%';
-
-  setStatus(`Entrenando ${selectedModels.length} modelo(s) para h=+${horizonH}h…`);
-
-  try {
-    const r = await api('/api/models/train', 'POST', {
-      session_id: WP.sessionId, horizon_h: horizonH, models: selectedModels
-    });
-    WP.trainTaskId = r.task_id;
-
-    // stop any previous poll
-    if (WP.trainPollInterval) clearInterval(WP.trainPollInterval);
-
-    WP.trainPollCount = 0;
-    WP.trainPollInterval = setInterval(async () => {
-      WP.trainPollCount++;
-      if (WP.trainPollCount > 600) {          // safety: ~20 min max
-        clearInterval(WP.trainPollInterval);
-        btn.disabled = false;
-        updateTrainBtnLabel();
-        toast('Timeout: el entrenamiento excedió 20 min.', 'error');
-        return;
-      }
-      try {
-        const s = await api(`/api/models/status/${WP.trainTaskId}`, 'GET');
-        progBar.style.width = `${s.progress}%`;
-        progLabel.textContent = s.message;
-
-        if (s.status === 'done') {
-          clearInterval(WP.trainPollInterval);
-          progContainer.classList.add('hidden');
-          btn.disabled = false;
-          updateTrainBtnLabel();
-          populateComparisonTable(s.result, horizonH);
-          renderFeatureImportance(s.result);
-          toast(`Entrenamiento completo (${selectedModels.length} modelos)`, 'success');
-          setStatus(`Modelos entrenados para h=+${horizonH}h`);
-        } else if (s.status === 'error') {
-          clearInterval(WP.trainPollInterval);
-          progContainer.classList.add('hidden');
-          btn.disabled = false;
-          updateTrainBtnLabel();
-          toast(`Error en entrenamiento: ${s.message}`, 'error');
-          setStatus('Error durante el entrenamiento.');
-        }
-      } catch (e) { /* ignore poll errors */ }
-    }, 2000);
-  } catch (e) {
-    btn.disabled = false;
-    updateTrainBtnLabel();
-    toast(`Error: ${e.message}`, 'error');
-  }
-}
-
-function populateComparisonTable(result, horizonH) {
-  const tbody = document.getElementById('comparison-tbody');
-  tbody.innerHTML = '';
-
-  const rows = Object.entries(result)
-    .filter(([k, v]) => !k.startsWith('_') && v.metrics)
-    .map(([k, v]) => ({ key: k, ...v.metrics, type: v.type }))
-    .sort((a, b) => a.rmse - b.rmse);
-
-  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty-msg">Sin resultados</td></tr>'; return; }
-
-  const bestRmse = rows[0].rmse;
-  const fmtSkill = (s) => s == null
-    ? '—'
-    : `<span style="color:${s > 0 ? 'var(--green)' : 'var(--red)'}">${(s*100).toFixed(1)}%</span>`;
-  tbody.innerHTML = rows.map((row, i) => {
-    const isBest = i === 0;
-    return `
-      <tr class="${isBest ? 'best-row' : ''}">
-        <td class="model-name">${isBest ? '★ ' : ''}${row.label}</td>
-        <td><span class="badge badge--${row.type === 'ml' ? 'info' : 'warn'}">${row.type}</span></td>
-        <td style="color:${isBest ? 'var(--green)' : ''}">${row.rmse?.toFixed(4)}</td>
-        <td>${row.mae?.toFixed(4)}</td>
-        <td>${row.r2?.toFixed(4)}</td>
-        <td>${(row.nrmse * 100)?.toFixed(1)}%</td>
-        <td>${row.smape?.toFixed(1)}%</td>
-        <td>${fmtSkill(row.skill_vs_persistence)}</td>
-        <td>${fmtSkill(row.skill_vs_climatology)}</td>
-      </tr>`;
-  }).join('');
-
-  document.getElementById('best-model-badge').textContent = `Best: ${rows[0].label} — RMSE ${rows[0].rmse?.toFixed(4)}`;
-
-  // populate overview model table
-  populateOverviewModelTable(rows);
-  renderModelBarOverview(result);
-
-  // populate forecast model select
-  const sel = document.getElementById('fc-model-select');
-  sel.innerHTML = rows.filter(r => r.type === 'ml')
-    .map(r => `<option value="${r.key || r.label.toLowerCase().replace(/ /g,'_')}">${r.label}</option>`)
-    .join('');
-
-  // populate validation
-  populateValidationMetrics(rows[0]);
-}
-
-function renderFeatureImportance(result) {
-  const mlModels = Object.entries(result)
-    .filter(([k, v]) => !k.startsWith('_') && v.type === 'ml' && v.feature_importance?.length > 0);
-  if (!mlModels.length) return;
-
-  const [, bestRes] = mlModels[0];
-  const fi = bestRes.feature_importance.slice(0, 12);
-
-  destroyChart('fi');
-  const ctx = document.getElementById('fi-chart').getContext('2d');
-  WP.charts['fi'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: fi.map(d => d.feature),
-      datasets: [{
-        label: 'Importancia (%)',
-        data: fi.map(d => d.importance),
-        backgroundColor: fi.map((_, i) => i===0 ? acc()+'cc' : acc3()+(55+i).toString(16)),
-        borderColor: chartAxisColor(), borderWidth: 0.8, borderRadius: 4,
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: chartGridOptions(), border: chartBorderOptions(), ticks: { font:{size:9, weight:'600'}, callback: v => `${v}%` } },
-        y: { grid: chartGridOptions(false), border: chartBorderOptions(), ticks: { font: { size: 9, weight:'600' } } }
-      }
-    }
-  });
-
-  // populate FI table
-  populateFiTable(fi);
-}
-
-function populateFiTable(fi) {
-  const card = document.getElementById('fi-table-card');
-  const tbody = document.querySelector('#fi-tbl tbody');
-  if (!card || !tbody) return;
-  card.style.display = '';
-  const total = fi.reduce((s, d) => s + d.importance, 0) || 1;
-  tbody.innerHTML = fi.map((d, i) => {
-    const pct = (d.importance / total * 100).toFixed(1);
-    const w   = Math.round(d.importance / fi[0].importance * 100);
-    return `<tr class="${i===0?'best-row':''}"><td>${i+1}</td><td>${d.feature}</td>
-      <td><div style="display:flex;align-items:center;gap:.5rem">
-        <div class="fi-bar-wrap"><div class="fi-bar" style="width:${w}%;background:${i===0?acc():acc3()}"></div></div>
-        <span>${d.importance.toFixed(2)}</span></div></td>
-      <td>${pct}%</td></tr>`;
-  }).join('');
-}
-
-function populateOverviewModelTable(rows) {
-  const tbody = document.querySelector('#overview-model-tbl tbody');
-  if (!tbody) return;
-  tbody.innerHTML = rows.slice(0,6).map((r, i) => {
-    const skill = r.skill_vs_persistence;
-    const skillTag = skill != null
-      ? `<span class="tag-${skill>0?'green':'red'}">${skill>0?'+':''}${(skill*100).toFixed(1)}%</span>`
-      : '—';
-    return `<tr class="${i===0?'best-row':''}"><td>${i===0?'★ ':''}${r.label}</td>
-      <td style="color:${i===0?acc():''}"><strong>${r.rmse?.toFixed(4)}</strong></td>
-      <td>${r.r2?.toFixed(4)}</td><td>${skillTag}</td></tr>`;
-  }).join('');
-}
-
-// ─── FORECAST STUDIO ─────────────────────────────────────────────────────────
-function bindForecastStudio() {
-  document.getElementById('btn-load-forecast').addEventListener('click', loadForecast);
-  ['wind', 'demand', 'demand_hourly', 'pml', 'pml_hourly', 'interest', 'fx'].forEach(key => {
-    const btn = document.getElementById(`btn-download-fs-${key}-future`);
-    if (btn) btn.addEventListener('click', () => downloadForecastFutureCsv(key));
-  });
-}
-
-async function loadForecast() {
-  const horizonH  = parseInt(document.getElementById('fc-horizon-select').value);
-  const modelName = document.getElementById('fc-model-select').value;
-
-  setStatus(`Cargando predicciones h=+${horizonH}h…`);
-  try {
-    const r = await api('/api/forecast/predictions', 'POST', {
-      session_id: WP.sessionId, horizon_h: horizonH, model: modelName
-    });
-
-    renderForecastMainChart(r, 'fs-wind');
-    renderScatterChart(r, 'fs-wind');
-    renderResidualHistogram(r, 'fs-wind');
-    renderStabilityChart(r.stability || [], 'fs-wind');
-    renderBinnedBiasChart(r, 'fs-wind');
-    renderForecastFutureChart('wind');
-    renderForecastMetricPills(r.metrics, 'fs-wind');
-    updateCalibration(r.calibration);
-    populateValidationMetrics(r.metrics);
-
-    setStatus(`Predicciones cargadas — RMSE ${r.metrics?.rmse?.toFixed(4)} m/s`);
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  }
-}
-
-function getPmlForecastStudioSide(cache) {
-  if (!cache?.sides) return { sideKey: null, sideCache: null };
-  const selectedSide = document.getElementById('pml-side')?.value;
-  const sideKey = selectedSide && selectedSide !== 'both' && cache.sides[selectedSide]
-    ? selectedSide
-    : (cache.sides.venta ? 'venta' : Object.keys(cache.sides)[0]);
-  return { sideKey, sideCache: cache.sides[sideKey] };
-}
-
-function getForecastFutureConfig(key) {
-  if (key === 'wind') {
-    const fc = WP.arenaCache.wind;
-    if (!fc?.projection) return null;
-    return {
-      projection: fc.projection, bestModel: fc.best_model,
-      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
-      ylabel: 'Velocidad del viento (m/s)', unitLabel: 'm/s', decimals: 2,
-      scaler: v => v, filename: 'forecast_studio_wind_future_25y.csv',
-      source: 'wind',
-    };
-  }
-
-  if (key === 'demand' || key === 'demand_hourly') {
-    const fc  = WP.arenaCache.demand;
-    const fcH = WP.arenaCache.demand_hourly;
-    if (!fc?.projection && !fcH?.raw_values) return null;
-    // Para horario, raw_values vienen del cache horario; projection del anual.
-    const rawValues = (key === 'demand_hourly')
-      ? (fcH?.raw_values || fc?.raw_values || null)
-      : (fc?.raw_values || null);
-    return {
-      projection: fc?.projection || {}, bestModel: fc?.best_model || (fcH?.best_model),
-      rawValues, annualKind: fc?.annual_kind || 'sum',
-      ylabel: 'Demanda (MW)', unitLabel: 'MW', decimals: 1,
-      scaler: v => v, filename: `forecast_studio_${key}_future_25y.csv`,
-      source: key,
-    };
-  }
-
-  if (key === 'pml' || key === 'pml_hourly') {
-    const fc  = WP.arenaCache.pml;
-    const fcH = WP.arenaCache.pml_hourly;
-    const { sideKey, sideCache } = getPmlForecastStudioSide(fc);
-    const { sideCache: sideCacheH } = getPmlForecastStudioSide(fcH);
-    if (!sideCache?.projection && !sideCacheH?.raw_values) return null;
-    const rawValues = (key === 'pml_hourly')
-      ? (sideCacheH?.raw_values || sideCache?.raw_values || null)
-      : (sideCache?.raw_values || null);
-    return {
-      projection: sideCache?.projection || {}, bestModel: sideCache?.best_model || sideCacheH?.best_model,
-      rawValues, annualKind: sideCache?.annual_kind || 'sum',
-      ylabel: `PML ($/kWh) — ${sideKey || 'serie'}`, unitLabel: '$/kWh', decimals: 4,
-      scaler: v => v, filename: `forecast_studio_${key}_${sideKey || 'series'}_future_25y.csv`,
-      source: `${key}_${sideKey || 'series'}`,
-    };
-  }
-
-  if (key === 'interest') {
-    const fc = WP.arenaCache.interest;
-    if (!fc?.projection) return null;
-    return {
-      projection: fc.projection, bestModel: fc.best_model,
-      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
-      ylabel: 'Tasa (%)', unitLabel: '%', decimals: 2,
-      scaler: v => v, filename: 'forecast_studio_interest_future_25y.csv',
-      source: 'interest',
-    };
-  }
-
-  if (key === 'fx') {
-    const fc = WP.arenaCache.fx;
-    if (!fc?.projection) return null;
-    return {
-      projection: fc.projection, bestModel: fc.best_model,
-      rawValues: fc.raw_values || null, annualKind: fc.annual_kind || 'mean',
-      ylabel: 'MXN / USD', unitLabel: 'MXN/USD', decimals: 2,
-      scaler: v => v, filename: 'forecast_studio_fx_future_25y.csv',
-      source: 'fx',
-    };
-  }
-
-  return null;
-}
-
-function renderForecastFutureChart(key) {
-  const prefix = `fs-${key}`;
-  try { renderForecastStatsCard(key); } catch (e) {}
-  const cfg = getForecastFutureConfig(key);
-  const badge = document.getElementById(`${prefix}-future-badge`);
-  const btn = document.getElementById(`btn-download-${prefix}-future`);
-  const canvasId = `${prefix}-future-chart`;
-
-  if (!cfg) {
-    destroyChart(canvasId);
-    if (badge) badge.textContent = 'Entrena el modelo para generar futuro';
-    if (btn) btn.disabled = true;
-    return;
-  }
-
-  // Si hay raw_values (serie histórica), renderizar continuación HORA A HORA.
-  // Si no, fallback a vista anual con todos los modelos.
-  let renderedHourly = false;
-  if (cfg.rawValues && cfg.rawValues.length) {
-    renderedHourly = renderArena25YearsHourly({
-      canvasId, badgeId: `${prefix}-future-badge`,
-      rawValues: cfg.rawValues, annualKind: cfg.annualKind,
-      projection: cfg.projection, bestModel: cfg.bestModel,
-      ylabel: cfg.ylabel, scaler: cfg.scaler,
-      decimals: cfg.decimals, unitLabel: cfg.unitLabel,
-    });
-  }
-  if (!renderedHourly) {
-    renderArena25Years({
-      canvasId, badgeId: `${prefix}-future-badge`,
-      projection: cfg.projection, bestModel: cfg.bestModel,
-      ylabel: cfg.ylabel, scaler: cfg.scaler,
-      decimals: cfg.decimals, unitLabel: cfg.unitLabel,
-    });
-  }
-  if (btn) btn.disabled = false;
-}
-
-function buildForecastFutureCsv(key) {
-  const cfg = getForecastFutureConfig(key);
-  if (!cfg) return '';
-  const rows = [['subtab', 'modelo', 'best_model', 'year', 'predicted', 'unit', 'ci_low', 'ci_high', 'cagr']];
-  for (const [model, proj] of Object.entries(cfg.projection || {})) {
-    if (!proj || proj.error || !proj.years?.length) continue;
-    proj.years.forEach((year, i) => {
-      rows.push([
-        cfg.source,
-        model,
-        model === cfg.bestModel ? 'yes' : 'no',
-        year,
-        cfg.scaler(proj.annual?.[i]),
-        cfg.unitLabel,
-        proj.ci_low?.[i] != null ? cfg.scaler(proj.ci_low[i]) : '',
-        proj.ci_high?.[i] != null ? cfg.scaler(proj.ci_high[i]) : '',
-        proj.cagr ?? '',
-      ]);
-    });
-  }
-  return rows.map(row => row.map(v => {
-    const s = v == null ? '' : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }).join(',')).join('\n');
-}
-
-function downloadForecastFutureCsv(key) {
-  const cfg = getForecastFutureConfig(key);
-  if (!cfg) {
-    toast('Primero entrena o carga la proyección del subtab.', 'warn');
-    return;
-  }
-  const csv = buildForecastFutureCsv(key);
-  if (!csv) {
-    toast('No hay datos futuros para descargar.', 'warn');
-    return;
-  }
-  downloadText(csv, cfg.filename);
-  toast(`Descargado: ${cfg.filename}`, 'success');
-}
-
-// ─── Tabla estadística por sub-tab (Forecast Studio) ────────────────────────
-// Estadísticos: tendencia central + dispersión sobre observado, ajustado y
-// proyección futura cuando estén disponibles.
-function _statsBlock(values, label) {
-  const arr = (values || []).map(v => +v).filter(v => Number.isFinite(v));
-  if (!arr.length) return { label, n: 0 };
-  const sorted = [...arr].sort((a, b) => a - b);
-  const sum = arr.reduce((s, v) => s + v, 0);
-  const n = arr.length;
-  const mean = sum / n;
-  const median = n % 2 ? sorted[(n-1)/2] : (sorted[n/2-1] + sorted[n/2]) / 2;
-  const std = Math.sqrt(arr.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(1, n - 1));
-  const q = (p) => sorted[Math.min(n - 1, Math.max(0, Math.floor((p/100) * n)))];
-  const min = sorted[0], max = sorted[n - 1];
-  const p10 = q(10), p25 = q(25), p75 = q(75), p90 = q(90);
-  const iqr = p75 - p25;
-  const cv = mean !== 0 ? (std / Math.abs(mean)) * 100 : null;
-  // Skewness (Fisher-Pearson)
-  const skew = std > 0 ? arr.reduce((s, v) => s + ((v - mean) / std) ** 3, 0) / n : null;
-  return { label, n, mean, median, std, min, max, p10, p90, iqr, cv, skew };
-}
-
-function ensureForecastStatsCard(key) {
-  const tab = document.getElementById(`fs-${key}-tab`);
-  if (!tab) return null;
-  let card = document.getElementById(`fs-${key}-stats-card`);
-  if (card) return card;
-  card = document.createElement('div');
-  card.id = `fs-${key}-stats-card`;
-  card.className = 'card mt-3';
-  card.innerHTML = `
-    <div class="card-header">
-      <span class="card-title">Parámetros estadísticos</span>
-      <span class="cbadge" id="fs-${key}-stats-badge" style="margin-left:.4rem">tendencia central · dispersión</span>
-    </div>
-    <div class="card-body" style="overflow-x:auto">
-      <table class="tbl" id="fs-${key}-stats-tbl">
-        <thead><tr>
-          <th>Serie</th><th>N</th><th>Media</th><th>Mediana</th><th>σ</th>
-          <th>Mín</th><th>Máx</th><th>P10</th><th>P90</th><th>IQR</th>
-          <th>CV %</th><th>Skew</th>
-        </tr></thead>
-        <tbody><tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Carga datos para ver estadísticos.</td></tr></tbody>
-      </table>
-    </div>
-  `;
-  tab.appendChild(card);
-  return card;
-}
-
-function renderForecastStatsCard(key) {
-  ensureForecastStatsCard(key);
-  const tbody = document.querySelector(`#fs-${key}-stats-tbl tbody`);
-  if (!tbody) return;
-
-  // Recolectar series disponibles desde el cache correspondiente
-  const series = [];
-  const cache = (key === 'wind') ? WP.arenaCache.wind
-              : (key === 'demand' || key === 'demand_hourly') ? (WP.arenaCache[key] || WP.arenaCache.demand)
-              : (key === 'pml' || key === 'pml_hourly') ? (WP.arenaCache[key] || WP.arenaCache.pml)
-              : (key === 'interest') ? WP.arenaCache.interest
-              : (key === 'fx') ? WP.arenaCache.fx
-              : null;
-  if (!cache) {
-    tbody.innerHTML = `<tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Aún no hay datos cargados ni modelo entrenado.</td></tr>`;
-    return;
-  }
-
-  // Observado: raw_values o predictions.actual
-  const observed = cache.raw_values || cache.predictions?.actual || cache.observed || null;
-  if (observed) series.push(_statsBlock(observed, 'Observado (histórico horario)'));
-
-  // Predicho/ajustado del best model (si está disponible)
-  const best = cache.best_model;
-  const fittedMap = cache.fitted || cache.models || {};
-  const fittedBest = best && fittedMap[best];
-  const fittedVals = fittedBest?.fitted_values || fittedBest?.predicted_values || cache.predictions?.predicted || null;
-  if (fittedVals) series.push(_statsBlock(fittedVals, `Ajustado · ${best || 'best'}`));
-
-  // Proyección futura (si key es _hourly, expandimos rawValues con factor anual)
-  const cfg = getForecastFutureConfig(key);
-  if (cfg?.projection && cfg.bestModel && cfg.projection[cfg.bestModel]?.values?.length) {
-    series.push(_statsBlock(cfg.projection[cfg.bestModel].values, `Proyección 25a · ${cfg.bestModel}`));
-  }
-
-  if (!series.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="ks" style="text-align:center;padding:1rem">Sin series listas para estadísticos.</td></tr>`;
-    return;
-  }
-  const fmt = (v, d=2) => (v == null || !Number.isFinite(v)) ? '—' : (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(d));
-  tbody.innerHTML = series.map(s => `
-    <tr>
-      <td><b>${s.label}</b></td>
-      <td>${s.n.toLocaleString()}</td>
-      <td>${fmt(s.mean)}</td>
-      <td>${fmt(s.median)}</td>
-      <td>${fmt(s.std)}</td>
-      <td>${fmt(s.min)}</td>
-      <td>${fmt(s.max)}</td>
-      <td>${fmt(s.p10)}</td>
-      <td>${fmt(s.p90)}</td>
-      <td>${fmt(s.iqr)}</td>
-      <td>${fmt(s.cv, 1)}</td>
-      <td>${fmt(s.skew, 2)}</td>
-    </tr>`).join('');
-}
-
-function renderForecastMainChart(r, prefix='fs-wind') {
-  // Refresh stats card siempre que se renderice el main chart
-  const k = (prefix || 'fs-wind').replace(/^fs-/, '');
-  try { renderForecastStatsCard(k); } catch (e) {}
-  destroyChart(`${prefix}-main`);
-  const ctx = document.getElementById(`${prefix}-main-chart`).getContext('2d');
-  const resetBtn = document.getElementById(`btn-reset-zoom-${prefix}`);
-  const hoverCommon = {
-    pointRadius: 0,
-    pointHoverRadius: 5,
-    pointHoverBorderColor: '#fff',
-    pointHoverBorderWidth: 2,
-  };
-  const datasets = [
-    { label: 'Observado', data: r.y_true, borderColor: ink(),
-      borderWidth: 1.8, fill: false, pointHoverBackgroundColor: ink(), ...hoverCommon },
-    { label: 'Predicho', data: r.y_pred, borderColor: acc(),
-      borderWidth: 1.8, fill: false, pointHoverBackgroundColor: acc(), ...hoverCommon },
-    ...(r.persistence ? [{ label: 'Persistencia', data: r.persistence,
-      borderColor: acc2(), borderWidth: 1.25, borderDash: [4,3], fill: false,
-      pointHoverBackgroundColor: acc2(), ...hoverCommon }] : []),
-  ];
-  if (r.q10 && r.q90) {
-    datasets.push({ label: 'Q10', data: r.q10, borderColor: acc3()+'44',
-      borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 0, fill: false });
-    datasets.push({ label: 'Q90', data: r.q90, borderColor: acc3()+'44',
-      borderWidth: 1.2, pointRadius: 0, pointHoverRadius: 0, fill: '-1', backgroundColor: acc3()+'18' });
-  }
-  WP.charts[`${prefix}-main`] = new Chart(ctx, {
-    type: 'line',
-    data: { labels: r.labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { position: 'top' },
-        tooltip: {
-          enabled: true,
-          backgroundColor: isLight() ? '#fff' : '#1B2230',
-          titleColor: isLight() ? '#0B1220' : '#F4F7FB',
-          bodyColor: isLight() ? '#3D4A5C' : '#A6B3C8',
-          borderColor: isLight() ? '#D6DEE9' : '#2A3346',
-          borderWidth: 1,
-          padding: 10,
-          callbacks: {
-            title: (items) => items[0] ? `📅 ${items[0].label}` : '',
-            label: (item) => `${item.dataset.label}: ${item.formattedValue} ${r.unit || 'm/s'}`,
-          }
-        },
-        zoom: {
-          pan: { enabled: true, mode: 'x', modifierKey: null },
-          zoom: {
-            wheel: { enabled: true, modifierKey: null },
-            pinch: { enabled: true },
-            drag: { enabled: false },
-            mode: 'x',
-            onZoomComplete: () => { if (resetBtn) resetBtn.style.display = 'inline-block'; },
-          },
-        },
-      },
-      scales: {
-        x: { grid: chartGridOptions(), border: chartBorderOptions(), ticks: { maxTicksLimit: 14, font:{size:9, weight:'600'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: r.unit || 'm/s', font:{weight:'700'} }, ticks:{font:{size:9, weight:'600'}} }
-      }
-    }
-  });
-  if (resetBtn) {
-    resetBtn.style.display = 'none';
-    resetBtn.onclick = () => {
-      WP.charts[`${prefix}-main`]?.resetZoom();
-      resetBtn.style.display = 'none';
-    };
-  }
-}
-
-function renderScatterChart(r, prefix='fs-wind') {
-  destroyChart('scatter');
-  const pts = r.y_true.map((y, i) => ({ x: y, y: r.y_pred[i] }))
-    .filter(p => p.x != null && p.y != null);
-  const maxVal = Math.max(...pts.map(p => Math.max(p.x, p.y)));
-  const ctx = document.getElementById(`${prefix}-scatter-chart`).getContext('2d');
-  WP.charts['scatter'] = new Chart(ctx, {
-    type: 'scatter',
-    data: {
-      datasets: [
-        { label: 'Obs vs Pred', data: pts, backgroundColor: acc()+'38',
-          borderColor: acc()+'80', borderWidth: 1.1, pointRadius: 2 },
-        { label: '1:1', data: [{x:0,y:0},{x:maxVal,y:maxVal}],
-          type: 'line', borderColor: acc2()+'80',
-          borderWidth: 1.6, borderDash: [5,3], pointRadius: 0, fill: false }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Observado (${r.unit || 'm/s'})`, font:{weight:'700'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Predicho (${r.unit || 'm/s'})`, font:{weight:'700'} } }
-      }
-    }
-  });
-}
-
-function renderResidualHistogram(r, prefix='fs-wind') {
-  destroyChart('residual-hist');
-  const residuals = r.y_pred.map((yp, i) => yp - r.y_true[i])
-    .filter(v => v != null && !isNaN(v));
-  if (!residuals.length) return;
-  const min = Math.min(...residuals), max = Math.max(...residuals);
-  const nbins = 30;
-  const binW = (max - min) / nbins || 1;
-  const bins = Array.from({length: nbins}, (_, i) => ({
-    x: +(min + (i + 0.5) * binW).toFixed(2),
-    count: 0
-  }));
-  residuals.forEach(v => {
-    const idx = Math.min(Math.floor((v - min) / binW), nbins - 1);
-    bins[idx].count++;
-  });
-  const ctx = document.getElementById(`${prefix}-residual-hist-chart`).getContext('2d');
-  destroyChart('residual-hist');
-  WP.charts['residual-hist'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: bins.map(b => b.x.toFixed(2)),
-      datasets: [{ label: 'Frecuencia', data: bins.map(b => b.count),
-        backgroundColor: acc3()+'58', borderColor: acc3(), borderWidth: 1.3, borderRadius:2 }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: `Residuo (${r.unit || 'm/s'})`, font:{weight:'700'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: 'Frecuencia', font:{weight:'700'} } }
-      }
-    }
-  });
-}
-
-function renderStabilityChart(stability, prefix='fs-wind') {
-  destroyChart('stability');
-  if (!stability.length) return;
-  const ctx = document.getElementById(`${prefix}-stability-chart`).getContext('2d');
-  WP.charts['stability'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: stability.map(s => s.period.substring(0,7)),
-      datasets: [
-        { label: 'RMSE (m/s)', data: stability.map(s => s.rmse),
-          backgroundColor: acc()+'48', borderColor: acc(), borderWidth: 1.4, borderRadius:3 },
-        { label: 'MAE (m/s)',  data: stability.map(s => s.mae),
-          backgroundColor: acc3()+'48', borderColor: acc3(), borderWidth: 1.4, borderRadius:3 }
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: 'top' } },
-      scales: {
-        x: { grid: chartGridOptions(false), border: chartBorderOptions() },
-        y: { grid: chartGridOptions(), border: chartBorderOptions() }
-      }
-    }
-  });
-}
-
-function buildBinnedBiasFromSeries(yTrue, yPred, nBins = 20) {
-  const pts = yTrue.map((obs, i) => ({ obs, res: yPred[i] - obs }))
-    .filter(p => p.obs != null && p.res != null && isFinite(p.obs) && isFinite(p.res));
-  if (pts.length < 3) return [];
-
-  const sorted = pts.map(p => p.obs).sort((a, b) => a - b);
-  const binCount = Math.min(nBins, Math.max(3, Math.floor(pts.length / 3)));
-  const quantile = q => {
-    const pos = (sorted.length - 1) * q;
-    const lo = Math.floor(pos);
-    const hi = Math.ceil(pos);
-    return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
-  };
-
-  const edges = [];
-  for (let i = 0; i <= binCount; i++) edges.push(quantile(i / binCount));
-  const uniqueEdges = [...new Set(edges.map(v => Number(v.toFixed(8))))];
-  if (uniqueEdges.length < 2) return [];
-
-  const bins = [];
-  for (let i = 0; i < uniqueEdges.length - 1; i++) {
-    const lo = uniqueEdges[i];
-    const hi = uniqueEdges[i + 1];
-    const inBin = pts.filter(p => p.obs >= lo && (i === uniqueEdges.length - 2 ? p.obs <= hi : p.obs < hi));
-    if (inBin.length < 3) continue;
-    const residuals = inBin.map(p => p.res);
-    const bias = residuals.reduce((a, b) => a + b, 0) / residuals.length;
-    const rmse = Math.sqrt(residuals.reduce((a, b) => a + b * b, 0) / residuals.length);
-    bins.push({
-      ws_center: (lo + hi) / 2,
-      bias,
-      rmse,
-      n: inBin.length,
-    });
-  }
-  return bins;
-}
-
-function renderBinnedBiasChart(r, prefix='fs-wind') {
-  const chartKey = `${prefix}-binned-bias`;
-  destroyChart(chartKey);
-  const canvas = document.getElementById(`${prefix}-binned-bias-chart`);
-  if (!canvas) return;
-
-  const binnedBias = r.residuals?.binned_bias?.length
-    ? r.residuals.binned_bias
-    : buildBinnedBiasFromSeries(r.y_true || [], r.y_pred || []);
-  if (!binnedBias.length) return;
-
-  const unit = r.unit || (prefix === 'fs-wind' ? 'm/s' : '');
-  const xTitle = prefix === 'fs-wind'
-    ? 'Velocidad observada (m/s)'
-    : `Valor observado${unit ? ` (${unit})` : ''}`;
-
-  const ctx = canvas.getContext('2d');
-  WP.charts[chartKey] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: binnedBias.map(b => fcFormatNumber(b.ws_center, 2)),
-      datasets: [{
-        label: `Sesgo medio${unit ? ` (${unit})` : ''}`,
-        data: binnedBias.map(b => b.bias),
-        backgroundColor: binnedBias.map(b => b.bias >= 0 ? acc()+'60' : acc2()+'60'),
-        borderColor: binnedBias.map(b => b.bias >= 0 ? acc() : acc2()),
-        borderWidth: 1.2, borderRadius:2,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: item => {
-              const bin = binnedBias[item.dataIndex] || {};
-              const bias = fcFormatNumber(item.parsed.y, 4);
-              const rmse = fcFormatNumber(bin.rmse, 4);
-              return [`Sesgo: ${bias} ${unit}`.trim(), `RMSE: ${rmse} ${unit}`.trim(), `n: ${bin.n || '—'}`];
-            }
-          }
-        }
-      },
-      scales: {
-        x: { grid: chartGridOptions(false), border: chartBorderOptions(), title: { display: true, text: xTitle, font:{weight:'700'} } },
-        y: { grid: chartGridOptions(), border: chartBorderOptions(), title: { display: true, text: `Sesgo${unit ? ` (${unit})` : ''}`, font:{weight:'700'} } }
-      }
-    }
-  });
-}
-
-function renderForecastMetricPills(metrics, prefix='fs-wind', unit='m/s') {
-  if (!metrics) return;
-  const el = document.getElementById(`${prefix}-metric-pills`);
-  if (!el) return;
-  const fmt = (value, digits = 4) => value != null && isFinite(value) ? value.toFixed(digits) : '—';
-  const pct = value => value != null && isFinite(value) ? (value * 100).toFixed(1) : '—';
-  el.innerHTML = [
-    ['RMSE', fmt(metrics.rmse), unit],
-    ['MAE', fmt(metrics.mae), unit],
-    ['R²', fmt(metrics.r2), ''],
-    ['nRMSE', pct(metrics.nrmse), '%'],
-    ['Skill', metrics.skill_vs_persistence != null ? pct(metrics.skill_vs_persistence) : '—', '%'],
-  ].map(([l, v, u]) =>
-    `<div class="metric-pill">${l}: <span>${v}${u}</span></div>`
-  ).join('');
-}
-
-// ─── ENERGY LAB ──────────────────────────────────────────────────────────────
 function bindEnergyLab() {
   // Tab switching
   document.querySelectorAll('#mod-energy .tab-btn').forEach(btn => {
@@ -2073,42 +1185,6 @@ async function compareTurbines() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   }
-}
-
-// ─── VALIDATION ───────────────────────────────────────────────────────────────
-function populateValidationMetrics(metrics) {
-  if (!metrics) return;
-  const el = document.getElementById('val-metrics-body');
-  const items = [
-    ['RMSE',  metrics.rmse?.toFixed(4), 'm/s'],
-    ['MAE',   metrics.mae?.toFixed(4),  'm/s'],
-    ['R²',    metrics.r2?.toFixed(4),   ''],
-    ['Bias',  metrics.bias?.toFixed(4), 'm/s'],
-    ['nRMSE', (metrics.nrmse*100)?.toFixed(2)+'%', ''],
-    ['nMAE',  (metrics.nmae*100)?.toFixed(2)+'%',  ''],
-    ['sMAPE', metrics.smape?.toFixed(2), '%'],
-    ['Pearson r', metrics.pearson_r?.toFixed(4), ''],
-    ['Skill vs Persistencia', metrics.skill_vs_persistence != null
-      ? (metrics.skill_vs_persistence*100).toFixed(1)+'%' : '—', ''],
-  ];
-  el.innerHTML = `<div class="val-metric-list">${
-    items.map(([l, v]) =>
-      `<div class="val-metric-item">
-        <span class="val-metric-name">${l}</span>
-        <span class="val-metric-val">${v ?? '—'}</span>
-      </div>`
-    ).join('')
-  }</div>`;
-}
-
-function updateCalibration(calib) {
-  if (!calib) return;
-  document.getElementById('calib-empirical').textContent = `${(calib.empirical_coverage*100).toFixed(1)}%`;
-  document.getElementById('calib-error').textContent     = `${(calib.calibration_error*100).toFixed(1)}%`;
-  document.getElementById('calib-sharp').textContent     = `${calib.sharpness?.toFixed(3)} m/s`;
-  const errEl = document.getElementById('calib-error');
-  const err = calib.calibration_error;
-  errEl.style.color = err < 0.05 ? 'var(--green)' : err < 0.15 ? 'var(--yellow)' : 'var(--red)';
 }
 
 // ─── WIND FARM LAYOUT ────────────────────────────────────────────────────────
@@ -2595,34 +1671,6 @@ function renderHourlyOverview(d) {
         x: { grid:{display:false}, ticks:{font:{size:9}, callback:v=>v+'h'} },
         y: { grid: { color: gridColor() }, ticks:{font:{size:9}, callback:v=>v+' m/s'} } } }
   });
-}
-
-function renderModelBarOverview(result) {
-  if (!result) return;
-  destroyChart('chart-model-bar-overview');
-  const ctx = document.getElementById('chart-model-bar-overview')?.getContext('2d');
-  if (!ctx) return;
-  const rows = Object.entries(result)
-    .filter(([k,v]) => !k.startsWith('_') && v.metrics)
-    .map(([,v]) => ({label: v.metrics.label || v.label, rmse: v.metrics.rmse}))
-    .sort((a,b) => a.rmse - b.rmse).slice(0,8);
-  const bestRmse = rows[0]?.rmse;
-  WP.charts['chart-model-bar-overview'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: rows.map(r => r.label),
-      datasets: [{ data: rows.map(r => r.rmse),
-        backgroundColor: rows.map((r,i) => i===0 ? acc()+'cc' : mut()+'55'),
-        borderRadius: 3 }]
-    },
-    options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:ctx=>` RMSE: ${ctx.parsed.x?.toFixed(4)} m/s`}} },
-      scales:{ x:{ grid:{color:gridColor()}, ticks:{font:{size:9}} },
-               y:{ grid:{display:false}, ticks:{font:{size:9}} } } }
-  });
-  // update overview table badge
-  const badge = document.getElementById('badge-best-model');
-  if (badge && rows[0]) badge.textContent = '★ ' + rows[0].label;
 }
 
 function _weibullPDF(v, k, lam) {
@@ -3132,8 +2180,8 @@ function bindTechno() {
   });
   [
     'te-turbine','te-nturbines','te-demand','te-price','te-price-escalation',
-    'te-inflation','te-rate','te-years','te-fx','te-price-mode','te-rate-mode',
-    'te-fx-mode','cm-turbine-usd-kw','cm-turbines-pct','cm-civil-pct',
+    'te-inflation','te-rate','te-years','te-fx','te-price-mode',
+    'cm-turbine-usd-kw','cm-turbines-pct','cm-civil-pct',
     'cm-elec-pct','cm-install-pct','cm-eng-pct','cm-misc-pct','cm-opex-pct',
   ].forEach(id => {
     const el = document.getElementById(id);
@@ -3204,7 +2252,7 @@ function bindTechno() {
   });
 
   // Selectores de modo (Fijo / 8760) — actualizar hints en tiempo real
-  ['te-price-mode', 'te-rate-mode', 'te-fx-mode'].forEach(id => {
+  ['te-price-mode'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('change', technoUpdateModeHints);
   });
@@ -3376,16 +2424,14 @@ function technoAdjustedAnalysis(a) {
   adj.annual_cashflow_usd = Math.round(baseRev - opex);
   adj.capacity_factor_pct = Math.round((a.capacity_factor_pct || 0) * factor * 100) / 100;
 
-  // Si el backend usó series variables (price/rate/fx por año), reescalamos los
-  // flujos existentes preservando la variación por año. Si no, reconstruimos
+  // Si el backend usó precios variables por año, preservamos esa variación.
+  // Si no, reconstruimos
   // desde year-1 baseRev (compatibilidad histórica).
   const useExisting = !!a.variable_params_used && Array.isArray(a.cashflow_table) && a.cashflow_table.length;
-  const rateSeries  = Array.isArray(a.discount_rate_series_pct) ? a.discount_rate_series_pct : null;
   let cum    = -capexTotal;
   let cumPv  = -capexTotal;
   let pbYears = null;
   adj.cashflow_table = [];
-  let cumDF = 1;  // cumulative discount factor when rate series available
   for (let yr = 1; yr <= N; yr++) {
     let cfT;
     let opexT = opex * Math.pow(1 + infl, yr - 1);
@@ -3400,16 +2446,8 @@ function technoAdjustedAnalysis(a) {
       const revT = baseRev * Math.pow(1 + esc, yr - 1);
       cfT = revT - opexT;
     }
-    // Discount: variable rate per year if series provided
-    let pvT;
-    if (rateSeries && rateSeries.length) {
-      const rY = (Number(rateSeries[Math.min(yr - 1, rateSeries.length - 1)]) || 0) / 100;
-      cumDF *= (1 + rY);
-      pvT = cumDF > 0 ? cfT / cumDF : cfT;
-    } else {
-      const r = (a.discount_rate_pct || 0) / 100;
-      pvT = cfT / Math.pow(1 + r, yr);
-    }
+    const r = (a.discount_rate_pct || 0) / 100;
+    const pvT = cfT / Math.pow(1 + r, yr);
     const prevCum = cum;
     cum   += cfT;
     cumPv += pvT;
@@ -3431,10 +2469,7 @@ function technoAdjustedAnalysis(a) {
   }
   adj.npv_usd       = Math.round(cumPv);
   adj.payback_years = pbYears;
-  // VAE / LCOE — usar rate medio cuando hay serie
-  const rMean = rateSeries && rateSeries.length
-    ? rateSeries.reduce((s,v) => s + (Number(v) || 0), 0) / rateSeries.length / 100
-    : (a.discount_rate_pct || 0) / 100;
+  const rMean = (a.discount_rate_pct || 0) / 100;
   adj.vae_usd = rMean > 0
     ? Math.round(adj.npv_usd * rMean / (1 - Math.pow(1 + rMean, -N)))
     : Math.round(adj.npv_usd / N);
@@ -3511,8 +2546,6 @@ function technoCollectInputs() {
     years: parseInt(document.getElementById('te-years')?.value) || 25,
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
     priceMode: document.getElementById('te-price-mode')?.value || 'fixed',
-    rateMode:  document.getElementById('te-rate-mode')?.value  || 'fixed',
-    fxMode:    document.getElementById('te-fx-mode')?.value    || 'fixed',
     costModel: technoCollectCostModel(),
   };
 }
@@ -3530,79 +2563,21 @@ function technoApplyInputs(inputs) {
   set('te-years', inputs.years);
   set('te-fx', inputs.fx);
   set('te-price-mode', inputs.priceMode || 'fixed');
-  set('te-rate-mode',  inputs.rateMode  || 'fixed');
-  set('te-fx-mode',    inputs.fxMode    || 'fixed');
   if (inputs.costModel) technoApplyCostModel(inputs.costModel);
   technoUpdateModeHints();
 }
 
-// ─── 8760 / Predicción ML — series anuales y arrays horarios ──────────────────
-
+// ─── PML fijo 2018: serie anual y perfil horario 8760 ────────────────────────
 function _arrMean(arr) {
   if (!Array.isArray(arr) || !arr.length) return null;
-  let s = 0, n = 0;
-  for (const v of arr) {
-    const x = Number(v);
-    if (Number.isFinite(x)) { s += x; n++; }
-  }
-  return n ? s / n : null;
+  const finite = arr.map(Number).filter(Number.isFinite);
+  return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
 }
-
-/**
- * Devuelve el array crudo (raw_values) y un detector de unidad para PML.
- * Para PML: prefiere pml_hourly (8760), si no hay usa la cara compra/venta del cache anual.
- * Para interest/fx: usa cache.<key>.raw_values directamente.
- */
-function _arenaRawValues(paramKey) {
-  const c = WP.arenaCache || {};
-  if (paramKey === 'price') {
-    const fixed = WP.parkConfiguration?.market_models?.pml;
-    if (fixed?.mode === 'fixed_2018_profile' && Array.isArray(fixed.hourly_profile_2018)) {
-      return { values: fixed.hourly_profile_2018, source: 'fixed_pml_2018', unit: fixed.unit };
-    }
-    const { sideCache: hourlySide } = getPmlForecastStudioSide(c.pml_hourly);
-    const h = hourlySide?.raw_values || c.pml_hourly?.raw_values;
-    if (Array.isArray(h) && h.length) return { values: h, source: 'pml_hourly', unit: c.pml?.meta?.unit };
-    const { sideCache } = getPmlForecastStudioSide(c.pml);
-    const side = sideCache || c.pml?.compra || c.pml?.venta || c.pml || null;
-    const r = side?.raw_values;
-    return Array.isArray(r) && r.length ? { values: r, source: 'pml_annual', unit: c.pml?.meta?.unit } : null;
-  }
-  if (paramKey === 'rate') {
-    const r = c.interest?.raw_values;
-    return Array.isArray(r) && r.length ? { values: r, source: 'interest' } : null;
-  }
-  if (paramKey === 'fx') {
-    const r = c.fx?.raw_values;
-    return Array.isArray(r) && r.length ? { values: r, source: 'fx' } : null;
-  }
-  return null;
+function _fixedPmlProfile() {
+  const pml = WP.parkConfiguration?.market_models?.pml;
+  if (pml?.mode !== 'fixed_2018_profile' || !Array.isArray(pml.hourly_profile_2018)) return null;
+  return { values: pml.hourly_profile_2018, unit: pml.unit || '' };
 }
-
-/**
- * Devuelve la proyección anual (25 años) para un parámetro desde Forecast Studio.
- * Para 'price' usa la cara activa de pml.
- */
-function _arenaProjectionAnnual(paramKey) {
-  const cfgKey = paramKey === 'price' ? 'pml'
-              : paramKey === 'rate'  ? 'interest'
-              : paramKey === 'fx'    ? 'fx' : null;
-  if (!cfgKey) return null;
-  const cfg = getForecastFutureConfig(cfgKey);
-  const proj = cfg?.projection || {};
-  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel
-              : Object.keys(proj).find(k => proj[k]?.annual?.length);
-  let annual = model ? proj[model]?.annual : null;
-  if (!Array.isArray(annual) || !annual.length) {
-    annual = WP.parkConfiguration?.market_models?.[cfgKey]?.annual;
-  }
-  return Array.isArray(annual) && annual.length ? annual.map(Number) : null;
-}
-
-/**
- * Convierte un valor PML al sistema USD/kWh.
- * Heurística: si val > 50 → asumimos MXN/MWh; entre 1 y 50 → USD/MWh; <1 → USD/kWh ya.
- */
 function _pmlToUsdKwh(val, fxScalar, unit = '') {
   const v = Number(val);
   if (!Number.isFinite(v)) return null;
@@ -3611,127 +2586,36 @@ function _pmlToUsdKwh(val, fxScalar, unit = '') {
   if (normalizedUnit.includes('USD/MWH')) return v / 1000;
   if (normalizedUnit.includes('MXN/KWH')) return v / (fxScalar > 0 ? fxScalar : 18);
   if (normalizedUnit.includes('MXN/MWH')) return v / (fxScalar > 0 ? fxScalar : 18) / 1000;
-  if (v > 50) return v / (fxScalar > 0 ? fxScalar : 18) / 1000; // MXN/MWh → USD/kWh
-  if (v > 1)  return v / 1000;                                  // USD/MWh → USD/kWh
-  return v;                                                      // ya USD/kWh
+  if (v > 50) return v / (fxScalar > 0 ? fxScalar : 18) / 1000;
+  if (v > 1) return v / 1000;
+  return v;
 }
-
-/**
- * Construye la serie anual (length nYears) para un parámetro de la evaluación integral.
- * - mode='fixed' → null (backend usa escalar)
- * - mode='arena' → trayectoria publicada desde el año 1; si no existe,
- *   conserva la media histórica para todo el horizonte.
- * Devuelve { series, baseline, hourly } donde:
- *   series = array length nYears (en unidades del backend) o null
- *   baseline = valor escalar año 1 (mostrado al usuario)
- *   hourly  = (solo para 'price') array de 8760 en USD/kWh para year-1 weighting
- */
-function technoBuildParamSeries(paramKey, mode, _scenarioKey, nYears, fxScalar) {
-  if (mode !== 'arena') return { series: null, baseline: null, hourly: null };
-  const raw = _arenaRawValues(paramKey);
-  const annualProjection = _arenaProjectionAnnual(paramKey);
-  if (!raw && (!annualProjection || !annualProjection.length)) {
-    return { series: null, baseline: null, hourly: null };
-  }
-
-  // baseline (year 1) en unidades del backend
-  let baseline = null;
-  let hourly   = null;
-  if (raw && paramKey === 'price') {
-    const meanRaw = _arrMean(raw.values);
-    baseline = _pmlToUsdKwh(meanRaw, fxScalar, raw.unit);
-    // El PML fijo 2018 y el legado horario se ponderan contra la producción.
-    hourly = raw.values.map(v => _pmlToUsdKwh(v, fxScalar, raw.unit)).map(v => Number.isFinite(v) ? v : baseline);
-  } else if (raw) {
-    baseline = _arrMean(raw.values);
-  } else {
-    const first = Number(annualProjection[0]);
-    baseline = paramKey === 'price' ? _pmlToUsdKwh(first, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit) : first;
-  }
-  if (baseline == null || !Number.isFinite(baseline)) {
-    return { series: null, baseline: null, hourly: null };
-  }
-
-  const series = new Array(nYears).fill(baseline);
-  const annual = annualProjection;
-  if (annual && annual.length) {
-    // La trayectoria publicada comienza en el año 1 del proyecto y se usa
-    // completa; no se inserta un año histórico constante delante.
-    for (let i = 0; i < nYears; i++) {
-      let v = Number(annual[Math.min(i, annual.length - 1)]);
-      if (!Number.isFinite(v)) continue;
-      if (paramKey === 'price') v = _pmlToUsdKwh(v, fxScalar, WP.parkConfiguration?.market_models?.pml?.unit);
-      if (Number.isFinite(v)) series[i] = v;
-    }
-    baseline = series[0];
-    if (paramKey === 'price' && hourly?.length) {
-      const hourlyMean = _arrMean(hourly);
-      if (hourlyMean && Number.isFinite(hourlyMean) && Number.isFinite(baseline)) {
-        hourly = hourly.map(value => Number(value) * baseline / hourlyMean);
-      }
-    }
-  }
-  return { series, baseline, hourly };
-}
-
-/**
- * Actualiza los hints debajo de cada selector mostrando la fuente de datos
- * cuando el modo es 'arena'.
- */
-function technoUpdateModeHints() {
-  const fxScalar = parseFloat(document.getElementById('te-fx')?.value) || 18;
-  const scenarioKey = 'integrated';
-  const fmt = (v, dec=4) => Number.isFinite(v) ? Number(v).toLocaleString('es-MX', {maximumFractionDigits: dec}) : '—';
-
-  const cfg = [
-    { key: 'price', mode: document.getElementById('te-price-mode')?.value, hintId: 'te-price-mode-hint', label: 'USD/kWh', dec: 5 },
-    { key: 'rate',  mode: document.getElementById('te-rate-mode')?.value,  hintId: 'te-rate-mode-hint',  label: '%',       dec: 3 },
-    { key: 'fx',    mode: document.getElementById('te-fx-mode')?.value,    hintId: 'te-fx-mode-hint',    label: 'MXN/USD', dec: 3 },
-  ];
-  cfg.forEach(c => {
-    const el = document.getElementById(c.hintId);
-    if (!el) return;
-    if (c.mode !== 'arena') {
-      // Reset to default hint
-      if (c.key === 'fx') el.textContent = 'Análisis siempre en USD; FX solo muestra equivalente MXN bajo cada KPI.';
-      else el.textContent = '';
-      return;
-    }
-    const built = technoBuildParamSeries(c.key, 'arena', scenarioKey, parseInt(document.getElementById('te-years')?.value) || 25, fxScalar);
-    if (!built.series) {
-      const srcLabel = c.key === 'price' ? 'PML/PRECIO' : c.key.toUpperCase();
-      el.innerHTML = `<span style="color:#d97706">⚠ No hay trayectoria publicada para ${srcLabel}. Configura o estima la variable en Configuración del parque.</span>`;
-      return;
-    }
-    const hAvg = built.series.length > 1
-      ? built.series.slice(1).reduce((a,b)=>a+b,0) / (built.series.length - 1)
-      : built.baseline;
-    const tag = `Año 1: <strong>${fmt(built.baseline, c.dec)} ${c.label}</strong> · ` +
-      `Años 2-${built.series.length}: <strong>${fmt(hAvg, c.dec)} ${c.label}</strong> ` +
-      `(${_arenaProjectionAnnual(c.key)?.length ? 'trayectoria publicada' : 'media histórica'})`;
-    el.innerHTML = tag;
+function technoBuildPriceSeries(mode, nYears, fxScalar) {
+  if (mode !== 'pml8760') return { series: null, baseline: null, hourly: null };
+  const raw = _fixedPmlProfile();
+  if (!raw) return { series: null, baseline: null, hourly: null };
+  const hourly = raw.values.map(value => _pmlToUsdKwh(value, fxScalar, raw.unit));
+  const baseline = _arrMean(hourly);
+  if (!Number.isFinite(baseline)) return { series: null, baseline: null, hourly: null };
+  const annual = WP.parkConfiguration?.market_models?.pml?.annual || [];
+  const series = Array.from({ length: nYears }, (_, index) => {
+    const value = Number(annual[Math.min(index, annual.length - 1)]);
+    const converted = _pmlToUsdKwh(value, fxScalar, raw.unit);
+    return Number.isFinite(converted) ? converted : baseline;
   });
+  return { series, baseline: series[0] ?? baseline, hourly };
 }
-
-function technoBestAnnualValue(key) {
-  const cfg = getForecastFutureConfig(key);
-  const proj = cfg?.projection || {};
-  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel : Object.keys(proj).find(k => proj[k]?.annual?.length);
-  const arr = model ? proj[model]?.annual : WP.parkConfiguration?.market_models?.[key]?.annual;
-  if (!arr?.length) return null;
-  const vals = arr.map(Number).filter(Number.isFinite);
-  if (!vals.length) return null;
-  return vals.reduce((a, b) => a + b, 0) / vals.length;
-}
-
-function technoWindAnnualSeries() {
-  const cfg = getForecastFutureConfig('wind');
-  const proj = cfg?.projection || {};
-  const model = cfg?.bestModel && proj[cfg.bestModel] ? cfg.bestModel : Object.keys(proj).find(k => proj[k]?.annual?.length);
-  const arr = model ? proj[model]?.annual : null;
-  if (!arr?.length) return null;
-  const vals = arr.map(Number).filter(Number.isFinite);
-  return vals.length ? vals : null;
+function technoUpdateModeHints() {
+  const hint = document.getElementById('te-price-mode-hint');
+  if (!hint) return;
+  const mode = document.getElementById('te-price-mode')?.value || 'fixed';
+  if (mode !== 'pml8760') { hint.textContent = ''; return; }
+  const years = parseInt(document.getElementById('te-years')?.value) || 25;
+  const fx = parseFloat(document.getElementById('te-fx')?.value) || 18;
+  const built = technoBuildPriceSeries(mode, years, fx);
+  hint.innerHTML = built.series
+    ? `PML fijo 2018: <strong>${built.baseline.toLocaleString('es-MX', {maximumFractionDigits: 5})} USD/kWh</strong> · perfil horario replicado durante ${years} años.`
+    : '<span style="color:#d97706">⚠ Carga y publica el PML 2018 en Configuración del parque.</span>';
 }
 
 function technoWindResultCompatible(source) {
@@ -3754,32 +2638,19 @@ function technoCompatibleParkResult() {
 
 function technoIntegratedDefaults() {
   const base = technoCollectInputs();
-  const configuredHorizon = Number(WP.parkConfiguration?.project_horizon_years) || 25;
-  base.years = configuredHorizon;
+  base.years = Number(WP.parkConfiguration?.project_horizon_years) || 25;
   const marketInputs = parkEquivalentDesignInputs();
-  const demand = technoBestAnnualValue('demand');
-  const pml = technoBestAnnualValue('pml');
-  const rate = technoBestAnnualValue('interest');
-  const fx = technoBestAnnualValue('fx');
-  base.demand = Math.round(marketInputs.demand_mwh ?? demand ?? 0);
+  base.demand = Math.round(marketInputs.demand_mwh || 0);
   if (marketInputs.price_usd_kwh != null) base.price = Number(marketInputs.price_usd_kwh).toFixed(4);
-  else if (pml != null) base.price = Number(pml).toFixed(4);
-  if (marketInputs.tasa != null) base.rate = Number(marketInputs.tasa * 100).toFixed(2);
-  else if (rate != null) base.rate = Number(rate).toFixed(2);
-  if (marketInputs.price_mxn_per_usd != null) base.fx = Number(marketInputs.price_mxn_per_usd).toFixed(2);
-  else if (fx != null) base.fx = Number(fx).toFixed(2);
-  if (parkMarketTrajectory('pml')?.length) base.priceMode = 'arena';
-  if (parkMarketTrajectory('interest')?.length) base.rateMode = 'arena';
-  if (parkMarketTrajectory('fx')?.length) base.fxMode = 'arena';
-
+  if (WP.parkConfiguration?.base_interest_rate_pct != null) base.rate = Number(WP.parkConfiguration.base_interest_rate_pct).toFixed(2);
+  if (WP.parkConfiguration?.base_fx_mxn_usd != null) base.fx = Number(WP.parkConfiguration.base_fx_mxn_usd).toFixed(2);
+  if (parkMarketTrajectory('pml')?.length) base.priceMode = 'pml8760';
   const winner = technoCompatibleWinner();
   const parkResult = technoCompatibleParkResult();
   if (winner?.turbina) base.turbine = winner.turbina;
   if (Number(winner?.n_aerogeneradores) > 0) base.nTurbines = Number(winner.n_aerogeneradores);
   else if (parkResult?.turbine?.name) base.turbine = parkResult.turbine.name;
-  if (!Number(winner?.n_aerogeneradores) && parkResult?.turbines?.length) {
-    base.nTurbines = parkResult.turbines.length;
-  }
+  if (!Number(winner?.n_aerogeneradores) && parkResult?.turbines?.length) base.nTurbines = parkResult.turbines.length;
   return base;
 }
 
@@ -3806,12 +2677,10 @@ function technoRefreshScenarioView() {
     sources.push('Resultados eólicos anteriores omitidos: pertenecen a otra fuente');
   }
   if (WP.parkConfiguration) sources.push(`Configuración comercial: revisión ${WP.parkConfiguration.configuration_revision || 0}`);
-  if (technoWindAnnualSeries()?.length) sources.push('Recurso: trayectoria eólica publicada');
-  else if (WP.activeDataSource?.startsWith('mcp:')) sources.push(`Recurso: reconstrucción histórica MCP (${WP.activeDataSource})`);
+  if (WP.activeDataSource?.startsWith('mcp:')) sources.push(`Recurso: reconstrucción histórica MCP (${WP.activeDataSource})`);
   else if (WP.studyMode === 'reanalysis_only') sources.push(`Recurso: ERA5/MERRA-2 del área (${WP.activeDataSource}) · sin MCP`);
   else sources.push('Recurso: serie observada activa');
-  const trajectoryNames = ['pml', 'interest', 'fx'].filter(key => parkMarketTrajectory(key)?.length);
-  if (trajectoryNames.length) sources.push(`Trayectorias: ${trajectoryNames.join(', ')}`);
+  if (parkMarketTrajectory('pml')?.length) sources.push('Precio: PML fijo 2018 (8760)');
   if (badge) badge.textContent = 'Integral';
   if (status) status.innerHTML =
     `<p style="font-size:.8rem;margin:0 0 .35rem">${sources.map(mcdaAuditEscape).join(' · ')}</p>` +
@@ -3958,29 +2827,18 @@ async function calcTechnoEconomic() {
   try {
     const inputs = technoCollectInputs();
     // Una sola evaluación, con precedencia trazable de recurso:
-    // parque/TOPSIS compatible → trayectoria anual → fuente eólica activa
+    // parque/TOPSIS compatible → fuente eólica activa
     // (hindcast MCP publicado o, sólo en modo manual, serie observada).
     const winner = technoCompatibleWinner();
     const parkResult = technoCompatibleParkResult();
     const parkAepValue = winner?.aep_p50_mwh ?? winner?.aep_mwh ?? parkResult?.aep_mwh;
     const parkAep = Number.isFinite(Number(parkAepValue)) && Number(parkAepValue) > 0
       ? Number(parkAepValue) : null;
-    const windSeries = parkAep == null ? technoWindAnnualSeries() : null;
-    const windMean = parkAep == null && !windSeries ? technoBestAnnualValue('wind') : null;
 
-    // ── Modos 8760 / Predicción ML para precio, tasa y FX ─────────────────
     const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : 18;
-    const builtPrice = technoBuildParamSeries('price', inputs.priceMode, scenarioKey, inputs.years, fxScalar);
-    const builtRate  = technoBuildParamSeries('rate',  inputs.rateMode,  scenarioKey, inputs.years, fxScalar);
-    const builtFx    = technoBuildParamSeries('fx',    inputs.fxMode,    scenarioKey, inputs.years, fxScalar);
-
-    // Si la modalidad arena no encontró datos, avisamos pero continuamos en modo fijo
-    const missing = [];
-    if (inputs.priceMode === 'arena' && !builtPrice.series) missing.push('precio (PML)');
-    if (inputs.rateMode  === 'arena' && !builtRate.series)  missing.push('tasa (interés)');
-    if (inputs.fxMode    === 'arena' && !builtFx.series)    missing.push('FX');
-    if (missing.length) {
-      toast(`Sin trayectoria configurada para: ${missing.join(', ')}. Configura o estima la variable en Configuración del parque, o usa Fijo.`, 'warn');
+    const builtPrice = technoBuildPriceSeries(inputs.priceMode, inputs.years, fxScalar);
+    if (inputs.priceMode === 'pml8760' && !builtPrice.series) {
+      toast('No hay un PML fijo 2018 publicado; se usará el precio manual.', 'warn');
     }
 
     const body = {
@@ -3989,8 +2847,6 @@ async function calcTechnoEconomic() {
       scenario:      scenarioKey,
       n_turbines:    inputs.nTurbines,
       ws_height_m:   wsH(),
-      annual_wind_series_ms: windSeries,
-      annual_wind_mean_ms: windMean,
       annual_energy_mwh: Number.isFinite(Number(parkAep)) ? Number(parkAep) : null,
       turbine: { builtin_model: inputs.turbine },
       financial: {
@@ -4001,16 +2857,9 @@ async function calcTechnoEconomic() {
         usd_to_mxn:           inputs.fx,
         annual_inflation_pct: inputs.inflation,
         cost_model:           inputs.costModel,
-        // Series por año (cuando mode='arena')
         energy_price_series_usd_kwh: builtPrice.series || null,
-        discount_rate_series_pct:    builtRate.series  || null,
-        usd_to_mxn_series:           builtFx.series    || null,
-        // Año 1 horario (precio) → backend usa override de revenue ponderado
         price_hourly_year1_usd_kwh:  builtPrice.hourly || null,
-        // Metadatos de modo (informativos)
         price_mode: inputs.priceMode,
-        rate_mode:  inputs.rateMode,
-        fx_mode:    inputs.fxMode,
       }
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
@@ -5262,12 +4111,6 @@ async function exportData(type) {
       const r = await api(`/api/export/csv?session_id=${WP.sessionId}&type=energy`, 'GET');
       csvText = r.csv || buildEnergyCsv(WP.energyResult);
       filename = 'monthly_energy.csv';
-    } else if (type === 'metrics') {
-      csvText = buildMetricsCsv(WP.compareResult);
-      filename = 'model_metrics.csv';
-    } else if (type === 'forecast') {
-      csvText = buildForecastCsv(WP.forecastResult);
-      filename = 'forecast_backtest.csv';
     } else if (type === 'climatology') {
       const r = WP.windStats || await api('/api/wind/stats', 'POST', {
         session_id: WP.sessionId, data_source: WP.activeDataSource,
@@ -5332,7 +4175,6 @@ async function exportReport() {
       '',
       '── METODOLOGÍA ────────────────────────────────────────',
       'Datos: MERRA-2 / ERA5 (Windnavigator) — horario, 50m',
-      'Modelos ML: Ridge, RF, GBM, MLP, SVR, ARIMA — validación cronológica',
       'Energía: Curva de potencia real + corrección densidad de aire',
       'Tecno-econ.: Metodología PhD MATLAB — CAPEX, OPEX, VAN, LCOE, VAE',
       'Weibull: máxima verosimilitud de 2 parámetros, localización fija en 0 (scipy.stats.weibull_min)',
@@ -5343,7 +4185,7 @@ async function exportReport() {
       '· VAN sensible a tasa de descuento y precio de energía asumidos',
       '',
       '══════════════════════════════════════════════════════',
-      ' AERO OPEN CIM · v2.0 · Flask + scikit-learn + LightGBM',
+      ' AERO OPEN CIM · v2.0 · Flask + scikit-learn',
       '══════════════════════════════════════════════════════',
     ];
     downloadText(lines.join('\n'), 'aero_report.txt');
@@ -5500,24 +4342,6 @@ function buildEnergyCsv(r) {
   const rows = ['mes,energia_mwh,fc_pct'];
   const m = r.monthly;
   if (m.labels) m.labels.forEach((l, i) => rows.push(`${l},${m.energy_mwh?.[i]??''},${m.capacity_factor_pct?.[i]??''}`));
-  return rows.join('\n');
-}
-
-function buildMetricsCsv(r) {
-  if (!r?.results?.length) return '';
-  const rows = ['modelo,rmse,mae,r2,smape,nrmse,skill'];
-  r.results.forEach(t => rows.push(`${t.name},${t.rmse??''},${t.mae??''},${t.r2??''},${t.smape??''},${t.nrmse??''},${t.skill??''}`));
-  return rows.join('\n');
-}
-
-function buildForecastCsv(r) {
-  if (!r) return '';
-  const rows = ['timestamp,observado,predicho,persistencia'];
-  const ts = r.timestamps || r.dates || [];
-  const ob = r.observed || r.actual || [];
-  const pr = r.predicted || [];
-  const pe = r.persistence || [];
-  ts.forEach((t, i) => rows.push(`${t},${ob[i]??''},${pr[i]??''},${pe[i]??''}`));
   return rows.join('\n');
 }
 
@@ -9124,8 +7948,8 @@ function renderMonthHourHeatmap(data) {
                       style="background:rgb(${r_|0},${g_|0},${b_|0});height:26px;border-radius:3px;
                              display:flex;align-items:center;justify-content:center;
                              color:${txtCol};font-size:.52rem;font-weight:500;cursor:default;
-                             transition:transform .1s;" 
-                      onmouseenter="this.style.transform='scale(1.15)';this.style.zIndex='2'" 
+                             transition:transform .1s;"
+                      onmouseenter="this.style.transform='scale(1.15)';this.style.zIndex='2'"
                       onmouseleave="this.style.transform='';this.style.zIndex=''">${v.toFixed(1)}</div>`;
       }
     }
@@ -9196,7 +8020,7 @@ function parqueRenderKrigingLayer(key) {
   let krigResult = null;
   if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
   else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
-  
+
   if (!krigResult) {
     document.getElementById('parque-map-status').textContent = 'Sin Kriging';
     document.getElementById('parque-map-hint').style.display = '';
@@ -9241,7 +8065,7 @@ function parqueRenderPolygon() {
   let pts = null;
   if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) pts = MAPA.parkPoints;
   else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) pts = KRIG.parkPoints;
-  
+
   if (!pts || pts.length < 3) return;
   PARQUE.polyLayer = L.polygon(pts, {
     color: '#f59e0b', weight: 2.5,
@@ -9720,7 +8544,7 @@ async function parqueOptimize() {
   let krigResult = null;
   if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
   else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
-  
+
   const layerKey   = document.getElementById('parque-map-layer')?.value || 'wind';
   const windGrid   = krigResult ? (krigResult[layerKey] || krigResult['wind'] || krigResult['speed'] || null) : null;
 
@@ -10512,1531 +9336,12 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     });
   });
-  document.querySelectorAll('[data-model]').forEach(tag => {
-    const key = tag.dataset.model;
-    const color = MODEL_COLORS[key];
-    if (color) {
-      tag.style.setProperty('--tag-color', color);
-    }
-  });
 });
 
-// ═════════════════════════ DEMAND & PML ARENA ═════════════════════════════
-const MODEL_COLORS = {
-  'linear':         '#3b82f6', // blue
-  'polynomial':     '#8b5cf6', // purple
-  'exponential':    '#ec4899', // pink
-  'logarithmic':    '#0ea5e9', // light blue
-  'logistic':       '#14b8a6', // teal
-  'mean_reversion': '#f59e0b', // amber
-  'arima':          '#eab308', // yellow
-  'holt_winters':   '#f97316', // orange
-  'random_forest':  '#10b981', // emerald
-  'gradient_boost': '#06b6d4', // cyan
-  'mlp':            '#6366f1', // indigo
-  'ridge':          '#84cc16', // lime
-  'svr':            '#d946ef'  // fuchsia
-};
-
-const FC_PALETTE = [
-  '#4DA3FF', '#9F7AEA', '#3DDC97', '#F4C95D',
-  '#F6A156', '#E5707A', '#7FB3D5', '#9CCC65',
-];
-
-function fcGetSelectedModels(containerId) {
-  return [...document.querySelectorAll(`#${containerId} [data-model].active`)]
-    .map(t => t.dataset.model);
-}
-
-function fcKpiCard(label, value, sub) {
-  return `<div class="kpi-card">
-    <div class="kpi-label">${label}</div>
-    <div class="kpi-value">${value}</div>
-    ${sub ? `<div class="kpi-sub">${sub}</div>` : ''}
-  </div>`;
-}
-
-function fcFormatNumber(x, digits = 2) {
-  if (x == null || !isFinite(x)) return '—';
-  if (Math.abs(x) >= 1000) return x.toLocaleString('es-MX', { maximumFractionDigits: 0 });
-  return x.toLocaleString('es-MX', { maximumFractionDigits: digits });
-}
-
-function fcPct(x, digits = 2) {
-  if (x == null || !isFinite(x)) return '—';
-  return (x * 100).toFixed(digits) + '%';
-}
-
-// ─── DEMAND ARENA ─────────────────────────────────────────────────────────────
-function bindDemandArena() {
-  const tagBox = document.getElementById('dem-model-tags');
-  if (tagBox) {
-    tagBox.addEventListener('click', e => {
-      const tag = e.target.closest('[data-model]');
-      if (tag) tag.classList.toggle('active');
-    });
-  }
-  const btn = document.getElementById('btn-dem-train');
-  if (btn) btn.addEventListener('click', runDemandArena);
-  
-  const btnHourly = document.getElementById('btn-dem-train-hourly');
-  if (btnHourly) btnHourly.addEventListener('click', runDemandArenaHourly);
-}
-
-async function runDemandArena() {
-  const preset = document.getElementById('dem-preset').value;
-  const growth = parseFloat(document.getElementById('dem-growth').value || '0.025');
-  const horizon = Math.max(25, parseInt(document.getElementById('dem-horizon').value || '25'));
-  const models = fcGetSelectedModels('dem-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
-
-  const btn = document.getElementById('btn-dem-train');
-  btn.disabled = true; btn.textContent = 'Cargando y ajustando…';
-  try {
-    const baseInfo = await api('/api/demand/load', 'POST', {
-      session_id: WP.sessionId, preset
-    });
-    renderDemandKPIs(baseInfo);
-    renderDemandProfile(baseInfo.stats);
-    renderDemandDuration(baseInfo.stats);
-
-    const fc = await api('/api/demand/forecast', 'POST', {
-      session_id: WP.sessionId, preset, growth, horizon, models
-    });
-    WP.arenaCache.demand = fc;
-    renderForecastFutureChart('demand');
-    renderForecastFutureChart('demand_hourly');
-    renderDemandProjection(fc, baseInfo.meta);
-    // Predicción continua (histórico + proyección)
-    const baseYear = new Date().getFullYear();
-    const histYearsAbs = (fc.history_t || []).map(t => baseYear - (fc.history_t.length - 1) + t);
-    renderArenaPrediction({
-      canvasId: 'dem-prediction-chart', badgeId: 'dem-prediction-badge',
-      history: { years: histYearsAbs, annual: (fc.history_annual || []).map(v => v / 1000) },
-      projection: Object.fromEntries(Object.entries(fc.projection || {}).map(([k, v]) => [k, {
-        ...v, annual: (v.annual || []).map(x => x / 1000),
-        ci_low:  (v.ci_low  || []).map(x => x / 1000),
-        ci_high: (v.ci_high || []).map(x => x / 1000),
-      }])),
-      bestModel: fc.best_model, ylabel: 'Energía anual (GWh)', decimals: 1, unitLabel: 'GWh',
-    });
-    renderDemandTable(fc);
-    await loadParkConfiguration({ quiet: true });
-    setStatus(`Demanda proyectada — modelo recomendado: ${fc.best_model}`);
-    toast('Pronóstico de demanda completado', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y entrenar modelos (anual)';
-  }
-}
-
-async function runDemandArenaHourly() {
-  const preset = document.getElementById('dem-preset').value;
-  const models = fcGetSelectedModels('dem-model-tags');
-  if (!models.length) { toast('Selecciona al menos un modelo', 'warn'); return; }
-
-  const btn = document.getElementById('btn-dem-train-hourly');
-  btn.disabled = true; btn.textContent = 'Ajustando perfil horario… (aprox 30s)';
-  try {
-    const baseInfo = await api('/api/demand/load', 'POST', {
-      session_id: WP.sessionId, preset
-    });
-    renderDemandKPIs(baseInfo);
-    renderDemandProfile(baseInfo.stats);
-    renderDemandDuration(baseInfo.stats);
-
-    const fc = await api('/api/demand/forecast_hourly', 'POST', {
-      session_id: WP.sessionId, preset, models
-    });
-    WP.arenaCache.demand_hourly = fc;
-
-    const growth = parseFloat(document.getElementById('dem-growth').value || '0.025');
-    const horizon = Math.max(25, parseInt(document.getElementById('dem-horizon').value || '25'));
-    const annualFc = await api('/api/demand/forecast', 'POST', {
-      session_id: WP.sessionId, preset, growth, horizon, models
-    });
-    WP.arenaCache.demand = annualFc;
-    await loadParkConfiguration({ quiet: true });
-    renderForecastFutureChart('demand');
-    renderForecastFutureChart('demand_hourly');
-    toast('Perfil horario ajustado. Revisa Configuración del parque.', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Entrenar Perfil Horario (8760 pts)';
-  }
-}
-
-function renderDemandKPIs(info) {
-  const s = info.stats || {};
-  const unit = info.meta?.unit || '';
-  const html = [
-    fcKpiCard('Horas observadas', fcFormatNumber(s.n_hours), 'serie horaria'),
-    fcKpiCard('Demanda media', `${fcFormatNumber(s.mean)} ${unit}`),
-    fcKpiCard('Pico', `${fcFormatNumber(s.max)} ${unit}`),
-    fcKpiCard('Factor de carga', s.load_factor != null ? (s.load_factor * 100).toFixed(1) + '%' : '—'),
-    fcKpiCard('Energía anual', `${fcFormatNumber(s.annual_sum / 1000, 1)} GWh`, 'sum × 1 h'),
-    fcKpiCard('Desviación', `${fcFormatNumber(s.std)} ${unit}`),
-  ].join('');
-  document.getElementById('dem-kpis').innerHTML = html;
-}
-
-function renderDemandProfile(stats) {
-  destroyChart('dem-profile-chart');
-  const ctx = document.getElementById('dem-profile-chart').getContext('2d');
-  WP.charts['dem-profile-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: Array.from({ length: 24 }, (_, i) => `${i}h`),
-      datasets: [{
-        label: 'Demanda media diurna', data: stats.diurnal,
-        borderColor: acc(), backgroundColor: acc() + '22',
-        fill: true, tension: 0.35, borderWidth: 2, pointRadius: 0,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: true } },
-      scales: { x: { grid: { color: gridColor() } }, y: { grid: { color: gridColor() } } }
-    }
-  });
-}
-
-function renderDemandDuration(stats) {
-  destroyChart('dem-duration-chart');
-  const ctx = document.getElementById('dem-duration-chart').getContext('2d');
-  const data = stats.duration_curve || [];
-  const step = Math.max(1, Math.floor(data.length / 200));
-  const sub = data.filter((_, i) => i % step === 0);
-  WP.charts['dem-duration-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: sub.map((_, i) => ((i * step) / data.length * 100).toFixed(0) + '%'),
-      datasets: [{
-        label: 'Curva de duración', data: sub,
-        borderColor: acc3(), backgroundColor: acc3() + '22',
-        fill: true, tension: 0, borderWidth: 1.5, pointRadius: 0,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: { x: { grid: { color: gridColor() } }, y: { grid: { color: gridColor() } } }
-    }
-  });
-}
-
-function renderDemandProjection(fc, meta) {
-  destroyChart('dem-projection-chart');
-  const ctx = document.getElementById('dem-projection-chart').getContext('2d');
-  const proj = fc.projection || {};
-  const keys = Object.keys(proj);
-  if (!keys.length) return;
-
-  const sample = proj[keys[0]];
-  const labels = sample.years;
-  const datasets = keys.map((k, i) => ({
-    label: `${k} (CAGR ${fcPct(proj[k].cagr)})`,
-    data: proj[k].annual.map(v => v / 1000),  // GWh
-    borderColor: FC_PALETTE[i % FC_PALETTE.length],
-    backgroundColor: FC_PALETTE[i % FC_PALETTE.length] + '22',
-    borderWidth: k === fc.best_model ? 2.6 : 1.3,
-    borderDash: k === fc.best_model ? [] : [4, 3],
-    fill: false, tension: 0.25, pointRadius: 0,
-  }));
-
-  // banda IC del mejor modelo
-  if (fc.best_model && proj[fc.best_model]) {
-    const b = proj[fc.best_model];
-    datasets.push({
-      label: 'IC 95 % (mejor modelo)',
-      data: b.ci_high.map(v => v / 1000),
-      borderColor: 'transparent', backgroundColor: acc() + '20',
-      fill: '+1', pointRadius: 0, borderWidth: 0,
-    });
-    datasets.push({
-      label: '_lower', data: b.ci_low.map(v => v / 1000),
-      borderColor: 'transparent', backgroundColor: 'transparent',
-      pointRadius: 0, borderWidth: 0, fill: false,
-    });
-  }
-
-  WP.charts['dem-projection-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: {
-        legend: { display: true, labels: { filter: it => it.text !== '_lower' } },
-        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, 1)} GWh` } },
-      },
-      scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Año' } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'Energía anual (GWh)' } }
-      }
-    }
-  });
-
-  const best = fc.best_model;
-  if (best && proj[best]) {
-    const b = proj[best];
-    document.getElementById('dem-best-badge').textContent =
-      `Best: ${best} · CAGR ${fcPct(b.cagr)} · Año final ${fcFormatNumber(b.annual.at(-1) / 1000, 1)} GWh`;
-  }
-}
-
-function renderDemandTable(fc) {
-  const tbody = document.querySelector('#dem-compare-tbl tbody');
-  const rows = (fc.summary || []).filter(r => !r.error);
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty-msg">Sin resultados.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map((r, i) => {
-    const isBest = r.model === fc.best_model;
-    return `<tr class="${isBest ? 'best-row' : ''}">
-      <td>${isBest ? '★ ' : ''}${r.model} <span class="text-muted" style="font-size:.7rem">${r.kind || ''}</span></td>
-      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
-      <td>${fcFormatNumber(r.rmse, 1)}</td>
-      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
-      <td>${fcPct(r.cagr)}</td>
-      <td>${fcFormatNumber((r.final || 0) / 1000, 1)} GWh</td>
-    </tr>`;
-  }).join('');
-}
-
-// ─── PML ARENA ────────────────────────────────────────────────────────────────
-function bindPMLArena() {
-  const btn = document.getElementById('btn-pml-load-fixed');
-  if (btn) btn.addEventListener('click', runPMLArena);
-}
-
-async function runPMLArena() {
-  const preset = document.getElementById('pml-preset').value;
-  if (!preset) { toast('Selecciona el archivo PML 2018', 'warn'); return; }
-
-  const btn = document.getElementById('btn-pml-load-fixed');
-  btn.disabled = true; btn.textContent = 'Cargando perfil 2018…';
-  try {
-    const baseInfo = await api('/api/pml/load', 'POST', {
-      session_id: WP.sessionId, preset
-    });
-    renderPMLKPIs(baseInfo, 'venta');
-    renderPMLSeries(baseInfo);
-    renderPMLDiurnal(baseInfo);
-    renderPMLDuration(baseInfo, 'venta');
-    WP.arenaCache.pml = {
-      mode: 'fixed_2018_profile',
-      meta: baseInfo.meta,
-      raw_values: baseInfo.profile_2018,
-      sides: { venta: { raw_values: baseInfo.profile_2018 } },
-    };
-    await loadParkConfiguration({ quiet: true });
-    const norm = baseInfo.normalization?.venta || {};
-    const status = document.getElementById('pml-fixed-status');
-    if (status) {
-      const filled = Number(norm.filled_hours || 0);
-      status.style.display = '';
-      status.innerHTML = `<strong>PML 2018 publicado.</strong> ${Number(norm.output_hours || 0).toLocaleString('es-MX')} horas · replicación fija · escalamiento 0 %.${filled ? ` Se completó ${filled} hora faltante con la media anual porque el archivo no contiene timestamp.` : ''}`;
-    }
-    setStatus('PML 2018 cargado — perfil fijo publicado para el proyecto');
-    toast('PML 2018 cargado y publicado sin modelado', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Cargar y usar PML 2018';
-  }
-}
-
-function renderPMLSeries(info) {
-  destroyChart('pml-series-chart');
-  const ctx = document.getElementById('pml-series-chart')?.getContext('2d');
-  if (!ctx) return;
-  const values = info.daily_mean_venta || [];
-  WP.charts['pml-series-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: values.map((_, index) => `Día ${index + 1}`),
-      datasets: [{
-        label: 'PML medio diario · venta', data: values,
-        borderColor: acc(), backgroundColor: acc() + '18',
-        borderWidth: 1.6, pointRadius: 0, tension: 0.15, fill: true,
-      }],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Día de 2018' } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: info.meta?.unit || '$/kWh' } },
-      },
-    },
-  });
-  const badge = document.getElementById('pml-series-badge');
-  if (badge) badge.textContent = `${info.base_year} · ${Number(info.stats_venta?.n_hours || 0).toLocaleString('es-MX')} h · fijo`;
-}
-
-function renderPMLKPIs(info, side) {
-  const s = side === 'compra' ? info.stats_compra : info.stats_venta;
-  const unit = info.meta?.unit || '$/kWh';
-  const html = [
-    fcKpiCard('Horas observadas', fcFormatNumber(s.n_hours)),
-    fcKpiCard(`Precio medio (${side})`, `${fcFormatNumber(s.mean, 4)} ${unit}`),
-    fcKpiCard('P10 / P90', `${fcFormatNumber(s.p10, 4)} / ${fcFormatNumber(s.p90, 4)}`, unit),
-    fcKpiCard('Mín / Máx', `${fcFormatNumber(s.min, 4)} / ${fcFormatNumber(s.max, 4)}`),
-    fcKpiCard('Volatilidad σ', fcFormatNumber(s.std, 4)),
-    fcKpiCard('Ingreso/MWh medio', `${fcFormatNumber(s.mean * 1000, 2)} $/MWh`),
-  ].join('');
-  document.getElementById('pml-kpis').innerHTML = html;
-}
-
-function renderPMLDiurnal(info) {
-  destroyChart('pml-diurnal-chart');
-  const ctx = document.getElementById('pml-diurnal-chart').getContext('2d');
-  WP.charts['pml-diurnal-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: Array.from({ length: 24 }, (_, i) => `${i}h`),
-      datasets: [
-        { label: 'Compra', data: info.stats_compra.diurnal,
-          borderColor: acc2(), backgroundColor: acc2() + '20',
-          fill: true, tension: 0.35, borderWidth: 1.8, pointRadius: 0 },
-        { label: 'Venta', data: info.stats_venta.diurnal,
-          borderColor: acc(), backgroundColor: acc() + '20',
-          fill: false, tension: 0.35, borderWidth: 2.2, pointRadius: 0 },
-      ]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: true } },
-      scales: { x: { grid: { color: gridColor() } }, y: { grid: { color: gridColor() } } }
-    }
-  });
-}
-
-function renderPMLDuration(info, sideKey) {
-  destroyChart('pml-duration-chart');
-  const ctx = document.getElementById('pml-duration-chart').getContext('2d');
-  const stats = sideKey === 'compra' ? info.stats_compra : info.stats_venta;
-  const data = stats.duration_curve || [];
-  const step = Math.max(1, Math.floor(data.length / 200));
-  const sub = data.filter((_, i) => i % step === 0);
-  WP.charts['pml-duration-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: sub.map((_, i) => ((i * step) / data.length * 100).toFixed(0) + '%'),
-      datasets: [{
-        label: `Curva de duración — ${sideKey}`, data: sub,
-        borderColor: gold(), backgroundColor: gold() + '22',
-        fill: true, tension: 0, borderWidth: 1.5, pointRadius: 0,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: { x: { grid: { color: gridColor() } }, y: { grid: { color: gridColor() } } }
-    }
-  });
-}
-
-function renderPMLProjection(fc) {
-  destroyChart('pml-projection-chart');
-  const ctx = document.getElementById('pml-projection-chart').getContext('2d');
-  const sides = fc.sides || {};
-  const sideKeys = Object.keys(sides);
-  if (!sideKeys.length) return;
-
-  let labels = null;
-  const datasets = [];
-  sideKeys.forEach((s, si) => {
-    const sideData = sides[s];
-    const proj = sideData.projection || {};
-    const best = sideData.best_model;
-    Object.keys(proj).forEach((k, i) => {
-      const p = proj[k];
-      labels = labels || p.years;
-      const isBest = (k === best);
-      datasets.push({
-        label: `${s} · ${k}${isBest ? ' ★' : ''}`,
-        data: p.annual,
-        borderColor: FC_PALETTE[(i + si * 3) % FC_PALETTE.length],
-        backgroundColor: FC_PALETTE[(i + si * 3) % FC_PALETTE.length] + '20',
-        borderWidth: isBest ? 2.6 : 1.0,
-        borderDash: isBest ? [] : [4, 3],
-        fill: false, tension: 0.25, pointRadius: 0,
-      });
-    });
-    if (best && proj[best]) {
-      const b = proj[best];
-      datasets.push({
-        label: `IC 95 % · ${s}`, data: b.ci_high,
-        borderColor: 'transparent',
-        backgroundColor: (s === 'venta' ? acc() : acc2()) + '18',
-        fill: '+1', pointRadius: 0, borderWidth: 0,
-      });
-      datasets.push({
-        label: '_lower', data: b.ci_low,
-        borderColor: 'transparent', backgroundColor: 'transparent',
-        pointRadius: 0, borderWidth: 0, fill: false,
-      });
-    }
-  });
-
-  WP.charts['pml-projection-chart'] = new Chart(ctx, {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: {
-        legend: { display: true, labels: { filter: it => it.text !== '_lower' } },
-        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, 4)} $/kWh` } },
-      },
-      scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Año' } },
-        y: { grid: { color: gridColor() }, title: { display: true, text: 'PML anual ($/kWh)' } }
-      }
-    }
-  });
-
-  const fragments = sideKeys.map(s => {
-    const b = sides[s].best_model;
-    const last = sides[s].projection?.[b]?.annual?.at(-1);
-    const cagr = sides[s].projection?.[b]?.cagr;
-    return `${s}: ${b} · CAGR ${fcPct(cagr)} · Año final ${fcFormatNumber(last, 4)} $/kWh`;
-  });
-  document.getElementById('pml-best-badge').textContent = fragments.join('   ·   ');
-}
-
-function renderPMLTable(fc) {
-  const tbody = document.querySelector('#pml-compare-tbl tbody');
-  const sides = fc.sides || {};
-  const rows = [];
-  Object.keys(sides).forEach(s => {
-    const best = sides[s].best_model;
-    (sides[s].summary || []).filter(r => !r.error).forEach(r => {
-      rows.push({ ...r, side: s, isBest: r.model === best });
-    });
-  });
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty-msg">Sin resultados.</td></tr>';
-    return;
-  }
-  tbody.innerHTML = rows.map(r => `
-    <tr class="${r.isBest ? 'best-row' : ''}">
-      <td>${r.isBest ? '★ ' : ''}${r.model} <span class="text-muted" style="font-size:.7rem">${r.kind || ''}</span></td>
-      <td>${r.side}</td>
-      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
-      <td>${fcFormatNumber(r.rmse, 4)}</td>
-      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
-      <td>${fcPct(r.cagr)}</td>
-      <td>${fcFormatNumber(r.final, 4)} $/kWh</td>
-    </tr>`).join('');
-}
-
-// ─── TASA DE INTERÉS ARENA ───────────────────────────────────────────────────
-function bindInterestArena() {
-  const btn = document.getElementById('btn-interest-train');
-  if (btn) btn.addEventListener('click', runInterestArena);
-}
-
-async function runInterestArena() {
-  const preset = document.getElementById('interest-preset').value;
-  const horizon = Math.max(25, parseInt(document.getElementById('interest-horizon').value || '25'));
-
-  const btn = document.getElementById('btn-interest-train');
-  btn.disabled = true; btn.textContent = 'Validando ventanas recientes…';
-  try {
-    const fc = await api('/api/interest/forecast', 'POST', {
-      session_id: WP.sessionId, preset, horizon
-    });
-    WP.arenaCache.interest = fc;
-    renderInterestKPIs(fc);
-    renderArena25Years({
-      canvasId: 'interest-25y-chart', badgeId: 'interest-25y-badge',
-      projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Tasa (%)', decimals: 2, unitLabel: '%', bestOnly: true,
-    });
-    renderMarketMilestones('interest-milestone-tbl', fc, '%');
-    await loadParkConfiguration({ quiet: true });
-    toast('Trayectoria de tasa estimada para 25 años', 'success');
-  } catch (err) {
-    console.error(err);
-    toast(err.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Estimar tasa del proyecto · 25 años';
-  }
-}
-
-function renderInterestKPIs(fc) {
-  const kpiBox = document.getElementById('interest-kpis');
-  if (!fc.history_annual || !fc.history_annual.length) return;
-  const vals = fc.history_annual;
-  const last = vals[vals.length - 1];
-  const years = fc.history_years || [];
-  const start = fc.provenance?.training_start_year ?? '—';
-  const end = fc.provenance?.training_end_year ?? '—';
-  const metric = fc.validation?.models?.[fc.best_model] || {};
-
-  kpiBox.innerHTML = [
-    fcKpiCard('Histórico visible', `${years[0]}–${years.at(-1)}`),
-    fcKpiCard(`Último año (${years.at(-1)})`, `${fcFormatNumber(last)} %`),
-    fcKpiCard('Ventana de entrenamiento', `${start}–${end}`),
-    fcKpiCard('RMSE fuera de muestra', `${fcFormatNumber(metric.rmse, 3)} pp`)
-  ].join('');
-}
-
-let interestProjChart = null;
-function renderInterestProjection(fc) {
-  const ctx = document.getElementById('interest-projection-chart');
-  if (!ctx) return;
-  if (interestProjChart) interestProjChart.destroy();
-
-  const datasets = [];
-  const histYears = fc.history_years;
-  const histVals = fc.history_annual;
-  
-  datasets.push({
-    label: 'Histórico',
-    data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
-    borderColor: isLight() ? '#1e293b' : '#ffffff', backgroundColor: isLight() ? '#1e293b' : '#ffffff',
-    borderWidth: 3, pointRadius: 2, pointHoverRadius: 5, fill: false,
-    order: 10
-  });
-
-  const best = fc.best_model;
-  let colorIdx = 0;
-  for (const [key, m] of Object.entries(fc.projection)) {
-    if (m.error) continue;
-    const isBest = (key === best);
-    const color = MODEL_COLORS[key] || FC_PALETTE[colorIdx % FC_PALETTE.length];
-    if (!isBest) colorIdx++;
-    const lw = isBest ? 4 : 3;
-    const ldash = isBest ? [] : [5, 5];
-    const alpha = isBest ? 1.0 : 0.6;
-
-    datasets.push({
-      label: `Proj: ${key}`,
-      data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
-      backgroundColor: 'transparent',
-      borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
-      borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
-    });
-    
-    if (isBest && m.ci_low && m.ci_high) {
-       datasets.push({
-         label: `${key} Límite Sup`,
-         data: m.years.map((y, i) => ({ x: y, y: m.ci_high[i] })),
-         borderColor: 'transparent', backgroundColor: Chart.helpers.color(color).alpha(0.1).rgbString(),
-         fill: '+1', pointRadius: 0, order: 20
-       });
-       datasets.push({
-         label: `${key} Límite Inf`,
-         data: m.years.map((y, i) => ({ x: y, y: m.ci_low[i] })),
-         borderColor: 'transparent', backgroundColor: 'transparent',
-         fill: false, pointRadius: 0, order: 20
-       });
-    }
-  }
-
-  interestProjChart = new Chart(ctx, {
-    type: 'line', data: { datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: '#a0a0a0' } } },
-      scales: {
-        x: { type: 'linear', title: { display: true, text: 'Año', color: '#a0a0a0' },
-             grid: { color: '#333' }, ticks: { color: '#a0a0a0', callback: v => v.toString() } },
-        y: { title: { display: true, text: 'Tasa (%)', color: '#a0a0a0' },
-             grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }
-      }
-    }
-  });
-}
-
-function renderInterestCompareTable(fc) {
-  const tbody = document.querySelector('#interest-compare-tbl tbody');
-  if (!tbody || !fc.summary) return;
-  const best = fc.best_model;
-  
-  const rows = fc.summary.map(r => {
-    return { ...r, isBest: (r.model === best) };
-  });
-  
-  tbody.innerHTML = rows.map(r => `
-    <tr class="${r.isBest ? 'best-row' : ''}">
-      <td>${r.isBest ? '★ ' : ''}${r.model}</td>
-      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
-      <td>${fcFormatNumber(r.rmse, 4)}</td>
-      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
-      <td>${fcFormatNumber(r.final, 2)} %</td>
-    </tr>`).join('');
-}
-
-
-// ─── TIPO DE CAMBIO ARENA ────────────────────────────────────────────────────
-function bindFxArena() {
-  const btn = document.getElementById('btn-fx-train');
-  if (btn) btn.addEventListener('click', runFxArena);
-}
-
-async function runFxArena() {
-  const preset = document.getElementById('fx-preset').value;
-  const horizon = Math.max(25, parseInt(document.getElementById('fx-horizon').value || '25'));
-
-  const btn = document.getElementById('btn-fx-train');
-  btn.disabled = true; btn.textContent = 'Validando ventanas recientes…';
-  try {
-    const fc = await api('/api/fx/forecast', 'POST', {
-      session_id: WP.sessionId, preset, horizon
-    });
-    WP.arenaCache.fx = fc;
-    renderFxKPIs(fc);
-    renderArena25Years({
-      canvasId: 'fx-25y-chart', badgeId: 'fx-25y-badge',
-      projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'MXN / USD', decimals: 2, unitLabel: 'MXN/USD', bestOnly: true,
-    });
-    renderMarketMilestones('fx-milestone-tbl', fc, 'MXN/USD');
-    await loadParkConfiguration({ quiet: true });
-    toast('Trayectoria USD/MXN estimada con el régimen reciente', 'success');
-  } catch (err) {
-    console.error(err);
-    toast(err.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Estimar USD/MXN del proyecto · 25 años';
-  }
-}
-
-function renderMarketMilestones(tableId, fc, unit) {
-  const tbody = document.querySelector(`#${tableId} tbody`);
-  const projection = fc?.projection?.[fc?.best_model];
-  if (!tbody || !projection?.annual?.length) return;
-  const windowYears = projection.params?.window_years
-    || fc.validation?.selected_window_years
-    || fc.projection_policy?.training_window_years
-    || '—';
-  const milestones = [1, 5, 10, 15, 20, 25]
-    .filter(year => year <= projection.annual.length);
-  tbody.innerHTML = milestones.map(projectYear => {
-    const index = projectYear - 1;
-    return `<tr>
-      <td>${projectYear}</td>
-      <td>${projection.years[index]}</td>
-      <td>${fcFormatNumber(projection.annual[index], 3)} ${unit}</td>
-      <td>${fc.best_model} · ${windowYears} años</td>
-    </tr>`;
-  }).join('');
-}
-
-function renderFxKPIs(fc) {
-  const kpiBox = document.getElementById('fx-kpis');
-  if (!fc.history_annual || !fc.history_annual.length) return;
-  const vals = fc.history_annual;
-  const last = vals[vals.length - 1];
-  const years = fc.history_years || [];
-  const metric = fc.validation?.models?.[fc.best_model] || {};
-
-  kpiBox.innerHTML = [
-    fcKpiCard('Histórico visible', `${years[0]}–${years.at(-1)}`),
-    fcKpiCard(`Último año (${years.at(-1)})`, `${fcFormatNumber(last)} MXN/USD`),
-    fcKpiCard('Ventana de entrenamiento', `${fc.training_start || '—'}–${fc.training_end || '—'}`),
-    fcKpiCard('RMSE fuera de muestra', `${fcFormatNumber(metric.rmse, 3)} MXN/USD`)
-  ].join('');
-}
-
-let fxProjChart = null;
-function renderFxProjection(fc) {
-  const ctx = document.getElementById('fx-projection-chart');
-  if (!ctx) return;
-  if (fxProjChart) fxProjChart.destroy();
-
-  const datasets = [];
-  const histYears = fc.history_years;
-  const histVals = fc.history_annual;
-  
-  datasets.push({
-    label: 'Histórico',
-    data: histYears.map((y, i) => ({ x: y, y: histVals[i] })),
-    borderColor: isLight() ? '#1e293b' : '#ffffff', backgroundColor: isLight() ? '#1e293b' : '#ffffff',
-    borderWidth: 3, pointRadius: 2, pointHoverRadius: 5, fill: false,
-    order: 10
-  });
-
-  const best = fc.best_model;
-  let colorIdx = 0;
-  for (const [key, m] of Object.entries(fc.projection)) {
-    if (m.error) continue;
-    const isBest = (key === best);
-    const color = MODEL_COLORS[key] || FC_PALETTE[colorIdx % FC_PALETTE.length];
-    if (!isBest) colorIdx++;
-    const lw = isBest ? 4 : 3;
-    const ldash = isBest ? [] : [5, 5];
-    const alpha = isBest ? 1.0 : 0.6;
-
-    datasets.push({
-      label: `Proj: ${key}`,
-      data: m.years.map((y, i) => ({ x: y, y: m.annual[i] })),
-      backgroundColor: 'transparent',
-      borderWidth: lw, borderDash: ldash, tension: 0.2, pointRadius: isBest ? 2 : 0,
-      borderColor: Chart.helpers.color(color).alpha(alpha).rgbString()
-    });
-    
-    if (isBest && m.ci_low && m.ci_high) {
-       datasets.push({
-         label: `${key} Límite Sup`,
-         data: m.years.map((y, i) => ({ x: y, y: m.ci_high[i] })),
-         borderColor: 'transparent', backgroundColor: Chart.helpers.color(color).alpha(0.1).rgbString(),
-         fill: '+1', pointRadius: 0, order: 20
-       });
-       datasets.push({
-         label: `${key} Límite Inf`,
-         data: m.years.map((y, i) => ({ x: y, y: m.ci_low[i] })),
-         borderColor: 'transparent', backgroundColor: 'transparent',
-         fill: false, pointRadius: 0, order: 20
-       });
-    }
-  }
-
-  fxProjChart = new Chart(ctx, {
-    type: 'line', data: { datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: { legend: { labels: { color: '#a0a0a0' } } },
-      scales: {
-        x: { type: 'linear', title: { display: true, text: 'Año', color: '#a0a0a0' },
-             grid: { color: '#333' }, ticks: { color: '#a0a0a0', callback: v => v.toString() } },
-        y: { title: { display: true, text: 'MXN / USD', color: '#a0a0a0' },
-             grid: { color: '#333' }, ticks: { color: '#a0a0a0' } }
-      }
-    }
-  });
-}
-
-function renderFxCompareTable(fc) {
-  const tbody = document.querySelector('#fx-compare-tbl tbody');
-  if (!tbody || !fc.summary) return;
-  const best = fc.best_model;
-  
-  const rows = fc.summary.map(r => {
-    return { ...r, isBest: (r.model === best) };
-  });
-  
-  tbody.innerHTML = rows.map(r => `
-    <tr class="${r.isBest ? 'best-row' : ''}">
-      <td>${r.isBest ? '★ ' : ''}${r.model}</td>
-      <td>${r.r2 != null ? r.r2.toFixed(4) : '—'}</td>
-      <td>${fcFormatNumber(r.rmse, 4)}</td>
-      <td>${r.mape != null ? r.mape.toFixed(2) + '%' : '—'}</td>
-      <td>$ ${fcFormatNumber(r.final, 2)}</td>
-    </tr>`).join('');
-}
-
-// ─── HELPERS GENÉRICOS DE GRÁFICA UNIFICADA ──────────────────────────────────
-// Predicción continua: histórico + todas las proyecciones en el mismo eje
-function renderArenaPrediction({ canvasId, badgeId, history, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '' }) {
-  destroyChart(canvasId);
-  const ctxEl = document.getElementById(canvasId);
-  if (!ctxEl) return;
-  const ctx = ctxEl.getContext('2d');
-
-  const datasets = [];
-  const histYears = history.years || [];
-  const histVals  = history.annual || [];
-  datasets.push({
-    label: 'Histórico',
-    data: histYears.map((y, i) => ({ x: y, y: scaler(histVals[i]) })),
-    borderColor: ink(), backgroundColor: ink(),
-    borderWidth: 2.6, pointRadius: 1.6, fill: false, order: 10,
-  });
-
-  let colorIdx = 0;
-  for (const [key, m] of Object.entries(projection || {})) {
-    if (!m || m.error || !m.years) continue;
-    const isBest = (key === bestModel);
-    const color = isBest ? '#22c55e' : FC_PALETTE[colorIdx % FC_PALETTE.length];
-    if (!isBest) colorIdx++;
-    datasets.push({
-      label: `Proj: ${key}${isBest ? ' ★' : ''}`,
-      data: m.years.map((y, i) => ({ x: y, y: scaler(m.annual[i]) })),
-      borderColor: color, backgroundColor: 'transparent',
-      borderWidth: isBest ? 2.8 : 1.4,
-      borderDash: isBest ? [] : [5, 4],
-      pointRadius: 0, tension: 0.2,
-    });
-    if (isBest && m.ci_low && m.ci_high) {
-      datasets.push({
-        label: `${key} IC sup`,
-        data: m.years.map((y, i) => ({ x: y, y: scaler(m.ci_high[i]) })),
-        borderColor: 'transparent',
-        backgroundColor: Chart.helpers.color(color).alpha(0.12).rgbString(),
-        fill: '+1', pointRadius: 0, order: 20,
-      });
-      datasets.push({
-        label: `${key} IC inf`,
-        data: m.years.map((y, i) => ({ x: y, y: scaler(m.ci_low[i]) })),
-        borderColor: 'transparent', backgroundColor: 'transparent',
-        fill: false, pointRadius: 0, order: 20,
-      });
-    }
-  }
-
-  WP.charts[canvasId] = new Chart(ctx, {
-    type: 'line', data: { datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { labels: { filter: it => !/IC (sup|inf)$/.test(it.text) } },
-        tooltip: { callbacks: {
-          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
-        } }
-      },
-      scales: {
-        x: { type: 'linear', title: { display: true, text: 'Año' }, grid: { color: gridColor() }, ticks: { callback: v => v.toString() } },
-        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
-      }
-    }
-  });
-
-  if (badgeId && bestModel) {
-    const b = projection?.[bestModel];
-    const last = b?.annual?.at(-1);
-    const cagr = b?.cagr;
-    const txt = `Best: ${bestModel}` + (cagr != null ? ` · CAGR ${fcPct(cagr)}` : '') + (last != null ? ` · Año final ${fcFormatNumber(scaler(last), decimals)} ${unitLabel}` : '');
-    const bd = document.getElementById(badgeId);
-    if (bd) bd.textContent = txt;
-  }
-}
-
-// Proyección continua hora a hora a N años: escala el último ciclo (8760 h o 365 d)
-// del histórico por annual[y] / aggregate(perfil) para CADA modelo proyectado.
-// Incluye zoom con scroll y pan con drag igual que la gráfica observado-vs-predicho.
-function renderArena25YearsHourly({ canvasId, badgeId, rawValues, projection, bestModel,
-                                     ylabel, scaler = (v) => v, decimals = 2, unitLabel = '',
-                                     baseYearLabel = null, annualKind = 'mean' }) {
-  destroyChart(canvasId);
-  const ctxEl = document.getElementById(canvasId);
-  if (!ctxEl) return false;
-  if (!rawValues || !rawValues.length) return false;
-
-  const proj = projection || {};
-  const modelKeys = Object.keys(proj).filter(k => proj[k] && !proj[k].error && proj[k].annual?.length);
-  if (!modelKeys.length) return false;
-  const refModel = (bestModel && proj[bestModel]) ? proj[bestModel] : proj[modelKeys[0]];
-
-  // Determinar tamaño del ciclo
-  const n = rawValues.length;
-  let cycleLen;
-  if (n >= 8760) cycleLen = 8760;
-  else if (n >= 365) cycleLen = 365;
-  else cycleLen = n;
-  const baseProfile = rawValues.slice(-cycleLen);
-
-  // Suma y media del perfil base
-  let baseSum = 0;
-  for (let i = 0; i < baseProfile.length; i++) baseSum += baseProfile[i];
-  const baseMean = baseSum / baseProfile.length;
-  const denom = (annualKind === 'sum') ? baseSum : baseMean;
-  if (!isFinite(denom) || denom === 0) return false;
-
-  const horizon = refModel.annual.length;
-  const totalLen = horizon * cycleLen;
-  const startYear = (refModel.years && refModel.years[0]) ||
-                    (baseYearLabel ? baseYearLabel + 1 : new Date().getFullYear() + 1);
-
-  // Etiquetas
-  const labels = new Array(totalLen);
-  for (let y = 0; y < horizon; y++) {
-    const yr = startYear + y;
-    for (let h = 0; h < cycleLen; h++) {
-      labels[y * cycleLen + h] = `${yr} · ${cycleLen === 8760 ? 'h' : 'd'}${h+1}`;
-    }
-  }
-
-  // Construir serie horaria por modelo
-  function buildHourlySeries(annualArr) {
-    const arr = new Array(totalLen);
-    for (let y = 0; y < annualArr.length && y < horizon; y++) {
-      const factor = annualArr[y] / denom;
-      for (let h = 0; h < cycleLen; h++) {
-        arr[y * cycleLen + h] = scaler(baseProfile[h] * factor);
-      }
-    }
-    return arr;
-  }
-
-  const datasets = [];
-
-  // Banda IC del mejor modelo (al fondo)
-  const best = bestModel && proj[bestModel] && !proj[bestModel].error ? proj[bestModel] : null;
-  if (best && best.ci_high?.length && best.ci_low?.length) {
-    datasets.push({
-      label: 'IC 95% sup', data: buildHourlySeries(best.ci_high),
-      borderColor: 'transparent', backgroundColor: '#22c55e1a',
-      fill: '+1', pointRadius: 0, borderWidth: 0, order: 99,
-    });
-    datasets.push({
-      label: 'IC 95% inf', data: buildHourlySeries(best.ci_low),
-      borderColor: 'transparent', backgroundColor: 'transparent',
-      fill: false, pointRadius: 0, borderWidth: 0, order: 99,
-    });
-  }
-
-  // Una línea por modelo
-  modelKeys.forEach((k, i) => {
-    const isBest = (k === bestModel);
-    datasets.push({
-      label: `${k}${isBest ? ' \u2605' : ''}`,
-      data: buildHourlySeries(proj[k].annual),
-      borderColor: isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length],
-      backgroundColor: (isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length]) + '22',
-      borderWidth: isBest ? 1.4 : 0.8,
-      borderDash: isBest ? [] : [3, 2],
-      fill: false, tension: 0, pointRadius: 0,
-      order: isBest ? 1 : 10 + i,
-    });
-  });
-
-  // ── Toolbar de navegación ──────────────────────────────────────────────────
-  const wrapper = ctxEl.parentElement;
-  if (wrapper) wrapper.style.position = wrapper.style.position || 'relative';
-
-  // Limpiar toolbar anterior si existe
-  const oldToolbar = wrapper?.querySelector('.hourly-nav-toolbar');
-  if (oldToolbar) oldToolbar.remove();
-
-  // Estado de ventana deslizante
-  const WIN_YEARS  = 5;
-  let winStart     = 0;
-  let winEnd       = WIN_YEARS * cycleLen - 1;
-  let isZoomed     = false;
-  let boxSelectOn  = false;
-
-  const toolbar = document.createElement('div');
-  toolbar.className = 'hourly-nav-toolbar';
-  toolbar.style.cssText = [
-    'position:absolute', 'top:6px', 'right:6px', 'z-index:10',
-    'display:flex', 'gap:5px', 'align-items:center',
-  ].join(';');
-
-  const btnPrev = document.createElement('button');
-  btnPrev.type = 'button'; btnPrev.textContent = '\u25C4'; btnPrev.title = 'Año anterior';
-  btnPrev.className = 'hourly-nav-btn';
-
-  const yrLabel = document.createElement('span');
-  yrLabel.className = 'hourly-nav-label';
-
-  const btnNext = document.createElement('button');
-  btnNext.type = 'button'; btnNext.textContent = '\u25BA'; btnNext.title = 'Año siguiente';
-  btnNext.className = 'hourly-nav-btn';
-
-  const btnAll = document.createElement('button');
-  btnAll.type = 'button'; btnAll.textContent = '\u22DE Ver todo';
-  btnAll.title = 'Mostrar todos los años (sin zoom)';
-  btnAll.className = 'hourly-nav-btn hourly-nav-btn--all';
-
-  const btnZoomSel = document.createElement('button');
-  btnZoomSel.type = 'button'; btnZoomSel.textContent = '\u25A3 Zoom sel.';
-  btnZoomSel.title = 'Haz drag sobre el gráfico para hacer zoom en esa área';
-  btnZoomSel.className = 'hourly-nav-btn hourly-nav-btn--zoom';
-
-  toolbar.append(btnPrev, yrLabel, btnNext, btnAll, btnZoomSel);
-  if (wrapper) wrapper.appendChild(toolbar);
-
-  // ── Helpers de ventana ─────────────────────────────────────────────────────
-  function updateLabel() {
-    if (isZoomed) { yrLabel.textContent = 'Zoom activo'; return; }
-    const y0 = startYear + Math.floor(winStart / cycleLen);
-    const y1 = startYear + Math.min(horizon - 1, Math.floor(winEnd / cycleLen));
-    yrLabel.textContent = `${y0} \u2013 ${y1}`;
-  }
-
-  function applyWindow(chart) {
-    if (isZoomed) return;
-    chart.options.scales.x.min = winStart;
-    chart.options.scales.x.max = winEnd;
-    chart.update('none');
-    updateLabel();
-    btnPrev.disabled = (winStart <= 0);
-    btnNext.disabled = (winEnd >= totalLen - 1);
-  }
-
-  function slideYears(delta) {
-    if (isZoomed) return;
-    const step = cycleLen;
-    winStart = Math.max(0, Math.min(winStart + delta * step, totalLen - WIN_YEARS * cycleLen));
-    winEnd   = winStart + WIN_YEARS * cycleLen - 1;
-    applyWindow(WP.charts[canvasId]);
-  }
-
-  // ── Crear chart ────────────────────────────────────────────────────────────
-  const ctx = ctxEl.getContext('2d');
-  WP.charts[canvasId] = new Chart(ctx, {
-    type: 'line', data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: {
-        legend: { labels: { filter: it => !/IC 95%/.test(it.text) } },
-        decimation: { enabled: true, algorithm: 'lttb', samples: 3000, threshold: 3000 },
-        tooltip: { callbacks: {
-          label: c => `${c.dataset.label}: ${fcFormatNumber(c.parsed.y, decimals)} ${unitLabel}`.trim()
-        } },
-        zoom: {
-          pan:  { enabled: false },        // pan libre DESACTIVADO
-          zoom: {
-            wheel:  { enabled: false },    // scroll DESACTIVADO (evita lentitud)
-            pinch:  { enabled: false },    // pinch DESACTIVADO
-            drag:   { enabled: false },    // box-select OFF por defecto
-            mode: 'x',
-            onZoomComplete: () => {
-              isZoomed = true;
-              updateLabel();
-              btnZoomSel.textContent = '\u2715 Salir zoom';
-              btnZoomSel.classList.add('active');
-              // desactivar drag para no re-zoomear encima
-              WP.charts[canvasId].options.plugins.zoom.zoom.drag.enabled = false;
-              WP.charts[canvasId].update('none');
-              boxSelectOn = false;
-            },
-          },
-        },
-      },
-      scales: {
-        x: {
-          min: 0, max: WIN_YEARS * cycleLen - 1,
-          title: {
-            display: true,
-            text: `\u25C4 \u25BA Navega con los botones  \u00B7  ${WIN_YEARS} de ${horizon} años visibles  \u00B7  Zoom solo por selección`
-          },
-          grid: { color: gridColor() },
-          ticks: {
-            maxTicksLimit: Math.min(horizon, 26), font: { size: 9 },
-            callback: function(_val, idx) {
-              if (idx % cycleLen === 0) return startYear + Math.floor(idx / cycleLen);
-              return '';
-            }
-          }
-        },
-        y: {
-          title: { display: true, text: ylabel },
-          grid: { color: gridColor() }, ticks: { font: { size: 9 } }
-        }
-      }
-    }
-  });
-
-  // ── Eventos de toolbar ─────────────────────────────────────────────────────
-  btnPrev.addEventListener('click', () => slideYears(-1));
-  btnNext.addEventListener('click', () => slideYears(+1));
-
-  btnAll.addEventListener('click', () => {
-    const chart = WP.charts[canvasId];
-    if (!chart) return;
-    isZoomed = false; boxSelectOn = false;
-    chart.options.plugins.zoom.zoom.drag.enabled = false;
-    chart.options.scales.x.min = 0;
-    chart.options.scales.x.max = totalLen - 1;
-    chart.update('none');
-    yrLabel.textContent = `Todo (${horizon} a\u00F1os)`;
-    btnZoomSel.textContent = '\u25A3 Zoom sel.';
-    btnZoomSel.classList.remove('active');
-    btnPrev.disabled = true;
-    btnNext.disabled = true;
-  });
-
-  btnZoomSel.addEventListener('click', () => {
-    const chart = WP.charts[canvasId];
-    if (!chart) return;
-    if (isZoomed) {
-      // Salir del zoom → volver a ventana de 5 años
-      isZoomed = false; boxSelectOn = false;
-      chart.options.plugins.zoom.zoom.drag.enabled = false;
-      chart.resetZoom();
-      btnZoomSel.textContent = '\u25A3 Zoom sel.';
-      btnZoomSel.classList.remove('active');
-      applyWindow(chart);
-    } else if (boxSelectOn) {
-      // Cancelar selección
-      boxSelectOn = false;
-      chart.options.plugins.zoom.zoom.drag.enabled = false;
-      chart.update('none');
-      btnZoomSel.textContent = '\u25A3 Zoom sel.';
-      btnZoomSel.classList.remove('active');
-    } else {
-      // Activar box-select
-      boxSelectOn = true;
-      chart.options.plugins.zoom.zoom.drag.enabled = true;
-      chart.update('none');
-      btnZoomSel.textContent = '\uD83D\uDD0D Arrastra para zoom\u2026';
-      btnZoomSel.classList.add('active');
-    }
-  });
-
-  // Scroll horizontal → desliza años (sin zoom)
-  ctxEl.addEventListener('wheel', (e) => {
-    if (isZoomed || boxSelectOn) return;
-    if (Math.abs(e.deltaX) < 5 && Math.abs(e.deltaY) < 5) return;
-    e.preventDefault();
-    const dir = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY) > 0 ? 1 : -1;
-    slideYears(dir);
-  }, { passive: false });
-
-  // Touch swipe horizontal
-  let touchStartX = null;
-  ctxEl.addEventListener('touchstart', (e) => {
-    if (e.touches.length === 1) touchStartX = e.touches[0].clientX;
-  }, { passive: true });
-  ctxEl.addEventListener('touchend', (e) => {
-    if (touchStartX === null) return;
-    const dx = (e.changedTouches[0]?.clientX ?? touchStartX) - touchStartX;
-    touchStartX = null;
-    if (Math.abs(dx) < 40) return;
-    slideYears(dx < 0 ? 1 : -1);
-  }, { passive: true });
-
-  // Estado inicial
-  updateLabel();
-  btnPrev.disabled = true;
-  btnNext.disabled = (horizon <= WIN_YEARS);
-
-  // Badge
-  if (badgeId && best) {
-    const lastVal = best.annual[best.annual.length - 1];
-    const txt = `Best: ${bestModel} \u00B7 ${totalLen.toLocaleString()} ${cycleLen === 8760 ? 'h' : 'd'} \u00B7 CAGR ${fcPct(best.cagr)} \u00B7 A\u00F1o final ${fcFormatNumber(scaler(lastVal), decimals)} ${unitLabel}`;
-    const bd = document.getElementById(badgeId);
-    if (bd) bd.textContent = txt;
-  }
-  return true;
-}
-
-// Proyección 25 años (solo futuro) con bandas IC del mejor modelo
-function renderArena25Years({ canvasId, badgeId, projection, bestModel, ylabel, scaler = (v) => v, decimals = 2, unitLabel = '', bestOnly = false }) {
-  destroyChart(canvasId);
-  const ctxEl = document.getElementById(canvasId);
-  if (!ctxEl) return;
-  const ctx = ctxEl.getContext('2d');
-  const proj = projection || {};
-  let keys = Object.keys(proj).filter(k => proj[k] && !proj[k].error);
-  if (bestOnly && bestModel && proj[bestModel]) keys = [bestModel];
-  if (!keys.length) return;
-  const labels = proj[keys[0]].years;
-
-  const datasets = keys.map((k, i) => {
-    const isBest = (k === bestModel);
-    return {
-      label: `${k}${isBest ? ' ★' : ''}`,
-      data: proj[k].annual.map(scaler),
-      borderColor: isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length],
-      backgroundColor: (isBest ? '#22c55e' : FC_PALETTE[i % FC_PALETTE.length]) + '22',
-      borderWidth: isBest ? 2.8 : 1.4,
-      borderDash: isBest ? [] : [5, 4],
-      fill: false, tension: 0.25, pointRadius: 0,
-    };
-  });
-
-  if (bestModel && proj[bestModel]) {
-    const b = proj[bestModel];
-    datasets.push({
-      label: 'Banda de planeación sup', data: b.ci_high.map(scaler),
-      borderColor: 'transparent', backgroundColor: '#22c55e22',
-      fill: '+1', pointRadius: 0, borderWidth: 0,
-    });
-    datasets.push({
-      label: 'Banda de planeación inf', data: b.ci_low.map(scaler),
-      borderColor: 'transparent', backgroundColor: 'transparent',
-      pointRadius: 0, borderWidth: 0, fill: false,
-    });
-  }
-
-  WP.charts[canvasId] = new Chart(ctx, {
-    type: 'line', data: { labels, datasets },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: {
-        legend: { labels: { filter: it => !/Banda de planeación/.test(it.text) } },
-        tooltip: { callbacks: {
-          label: ctx => `${ctx.dataset.label}: ${fcFormatNumber(ctx.parsed.y, decimals)} ${unitLabel}`.trim()
-        } }
-      },
-      scales: {
-        x: { title: { display: true, text: 'Año' }, grid: { color: gridColor() } },
-        y: { title: { display: true, text: ylabel }, grid: { color: gridColor() } }
-      }
-    }
-  });
-
-  if (badgeId && bestModel && proj[bestModel]) {
-    const b = proj[bestModel];
-    const txt = `${bestModel} · Año 25: ${fcFormatNumber(scaler(b.annual.at(-1)), decimals)} ${unitLabel}`;
-    const bd = document.getElementById(badgeId);
-    if (bd) bd.textContent = txt;
-  }
-}
-
-// ─── VIENTO: PROYECCIÓN ANUAL (motor de tendencia, post-entrenamiento ML) ────
-async function runWindAnnualForecast() {
-  if (!WP.sessionId) return;
-  const btn = document.getElementById('btn-run-wind-annual');
-  if (btn) btn.disabled = true;
-  setStatus('Calculando proyección anual de viento…');
-  try {
-    const fc = await api('/api/wind/annual_forecast', 'POST', {
-      session_id: WP.sessionId, data_source: WP.activeDataSource,
-      ws_col: 'wind_speed', growth: 0.005, horizon: 25,
-    });
-    WP.arenaCache.wind = fc;
-    renderForecastFutureChart('wind');
-    renderWindKPIs(fc);
-    renderArenaPrediction({
-      canvasId: 'wind-prediction-chart', badgeId: 'wind-prediction-badge',
-      history: { years: fc.history_years, annual: fc.history_annual },
-      projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Velocidad media anual (m/s)', decimals: 2, unitLabel: 'm/s',
-    });
-    renderArena25Years({
-      canvasId: 'wind-25y-chart', badgeId: 'wind-25y-badge',
-      projection: fc.projection, bestModel: fc.best_model,
-      ylabel: 'Velocidad media anual (m/s)', decimals: 2, unitLabel: 'm/s',
-    });
-    setStatus('Proyección anual de viento lista.');
-  } catch (e) {
-    console.warn('wind annual forecast skipped:', e.message);
-    toast(`No se pudo calcular proyección anual: ${e.message}`, 'warn');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-function renderWindKPIs(fc) {
-  const box = document.getElementById('wind-kpis');
-  if (!box) return;
-  const s = fc.stats || {};
-  const html = [
-    fcKpiCard('Horas observadas', fcFormatNumber(s.n_hours), 'serie horaria'),
-    fcKpiCard('Velocidad media', `${fcFormatNumber(s.mean, 2)} m/s`),
-    fcKpiCard('P10 / P90', `${fcFormatNumber(s.p10, 2)} / ${fcFormatNumber(s.p90, 2)}`, 'm/s'),
-    fcKpiCard('Mín / Máx', `${fcFormatNumber(s.min, 2)} / ${fcFormatNumber(s.max, 2)}`, 'm/s'),
-    fcKpiCard('Desviación', `${fcFormatNumber(s.std, 2)} m/s`),
-    fcKpiCard('Histórico anual', s.used_real_annual ? 'Real (>=2 años)' : 'Sintético'),
-  ].join('');
-  box.innerHTML = html;
-}
-
-
-
-// ─── FORECAST STUDIO TABS & DATA LOADING ─────────────────────────────────────
-function bindForecastTabs() {
-  document.querySelectorAll('.tab-btn[data-tab^="fs-"]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      document.querySelectorAll('.tab-btn[data-tab^="fs-"], .tab-content[id^="fs-"]').forEach(el => el.classList.remove('active'));
-      btn.classList.add('active');
-      const targetId = btn.dataset.tab + '-tab';
-      document.getElementById(targetId).classList.add('active');
-      
-      const key = btn.dataset.tab.replace('fs-', '');
-      if (key !== 'wind') {
-        populateForecastStudioSelect(key);
-      }
-      renderForecastFutureChart(key);
-    });
-  });
-
-  ['demand', 'demand_hourly', 'pml', 'pml_hourly', 'interest', 'fx'].forEach(key => {
-    const sel = document.getElementById(`fs-${key}-model-select`);
-    if (sel) {
-      sel.addEventListener('change', () => loadForecastFromCache(key));
-    }
-  });
-  renderForecastFutureChart('wind');
-}
-
-function getForecastStudioTargetCache(key) {
-  const cache = WP.arenaCache[key];
-  if ((key === 'pml' || key === 'pml_hourly') && cache?.sides) {
-    const selectedSide = document.getElementById('pml-side')?.value;
-    const sideKey = selectedSide && selectedSide !== 'both' && cache.sides[selectedSide]
-      ? selectedSide
-      : (cache.sides.venta ? 'venta' : Object.keys(cache.sides)[0]);
-    return { cache, targetCache: cache.sides[sideKey], sideKey };
-  }
-  return { cache, targetCache: cache, sideKey: null };
-}
-
-function populateForecastStudioSelect(key) {
-  const { targetCache, sideKey } = getForecastStudioTargetCache(key);
-  const sel = document.getElementById(`fs-${key}-model-select`);
-  if (!sel) return;
-
-  if (!targetCache || !targetCache.fitted || Object.keys(targetCache.fitted).length === 0) {
-    sel.innerHTML = '<option value="">Aún no hay modelos entrenados</option>';
-    return;
-  }
-  
-  const currentVal = sel.value;
-  sel.innerHTML = '<option value="">-- Seleccionar Modelo --</option>';
-  for (const modelName of Object.keys(targetCache.fitted)) {
-    const m = targetCache.fitted[modelName];
-    if (m.error) continue;
-    const opt = document.createElement('option');
-    opt.value = modelName;
-    const sideLabel = sideKey ? ` · ${sideKey}` : '';
-    opt.textContent = `${modelName}${sideLabel} (R² = ${m.metrics?.r2?.toFixed(2) || 'N/A'})`;
-    sel.appendChild(opt);
-  }
-  
-  if (currentVal && targetCache.fitted[currentVal] && !targetCache.fitted[currentVal].error) {
-    sel.value = currentVal;
-  } else if (targetCache.best_model) {
-    sel.value = targetCache.best_model;
-  }
-  
-  if (sel.value) {
-    loadForecastFromCache(key);
-  }
-}
-
-function loadForecastFromCache(key) {
-  const { cache, targetCache } = getForecastStudioTargetCache(key);
-  const sel = document.getElementById(`fs-${key}-model-select`);
-  if (!cache) { console.warn(`Forecast Studio: no hay caché para "${key}"`); return; }
-  if (!sel || !sel.value) return;
-
-  const modelName = sel.value;
-
-  if (!targetCache || !targetCache.fitted) { console.warn(`Forecast Studio: fitted no disponible para "${key}"`); return; }
-  const m = targetCache.fitted[modelName];
-  if (!m || m.error) { console.warn(`Forecast Studio: modelo "${modelName}" no disponible`); return; }
-
-  const y_pred_raw = m.fitted_values || m.fitted || [];
-  let y_true = [];
-  let y_pred = [];
-  let labels = [];
-
-  if (key === 'interest' || key === 'fx') {
-    // Financieras: entrenadas sobre datos anuales reales (desde 2001)
-    const full_true = targetCache.history_annual || [];
-    const full_years = targetCache.history_years || [];
-    const train_len  = y_pred_raw.length;
-    y_true  = full_true.slice(full_true.length - train_len);
-    y_pred  = y_pred_raw;
-    labels  = full_years.slice(full_years.length - train_len).map(y => y.toString());
-  } else if (key === 'demand_hourly' || key === 'pml_hourly') {
-    y_true = (targetCache.raw_values || []).slice(0, y_pred_raw.length);
-    y_pred = y_pred_raw;
-    labels = y_true.map((_, i) => 'h=' + (i + 1));
-  } else {
-    // Demanda / PML: entrenadas sobre agregados anuales (sintéticos o reales)
-    y_true  = targetCache.history_annual || [];
-    y_pred  = y_pred_raw;
-    labels  = (targetCache.history_t || []).map(t => 't=' + t);
-
-    if (key === 'demand') {
-      y_true = y_true.map(v => v / 1000);  // MWh → GWh
-      y_pred = y_pred.map(v => v / 1000);
-    }
-  }
-
-  const unitMap = {
-    'demand':   'GWh',
-    'demand_hourly': 'MW',
-    'pml':      '$/kWh',
-    'pml_hourly': '$/kWh',
-    'interest': '%',
-    'fx':       'MXN/USD',
-    'wind':     'm/s'
-  };
-
-  const r = {
-    y_true,
-    y_pred,
-    labels,
-    unit:    unitMap[key] || '',
-    metrics: m.metrics,
-    residuals: { binned_bias: [] },
-    stability: []
-  };
-
-  const prefix = `fs-${key}`;
-  renderForecastMainChart(r, prefix);
-  renderScatterChart(r, prefix);
-  renderResidualHistogram(r, prefix);
-  renderBinnedBiasChart(r, prefix);
-  renderForecastFutureChart(key);
-  renderForecastMetricPills(r.metrics, prefix, r.unit);
-
-  // Ocultar tarjeta de estabilidad (solo para viento)
-  const stabEl = document.getElementById(`${prefix}-stability-chart`);
-  if (stabEl) stabEl.parentElement.parentElement.style.display = 'none';
-
-  // Perfil horario real (solo Demanda y PML)
-  if ((key === 'demand' || key === 'pml') && targetCache.raw_values?.length) {
-    renderRawHourlyProfile(targetCache.raw_values, key, unitMap[key]);
-  }
-}
-
-function renderRawHourlyProfile(rawValues, key, unit) {
-  const canvasId = `fs-${key}-raw-chart`;
-  const el = document.getElementById(canvasId);
-  if (!el) return;
-
-  const chartKey = `${key}-raw`;
-  destroyChart(chartKey);
-
-  const vals = key === 'demand' ? rawValues.map(v => v / 1000) : rawValues;
-  const labels = vals.map((_, i) => i + 1);
-
-  WP.charts[chartKey] = new Chart(el.getContext('2d'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: `Perfil horario (${unit})`,
-        data: vals,
-        borderColor: acc(),
-        borderWidth: 1,
-        pointRadius: 0,
-        fill: false,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: item => `Hora ${item.label}: ${item.formattedValue} ${unit}`
-          }
-        }
-      },
-      scales: {
-        x: {
-          grid: { color: gridColor() },
-          ticks: { maxTicksLimit: 12, font: { size: 9 } }
-        },
-        y: {
-          grid: { color: gridColor() },
-          title: { display: true, text: unit },
-          ticks: { font: { size: 9 } }
-        }
-      }
-    }
-  });
-}
-
-// ─── MARKET DATA HUB ─────────────────────────────────────────────────────────
-
-const MARKET_CATS = ['demand', 'pml', 'interest', 'fx'];
+// ═════════════════════════ MARKET DATA HUB ═════════════════════════════
+const MARKET_CATS = ['demand', 'pml'];
 const MARKET_LABELS = {
-  demand: 'Demanda', pml: 'PML', interest: 'Tasa de Interés', fx: 'Tipo de Cambio'
+  demand: 'Demanda', pml: 'PML'
 };
 
 async function loadMarketFiles() {
@@ -12085,49 +9390,6 @@ function bindMarketDataHub() {
   });
 }
 
-// Pobla los selectores de preset (dem-preset, pml-preset, interest-preset,
-// fx-preset) leyendo /api/market/list_presets. Cualquier archivo nuevo
-// depositado en las carpetas mercado_demanda/, mercado_pml/, mercado_fx/,
-// mercado_tasas/ aparece automáticamente.
-const MARKET_PRESET_TARGETS = {
-  demand:   { selectId: 'dem-preset',      defaultKey: 'juchitan' },
-  pml:      { selectId: 'pml-preset',      defaultKey: 'pml_ipo'  },
-  interest: { selectId: 'interest-preset', defaultKey: 'tiie_28d' },
-  fx:       { selectId: 'fx-preset',       defaultKey: 'usdmxn'   },
-};
-
-async function loadMarketPresets() {
-  try {
-    const r = await api('/api/market/list_presets', 'GET');
-    Object.entries(MARKET_PRESET_TARGETS).forEach(([cat, cfg]) => {
-      const sel = document.getElementById(cfg.selectId);
-      if (!sel) return;
-      const items = r[cat] || [];
-      if (!items.length) {
-        sel.innerHTML = '<option value="">(sin archivos en carpeta)</option>';
-        return;
-      }
-      sel.innerHTML = '';
-      items.forEach(it => {
-        const opt = document.createElement('option');
-        opt.value = it.key;
-        const unit = it.unit ? ` (${it.unit})` : '';
-        opt.textContent = `${it.label}${unit}`;
-        sel.appendChild(opt);
-      });
-      // Restaurar selección preferida si existe
-      const has = (k) => Array.from(sel.options).some(o => o.value === k);
-      if (has(cfg.defaultKey)) sel.value = cfg.defaultKey;
-    });
-  } catch (e) {
-    console.warn('loadMarketPresets failed:', e);
-    Object.values(MARKET_PRESET_TARGETS).forEach(cfg => {
-      const sel = document.getElementById(cfg.selectId);
-      if (sel) sel.innerHTML = '<option value="">(error al listar presets)</option>';
-    });
-  }
-}
-
 async function loadMarketFile(category, filename) {
   setStatus(`Cargando ${filename}…`);
   try {
@@ -12168,11 +9430,10 @@ async function uploadMarketFile(category, file) {
 
 async function syncParkCommercialFile(category) {
   if (category === 'pml') {
-    const fixed = await api('/api/pml/load', 'POST', {
+    await api('/api/pml/load', 'POST', {
       session_id: WP.sessionId,
       preset: 'session_market_pml',
     });
-    WP.arenaCache.pmlBase = fixed;
   }
   if (category === 'pml' || category === 'demand') {
     const saved = await saveParkConfiguration({ quiet: true });
@@ -12249,8 +9510,6 @@ function _renderMarketResult(category, r) {
     ).join('');
   }
 
-  // Store in WP for later use by Centro de modelaje / Forecast Studio
-  WP.arenaCache[`market_${category}`] = r;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -12727,9 +9986,6 @@ async function publishMCPRun() {
     krig3ActivatePublishedSource();
     WP.windStats = null;
     WP.energyResult = null;
-    WP.compareResult = null;
-    WP.forecastResult = null;
-    if (WP.arenaCache) delete WP.arenaCache.wind;
     WP.technoResult = null;
     WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
     WP.technoInputsInitialized = false;
@@ -13716,9 +10972,6 @@ async function continueGlobeToReanalysis() {
     applyReferenceHeightToUI(WP.referenceHeight);
     WP.windStats = null;
     WP.energyResult = null;
-    WP.compareResult = null;
-    WP.forecastResult = null;
-    if (WP.arenaCache) delete WP.arenaCache.wind;
     WP.technoResult = null;
     WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
     WP.technoInputsInitialized = false;
@@ -14553,8 +11806,7 @@ function resetSimulationState() {
   // 3) Charts: destruir todos los charts del análisis para evitar overlay viejo
   if (typeof WP !== 'undefined' && WP.charts) {
     Object.keys(WP.charts).forEach(id => {
-      if (id.startsWith('chart-') || id.startsWith('dem-') ||
-          id.startsWith('pml-') || id.startsWith('fx-') || id.startsWith('int-')) {
+      if (id.startsWith('chart-')) {
         try { WP.charts[id]?.destroy?.(); } catch (e) {}
         WP.charts[id] = null;
       }
@@ -14565,7 +11817,7 @@ function resetSimulationState() {
   const vBox  = document.getElementById('resumen-verdict');
   const vVal  = document.getElementById('resumen-verdict-value');
   const vSub  = document.getElementById('resumen-verdict-sub');
-  const vCta  = document.getElementById('btn-go-to-arena');
+  const vCta  = document.getElementById('btn-go-to-park-config');
   const title = document.getElementById('resumen-site-title');
   const sub   = document.getElementById('resumen-site-sub');
   vBox?.classList.remove('is-good', 'is-marginal', 'is-poor');
@@ -14824,9 +12076,9 @@ function bindResumenUnified() {
     runResumenPipeline();
   });
   // CTA → Centro de modelaje
-  document.getElementById('btn-go-to-arena')?.addEventListener('click', () => {
-    const arenaBtn = document.querySelector('.nav-btn[data-module="models"]');
-    arenaBtn?.click();
+  document.getElementById('btn-go-to-park-config')?.addEventListener('click', () => {
+    const parkConfigBtn = document.querySelector('.nav-btn[data-module="park-config"]');
+    parkConfigBtn?.click();
   });
   // Configuración del parque concentra únicamente los dos archivos requeridos:
   // demanda (cuando hay autoconsumo) y PML. FX y tasa son campos manuales.
@@ -14839,14 +12091,11 @@ function bindResumenUnified() {
     const destination = document.getElementById(destinationId);
     if (!select || !destination) return;
     const row = select.closest('.market-data-row');
-    if (!row || row.dataset.movedToArena === '1') return;
-    row.dataset.movedToArena = '1';
+    if (!row || row.dataset.movedToParkConfig === '1') return;
+    row.dataset.movedToParkConfig = '1';
     row.classList.remove('mb-3');
     destination.appendChild(row);
   });
-  // Si quedó arena-data-tab residual de un bind previo, lo retiramos.
-  document.getElementById('arena-data-tab')?.remove();
-  document.querySelector('#mod-models .tab-btn[data-tab="arena-data"]')?.remove();
 
   // Al entrar a Diseño y optimización: encuadre ~35 km al sitio del Globe +
   // estación maestra fija + parámetros desde Centro de modelaje. Solo se aplica la
@@ -14885,7 +12134,7 @@ async function krig3AutoFitFromGlobe() {
 
   // Pull parámetros económicos del cache de Centro de modelaje (solo en primera aplicación
   // de este POI; preserva ediciones manuales posteriores del usuario).
-  krig3PullParamsFromArena();
+  krig3PullProjectParams();
 
   // Asegura que los sitios estén cargados
   if (typeof KRIG !== 'undefined' && KRIG && (!KRIG.sites?.length) && typeof krig3LoadSites === 'function') {
@@ -14915,131 +12164,73 @@ async function krig3AutoFitFromGlobe() {
 }
 
 function parkMarketTrajectory(category) {
-  const stored = WP.parkConfiguration?.market_models?.[category]?.annual;
-  if (Array.isArray(stored) && stored.length) return stored.map(Number).filter(Number.isFinite);
-  const paramKey = category === 'pml' ? 'price' : category === 'interest' ? 'rate' : category;
-  return _arenaProjectionAnnual(paramKey) || null;
+  if (category !== 'pml') return null;
+  const stored = WP.parkConfiguration?.market_models?.pml?.annual;
+  return Array.isArray(stored) && stored.length
+    ? stored.map(Number).filter(Number.isFinite) : null;
 }
 
 function parkEquivalentDesignInputs() {
   const config = WP.parkConfiguration || {};
   const horizon = Math.max(5, Number(config.project_horizon_years) || 25);
   const priceSeries = (parkMarketTrajectory('pml') || []).slice(0, horizon);
-  const projectedRate = (parkMarketTrajectory('interest') || []).slice(0, horizon);
-  const projectedFx = (parkMarketTrajectory('fx') || []).slice(0, horizon);
   const baseRate = Number(config.base_interest_rate_pct);
   const baseFx = Number(config.base_fx_mxn_usd);
-  const hasBaseRate = config.base_interest_rate_pct !== null
-    && config.base_interest_rate_pct !== '' && Number.isFinite(baseRate);
-  const rateSeriesPct = hasBaseRate
-    ? Array.from({ length: horizon }, () => baseRate)
-    : projectedRate;
-  const fxSeries = Number.isFinite(baseFx) && baseFx > 0
-    ? Array.from({ length: horizon }, () => baseFx)
-    : projectedFx;
-  const n = Math.max(priceSeries.length, rateSeriesPct.length, fxSeries.length, 1);
-  const rates = Array.from({ length: n }, (_, i) => {
-    const v = Number(rateSeriesPct[Math.min(i, rateSeriesPct.length - 1)]);
-    return Number.isFinite(v) ? Math.max(v, 0) / 100 : 0.08;
-  });
-  let cumulative = 1;
-  const discount = rates.map(rate => (cumulative *= (1 + rate)));
-  const weights = discount.map(value => 1 / value);
-  const weightedMean = (series, fallback) => {
-    if (!series.length) return fallback;
-    let num = 0, den = 0;
-    for (let i = 0; i < n; i++) {
-      const value = Number(series[Math.min(i, series.length - 1)]);
-      if (Number.isFinite(value)) { num += value * weights[i]; den += weights[i]; }
-    }
-    return den > 0 ? num / den : fallback;
-  };
-  const equivalentRate = rateSeriesPct.length
-    ? Math.pow(discount.at(-1) || 1, 1 / n) - 1
+  const rate = Number.isFinite(baseRate) && baseRate >= 0 ? baseRate / 100 : 0.08;
+  const fx = Number.isFinite(baseFx) && baseFx > 0 ? baseFx : null;
+  const weights = Array.from({ length: Math.max(priceSeries.length, 1) }, (_, index) =>
+    1 / Math.pow(1 + rate, index + 1));
+  const priceRaw = priceSeries.length
+    ? priceSeries.reduce((sum, value, index) => sum + value * weights[index], 0) /
+      weights.slice(0, priceSeries.length).reduce((sum, value) => sum + value, 0)
     : null;
-  const priceRaw = weightedMean(priceSeries, null);
-  const fx = weightedMean(fxSeries, null);
-  const price = priceRaw == null ? null : _pmlToUsdKwh(priceRaw, fx || 18, config.market_models?.pml?.unit);
-  let demand = 0;
-  if (config.commercialization_mode !== 'total_sale') {
-    if (config.demand_source === 'market_series') {
-      demand = Number(config.demand_series?.annual_mwh)
-        || Number(config.annual_demand_mwh)
-        || Number(parkMarketTrajectory('demand')?.[0])
-        || 0;
-    } else {
-      demand = Number(config.annual_demand_mwh) || 0;
-    }
-  }
+  const price = priceRaw == null ? null
+    : _pmlToUsdKwh(priceRaw, fx || 18, config.market_models?.pml?.unit);
+  const demand = config.commercialization_mode !== 'total_sale'
+    ? Number(config.demand_series?.annual_mwh) || Number(config.annual_demand_mwh) || 0
+    : 0;
   return {
     demand_mwh: demand,
-    tasa: Number.isFinite(equivalentRate) ? equivalentRate : null,
+    tasa: rate,
     price_usd_kwh: price,
     price_mxn_per_usd: fx,
     trajectories: {
       pml: priceSeries,
-      interest_pct: rateSeriesPct,
-      fx_mxn_per_usd: fxSeries,
       horizon_years: horizon,
       configuration_revision: config.configuration_revision || 0,
       commercialization_mode: config.commercialization_mode || 'total_sale',
-      equivalence_method: 'discounted_levelized_price_and_geometric_rate',
+      equivalence_method: 'fixed_pml_discounted_with_scalar_rate',
     },
   };
 }
 
-// Llena el diseño con equivalentes calculados desde las trayectorias completas.
-function krig3PullParamsFromArena() {
+function krig3PullProjectParams() {
   if (typeof WP === 'undefined') return;
-  const cache = WP.arenaCache;
-  const _avg = arr => (arr && arr.length) ? arr.reduce((s,v)=>s+v,0) / arr.length : null;
   const equivalent = parkEquivalentDesignInputs();
-
-  // Tasa equivalente: media geométrica de los factores anuales proyectados.
-  const tasa = equivalent.tasa != null ? equivalent.tasa * 100 : _avg(cache.interest?.raw_values);
-  if (tasa != null) {
+  const tasa = Number(WP.parkConfiguration?.base_interest_rate_pct);
+  if (Number.isFinite(tasa) && tasa >= 0) {
     ['krig3-tasa', 'mcda-tasa'].forEach(id => {
-      const inp = document.getElementById(id);
-      if (inp) inp.value = tasa.toFixed(2);
+      const input = document.getElementById(id);
+      if (input) input.value = tasa.toFixed(2);
     });
   }
-
-  // USD/MXN equivalente ponderado por descuento sobre el horizonte.
-  const fxAvg = equivalent.price_mxn_per_usd != null
-    ? equivalent.price_mxn_per_usd : _avg(cache.fx?.raw_values);
-  if (fxAvg != null) {
+  const fx = Number(WP.parkConfiguration?.base_fx_mxn_usd);
+  if (Number.isFinite(fx) && fx > 0) {
     ['krig3-fx', 'mcda-fx'].forEach(id => {
-      const inp = document.getElementById(id);
-      if (inp) inp.value = fxAvg.toFixed(2);
+      const input = document.getElementById(id);
+      if (input) input.value = fx.toFixed(2);
     });
   }
-
-  // PML nivelado: promedio de la trayectoria ponderado por factores de descuento.
-  const pmlSide = cache.pml?.venta || cache.pml?.compra || cache.pml;
-  const pmlAvg = _avg(pmlSide?.raw_values);
-  let usdKwh = equivalent.price_usd_kwh;
-  if (usdKwh == null && pmlAvg != null) {
-    if (pmlAvg > 50) {                     // típicamente MXN/MWh
-      const fx = parseFloat(document.getElementById('krig3-fx')?.value) || fxAvg || 20;
-      usdKwh = (pmlAvg / 1000) / fx;
-    } else if (pmlAvg > 0.5) {             // MXN/kWh
-      const fx = parseFloat(document.getElementById('krig3-fx')?.value) || fxAvg || 20;
-      usdKwh = pmlAvg / fx;
-    } else {                                // USD/kWh ya
-      usdKwh = pmlAvg;
-    }
-  }
-  if (Number.isFinite(usdKwh)) {
+  if (Number.isFinite(equivalent.price_usd_kwh)) {
     ['krig3-price', 'mcda-price'].forEach(id => {
-      const inp = document.getElementById(id);
-      if (inp) inp.value = usdKwh.toFixed(4);
+      const input = document.getElementById(id);
+      if (input) input.value = equivalent.price_usd_kwh.toFixed(4);
     });
   }
-
   const demand = Math.max(0, Number(equivalent.demand_mwh) || 0);
   ['krig3-demand', 'mcda-demand', 'parque-demand', 'te-demand'].forEach(id => {
-    const inp = document.getElementById(id);
-    if (inp) inp.value = Math.round(demand).toString();
+    const input = document.getElementById(id);
+    if (input) input.value = Math.round(demand).toString();
   });
 }
 
@@ -15130,7 +12321,7 @@ function updateResumenVerdict() {
   const vBox  = document.getElementById('resumen-verdict');
   const vVal  = document.getElementById('resumen-verdict-value');
   const vSub  = document.getElementById('resumen-verdict-sub');
-  const vCta  = document.getElementById('btn-go-to-arena');
+  const vCta  = document.getElementById('btn-go-to-park-config');
   if (!vBox || !vVal) return;
   if (!ov) {
     vVal.textContent = '—';
