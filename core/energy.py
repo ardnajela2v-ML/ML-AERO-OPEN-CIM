@@ -722,6 +722,11 @@ class TechnoEconomicAnalyzer:
         prices_used = []
         fx_used = []
         opex_used = []
+        # LCOE = PV(costos) / PV(energía) — NUNCA (CAPEX + ΣOPEX) / Σenergía
+        # sin descontar: eso subestima el LCOE (el denominador crece más
+        # rápido que el PV real de la energía, que descuenta años futuros).
+        pv_costs_lcoe = investment_cost
+        pv_energy_lcoe = 0.0
 
         for yr in range(1, project_years + 1):
             if annual_energy_kwh_series and yr <= len(annual_energy_kwh_series):
@@ -748,6 +753,12 @@ class TechnoEconomicAnalyzer:
             npv += pv
             cumulative += yr_cashflow
             total_energy_kwh += yr_energy_kwh
+            if discount_factor > 0:
+                pv_costs_lcoe += yr_opex / discount_factor
+                pv_energy_lcoe += yr_energy_kwh / discount_factor
+            else:
+                pv_costs_lcoe += yr_opex
+                pv_energy_lcoe += yr_energy_kwh
             if payback_years == float('inf') and cumulative >= 0:
                 # interpolate within the year
                 prev_cum = cumulative - yr_cashflow
@@ -778,10 +789,13 @@ class TechnoEconomicAnalyzer:
         vae = (npv * r_mean / (1 - (1 + r_mean) ** -project_years)
                if r_mean > 0 else npv / project_years)
 
-        # LCOE uses actual total energy across project life
+        # total_opex_project_usd / total_energy_kwh: totales SIN descontar,
+        # informativos (vida útil del proyecto), no se usan para LCOE.
         total_opex_project_usd = sum(opex_used) if opex_used else annual_maintenance * project_years
         total_costs_usd = total_capex + total_opex_project_usd
-        lcoe_usd_kwh = total_costs_usd / total_energy_kwh if total_energy_kwh > 0 else 0
+        # LCOE = PV(CAPEX + OPEX) / PV(energía), consistente con
+        # core/farm_mcda.py:lcoe_usd_kwh (IEA/NREL).
+        lcoe_usd_kwh = pv_costs_lcoe / pv_energy_lcoe if pv_energy_lcoe > 0 else 0
 
         capacity_factor = (annual_energy_kwh /
                            (turbine.rated_power_kw * n_turbines * 8760)
