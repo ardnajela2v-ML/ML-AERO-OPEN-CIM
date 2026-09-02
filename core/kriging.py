@@ -39,7 +39,20 @@ Z_TGT = 80.0    # m — typical hub height target
 Z0    = 0.03    # m — surface roughness length (open terrain)
 R_ESP = 287.05  # J/(kg·K)
 MAX_W = 25.0    # m/s — turbine cut-out assumption
-ANIOS = 20      # project life (years)
+
+
+def _require_project_economics(price_usd_kwh, anios):
+    """Validate economic inputs supplied by the project configuration."""
+    if price_usd_kwh is None or anios is None:
+        raise ValueError(
+            'price_usd_kwh y anios deben venir de la configuración del proyecto')
+    price = float(price_usd_kwh)
+    years = int(anios)
+    if not np.isfinite(price) or price < 0:
+        raise ValueError('price_usd_kwh debe ser un número no negativo')
+    if not 5 <= years <= 40:
+        raise ValueError('anios debe estar entre 5 y 40')
+    return price, years
 
 
 # ── Coordinate parsing — tolerates many naming variants:
@@ -558,13 +571,14 @@ def parallel_read_sites(paths: List[str], year: Optional[int] = None,
 # ── Energy & economics per turbine × site ─────────────────────────────────────
 
 def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
-                           demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
-                           price_mxn_per_usd=20.0, anios=ANIOS, max_w=MAX_W,
+                           demand_mwh=1000, tasa=0.08, price_usd_kwh=None,
+                           price_mxn_per_usd=20.0, anios=None, max_w=MAX_W,
                            cost_model: Optional[CostModel] = None):
     """
     Compute per-site × per-turbine technical + economic metrics.
     All inputs are arrays/scalars already read from files.
     """
+    price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     p_nom_w = p_nom_kw * 1000.0
     ps = fit_power_curve_gauss4(curve_x, curve_y * 1000.0, p_nom_w)  # kW -> W
     # interp1d 'linear' para preservar la suavidad del fit gauss4 (antes 'nearest'
@@ -669,8 +683,8 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
 # ── Top-level: analyze all sites × all turbines ───────────────────────────────
 
 def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
-                  demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
-                  price_mxn_per_usd=20.0, anios=ANIOS, max_files=None,
+                  demand_mwh=1000, tasa=0.08, price_usd_kwh=None,
+                  price_mxn_per_usd=20.0, anios=None, max_files=None,
                   filter_filenames: Optional[List[str]] = None,
                   bounds: Optional[dict] = None,
                   turbine_filenames: Optional[List[str]] = None,
@@ -679,6 +693,7 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
     Full analysis: read all wind files + turbine csvs, compute metrics,
     return sites list + turbine results matrix suitable for JSON.
     """
+    price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     wind_files = sorted(
         f for f in os.listdir(wind_folder)
         if f.lower().endswith('.txt') and not f.startswith('.')
@@ -882,9 +897,9 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                                  polygon: Optional[List[dict]] = None,
                                  bounds: Optional[dict] = None,
                                  demand_mwh=1000, tasa=0.08,
-                                 price_usd_kwh=0.20,
+                                 price_usd_kwh=None,
                                  price_mxn_per_usd=20.0,
-                                 anios=ANIOS,
+                                 anios=None,
                                  n_grid: int = 80,
                                  model: str = 'exponential',
                                  max_points: int = 72,
@@ -897,6 +912,7 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     Stations are only inputs to interpolate wind/resource layers; returned sites
     are coordinates sampled inside the park polygon or exploratory rectangle.
     """
+    price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     scope = 'park' if scope == 'park' else 'exploratory'
     if scope == 'park':
         if not polygon or len(polygon) < 3:
@@ -1125,9 +1141,9 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
                                 polygon: Optional[List[dict]] = None,
                                 bounds: Optional[dict] = None,
                                 demand_mwh=1000, tasa=0.08,
-                                price_usd_kwh=0.20,
+                                price_usd_kwh=None,
                                 price_mxn_per_usd=20.0,
-                                anios=ANIOS,
+                                anios=None,
                                 max_points: int = 72,
                                 turbine_filenames: Optional[List[str]] = None,
                                 cost_model: Optional[CostModel] = None):
@@ -1139,6 +1155,7 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
     :func:`build_calibrated_maps`.
     """
 
+    price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     scope = 'park' if scope == 'park' else 'exploratory'
     if scope == 'park':
         if not polygon or len(polygon) < 3:
@@ -1319,8 +1336,8 @@ def _haversine_km(lat1, lon1, lat2, lon2):
 
 
 def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
-                      demand_mwh=1000, tasa=0.08, price_usd_kwh=0.20,
-                      price_mxn_per_usd=20.0, anios=ANIOS, max_files=None,
+                      demand_mwh=1000, tasa=0.08, price_usd_kwh=None,
+                      price_mxn_per_usd=20.0, anios=None, max_files=None,
                       n_grid=80, model='exponential',
                       center_lat: Optional[float] = None,
                       center_lon: Optional[float] = None,
@@ -1346,6 +1363,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
     Devuelve un dict con los 3 grids + las listas de puntos de entrada.
     """
+    price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     wind_files = sorted(
         f for f in os.listdir(wind_folder)
         if f.lower().endswith('.txt') and not f.startswith('.')

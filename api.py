@@ -1721,6 +1721,14 @@ def create_app():
                 if str(body.get('reporting_currency', 'USD')).upper() in {'USD', 'MXN'} else 'USD',
             'updated_at': datetime.now(timezone.utc).isoformat(),
         }
+        fixed_pml = sess['park_configuration']['market_models'].get('pml')
+        if isinstance(fixed_pml, dict) and fixed_pml.get('mode') == 'fixed_2018_profile':
+            annual = fixed_pml.get('annual') or []
+            if annual:
+                fixed_price = float(annual[0])
+                start_year = datetime.now(timezone.utc).year
+                fixed_pml['years'] = list(range(start_year, start_year + horizon))
+                fixed_pml['annual'] = [fixed_price] * horizon
         return jsonify(numpy_to_python(_park_configuration_payload(sess)))
 
     @app.route('/api/mcp/runs', methods=['POST'])
@@ -2685,11 +2693,22 @@ def create_app():
         turbine_cfg = body.get('turbine', {})
         fin_cfg     = body.get('financial', {})
 
+        if fin_cfg.get('energy_price_usd_kwh') in (None, ''):
+            return _err('energy_price_usd_kwh debe venir de la configuración del proyecto')
+        if fin_cfg.get('project_years') in (None, ''):
+            return _err('project_years debe venir de la configuración del proyecto')
+        try:
+            energy_price_usd_kwh = float(fin_cfg['energy_price_usd_kwh'])
+            n_yrs = int(fin_cfg['project_years'])
+        except (TypeError, ValueError):
+            return _err('Precio de energía o vida del proyecto inválidos')
+        if not np.isfinite(energy_price_usd_kwh) or energy_price_usd_kwh < 0:
+            return _err('El precio de energía debe ser un número no negativo')
+
         # Validación de rangos físicos/financieros (antes del df check)
         rated_kw = float(turbine_cfg.get('rated_power_kw', 2000))
         hub_h    = float(turbine_cfg.get('hub_height_m', 80))
         d_rate   = float(fin_cfg.get('discount_rate_pct', 8.0)) / 100.0
-        n_yrs    = int(fin_cfg.get('project_years', 25))
         err = _validate_ranges(discount_rate=d_rate, n_years=n_yrs,
                                rated_power_kw=rated_kw, hub_height_m=hub_h)
         if err is not None:
@@ -2773,7 +2792,7 @@ def create_app():
             # como display equivalente. Antes el FX multiplicaba los flujos
             # internamente y mezclaba unidades en las llaves *_usd.
             fx_mxn_per_usd = float(fin_cfg.get('usd_to_mxn', 1.0))
-            _project_years = int(fin_cfg.get('project_years', 25))
+            _project_years = n_yrs
             # ── Precio anual fijo y perfil horario PML 8760 ──
             def _clean_series(seq, ny):
                 if not isinstance(seq, list):
@@ -2848,7 +2867,7 @@ def create_app():
 
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
-                energy_price_usd_kwh=float(fin_cfg.get('energy_price_usd_kwh', 0.07)),
+                energy_price_usd_kwh=energy_price_usd_kwh,
                 discount_rate_pct=float(fin_cfg.get('discount_rate_pct', 8.0)),
                 project_years=_project_years,
                 usd_to_mxn=1.0,
@@ -2961,11 +2980,13 @@ def create_app():
                 loan_years, usd_to_mxn (optional).
         """
         body = request.json or {}
+        if body.get('project_years') in (None, ''):
+            return _err('project_years debe venir de la configuración del proyecto')
         try:
             capex          = float(body['capex_usd'])
             annual_revenue = float(body['annual_revenue_usd'])
             annual_opex    = float(body['annual_opex_usd'])
-            project_years  = int(body.get('project_years', 25))
+            project_years  = int(body['project_years'])
             equity_rate    = float(body.get('equity_discount_rate_pct', 12)) / 100.0
             debt_ratio     = float(body.get('debt_ratio_pct', 70)) / 100.0
             interest_rate  = float(body.get('interest_rate_pct', 8)) / 100.0
@@ -3110,6 +3131,18 @@ def create_app():
         turbine_cfg = body.get('turbine', {})
         fin_cfg     = body.get('financial', {})
 
+        if fin_cfg.get('energy_price_usd_kwh') in (None, ''):
+            return _err('energy_price_usd_kwh debe venir de la configuración del proyecto')
+        if fin_cfg.get('project_years') in (None, ''):
+            return _err('project_years debe venir de la configuración del proyecto')
+        try:
+            base_price = float(fin_cfg['energy_price_usd_kwh'])
+            base_years = int(fin_cfg['project_years'])
+        except (TypeError, ValueError):
+            return _err('Precio de energía o vida del proyecto inválidos')
+        if not np.isfinite(base_price) or base_price < 0 or not 5 <= base_years <= 40:
+            return _err('Precio de energía o vida del proyecto fuera de rango')
+
         # ── Resolve turbine ───────────────────────────────────────────────────
         builtin = turbine_cfg.get('builtin_model')
         if builtin and builtin in PowerCurve.BUILTIN_CURVES:
@@ -3128,9 +3161,7 @@ def create_app():
 
         base_kwh   = float(body.get('base_annual_kwh', 0))
         n_turb     = int(body.get('n_turbines', 1))
-        base_price = float(fin_cfg.get('energy_price_usd_kwh', 0.07))
         base_rate  = float(fin_cfg.get('discount_rate_pct', 8.0))
-        base_years = int(fin_cfg.get('project_years', 25))
         base_escal = float(fin_cfg.get('price_escalation_pct', 0.0))
         base_infl  = float(fin_cfg.get('annual_inflation_pct', 0.0))
         # Optional leveraged config — when present, the heatmap/tornado return
@@ -4597,6 +4628,20 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
+    def _required_design_economics(body):
+        """Read user-defined economics without inventing project defaults."""
+        if body.get('price_usd_kwh') in (None, ''):
+            raise ValueError('El precio de energía debe venir de la configuración del proyecto')
+        if body.get('project_years') in (None, ''):
+            raise ValueError('La vida del proyecto debe venir de la configuración del proyecto')
+        price = float(body['price_usd_kwh'])
+        years = int(body['project_years'])
+        if not np.isfinite(price) or price < 0:
+            raise ValueError('El precio de energía debe ser un número no negativo')
+        if not 5 <= years <= 40:
+            raise ValueError('La vida del proyecto debe estar entre 5 y 40 años')
+        return price, years
+
     @app.route('/api/kriging/legacy_maps', methods=['POST'])
     def kriging_legacy_maps():
         """
@@ -4606,6 +4651,10 @@ def create_app():
         (viento, inversión, VAN).
         """
         body = request.get_json(silent=True) or {}
+        try:
+            price_usd_kwh, project_years = _required_design_economics(body)
+        except (TypeError, ValueError) as exc:
+            return _err(str(exc))
         source_info = None
         if body.get('session_id'):
             source_info = _analysis_source_info(
@@ -4661,9 +4710,9 @@ def create_app():
                         physical=bool(body.get('physical', True)),
                         demand_mwh=float(body.get('demand_mwh', 0)),
                         discount_rate=float(body.get('tasa', 0.08)),
-                        price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
+                        price_usd_kwh=price_usd_kwh,
                         fx_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
-                        project_years=int(body.get('project_years', 25)),
+                        project_years=project_years,
                         cost_model=CostModel.from_dict(body.get('cost_model')),
                         orographic_speedup_grid=body.get('orographic_speedup_grid'),
                         progress_callback=cb,
@@ -4676,8 +4725,9 @@ def create_app():
                         year=int(body.get('year', 2018)),
                         demand_mwh=float(body.get('demand_mwh', 1000)),
                         tasa=float(body.get('tasa', 0.08)),
-                        price_usd_kwh=float(body.get('price_usd_kwh', 0.20)),
+                        price_usd_kwh=price_usd_kwh,
                         price_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
+                        anios=project_years,
                         max_files=body.get('max_files'),
                         n_grid=int(body.get('n_grid', 80)),
                         model=body.get('model', 'exponential'),
@@ -4705,7 +4755,8 @@ def create_app():
                         'equivalent_inputs': {
                             'demand_mwh': float(body.get('demand_mwh', 0)),
                             'discount_rate': float(body.get('tasa', 0.08)),
-                            'price_usd_kwh': float(body.get('price_usd_kwh', 0.20)),
+                            'price_usd_kwh': price_usd_kwh,
+                            'project_years': project_years,
                             'fx_mxn_per_usd': float(body.get('price_mxn_per_usd', 20)),
                         },
                     }
@@ -4730,10 +4781,13 @@ def create_app():
     def kriging_full_analysis():
         """Full multi-site × multi-turbine analysis (heavy). Runs async."""
         body = request.get_json(silent=True) or {}
+        try:
+            price_usd_kwh, project_years = _required_design_economics(body)
+        except (TypeError, ValueError) as exc:
+            return _err(str(exc))
         year = int(body.get('year', 2018))
         demand_mwh = float(body.get('demand_mwh', 1000))
         tasa = float(body.get('tasa', 0.08))
-        price_usd_kwh = float(body.get('price_usd_kwh', 0.20))
         price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
         max_files = body.get('max_files')
         filter_files = body.get('filenames')
@@ -4764,6 +4818,7 @@ def create_app():
                     year=year, demand_mwh=demand_mwh, tasa=tasa,
                     price_usd_kwh=price_usd_kwh,
                     price_mxn_per_usd=price_mxn_per_usd,
+                    anios=project_years,
                     max_files=max_files, filter_filenames=filter_files,
                     bounds=area_bounds,
                     turbine_filenames=turbine_files,
@@ -4852,6 +4907,10 @@ def create_app():
         exploratory rectangle (scope=exploratory).
         """
         body = request.get_json(silent=True) or {}
+        try:
+            price_usd_kwh, project_years = _required_design_economics(body)
+        except (TypeError, ValueError) as exc:
+            return _err(str(exc))
         source_info = None
         if body.get('session_id'):
             source_info = _analysis_source_info(
@@ -4875,7 +4934,6 @@ def create_app():
         year = int(body.get('year', 2018))
         demand_mwh = float(body.get('demand_mwh', 1000))
         tasa = float(body.get('tasa', 0.08))
-        price_usd_kwh = float(body.get('price_usd_kwh', 0.20))
         price_mxn_per_usd = float(body.get('price_mxn_per_usd', 20))
         n_grid = int(body.get('n_grid', 80))
         model = body.get('model', 'exponential')
@@ -4935,7 +4993,7 @@ def create_app():
                         demand_mwh=demand_mwh, discount_rate=tasa,
                         price_usd_kwh=price_usd_kwh,
                         fx_mxn_per_usd=price_mxn_per_usd,
-                        project_years=int(body.get('project_years', 25)),
+                        project_years=project_years,
                         cost_model=cost_model,
                         orographic_speedup_grid=body.get('orographic_speedup_grid'),
                         progress_callback=calibration_progress,
@@ -4949,6 +5007,7 @@ def create_app():
                         demand_mwh=demand_mwh, tasa=tasa,
                         price_usd_kwh=price_usd_kwh,
                         price_mxn_per_usd=price_mxn_per_usd,
+                        anios=project_years,
                         max_points=max_points,
                         turbine_filenames=turbine_files,
                         cost_model=cost_model,
@@ -4966,6 +5025,7 @@ def create_app():
                         tasa=tasa,
                         price_usd_kwh=price_usd_kwh,
                         price_mxn_per_usd=price_mxn_per_usd,
+                        anios=project_years,
                         n_grid=n_grid,
                         model=model,
                         max_points=max_points,
@@ -4995,7 +5055,7 @@ def create_app():
                         curtailment_loss=float(body.get('curtailment_loss') or 0.0),
                         environmental_loss=float(body.get('environmental_loss') or 0.0),
                         discount_rate=tasa,
-                        project_years=int(body.get('project_years') or 25),
+                        project_years=project_years,
                         price_usd_kwh=price_usd_kwh,
                         demand_mwh=demand_mwh,
                         commercialization_mode=body.get('commercialization_mode') or 'total_sale',

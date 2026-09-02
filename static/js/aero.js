@@ -2539,11 +2539,11 @@ function technoCollectInputs() {
     turbine: document.getElementById('te-turbine')?.value || 'SG_8.0_167',
     nTurbines: parseInt(document.getElementById('te-nturbines')?.value) || 10,
     demand: parseFloat(document.getElementById('te-demand')?.value) || 0,
-    price: parseFloat(document.getElementById('te-price')?.value) || 0.07,
+    price: parseFloat(document.getElementById('te-price')?.value),
     priceEscalation: parseFloat(document.getElementById('te-price-escalation')?.value) || 0,
     inflation: parseFloat(document.getElementById('te-inflation')?.value) || 0,
-    rate: parseFloat(document.getElementById('te-rate')?.value) || 8,
-    years: parseInt(document.getElementById('te-years')?.value) || 25,
+    rate: parseFloat(document.getElementById('te-rate')?.value),
+    years: parseInt(document.getElementById('te-years')?.value),
     fx: parseFloat(document.getElementById('te-fx')?.value) || 1,
     priceMode: document.getElementById('te-price-mode')?.value || 'fixed',
     costModel: technoCollectCostModel(),
@@ -2581,12 +2581,13 @@ function _fixedPmlProfile() {
 function _pmlToUsdKwh(val, fxScalar, unit = '') {
   const v = Number(val);
   if (!Number.isFinite(v)) return null;
+  const fx = Number(fxScalar);
   const normalizedUnit = String(unit || '').toUpperCase().replace(/\s+/g, '');
   if (normalizedUnit.includes('USD/KWH')) return v;
   if (normalizedUnit.includes('USD/MWH')) return v / 1000;
-  if (normalizedUnit.includes('MXN/KWH')) return v / (fxScalar > 0 ? fxScalar : 18);
-  if (normalizedUnit.includes('MXN/MWH')) return v / (fxScalar > 0 ? fxScalar : 18) / 1000;
-  if (v > 50) return v / (fxScalar > 0 ? fxScalar : 18) / 1000;
+  if (normalizedUnit.includes('MXN/KWH')) return fx > 0 ? v / fx : null;
+  if (normalizedUnit.includes('MXN/MWH')) return fx > 0 ? v / fx / 1000 : null;
+  if (v > 50) return fx > 0 ? v / fx / 1000 : null;
   if (v > 1) return v / 1000;
   return v;
 }
@@ -2610,8 +2611,8 @@ function technoUpdateModeHints() {
   if (!hint) return;
   const mode = document.getElementById('te-price-mode')?.value || 'fixed';
   if (mode !== 'pml8760') { hint.textContent = ''; return; }
-  const years = parseInt(document.getElementById('te-years')?.value) || 25;
-  const fx = parseFloat(document.getElementById('te-fx')?.value) || 18;
+  const years = parseInt(document.getElementById('te-years')?.value);
+  const fx = parseFloat(document.getElementById('te-fx')?.value);
   const built = technoBuildPriceSeries(mode, years, fx);
   hint.innerHTML = built.series
     ? `PML fijo 2018: <strong>${built.baseline.toLocaleString('es-MX', {maximumFractionDigits: 5})} USD/kWh</strong> · perfil horario replicado durante ${years} años.`
@@ -2638,7 +2639,8 @@ function technoCompatibleParkResult() {
 
 function technoIntegratedDefaults() {
   const base = technoCollectInputs();
-  base.years = Number(WP.parkConfiguration?.project_horizon_years) || 25;
+  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
+  if (Number.isFinite(projectYears)) base.years = projectYears;
   const marketInputs = parkEquivalentDesignInputs();
   base.demand = Math.round(marketInputs.demand_mwh || 0);
   if (marketInputs.price_usd_kwh != null) base.price = Number(marketInputs.price_usd_kwh).toFixed(4);
@@ -2823,9 +2825,14 @@ function renderTechnoLayoutPreview() {
 async function calcTechnoEconomic() {
   if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
   const scenarioKey = 'integrated';
-  setStatus('Calculando análisis tecnoeconómico…');
   try {
     const inputs = technoCollectInputs();
+    if (!Number.isFinite(inputs.price) || inputs.price < 0 ||
+        !Number.isInteger(inputs.years) || inputs.years < 5 || inputs.years > 40) {
+      toast('Captura un precio de energía válido y una vida del proyecto entre 5 y 40 años.', 'warn');
+      return;
+    }
+    setStatus('Calculando análisis tecnoeconómico…');
     // Una sola evaluación, con precedencia trazable de recurso:
     // parque/TOPSIS compatible → fuente eólica activa
     // (hindcast MCP publicado o, sólo en modo manual, serie observada).
@@ -2835,7 +2842,7 @@ async function calcTechnoEconomic() {
     const parkAep = Number.isFinite(Number(parkAepValue)) && Number(parkAepValue) > 0
       ? Number(parkAepValue) : null;
 
-    const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : 18;
+    const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : null;
     const builtPrice = technoBuildPriceSeries(inputs.priceMode, inputs.years, fxScalar);
     if (inputs.priceMode === 'pml8760' && !builtPrice.series) {
       toast('No hay un PML fijo 2018 publicado; se usará el precio manual.', 'warn');
@@ -3759,7 +3766,7 @@ async function calcLeveragedForScenario(scenarioKey, params) {
     capex_usd:                a.capex?.total_capex_usd,
     annual_revenue_usd:       a.annual_revenue_usd,
     annual_opex_usd:          a.annual_opex_usd,
-    project_years:            a.project_years || parseInt(document.getElementById('te-years')?.value) || 25,
+    project_years:            a.project_years,
     debt_ratio_pct:           params.debt_ratio_pct,
     interest_rate_pct:        params.interest_rate_pct,
     loan_years:               params.loan_years,
@@ -6614,11 +6621,18 @@ async function krig3Run() {
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
   const physical = !!document.getElementById('krig3-physical')?.checked;
   const marketInputs = parkEquivalentDesignInputs();
+  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
+  if (!Number.isFinite(projectYears) || projectYears < 5 ||
+      !Number.isFinite(marketInputs.price_usd_kwh)) {
+    toast('Guarda la vida del proyecto y carga el archivo de precios antes de ejecutar Kriging.', 'error');
+    return;
+  }
   const body = {
     year:             parseInt(document.getElementById('krig3-year').value),
     demand_mwh:       marketInputs.demand_mwh ?? parseFloat(document.getElementById('krig3-demand').value),
     tasa:             marketInputs.tasa ?? parseFloat(document.getElementById('krig3-tasa').value) / 100,
-    price_usd_kwh:    marketInputs.price_usd_kwh ?? parseFloat(document.getElementById('krig3-price').value),
+    price_usd_kwh:    marketInputs.price_usd_kwh,
+    project_years:    projectYears,
     price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('krig3-fx').value),
     market_trajectories: marketInputs.trajectories,
     n_grid:           parseInt(document.getElementById('krig3-n').value),
@@ -6637,7 +6651,6 @@ async function krig3Run() {
   if (KRIG.guidedMcp) {
     body.session_id = WP.sessionId;
     body.data_source = WP.activeDataSource;
-    body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 25);
     if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
   }
   if (principal) {
@@ -7373,6 +7386,12 @@ async function mcdaRunAnalysis() {
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
+  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
+  if (!Number.isFinite(projectYears) || projectYears < 5 ||
+      !Number.isFinite(marketInputs.price_usd_kwh)) {
+    toast('Guarda la vida del proyecto y carga el archivo de precios antes de ejecutar TOPSIS.', 'warning');
+    return;
+  }
   const safetyMinD = Math.max(3, Number(document.getElementById('parque-min-sep-d')?.value) || 3);
   const rowStartD = Math.max(safetyMinD, Number(document.getElementById('parque-row-sep-d')?.value) || 3);
   const colStartD = Math.max(safetyMinD, Number(document.getElementById('parque-col-sep-d')?.value) || 3);
@@ -7399,7 +7418,8 @@ async function mcdaRunAnalysis() {
     year:          parseInt(document.getElementById('mcda-year').value),
     demand_mwh:    marketInputs.demand_mwh ?? parseFloat(document.getElementById('mcda-demand').value),
     tasa:          marketInputs.tasa ?? parseFloat(document.getElementById('mcda-tasa').value) / 100,
-    price_usd_kwh: marketInputs.price_usd_kwh ?? parseFloat(document.getElementById('mcda-price').value),
+    price_usd_kwh: marketInputs.price_usd_kwh,
+    project_years: projectYears,
     price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('mcda-fx').value),
     market_trajectories: marketInputs.trajectories,
     n_grid:        parseInt(document.getElementById('krig3-n')?.value) || 80,
@@ -7452,7 +7472,6 @@ async function mcdaRunAnalysis() {
       body.calibration_id = await krig3EnsureCalibration();
       body.target_height_m = Number(wsH());
       body.physical = !!document.getElementById('krig3-physical')?.checked;
-      body.project_years = Number(WP.parkConfiguration?.project_horizon_years || 25);
       if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
     }
     const r = await api('/api/multicriteria/spatial', 'POST', body);
@@ -12172,20 +12191,23 @@ function parkMarketTrajectory(category) {
 
 function parkEquivalentDesignInputs() {
   const config = WP.parkConfiguration || {};
-  const horizon = Math.max(5, Number(config.project_horizon_years) || 25);
-  const priceSeries = (parkMarketTrajectory('pml') || []).slice(0, horizon);
+  const configuredHorizon = Number(config.project_horizon_years);
+  const horizon = Number.isFinite(configuredHorizon) ? configuredHorizon : null;
+  const priceSeries = horizon == null
+    ? [] : (parkMarketTrajectory('pml') || []).slice(0, horizon);
   const baseRate = Number(config.base_interest_rate_pct);
   const baseFx = Number(config.base_fx_mxn_usd);
-  const rate = Number.isFinite(baseRate) && baseRate >= 0 ? baseRate / 100 : 0.08;
+  const rate = Number.isFinite(baseRate) && baseRate >= 0 ? baseRate / 100 : null;
   const fx = Number.isFinite(baseFx) && baseFx > 0 ? baseFx : null;
-  const weights = Array.from({ length: Math.max(priceSeries.length, 1) }, (_, index) =>
-    1 / Math.pow(1 + rate, index + 1));
-  const priceRaw = priceSeries.length
+  const weights = rate == null ? []
+    : Array.from({ length: Math.max(priceSeries.length, 1) }, (_, index) =>
+      1 / Math.pow(1 + rate, index + 1));
+  const priceRaw = priceSeries.length && weights.length
     ? priceSeries.reduce((sum, value, index) => sum + value * weights[index], 0) /
       weights.slice(0, priceSeries.length).reduce((sum, value) => sum + value, 0)
     : null;
   const price = priceRaw == null ? null
-    : _pmlToUsdKwh(priceRaw, fx || 18, config.market_models?.pml?.unit);
+    : _pmlToUsdKwh(priceRaw, fx, config.market_models?.pml?.unit);
   const demand = config.commercialization_mode !== 'total_sale'
     ? Number(config.demand_series?.annual_mwh) || Number(config.annual_demand_mwh) || 0
     : 0;

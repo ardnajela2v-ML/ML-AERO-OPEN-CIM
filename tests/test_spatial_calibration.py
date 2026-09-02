@@ -234,6 +234,7 @@ class SpatialCalibrationTests(unittest.TestCase):
             spatial = analyze_spatial_topsis_maps(
                 maps, turbines_folder=turbine_folder,
                 scope="exploratory", bounds=maps["wind"]["bounds"],
+                price_usd_kwh=0.083, anios=31,
                 max_points=6, turbine_filenames=[turbine_name],
             )
         self.assertEqual(spatial["field_source"], "mcp_calibrated_maps")

@@ -62,6 +62,30 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/models/status/dead-task").status_code, 404)
         self.assertEqual(self.client.get("/api/market/list_presets").status_code, 404)
 
+    def test_economic_routes_reject_implicit_price_and_project_life(self):
+        missing_both = self.client.post('/api/kriging/legacy_maps', json={})
+        self.assertEqual(missing_both.status_code, 400)
+        self.assertIn('precio', missing_both.get_json()['error'].lower())
+
+        missing_years = self.client.post('/api/kriging/legacy_maps', json={
+            'price_usd_kwh': 0.083,
+        })
+        self.assertEqual(missing_years.status_code, 400)
+        self.assertIn('vida del proyecto', missing_years.get_json()['error'].lower())
+
+        missing_price = self.client.post('/api/energy/techno_economic', json={
+            'session_id': self.sid,
+            'financial': {'project_years': 31},
+        })
+        self.assertEqual(missing_price.status_code, 400)
+        self.assertIn('energy_price_usd_kwh', missing_price.get_json()['error'])
+
+        leveraged = self.client.post('/api/energy/leveraged', json={
+            'capex_usd': 1, 'annual_revenue_usd': 1, 'annual_opex_usd': 0,
+        })
+        self.assertEqual(leveraged.status_code, 400)
+        self.assertIn('project_years', leveraged.get_json()['error'])
+
     def test_project_export_import_restores_data_configuration_and_client_state(self):
         csv = (
             "timestamp,wind_speed,wind_direction\n"
@@ -608,6 +632,21 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertTrue(config['ready_for_design'])
         self.assertEqual(set(config['market_models']), {'pml'})
 
+        resized = self.client.put(
+            f'/api/sessions/{self.sid}/park-configuration', json={
+                'commercialization_mode': 'self_consumption_surplus',
+                'sale_scheme': 'spot_pml',
+                'project_horizon_years': 31,
+                'base_fx_mxn_usd': 20.0,
+                'base_interest_rate_pct': 10.0,
+            })
+        self.assertEqual(resized.status_code, 200, resized.get_data(as_text=True))
+        resized_config = resized.get_json()
+        self.assertEqual(resized_config['project_horizon_years'], 31)
+        self.assertEqual(len(resized_config['market_models']['pml']['annual']), 31)
+        self.assertEqual(len(resized_config['market_models']['pml']['years']), 31)
+        config = resized_config
+
         design = self.client.post('/api/farm/recommend', json={
             'session_id': self.sid,
             'turbine': {'builtin_model': 'V150_4.5'},
@@ -638,15 +677,16 @@ class MCPIntegrationTests(unittest.TestCase):
             'financial': {
                 'demand_mwh': config['annual_demand_mwh'],
                 'energy_price_usd_kwh': 0.07,
-                'energy_price_series_usd_kwh': [0.07] * 25,
+                'energy_price_series_usd_kwh': [0.07] * config['project_horizon_years'],
                 'price_hourly_year1_usd_kwh': normalized_price,
                 'discount_rate_pct': 10.0,
-                'project_years': 25,
+                'project_years': config['project_horizon_years'],
                 'usd_to_mxn': 20.0,
             },
         })
         self.assertEqual(techno.status_code, 200, techno.get_data(as_text=True))
         analysis = techno.get_json()['analysis']
+        self.assertEqual(analysis['project_years'], 31)
         self.assertEqual(analysis['discount_rate_pct'], 10.0)
         self.assertEqual(analysis['fx_mxn_per_usd'], 20.0)
         self.assertNotIn('discount_rate_series_pct', analysis)
@@ -861,7 +901,10 @@ class MCPIntegrationTests(unittest.TestCase):
             "scenario": "integrated",
             "n_turbines": 1,
             "turbine": {"builtin_model": "V150_4.5"},
-            "financial": {"project_years": 25},
+            "financial": {
+                "project_years": 25,
+                "energy_price_usd_kwh": 0.07,
+            },
         })
         self.assertEqual(techno.status_code, 200, techno.get_data(as_text=True))
         self.assertEqual(

@@ -661,9 +661,9 @@ class TechnoEconomicAnalyzer:
     def analyze(self, turbine: 'PowerCurve',
                 n_turbines: int,
                 annual_energy_kwh: float,
-                energy_price_usd_kwh: float = 0.07,
+                energy_price_usd_kwh: float = None,
                 discount_rate_pct: float = 8.0,
-                project_years: int = 25,
+                project_years: int = None,
                 usd_to_mxn: float = 1.0,
                 energy_price_series_usd_kwh: list = None,
                 year1_revenue_override_usd: float = None,
@@ -680,6 +680,16 @@ class TechnoEconomicAnalyzer:
             weighting (8760 PML × FX × dispatched energy). Bypasses
             energy×price×fx for year 1 only.
         """
+        if energy_price_usd_kwh is None or project_years is None:
+            raise ValueError(
+                'energy_price_usd_kwh y project_years deben venir de la configuración del proyecto')
+        energy_price_usd_kwh = float(energy_price_usd_kwh)
+        project_years = int(project_years)
+        if not np.isfinite(energy_price_usd_kwh) or energy_price_usd_kwh < 0:
+            raise ValueError('energy_price_usd_kwh debe ser un número no negativo')
+        if not 5 <= project_years <= 40:
+            raise ValueError('project_years debe estar entre 5 y 40')
+
         def _at(seq, i, default):
             try:
                 if seq and i < len(seq):

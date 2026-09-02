@@ -85,12 +85,20 @@ class FarmScientificModelTests(unittest.TestCase):
         self.assertGreater(result['layout_config']['n_configs_tried'], 0)
         self.assertIn('orientation_deg', result['capacity_config'])
 
-    def test_technoeconomic_default_project_life_is_25_years(self):
+    def test_technoeconomic_uses_user_project_life_and_price(self):
         result = TechnoEconomicAnalyzer().analyze(
             self.turbine, n_turbines=1, annual_energy_kwh=4_000_000,
+            energy_price_usd_kwh=0.083, project_years=31,
         )
-        self.assertEqual(result['project_years'], 25)
-        self.assertEqual(len(result['cashflow_table']), 25)
+        self.assertEqual(result['project_years'], 31)
+        self.assertEqual(result['energy_price_usd_kwh'], 0.083)
+        self.assertEqual(len(result['cashflow_table']), 31)
+
+    def test_technoeconomic_rejects_missing_project_economics(self):
+        with self.assertRaisesRegex(ValueError, 'configuración del proyecto'):
+            TechnoEconomicAnalyzer().analyze(
+                self.turbine, n_turbines=1, annual_energy_kwh=4_000_000,
+            )
 
 
 class LayoutTopsisTests(unittest.TestCase):
@@ -181,7 +189,8 @@ class LayoutTopsisTests(unittest.TestCase):
                 'gamesa21_p2000_r45.csv',  # duplicate input must collapse
             ],
             demand_mwh=0, commercialization_mode='total_sale',
-            s_para_range=(5, 7), s_perp_range=(3, 4), project_years=20,
+            s_para_range=(5, 7), s_perp_range=(3, 4),
+            project_years=20, price_usd_kwh=0.083,
         )
         self.assertEqual(result['n_layout_alternatives'], 2)
         self.assertEqual(result['n_requested_models'], 2)
@@ -244,6 +253,7 @@ class LayoutTopsisTests(unittest.TestCase):
             ], 'aerogeneradores', ['gamesa21_p2000_r45.csv'],
             min_spacing_d=3, s_para_range=(3, 4, 5),
             s_perp_range=(3, 4), max_wake_loss_pct=0.0,
+            project_years=31, price_usd_kwh=0.083,
         )
         row = result['alternatives'][0]
         self.assertGreater(row['max_n_fisico'], 1)
@@ -252,8 +262,9 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertTrue(row['reducido_por_estela'])
         self.assertEqual(row['wake_trials'][-1]['n'], row['n_aerogeneradores'])
         self.assertTrue(any(trial['wake_loss_pct'] > 0 for trial in row['wake_trials'][:-1]))
-        self.assertEqual(row['economic_assumptions']['project_years'], 25)
-        self.assertEqual(len(row['cashflow_table']), 25)
+        self.assertEqual(row['economic_assumptions']['project_years'], 31)
+        self.assertEqual(row['economic_assumptions']['price_usd_kwh'], 0.083)
+        self.assertEqual(len(row['cashflow_table']), 31)
 
     def test_park_topsis_rejects_spacing_below_three_diameters(self):
         sites = [{
@@ -267,6 +278,7 @@ class LayoutTopsisTests(unittest.TestCase):
                     {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
                 ], 'aerogeneradores',
                 ['gamesa21_p2000_r45.csv'], min_spacing_d=2.5,
+                project_years=25, price_usd_kwh=0.07,
             )
 
 

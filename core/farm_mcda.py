@@ -172,8 +172,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          electrical_losses: float = 0.03,
                          curtailment_loss: float = 0.0,
                          environmental_loss: float = 0.0,
-                         discount_rate: float = 0.08, project_years: int = 25,
-                         price_usd_kwh: float = 0.20, demand_mwh: float = 0.0,
+                         discount_rate: float = 0.08, project_years: int = None,
+                         price_usd_kwh: float = None, demand_mwh: float = 0.0,
                          commercialization_mode: str = 'total_sale',
                          grid_limit_mw: Optional[float] = None,
                          target_height_m: Optional[float] = None,
@@ -190,7 +190,12 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         raise ValueError('La separación mínima no puede ser menor que 3D.')
     if not 0.0 <= float(max_wake_loss_pct) < 100.0:
         raise ValueError('El límite de pérdida por estela debe estar en [0, 100).')
-    if project_years <= 0 or discount_rate <= -1.0 or price_usd_kwh < 0:
+    if project_years is None or price_usd_kwh is None:
+        raise ValueError(
+            'project_years y price_usd_kwh deben venir de la configuración del proyecto.')
+    project_years = int(project_years)
+    price_usd_kwh = float(price_usd_kwh)
+    if not 5 <= project_years <= 40 or discount_rate <= -1.0 or price_usd_kwh < 0:
         raise ValueError('Horizonte, tasa de descuento o precio de energía inválidos.')
     for name, value in {
         'availability': availability, 'electrical_losses': electrical_losses,

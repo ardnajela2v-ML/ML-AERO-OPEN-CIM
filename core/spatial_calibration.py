@@ -797,9 +797,9 @@ def build_calibrated_maps(
     physical: bool = True,
     demand_mwh: float = 0.0,
     discount_rate: float = 0.08,
-    price_usd_kwh: float = 0.20,
+    price_usd_kwh: float | None = None,
     fx_mxn_per_usd: float = 20.0,
-    project_years: int = 25,
+    project_years: int | None = None,
     cost_model: Any = None,
     terrain_timeout_s: float = 20.0,
     orographic_speedup_grid: Sequence[Sequence[float]] | None = None,
@@ -1106,6 +1106,16 @@ def build_calibrated_maps(
             continue
     result["turbine_curves"] = turbine_curves
     if last_economic is not None:
+        if price_usd_kwh is None or project_years is None:
+            raise ValueError(
+                "price_usd_kwh y project_years deben venir de la configuración del proyecto"
+            )
+        price_usd_kwh = float(price_usd_kwh)
+        project_years = int(project_years)
+        if not np.isfinite(price_usd_kwh) or price_usd_kwh < 0:
+            raise ValueError("price_usd_kwh debe ser un número no negativo")
+        if not 5 <= project_years <= 40:
+            raise ValueError("project_years debe estar entre 5 y 40")
         x_raw, fitted_w, rotor_m, rated_kw = last_economic
         power_interp = interp1d(x_raw, fitted_w, bounds_error=False, fill_value=0.0)
         capex = np.zeros_like(wind)
