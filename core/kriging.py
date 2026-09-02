@@ -625,7 +625,7 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     area = sep ** 2 * n
 
     # Modelo económico central WindPro (core/cost_model.py)
-    cm_model = cost_model or CostModel.from_defaults()
+    cm_model = cost_model or CostModel.from_design_benchmark()
     cap = cm_model.capex_breakdown(p_nom_kw, n)
     caero = cap['turbines_total_usd']           # USD aerogeneradores
     ctot  = cap['total_capex_usd']              # USD CAPEX total (incluye BOS)
@@ -875,7 +875,7 @@ def _legacy_prefit_economics(mean_speed, k, rho_mean, power_interp, p_max_curve,
     n = math.ceil(demand_wh / pt) if pt > 0 else 0
     pan = pt * n
 
-    cm_model = cost_model or CostModel.from_defaults()
+    cm_model = cost_model or CostModel.from_design_benchmark()
     cap = cm_model.capex_breakdown(p_nom_kw, n)
     ctot = cap['total_capex_usd']
     cm   = cm_model.opex_annual_usd(ctot)

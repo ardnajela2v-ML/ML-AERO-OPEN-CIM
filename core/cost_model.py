@@ -38,6 +38,36 @@ DEFAULT_COST_MODEL: Dict[str, Any] = {
 }
 
 
+# Benchmark exclusivo para Diseño y optimización. IRENA reporta para proyectos
+# onshore comisionados en 2024 un costo total instalado medio global de
+# 1 041 USD/kW (USD de 2024). El mismo informe indica que los aerogeneradores
+# representan aproximadamente 75% del costo instalado. Por tanto, el parámetro
+# interno de suministro se fija en 1 041 × 0.75 = 780.75 USD/kW y el BOS ocupa
+# el 25% restante. La evaluación tecnoeconómica conserva DEFAULT_COST_MODEL.
+DESIGN_COST_BENCHMARK: Dict[str, Any] = {
+    'id': 'irena_onshore_2024_global_weighted_average',
+    'label': 'IRENA onshore 2024 · promedio global ponderado',
+    'data_year': 2024,
+    'currency_year': 2024,
+    'total_installed_usd_per_kw': 1041.0,
+    'source_url': (
+        'https://www.irena.org/Publications/2025/Jun/'
+        'Renewable-Power-Generation-Costs-in-2024'),
+    'cost_model': {
+        'turbine_usd_per_kw': 780.75,
+        'turbines_pct': 0.75,
+        # El 25% BOS conserva las proporciones relativas 12:8:5:6:3 del
+        # modelo original, evitando alterar qué rubros se representan.
+        'civil_works_pct': 0.08823529411764706,
+        'electrical_pct': 0.058823529411764705,
+        'installation_pct': 0.03676470588235294,
+        'engineering_pct': 0.04411764705882353,
+        'miscellaneous_pct': 0.022058823529411766,
+        'opex_pct_capex': 0.0372,
+    },
+}
+
+
 # Sub-componentes BOS en orden de presentación
 BOS_COMPONENTS = (
     ('civil_works_pct',   'civil_works_usd',   'Obras civiles (caminos + cimentaciones)'),
@@ -79,6 +109,11 @@ class CostModel:
     def from_defaults(cls) -> 'CostModel':
         return cls(**{k: v['value'] for k, v in DEFAULT_COST_MODEL.items()})
 
+    @classmethod
+    def from_design_benchmark(cls) -> 'CostModel':
+        """Modelo IRENA para comparar alternativas en Diseño/TOPSIS."""
+        return cls(**DESIGN_COST_BENCHMARK['cost_model'])
+
     def to_dict(self) -> Dict[str, float]:
         return {f: getattr(self, f) for f in self.__dataclass_fields__}
 
@@ -119,3 +154,11 @@ class CostModel:
 def get_default_model_dict() -> Dict[str, Any]:
     """Devuelve el dict completo (con rangos) para que el frontend renderice los inputs."""
     return {k: dict(v) for k, v in DEFAULT_COST_MODEL.items()}
+
+
+def get_design_cost_benchmark() -> Dict[str, Any]:
+    """Benchmark y modelo separados del escenario editable tecnoeconómico."""
+    return {
+        **{k: v for k, v in DESIGN_COST_BENCHMARK.items() if k != 'cost_model'},
+        'cost_model': dict(DESIGN_COST_BENCHMARK['cost_model']),
+    }

@@ -7430,7 +7430,6 @@ async function mcdaRunAnalysis() {
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
     turbine_filenames: turbineFilenames,
     commercialization_mode: marketInputs.trajectories?.commercialization_mode || 'total_sale',
-    cost_model: technoCollectCostModel(),
     min_spacing_d: safetyMinD,
     s_para_range: spacingRange(rowStartD, 10),
     s_perp_range: spacingRange(colStartD, 6),
@@ -7595,6 +7594,7 @@ function mcdaLayoutAuditHtml(a) {
   const spec = a.turbine_specification || {};
   const cap = a.capex_breakdown || {};
   const econ = a.economic_assumptions || {};
+  const costBenchmark = MCDA.lastSpatial?.design_cost_benchmark || {};
   const energy = a.energy_balance || {};
   const losses = a.loss_assumptions || {};
   const layout = a.layout_config || {};
@@ -7625,6 +7625,9 @@ function mcdaLayoutAuditHtml(a) {
       ['Incertidumbre combinada', `${mcdaAuditNumber(a.aep_uncertainty_pct, 2)}%`],
     ]),
     mcdaAuditCard('CAPEX auditable', [
+      ['Referencia de diseño', mcdaAuditEscape(costBenchmark.label || econ.cost_model_origin)],
+      ['CAPEX instalado benchmark', costBenchmark.total_installed_usd_per_kw == null
+        ? '—' : `<b>${mcdaAuditMoney(costBenchmark.total_installed_usd_per_kw)} /kW</b>`],
       ['Precio turbina configurado', `<b>${mcdaAuditMoney(econ.turbine_usd_per_kw)} /kW</b>`],
       ['Participación turbinas', `${mcdaAuditNumber(Number(cap.turbines_pct) * 100, 2)}%`],
       ['Costo unitario turbina', mcdaAuditMoney(cap.turbine_unit_usd)],

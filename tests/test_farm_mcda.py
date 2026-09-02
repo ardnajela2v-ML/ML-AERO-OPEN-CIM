@@ -4,6 +4,7 @@ import unittest
 import numpy as np
 
 from core.energy import PowerCurve, TechnoEconomicAnalyzer
+from core.cost_model import CostModel, get_design_cost_benchmark
 from core.farm import (
     _build_structured_grid,
     gaussian_deficit,
@@ -99,6 +100,19 @@ class FarmScientificModelTests(unittest.TestCase):
             TechnoEconomicAnalyzer().analyze(
                 self.turbine, n_turbines=1, annual_energy_kwh=4_000_000,
             )
+
+    def test_design_benchmark_is_separate_from_technoeconomic_default(self):
+        techno = CostModel.from_defaults()
+        design = CostModel.from_design_benchmark()
+        benchmark = get_design_cost_benchmark()
+
+        self.assertEqual(techno.turbine_usd_per_kw, 1800.0)
+        self.assertEqual(design.turbine_usd_per_kw, 780.75)
+        self.assertEqual(design.turbines_pct, 0.75)
+        self.assertAlmostEqual(design.total_pct_check(), 1.0, places=12)
+        installed = design.capex_breakdown(rated_kw=1000, n_turbines=1)
+        self.assertEqual(installed['total_capex_usd'], 1_041_000)
+        self.assertEqual(benchmark['total_installed_usd_per_kw'], 1041.0)
 
 
 class LayoutTopsisTests(unittest.TestCase):

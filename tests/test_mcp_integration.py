@@ -86,6 +86,16 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(leveraged.status_code, 400)
         self.assertIn('project_years', leveraged.get_json()['error'])
 
+    def test_mcda_exposes_irena_design_cost_without_changing_techno_default(self):
+        defaults = self.client.get('/api/multicriteria/defaults')
+        self.assertEqual(defaults.status_code, 200)
+        benchmark = defaults.get_json()['design_cost_benchmark']
+        self.assertEqual(benchmark['total_installed_usd_per_kw'], 1041.0)
+        self.assertEqual(benchmark['cost_model']['turbine_usd_per_kw'], 780.75)
+
+        from core.cost_model import CostModel
+        self.assertEqual(CostModel.from_defaults().turbine_usd_per_kw, 1800.0)
+
     def test_project_export_import_restores_data_configuration_and_client_state(self):
         csv = (
             "timestamp,wind_speed,wind_direction\n"

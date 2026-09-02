@@ -178,6 +178,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          grid_limit_mw: Optional[float] = None,
                          target_height_m: Optional[float] = None,
                          cost_model: Optional[CostModel] = None,
+                         cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
                          weights: Optional[Dict[str, float]] = None):
     if not sites:
@@ -204,8 +205,10 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         if not 0.0 <= float(value) < 1.0:
             raise ValueError(f'{name} debe estar en el intervalo [0, 1).')
     ws, wd, mean_speed, weibull_k, rho = _joint_synthetic_wind(sites)
-    cost_model_origin = 'request' if cost_model is not None else 'default'
-    cost_model = cost_model or CostModel.from_defaults()
+    if cost_model_origin is None:
+        cost_model_origin = ('request' if cost_model is not None
+                             else 'irena_onshore_2024_global_weighted_average')
+    cost_model = cost_model or CostModel.from_design_benchmark()
     alternatives = []
     errors = []
     unique_filenames = []
@@ -406,6 +409,9 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
              'doi': '10.1007/978-3-642-48318-9_3'},
             {'id': 'NREL-ATB-2024-Land-Based-Wind',
              'url': 'https://atb.nrel.gov/electricity/2024b/land-based_wind'},
+            {'id': 'IRENA-Renewable-Power-Generation-Costs-2024',
+             'url': ('https://www.irena.org/Publications/2025/Jun/'
+                     'Renewable-Power-Generation-Costs-in-2024')},
         ],
         'errors': errors,
     }

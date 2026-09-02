@@ -1608,6 +1608,11 @@
         <div><label class="form-label">Zoom tras Kriging (km)</label>
           <input class="form-input" type="number" id="krig3-zoom-km" value="100" step="25" min="25"></div>
       </div>
+      <p class="text-muted mt-2" style="font-size:.72rem">
+        CAPEX de diseño: benchmark IRENA onshore 2024 — 1,041 USD/kW instalado;
+        75% aerogeneradores (780.75 USD/kW implícitos). El escenario editable de
+        Evaluación tecnoeconómica conserva 1,800 USD/kW.
+      </p>
       <div class="flex-end mt-2" style="gap:.4rem;align-items:center">
         <span class="text-muted" id="krig3-selection-info" style="font-size:.78rem;margin-right:auto">
           Click: popup · Shift+click: incluir/excluir · <b>Ctrl+arrastrar: selección rectangular</b> · ★ parque principal.
@@ -1900,6 +1905,11 @@
               Cargando catálogo…
             </div>
           </div>
+          <p class="text-muted" style="font-size:.7rem;line-height:1.4">
+            TOPSIS usa el benchmark IRENA onshore 2024: 1,041 USD/kW de CAPEX
+            instalado (780.75 USD/kW de aerogeneradores al 75%). No modifica el
+            valor editable de 1,800 USD/kW en Evaluación tecnoeconómica.
+          </p>
           <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Analizar aerogeneradores del parque</button>
           <div class="progress-bar mt-2" id="mcda-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
             <div id="mcda-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>

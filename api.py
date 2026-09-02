@@ -67,7 +67,8 @@ from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           air_density, extrapolate_wind_hellmann,
                           extrapolate_wind_log,
                           load_turbines_from_folder, list_turbine_info)
-from core.cost_model import CostModel, get_default_model_dict
+from core.cost_model import (CostModel, get_default_model_dict,
+                             get_design_cost_benchmark)
 from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
                               compute_monthly_climatology, compute_extreme_events,
                               compute_histogram, compute_site_overview,
@@ -4713,7 +4714,9 @@ def create_app():
                         price_usd_kwh=price_usd_kwh,
                         fx_mxn_per_usd=float(body.get('price_mxn_per_usd', 20)),
                         project_years=project_years,
-                        cost_model=CostModel.from_dict(body.get('cost_model')),
+                        cost_model=(CostModel.from_dict(body['cost_model'])
+                                    if body.get('cost_model')
+                                    else CostModel.from_design_benchmark()),
                         orographic_speedup_grid=body.get('orographic_speedup_grid'),
                         progress_callback=cb,
                     )
@@ -4737,7 +4740,9 @@ def create_app():
                         filter_filenames=body.get('filenames') or None,
                         physical=bool(body.get('physical', False)),
                         grid_bounds=grid_bounds,
-                        cost_model=CostModel.from_dict(body.get('cost_model')),
+                        cost_model=(CostModel.from_dict(body['cost_model'])
+                                    if body.get('cost_model')
+                                    else CostModel.from_design_benchmark()),
                         z_tgt=float(body['target_height_m']) if body.get('target_height_m') else None,
                         include_sectorial=bool(body.get('include_sectorial', body.get('physical', False))),
                         include_physical_economics=bool(body.get('include_physical_economics', body.get('physical', False))),
@@ -4822,7 +4827,9 @@ def create_app():
                     max_files=max_files, filter_filenames=filter_files,
                     bounds=area_bounds,
                     turbine_filenames=turbine_files,
-                    cost_model=CostModel.from_dict(cost_model_payload),
+                    cost_model=(CostModel.from_dict(cost_model_payload)
+                                if cost_model_payload
+                                else CostModel.from_design_benchmark()),
                 )
                 tasks[task_id]['result'] = numpy_to_python(results)
                 tasks[task_id]['status'] = 'done'
@@ -4846,6 +4853,7 @@ def create_app():
             'layout_weights': LAYOUT_WEIGHTS,
             'layout_labels': LAYOUT_LABELS,
             'layout_directions': LAYOUT_DIRECTION,
+            'design_cost_benchmark': get_design_cost_benchmark(),
             'layout_scenarios': {
                 'base': {
                     'label': 'Escenario base científico',
@@ -4963,7 +4971,10 @@ def create_app():
 
         def _run():
             try:
-                cost_model = CostModel.from_dict(body.get('cost_model'))
+                requested_cost_model = body.get('cost_model')
+                cost_model = (CostModel.from_dict(requested_cost_model)
+                              if requested_cost_model
+                              else CostModel.from_design_benchmark())
                 if calibration_payload is not None:
                     tasks[task_id]['progress'] = 10
                     tasks[task_id]['message'] = 'Construyendo campos MCP calibrados para TOPSIS…'
@@ -5062,6 +5073,9 @@ def create_app():
                         grid_limit_mw=(float(body['grid_limit_mw']) if body.get('grid_limit_mw') else None),
                         target_height_m=(float(body['target_height_m']) if body.get('target_height_m') else None),
                         cost_model=cost_model,
+                        cost_model_origin=(
+                            'request' if requested_cost_model
+                            else 'irena_onshore_2024_global_weighted_average'),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
                         weights=body.get('layout_weights'),
                     )
@@ -5076,6 +5090,7 @@ def create_app():
                     **({'data_source': source_info} if source_info is not None else {}),
                     'ranking': ranking,
                     **(layout_result or {}),
+                    'design_cost_benchmark': get_design_cost_benchmark(),
                     'market_configuration': {
                         'trajectories': body.get('market_trajectories') or {},
                         'equivalent_inputs': {
