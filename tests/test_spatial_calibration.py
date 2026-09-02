@@ -8,7 +8,12 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from core.kriging import analyze_spatial_topsis_maps, kriging_interp
+from core.kriging import (
+    analyze_spatial_topsis_maps,
+    fit_variogram_loo,
+    kriging_grid,
+    kriging_interp,
+)
 from core.mcp_catalog import M04_LATITUDE, M04_LONGITUDE
 from core.terrain import sample_grid_worldcover_z0
 from core.spatial_calibration import (
@@ -177,6 +182,8 @@ class SpatialCalibrationTests(unittest.TestCase):
         self.assertIn("wind_merra2", maps)
         self.assertIn("wind_direction", maps)
         self.assertIn("uncertainty", maps)
+        self.assertEqual(maps["uncertainty"]["unit"], "m/s")
+        self.assertEqual(maps["uncertainty"]["kriging_variance_unit"], "(m/s)^2")
         self.assertIn("wind_raw_reference", maps)
         self.assertIn("wind_calibration_delta", maps)
         self.assertEqual(maps["wind_raw_reference"]["bounds"], maps["wind_neutral"]["bounds"])
@@ -257,6 +264,38 @@ class SpatialCalibrationTests(unittest.TestCase):
         )
         self.assertIn("not CFD", screening["label"])
         self.assertEqual(len(screening["exposure_sector_mean"]), 16)
+
+    def test_variogram_loo_matches_explicit_held_out_predictions(self):
+        lons = np.asarray([-95.2, -95.0, -94.8, -94.6, -94.5])
+        lats = np.asarray([16.3, 16.5, 16.7, 16.9, 17.0])
+        values = np.asarray([7.0, 7.5, 8.1, 8.4, 8.6])
+        selected = fit_variogram_loo(lons, lats, values, requested="auto")
+        residuals = []
+        for index in range(len(values)):
+            keep = np.arange(len(values)) != index
+            predicted, _ = kriging_interp(
+                lons[keep], lats[keep], values[keep],
+                np.asarray([[lons[index]]]), np.asarray([[lats[index]]]),
+                variogram=selected,
+            )
+            residuals.append(float(predicted[0, 0]) - values[index])
+        explicit_rmse = float(np.sqrt(np.mean(np.square(residuals))))
+        self.assertAlmostEqual(selected["loo_rmse"], explicit_rmse, places=10)
+        self.assertGreaterEqual(selected["sill"], selected["nugget"])
+        self.assertNotEqual(selected["range_km"], 50.0)
+
+    def test_kriging_variance_uses_squared_input_units(self):
+        lons = [-95.2, -95.0, -94.8, -94.6, -94.5]
+        lats = [16.3, 16.5, 16.7, 16.9, 17.0]
+        values = np.asarray([7.0, 7.5, 8.1, 8.4, 8.6])
+        base = kriging_grid(lons, lats, values, n=8, model="auto")
+        scaled = kriging_grid(lons, lats, values * 10.0, n=8, model="auto")
+        np.testing.assert_allclose(
+            np.asarray(scaled["variance"]), np.asarray(base["variance"]) * 100.0,
+            rtol=1e-6, atol=1e-10,
+        )
+        self.assertEqual(base["variance_units"], "squared_input_units")
+        self.assertIn("empirical_variogram", base["variogram"])
 
 
 if __name__ == "__main__":

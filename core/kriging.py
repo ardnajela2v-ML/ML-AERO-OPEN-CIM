@@ -20,7 +20,7 @@ from typing import Optional, List, Dict, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, lsq_linear
 from scipy.stats import weibull_min as wbl_dist
 from scipy.interpolate import interp1d
 from core.cost_model import CostModel
@@ -136,7 +136,156 @@ def _haversine_pairwise_km(lons1, lats1, lons2, lats2):
     return 2 * R * np.arcsin(np.sqrt(np.clip(a, 0.0, 1.0)))
 
 
-def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
+def _variogram_correlation(distance_km, model, range_km):
+    """Correlation associated with the supported stationary variograms."""
+    distance = np.asarray(distance_km, dtype=float)
+    scale = max(float(range_km), 1e-9)
+    if model == 'gaussian':
+        return np.exp(-np.square(distance / scale))
+    return np.exp(-distance / scale)
+
+
+def _empirical_variogram(distances, semivariances, max_bins=12):
+    """Bin a variogram cloud into distance-quantile classes."""
+    distances = np.asarray(distances, dtype=float).ravel()
+    semivariances = np.asarray(semivariances, dtype=float).ravel()
+    valid = np.isfinite(distances) & np.isfinite(semivariances) & (distances > 0)
+    distances, semivariances = distances[valid], semivariances[valid]
+    if not len(distances):
+        return np.asarray([]), np.asarray([]), np.asarray([])
+    n_bins = max(3, min(int(max_bins), int(np.sqrt(len(distances)))))
+    edges = np.unique(np.quantile(distances, np.linspace(0.0, 1.0, n_bins + 1)))
+    if len(edges) < 2:
+        return (np.asarray([float(np.mean(distances))]),
+                np.asarray([float(np.mean(semivariances))]),
+                np.asarray([len(distances)], dtype=float))
+    bin_index = np.clip(np.digitize(distances, edges[1:-1], right=True), 0, len(edges) - 2)
+    rows = []
+    for index in range(len(edges) - 1):
+        keep = bin_index == index
+        if np.any(keep):
+            rows.append((float(np.mean(distances[keep])),
+                         float(np.mean(semivariances[keep])), int(np.sum(keep))))
+    return tuple(np.asarray(column, dtype=float) for column in zip(*rows))
+
+
+def _fit_variogram_wls(bin_distance, bin_gamma, bin_count, model, range_km,
+                       fallback_variance):
+    """Fit nugget and partial sill with Cressie-style iterated WLS.
+
+    Reference: Cressie (1985), Mathematical Geology 17, 563–586,
+    https://doi.org/10.1007/BF01032109
+    """
+    h = np.asarray(bin_distance, dtype=float)
+    empirical = np.asarray(bin_gamma, dtype=float)
+    counts = np.asarray(bin_count, dtype=float)
+    basis = 1.0 - _variogram_correlation(h, model, range_km)
+    design = np.column_stack([np.ones_like(basis), basis])
+    total_variance = max(float(fallback_variance), 1e-12)
+    params = np.asarray([0.0, total_variance], dtype=float)
+    for _ in range(4):
+        fitted = np.maximum(design @ params, total_variance * 1e-9)
+        weights = np.sqrt(np.maximum(counts, 1.0)) / fitted
+        solved = lsq_linear(design * weights[:, None], empirical * weights,
+                            bounds=(0.0, np.inf), method='trf')
+        params = solved.x
+    nugget, partial_sill = float(params[0]), float(params[1])
+    if partial_sill <= total_variance * 1e-9:
+        partial_sill = total_variance * 1e-6
+    fitted = nugget + partial_sill * basis
+    cressie_weights = counts / np.maximum(np.square(fitted), total_variance ** 2 * 1e-12)
+    wls = float(np.sum(cressie_weights * np.square(empirical - fitted)) /
+                np.sum(cressie_weights))
+    return nugget, partial_sill, wls
+
+
+def _loo_rmse_from_covariance(x, y, z, model, range_km, nugget, partial_sill):
+    """Fast ordinary-Kriging LOO RMSE from one augmented-system inverse."""
+    distance = _haversine_pairwise_km(x, y, x, y)
+    covariance = partial_sill * _variogram_correlation(distance, model, range_km)
+    covariance += nugget * np.eye(len(z))
+    covariance += max(nugget + partial_sill, 1.0) * 1e-10 * np.eye(len(z))
+    system = np.empty((len(z) + 1, len(z) + 1), dtype=float)
+    system[:-1, :-1] = covariance
+    system[:-1, -1] = 1.0
+    system[-1, :-1] = 1.0
+    system[-1, -1] = 0.0
+    try:
+        inverse = np.linalg.inv(system)
+    except np.linalg.LinAlgError:
+        inverse = np.linalg.pinv(system)
+    alpha = inverse @ np.r_[z, 0.0]
+    diagonal = np.diag(inverse)[:-1]
+    valid = np.isfinite(diagonal) & (np.abs(diagonal) > 1e-12)
+    if not np.any(valid):
+        return float('inf'), 0
+    residuals = alpha[:-1][valid] / diagonal[valid]
+    return float(np.sqrt(np.mean(np.square(residuals)))), int(np.sum(valid))
+
+
+def fit_variogram_loo(lons, lats, values, requested='auto', structure=None):
+    """Fit nugget/sill/range and select model/range by leave-one-node-out.
+
+    The empirical semivariogram and returned variance use squared input units.
+    Passing ``structure`` retains its model/range and only refits nugget/sill,
+    which lets related map layers share one validated spatial structure.
+    """
+    x = np.asarray(lons, dtype=float).ravel()
+    y = np.asarray(lats, dtype=float).ravel()
+    z = np.asarray(values, dtype=float).ravel()
+    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
+    x, y, z = x[valid], y[valid], z[valid]
+    if len(z) < 3:
+        raise ValueError(f'Kriging requires >= 3 finite sites (got {len(z)}).')
+    distance_matrix = _haversine_pairwise_km(x, y, x, y)
+    pair_index = np.triu_indices(len(z), 1)
+    pair_distance = distance_matrix[pair_index]
+    pair_gamma = 0.5 * np.square(z[:, None] - z[None, :])[pair_index]
+    bin_h, bin_gamma, bin_count = _empirical_variogram(pair_distance, pair_gamma)
+    sample_variance = max(float(np.var(z, ddof=1)), 1e-12)
+    models = ([str(structure['model'])] if structure else
+              ([requested] if requested in {'exponential', 'gaussian'} else ['exponential', 'gaussian']))
+    positive_distance = pair_distance[pair_distance > 0]
+    median_distance = float(np.median(positive_distance)) if len(positive_distance) else 50.0
+    if structure:
+        ranges = [float(structure['range_km'])]
+    else:
+        lower = max(float(np.min(positive_distance)) * 0.5, 0.1) if len(positive_distance) else 1.0
+        upper_range = max(float(np.max(positive_distance)) * 2.0, lower) if len(positive_distance) else 300.0
+        ranges = sorted({float(np.clip(median_distance * factor, lower, upper_range))
+                         for factor in (0.25, 0.5, 1.0, 2.0, 4.0)})
+    candidates = []
+    for candidate_model in models:
+        for range_km in ranges:
+            nugget, partial_sill, wls = _fit_variogram_wls(
+                bin_h, bin_gamma, bin_count, candidate_model, range_km, sample_variance)
+            if structure:
+                loo_rmse, loo_n = None, 0
+            else:
+                loo_rmse, loo_n = _loo_rmse_from_covariance(
+                    x, y, z, candidate_model, range_km, nugget, partial_sill)
+            candidates.append({
+                'model': candidate_model, 'range_km': float(range_km),
+                'nugget': nugget, 'partial_sill': partial_sill,
+                'sill': nugget + partial_sill, 'wls_score': wls,
+                'loo_rmse': loo_rmse, 'loo_n': loo_n,
+            })
+    best = (candidates[0] if structure else
+            min(candidates, key=lambda row: (row['loo_rmse'], row['wls_score'])))
+    return {
+        **best, 'n': int(len(z)),
+        'selection': 'fixed_structure_wls' if structure else 'leave_one_node_out',
+        'variance_units': 'squared_input_units',
+        'empirical_variogram': {
+            'distance_km': bin_h.tolist(), 'semivariance': bin_gamma.tolist(),
+            'pair_count': bin_count.astype(int).tolist(),
+        },
+        'candidates': candidates if not structure else [],
+    }
+
+
+def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0,
+                   variogram=None):
     """Ordinary Kriging interpolation. Returns (z_interp, variance).
 
     Coordenadas (x=lon, y=lat) en grados; las distancias internas se calculan
@@ -158,15 +307,23 @@ def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
     # Distancias Haversine en km — 1°lat ≠ 1°lon en México (ver _haversine_pairwise_km).
     d  = _haversine_pairwise_km(x, y, x, y)
     dq = _haversine_pairwise_km(x, y, xq.ravel(), yq.ravel())
-    if rng == 0:
-        rng = np.max(d) / 3 if d.size else 1.0
-    if model == 'gaussian':
-        g = lambda h, a: 1 - np.exp(-(h / a) ** 2)
+    if variogram is None:
+        if rng == 0:
+            rng = np.max(d) / 3 if d.size else 1.0
+        nugget, partial_sill = 0.0, 1.0
     else:
-        g = lambda h, a: 1 - np.exp(-h / a)
-    # ridge 1e-6 para estabilidad numérica (sobre todo con variograma gaussiano).
-    C = 1 - g(d, rng) + 1e-6 * np.eye(len(x))
-    k = 1 - g(dq, rng)
+        model = str(variogram['model'])
+        rng = float(variogram['range_km'])
+        nugget = max(0.0, float(variogram.get('nugget', 0.0)))
+        partial_sill = max(
+            1e-12,
+            float(variogram.get('partial_sill', float(variogram.get('sill', 1.0)) - nugget)),
+        )
+    total_sill = nugget + partial_sill
+    C = partial_sill * _variogram_correlation(d, model, rng)
+    C += nugget * np.eye(len(x))
+    C += max(total_sill, 1.0) * 1e-10 * np.eye(len(x))
+    k = partial_sill * _variogram_correlation(dq, model, rng)
     n = len(x)
     K = np.empty((n + 1, n + 1), dtype=float)
     K[:n, :n] = C
@@ -181,7 +338,7 @@ def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0):
     w = sol[:n, :]
     lagrange = sol[n, :]
     z_hat = (w.T @ z).reshape(xq.shape)
-    var   = np.maximum(0.0, 1 - np.sum(w * k, axis=0) - lagrange).reshape(xq.shape)
+    var = np.maximum(0.0, total_sill - np.sum(w * k, axis=0) - lagrange).reshape(xq.shape)
     return z_hat, var
 
 
@@ -191,7 +348,7 @@ interpolate_wind = kriging_interp
 
 
 def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential',
-                 bounds=None):
+                 bounds=None, variogram_structure=None):
     """Build a regular lat/lon grid, interpolate, return dict ready for JSON."""
     la = np.asarray(lats, dtype=float)
     lo = np.asarray(lons, dtype=float)
@@ -213,12 +370,16 @@ def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential'
     xq, yq = np.meshgrid(
         np.linspace(lon_min, lon_max, n),
         np.linspace(lat_min, lat_max, n))
-    zq, var = kriging_interp(lo, la, va, xq, yq, model=model)
+    variogram = fit_variogram_loo(lo, la, va, requested=model,
+                                  structure=variogram_structure)
+    zq, var = kriging_interp(lo, la, va, xq, yq, variogram=variogram)
     return {
         'lon_grid': xq.tolist(),
         'lat_grid': yq.tolist(),
         'z':        zq.tolist(),
         'variance': var.tolist(),
+        'variance_units': 'squared_input_units',
+        'variogram': variogram,
         'bounds': {
             'lat_min': lat_min,
             'lat_max': lat_max,
@@ -228,7 +389,7 @@ def kriging_grid(lons, lats, values, n=80, margin_frac=0.15, model='exponential'
         'z_min': float(np.nanmin(zq)),
         'z_max': float(np.nanmax(zq)),
         'n': n,
-        'model': model,
+        'model': variogram['model'],
     }
 
 
@@ -938,10 +1099,13 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
 
     lats = [float(r['_lat']) for r in rows]
     lons = [float(r['_lon']) for r in rows]
+    variogram_structure = fit_variogram_loo(
+        lons, lats, [float(r.get('v_mean') or 0.0) for r in rows], requested=model)
 
     def _grid_for(key: str):
         return kriging_grid(lons, lats, [float(r.get(key) or 0.0) for r in rows],
-                            n=n_grid, model=model, bounds=grid_bounds)
+                            n=n_grid, model=model, bounds=grid_bounds,
+                            variogram_structure=variogram_structure)
 
     wind_grid = _grid_for('v_mean')
     gust_grid = _grid_for('gust_ms')
@@ -950,17 +1114,20 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     rho_grid = _grid_for('rho_mean')
     sector_freq_grids = [
         kriging_grid(lons, lats, [float((r.get('sector_frequency_pct') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
-                     n=n_grid, model=model, bounds=grid_bounds)
+                     n=n_grid, model=model, bounds=grid_bounds,
+                     variogram_structure=variogram_structure)
         for i in range(SECTOR_COUNT)
     ]
     sector_speed_grids = [
         kriging_grid(lons, lats, [float((r.get('sector_mean_speed') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
-                     n=n_grid, model=model, bounds=grid_bounds)
+                     n=n_grid, model=model, bounds=grid_bounds,
+                     variogram_structure=variogram_structure)
         for i in range(SECTOR_COUNT)
     ]
     sector_energy_grids = [
         kriging_grid(lons, lats, [float((r.get('sector_energy_pct') or [0.0] * SECTOR_COUNT)[i]) for r in rows],
-                     n=n_grid, model=model, bounds=grid_bounds)
+                     n=n_grid, model=model, bounds=grid_bounds,
+                     variogram_structure=variogram_structure)
         for i in range(SECTOR_COUNT)
     ]
     elevation_grid = None
@@ -981,7 +1148,9 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
             return math.log(Z_REF / Z0) / math.log(Z_REF / z0_local)
 
         neutral = [float(r.get('v_mean') or 0.0) * _alpha(z0) for r, z0 in zip(rows, z0_site)]
-        neutral_grid = kriging_grid(lons, lats, neutral, n=n_grid, model=model, bounds=grid_bounds)
+        neutral_grid = kriging_grid(
+            lons, lats, neutral, n=n_grid, model=model, bounds=grid_bounds,
+            variogram_structure=variogram_structure)
         b = neutral_grid['bounds']
         z = neutral_grid['z']
         ny = len(z)
@@ -1483,9 +1652,11 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
     if progress_callback:
         progress_callback(45, f'{len(lats)} sitios válidos · generando capas principales…')
 
+    variogram_structure = fit_variogram_loo(lons, lats, v_proms, requested=model)
+
     def _grid(values, title):
         g = kriging_grid(lons, lats, values, n=n_grid, model=model,
-                         bounds=grid_bounds)
+                         bounds=grid_bounds, variogram_structure=variogram_structure)
         g['title'] = title
         g['points'] = [
             {'lat': la, 'lon': lo, 'value': float(v), 'name': nm}
@@ -1495,7 +1666,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
 
     def _sector_grid(values, title):
         g = kriging_grid(lons, lats, values, n=n_grid, model=model,
-                         bounds=grid_bounds)
+                         bounds=grid_bounds, variogram_structure=variogram_structure)
         g['title'] = title
         return g
 

@@ -29,6 +29,7 @@ from core.kriging import (
     SECTOR_LABELS,
     _haversine_km,
     _legacy_prefit_economics,
+    fit_variogram_loo as _fit_variogram_loo,
     fit_power_curve_gauss4,
     kriging_grid,
     kriging_interp,
@@ -670,42 +671,8 @@ def calibrate_spatial_nodes(
 
 def select_variogram_loo(lons: Sequence[float], lats: Sequence[float], values: Sequence[float],
                          requested: str = "auto") -> dict[str, Any]:
-    """Select exponential/Gaussian and range using leave-one-node-out RMSE."""
-
-    x = np.asarray(lons, dtype=float)
-    y = np.asarray(lats, dtype=float)
-    z = np.asarray(values, dtype=float)
-    valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(z)
-    x, y, z = x[valid], y[valid], z[valid]
-    models = [requested] if requested in {"exponential", "gaussian"} else ["exponential", "gaussian"]
-    if len(z) < 4:
-        return {"model": models[0], "range_km": 50.0, "loo_rmse": None, "n": int(len(z)), "selection": "fallback_lt4"}
-    distances = []
-    for idx in range(len(z)):
-        for other in range(idx + 1, len(z)):
-            distances.append(_haversine_km(y[idx], x[idx], y[other], x[other]))
-    median = float(np.median(distances)) if distances else 50.0
-    ranges = sorted({max(10.0, min(300.0, median * factor)) for factor in (0.5, 1.0, 2.0)})
-    candidates = []
-    for model in models:
-        for range_km in ranges:
-            predictions = []
-            actual = []
-            for idx in range(len(z)):
-                mask = np.arange(len(z)) != idx
-                try:
-                    predicted, _ = kriging_interp(
-                        x[mask], y[mask], z[mask], np.asarray([[x[idx]]]), np.asarray([[y[idx]]]),
-                        model=model, rng=range_km,
-                    )
-                    predictions.append(float(predicted[0, 0]))
-                    actual.append(float(z[idx]))
-                except Exception:
-                    pass
-            rmse = float(np.sqrt(np.mean(np.square(np.asarray(predictions) - np.asarray(actual))))) if predictions else float("inf")
-            candidates.append({"model": model, "range_km": float(range_km), "loo_rmse": rmse, "n": len(predictions)})
-    best = min(candidates, key=lambda row: row["loo_rmse"])
-    return {**best, "selection": "leave_one_node_out", "candidates": candidates}
+    """Shared physical variogram fit used by classic and advanced routes."""
+    return _fit_variogram_loo(lons, lats, values, requested=requested)
 
 
 def _grid_with_range(lons: Sequence[float], lats: Sequence[float], values: Sequence[float], *,
@@ -731,12 +698,18 @@ def _grid_with_range(lons: Sequence[float], lats: Sequence[float], values: Seque
         np.linspace(limits["lon_min"], limits["lon_max"], int(n)),
         np.linspace(limits["lat_min"], limits["lat_max"], int(n)),
     )
-    zq, variance = kriging_interp(lons_array, lats_array, values_array, xq, yq, model=model, rng=range_km)
+    variogram = _fit_variogram_loo(
+        lons_array, lats_array, values_array,
+        structure={"model": model, "range_km": range_km},
+    )
+    zq, variance = kriging_interp(
+        lons_array, lats_array, values_array, xq, yq, variogram=variogram)
     result = {
         "lon_grid": xq.tolist(), "lat_grid": yq.tolist(), "z": zq.tolist(),
         "variance": variance.tolist(), "bounds": limits,
         "z_min": float(np.nanmin(zq)), "z_max": float(np.nanmax(zq)), "n": int(n),
         "model": model, "range_km": float(range_km), "title": title,
+        "variance_units": "squared_input_units", "variogram": variogram,
     }
     if names is not None:
         valid_names = [name for name, keep in zip(names, valid) if keep]
@@ -980,8 +953,10 @@ def build_calibrated_maps(
         weights[provider] ** 2 * np.asarray(data["fields"]["generalized_mean_speed"]["variance"], dtype=float)
         for provider, data in provider_grids.items()
     )
-    node_std = float(np.std([node["generalized_mean_speed"] for node in nodes if node.get("field_role") == "official"]))
-    kriging_uncertainty = np.sqrt(np.maximum(0.0, kriging_variance)) * node_std * target_factor
+    # Each provider variance is already in (m/s)² after the physical variogram
+    # fit.  Only the vertical-profile factor is needed to move its standard
+    # deviation from project-reference height to target height.
+    kriging_uncertainty = np.sqrt(np.maximum(0.0, kriging_variance)) * target_factor
     mcp_uncertainty = float(anchor.get("mcp_uncertainty_half_width_ms") or 0.0)
     uncertainty = np.sqrt(np.square(kriging_uncertainty) + np.square(provider_spread) + mcp_uncertainty ** 2)
 
@@ -1019,7 +994,10 @@ def build_calibrated_maps(
         "weibull_k": _wrap_grid(template, weibull_k, "Weibull k · reconstrucción histórica"),
         "weibull_lambda": _wrap_grid(template, lambda_target, "Weibull λ · reconstrucción histórica"),
         "power_density": _wrap_grid(template, power_density, "Densidad de potencia histórica"),
-        "uncertainty": _wrap_grid(template, uncertainty, "Incertidumbre MCP + Kriging + dispersión de proveedores"),
+        "uncertainty": {
+            **_wrap_grid(template, uncertainty, "Incertidumbre MCP + Kriging + dispersión de proveedores"),
+            "unit": "m/s", "kriging_variance_unit": "(m/s)^2",
+        },
         "elevation": _wrap_grid(template, elevation, "Altitud DEM · diagnóstico"),
         "roughness": _wrap_grid(template, roughness, "Rugosidad WorldCover + respaldo por pendiente DEM"),
         "air_density": _wrap_grid(template, density, "Densidad del aire por elevación"),
