@@ -25,6 +25,7 @@ from windmcp.profile import fit_vertical_profile, normalize_reference_height
 from windmcp.qc import quality_control
 from windmcp.readiness import assess_reconstruction_readiness
 from windmcp.service import _wind_rose_payload
+from core.energy import PowerCurve as CorePowerCurve
 from core.wind_stats import compute_wind_rose
 
 
@@ -262,6 +263,86 @@ class WindMCPTests(unittest.TestCase):
         self.assertAlmostEqual(summary["observed_period_energy_mwh"], 1.08)
         self.assertAlmostEqual(summary["predicted_period_energy_mwh"], 1.08)
         self.assertAlmostEqual(summary["delta_energy_pct"], 0.0)
+        self.assertEqual(summary["density_correction"]["hours_standard_fallback"], 2)
+        self.assertIn("observed_power_kw_gross_density_corrected", rows.columns)
+
+    def test_windmcp_power_curve_matches_central_physics(self):
+        points = [
+            (0.0, 0.0), (3.0, 0.0), (3.5, 80.0), (5.0, 300.0),
+            (12.0, 1000.0), (25.0, 1000.0), (25.1, 0.0),
+        ]
+        windmcp_curve = PowerCurve(
+            name="equivalence",
+            wind_speed_ms=np.array([row[0] for row in points]),
+            power_kw_values=np.array([row[1] for row in points]),
+        )
+        central_curve = CorePowerCurve(
+            name="equivalence", rated_power_kw=1000.0, cut_in=3.5,
+            rated_speed=12.0, cut_out=25.0, curve_points=points,
+        )
+        speeds = np.array([2.0, 3.5, 4.25, 12.0, 25.0, 25.01, 30.0, np.nan])
+
+        np.testing.assert_allclose(
+            windmcp_curve.power_kw(speeds), central_curve.power_kw(speeds),
+            equal_nan=True,
+        )
+        np.testing.assert_allclose(
+            windmcp_curve.power_kw_density_corrected(speeds, 1.225),
+            central_curve.power_kw_density_corrected(speeds, 1.225),
+            equal_nan=True,
+        )
+        self.assertEqual(windmcp_curve.cut_out_ms, 25.0)
+        self.assertEqual(windmcp_curve.rated_speed_ms, 12.0)
+        self.assertEqual(windmcp_curve.power_kw(np.array([25.01]))[0], 0.0)
+        self.assertLessEqual(np.nanmax(
+            windmcp_curve.power_kw_density_corrected(speeds, 1.4)
+        ), windmcp_curve.rated_power_kw)
+
+    def test_period_energy_uses_reanalysis_density_with_hourly_fallback(self):
+        curve = PowerCurve(
+            name="density",
+            wind_speed_ms=np.array([0.0, 5.0, 10.0, 25.0, 25.1]),
+            power_kw_values=np.array([0.0, 100.0, 500.0, 500.0, 0.0]),
+        )
+        predictions = pd.DataFrame({
+            "timestamp": pd.date_range("2021-01-01", periods=3, freq="1h", tz="UTC"),
+            "observed_wind_speed": [5.0, 5.0, 5.0],
+            "predicted_wind_speed": [5.0, 5.0, 5.0],
+            "temperature_ref": [15.0, 25.0, np.nan],
+            "pressure_ref_kpa": [101.325, 90.0, np.nan],
+        })
+
+        summary, rows = compare_period_energy(predictions, curve)
+
+        self.assertEqual(summary["density_correction"]["hours_reanalysis_temperature_pressure"], 2)
+        self.assertEqual(summary["density_correction"]["hours_standard_fallback"], 1)
+        self.assertEqual(rows["density_source"].tolist(), [
+            "reanalysis_temperature_pressure",
+            "reanalysis_temperature_pressure",
+            "standard_fallback",
+        ])
+        self.assertAlmostEqual(rows.iloc[2]["air_density_kg_m3"], 1.225)
+        self.assertAlmostEqual(
+            rows.iloc[2]["observed_power_kw_gross"],
+            rows.iloc[2]["observed_power_kw_gross_density_corrected"],
+        )
+        self.assertNotAlmostEqual(
+            rows.iloc[1]["observed_power_kw_gross"],
+            rows.iloc[1]["observed_power_kw_gross_density_corrected"],
+        )
+
+    def test_power_curve_file_parser_remains_header_tolerant(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "custom_curve.csv"
+            path.write_text(
+                "wind_speed,power_kw\n0,0\n3,0\n4,100\n12,500\n25,500\n25.1,0\n",
+                encoding="utf-8",
+            )
+            curve = PowerCurve.from_file(str(path))
+            self.assertEqual(curve.rated_power_kw, 500.0)
+            self.assertEqual(curve.cut_in_ms, 4.0)
+            self.assertEqual(curve.cut_out_ms, 25.0)
+            self.assertEqual(curve.power_kw(np.array([26.0]))[0], 0.0)
 
     def test_api_health_capabilities_and_structured_validation_error(self):
         with tempfile.TemporaryDirectory() as directory:

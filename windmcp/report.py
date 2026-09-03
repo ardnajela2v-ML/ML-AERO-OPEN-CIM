@@ -48,6 +48,10 @@ def write_final_report(result: Dict[str, Any], output_path: str | Path) -> str:
     energy = result.get("energy_forward") or {}
     energy_block = (
         _table([energy], ["observed_period_energy_mwh", "predicted_period_energy_mwh", "delta_energy_pct"])
+        + _table([energy.get("density_correction", {})], [
+            "mean_air_density_kg_m3", "hours_reanalysis_temperature_pressure",
+            "hours_standard_fallback", "reference_density_kg_m3",
+        ])
         if energy else "<p>No se calculó energía: no se proporcionó una curva de potencia.</p>"
     )
     backtest_rows = backtest.get("summary", [])

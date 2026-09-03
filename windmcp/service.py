@@ -1002,6 +1002,25 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     artifact_paths[selected_reference + "_reverse"] = _write_validation_artifacts(
         output_dir, _safe_filename(selected_reference) + "_reverse", final_reverse
     )
+    if power_curve is not None:
+        energy_forward, energy_forward_rows = compare_period_energy(
+            final_forward["predictions"], power_curve,
+            turbine_count=turbine_count, losses_pct=losses_pct,
+        )
+        energy_reverse, energy_reverse_rows = compare_period_energy(
+            final_reverse["predictions"], power_curve,
+            turbine_count=turbine_count, losses_pct=losses_pct,
+        )
+        selected_validation["energy_forward"] = energy_forward
+        selected_validation["energy_reverse"] = energy_reverse
+        energy_forward_path = output_dir / (
+            _safe_filename(selected_reference) + "_energy_forward.csv")
+        energy_reverse_path = output_dir / (
+            _safe_filename(selected_reference) + "_energy_reverse.csv")
+        energy_forward_rows.to_csv(energy_forward_path, index=False)
+        energy_reverse_rows.to_csv(energy_reverse_path, index=False)
+        artifact_paths[selected_reference + "_energy_forward"] = str(energy_forward_path)
+        artifact_paths[selected_reference + "_energy_reverse"] = str(energy_reverse_path)
     reconstruction_columns = ["wind_speed_obs", "wind_speed_ref"]
     reconstruction_training = selected_aligned.loc[
         selected_aligned.index.year == int(train_year), reconstruction_columns

@@ -676,7 +676,9 @@ def validate_direction(
     base_columns = _method_columns(aligned, method)
     raw_reference_column = "wind_speed_ref_raw"
     chart_columns = [
-        column for column in ("wind_direction_obs", "wind_direction_ref")
+        column for column in (
+            "wind_direction_obs", "wind_direction_ref", "temperature_ref", "pressure_ref_kpa"
+        )
         if column in aligned.columns
     ]
     test_columns = list(dict.fromkeys(
@@ -708,6 +710,9 @@ def validate_direction(
     )
     if "wind_direction_obs" in test.columns:
         predictions["observed_wind_direction"] = test["wind_direction_obs"].to_numpy()
+    for environmental_column in ("temperature_ref", "pressure_ref_kpa"):
+        if environmental_column in test.columns:
+            predictions[environmental_column] = test[environmental_column].to_numpy()
     if "wind_direction_ref" in test.columns:
         direction_training = aligned.loc[aligned.index.year == int(train_year)]
         direction_model = (

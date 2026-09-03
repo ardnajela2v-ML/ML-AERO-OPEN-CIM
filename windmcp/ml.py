@@ -218,6 +218,9 @@ def validate_ml_direction(
         "predicted_wind_speed_raw": raw,
         "predicted_wind_speed": predicted,
     })
+    for environmental_column in ("temperature_ref", "pressure_ref_kpa"):
+        if environmental_column in aligned.columns:
+            predictions[environmental_column] = aligned[environmental_column].reindex(test.index).to_numpy()
     if "wind_direction_obs" in aligned.columns:
         predictions["observed_wind_direction"] = aligned["wind_direction_obs"].reindex(test.index).to_numpy()
     if "wind_direction_ref" in aligned.columns:

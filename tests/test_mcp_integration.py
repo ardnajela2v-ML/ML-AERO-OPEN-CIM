@@ -780,6 +780,7 @@ class MCPIntegrationTests(unittest.TestCase):
             "train_year": train_year,
             "test_year": test_year,
             "target_height_m": 80,
+            "power_curve_file": "vestas20_p2000_r40.csv",
         })
         self.assertEqual(started.status_code, 202, started.get_data(as_text=True))
         ids = started.get_json()
@@ -845,6 +846,22 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertIn(str(train_year), result["selection_data_policy"]["model_selection"])
         self.assertIn(str(test_year), result["selection_data_policy"]["final_evaluation"])
         self.assertEqual(result["weibull_provenance"]["model_hindcast"]["method"], "MLE_floc_0")
+        density = result["energy_forward"]["density_correction"]
+        self.assertGreater(density["hours_reanalysis_temperature_pressure"], 0)
+        self.assertEqual(
+            density["hours_reanalysis_temperature_pressure"]
+            + density["hours_standard_fallback"],
+            result["energy_forward"]["concurrent_hours"],
+        )
+        energy_artifact = Path(
+            result["artifacts"][result["selected_reference"] + "_energy_forward"]
+        )
+        energy_columns = set(pd.read_csv(energy_artifact, nrows=1).columns)
+        self.assertTrue({
+            "air_density_kg_m3", "density_source",
+            "observed_power_kw_gross", "observed_power_kw_gross_density_corrected",
+            "predicted_power_kw_gross", "predicted_power_kw_gross_density_corrected",
+        }.issubset(energy_columns))
         for artifact_path in result["artifacts"].values():
             self.assertTrue(Path(artifact_path).exists(), artifact_path)
         self.assertIn(str(test_year), Path(
