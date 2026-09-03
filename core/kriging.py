@@ -734,14 +734,23 @@ def parallel_read_sites(paths: List[str], year: Optional[int] = None,
 def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
                            demand_mwh=1000, tasa=0.08, price_usd_kwh=None,
                            price_mxn_per_usd=20.0, anios=None, max_w=MAX_W,
-                           cost_model: Optional[CostModel] = None):
+                           cost_model: Optional[CostModel] = None,
+                           fitted_power_w=None):
     """
     Compute per-site × per-turbine technical + economic metrics.
     All inputs are arrays/scalars already read from files.
     """
     price_usd_kwh, anios = _require_project_economics(price_usd_kwh, anios)
     p_nom_w = p_nom_kw * 1000.0
-    ps = fit_power_curve_gauss4(curve_x, curve_y * 1000.0, p_nom_w)  # kW -> W
+    # ``analyze_sites`` supplies this prefit once per turbine. Other callers
+    # keep the original behavior by omitting it.
+    ps = (
+        np.asarray(fitted_power_w, dtype=float)
+        if fitted_power_w is not None
+        else fit_power_curve_gauss4(curve_x, curve_y * 1000.0, p_nom_w)
+    )  # kW -> W
+    if ps.shape != np.asarray(curve_x).shape:
+        raise ValueError('fitted_power_w debe coincidir con curve_x')
     # interp1d 'linear' para preservar la suavidad del fit gauss4 (antes 'nearest'
     # producía escalones discretos que descartaban la suavización).
     ifn = interp1d(curve_x, ps, kind='linear', bounds_error=False, fill_value=0)
@@ -875,6 +884,8 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
         wind_files = [f for f in wind_files if _inside_bounds_from_name(f)]
     if max_files:
         wind_files = wind_files[:max_files]
+    if not wind_files:
+        return []
 
     turb_files = sorted(
         f for f in os.listdir(turbines_folder)
@@ -886,49 +897,50 @@ def analyze_sites(wind_folder: str, turbines_folder: str, year: int,
     if not turb_files:
         raise ValueError('Selecciona al menos una turbina válida para el análisis.')
 
-    sites_out = []
-    for wf in wind_files:
-        path = os.path.join(wind_folder, wf)
+    # Curvas y ajustes dependen sólo de la turbina, no del sitio. Prepararlos
+    # aquí evita repetir read_csv + curve_fit por cada combinación sitio×turbina.
+    turbines = []
+    for tf in turb_files:
         try:
-            site = read_wind_file(path, year=year)
+            dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
+            x_c = dat[:, 0].astype(float)
+            y_c = dat[:, 1].astype(float)
+            name, rotor, p_nom_kw = parse_turbine_filename(tf)
+            fitted_power_w = fit_power_curve_gauss4(
+                x_c, y_c * 1000.0, p_nom_kw * 1000.0)
+            turbines.append((tf, x_c, y_c, name, rotor, p_nom_kw, fitted_power_w))
         except Exception as e:
-            log.warning('analyze_sites: skip wind file %s — %s', wf, e)
+            log.warning('analyze_sites: skip turbine CSV %s — %s', tf, e)
+    wind_paths = [os.path.join(wind_folder, wf) for wf in wind_files]
+    site_stats = parallel_read_sites(wind_paths, year=year, max_workers=6)
+    sites_out = []
+    for wf, stats in zip(wind_files, site_stats):
+        if stats is None:
             continue
         if bounds:
-            if not (float(bounds['lat_min']) <= float(site['lat']) <= float(bounds['lat_max']) and
-                    float(bounds['lon_min']) <= float(site['lon']) <= float(bounds['lon_max'])):
+            if not (float(bounds['lat_min']) <= float(stats['_lat']) <= float(bounds['lat_max']) and
+                    float(bounds['lon_min']) <= float(stats['_lon']) <= float(bounds['lon_max'])):
                 continue
-        if site['n'] < 24:
-            continue
-        stats = site_wind_stats(site)
-        if stats is None:
+        if stats['_n'] < 24:
             continue
 
         turbines_out = []
-        for tf in turb_files:
-            try:
-                dat = pd.read_csv(os.path.join(turbines_folder, tf), header=None).values
-                x_c = dat[:, 0].astype(float)
-                y_c = dat[:, 1].astype(float)
-            except Exception as e:
-                log.warning('analyze_sites: skip turbine CSV %s — %s', tf, e)
-                continue
-            name, rotor, p_nom_kw = parse_turbine_filename(tf)
+        for tf, x_c, y_c, name, rotor, p_nom_kw, fitted_power_w in turbines:
             econ = turbine_site_economics(
                 stats['ws_hub'], stats['rho'], x_c, y_c, rotor, p_nom_kw,
                 demand_mwh=demand_mwh, tasa=tasa,
                 price_usd_kwh=price_usd_kwh,
                 price_mxn_per_usd=price_mxn_per_usd, anios=anios,
-                cost_model=cost_model)
+                cost_model=cost_model, fitted_power_w=fitted_power_w)
             econ['turbina']   = name
             econ['rotor_m']   = rotor
             turbines_out.append(econ)
 
         sites_out.append({
-            'name':        site['name'],
-            'lat':         site['lat'],
-            'lon':         site['lon'],
-            'n_hours':     int(site['n']),
+            'name':        stats['_name'],
+            'lat':         stats['_lat'],
+            'lon':         stats['_lon'],
+            'n_hours':     int(stats['_n']),
             'v_mean':      stats['v_mean'],
             'v_mean_raw':  stats['v_mean_raw'],
             'v_max':       stats['v_max'],
