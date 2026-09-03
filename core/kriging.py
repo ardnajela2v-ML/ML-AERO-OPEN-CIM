@@ -9,9 +9,13 @@ Optimizaciones 2026-04:
   - _SITE_STATS_CACHE cachea stats por (path, mtime, year, altura, z0) en memoria;
     la segunda llamada es O(1) sin releer el disco.
   - parallel_read_sites() usa ThreadPoolExecutor para leer N sitios en paralelo.
+  - Los análisis anuales extraen sólo el bloque del año solicitado y persisten
+    sus estadísticas con invalidación por tamaño + mtime_ns del archivo.
 """
 import os
 import re
+import io
+import mmap
 import math
 import logging
 import warnings
@@ -23,6 +27,7 @@ import pandas as pd
 from scipy.optimize import curve_fit, lsq_linear
 from scipy.stats import weibull_min as wbl_dist
 from scipy.interpolate import interp1d
+from core.cache import clear_namespace, file_signature, get as cache_get, set as cache_set
 from core.cost_model import CostModel
 
 warnings.filterwarnings('ignore')
@@ -39,6 +44,8 @@ Z_TGT = 80.0    # m — typical hub height target
 Z0    = 0.03    # m — surface roughness length (open terrain)
 R_ESP = 287.05  # J/(kg·K)
 MAX_W = 25.0    # m/s — turbine cut-out assumption
+_SITE_STATS_CACHE_NAMESPACE = 'kriging_site_stats'
+_SITE_STATS_CACHE_VERSION = 'year-slice-v1'
 
 
 def _require_project_economics(price_usd_kwh, anios):
@@ -469,6 +476,58 @@ def _parse_header_columns(path: str, data_start_line: int):
     return idx, z_ref
 
 
+def _year_data_bytes(path: str, year: int) -> bytes:
+    """Return only one chronological year of Windnavigator data.
+
+    The source files contain roughly four decades. A memory map locates the
+    first requested timestamp and copies only its contiguous annual block, so
+    pandas converts ~8,760 rows instead of parsing the complete file.
+    """
+    prefix = f'{int(year):04d}-'.encode('ascii')
+    line_prefix = b'\n' + prefix
+    with open(path, 'rb') as stream:
+        if os.fstat(stream.fileno()).st_size == 0:
+            return b''
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            start = 0 if mapped[:len(prefix)] == prefix else mapped.find(line_prefix)
+            if start < 0:
+                # Preserve compatibility with exports that indent data rows.
+                match = re.search(rb'(?m)^[ \t]*' + re.escape(prefix), mapped)
+                start = match.start() if match is not None else -1
+            if start < 0:
+                return b''
+            if start > 0 and mapped[start:start + 1] == b'\n':
+                start += 1  # skip the newline used to anchor the timestamp
+            position = start
+            size = len(mapped)
+            while position < size:
+                newline = mapped.find(b'\n', position)
+                if newline < 0:
+                    return bytes(mapped[start:size])
+                next_line = newline + 1
+                next_head = bytes(mapped[next_line:next_line + len(prefix) + 16]).lstrip(b' \t')
+                if next_line >= size or not next_head.startswith(prefix):
+                    return bytes(mapped[start:next_line])
+                position = next_line
+    return b''
+
+
+def _read_wind_table(path: str, skip: int, year: Optional[int]) -> pd.DataFrame:
+    """Read the full table or a prefiltered annual byte slice."""
+    if year is None:
+        return pd.read_csv(
+            path, skiprows=skip, sep=r'\s+', header=None,
+            na_values=['-', 'nan', 'NaN', ''], on_bad_lines='skip', engine='c',
+        )
+    annual = _year_data_bytes(path, year)
+    if not annual:
+        return pd.DataFrame()
+    return pd.read_csv(
+        io.BytesIO(annual), sep=r'\s+', header=None,
+        na_values=['-', 'nan', 'NaN', ''], on_bad_lines='skip', engine='c',
+    )
+
+
 def read_wind_file(path: str, year: Optional[int] = None):
     """
     Lee un archivo Windnavigator (MERRA-2/ERA5) con pandas — 20-50x más rápido
@@ -492,10 +551,15 @@ def read_wind_file(path: str, year: Optional[int] = None):
     skip = _find_data_start(path)
     idx, z_ref = _parse_header_columns(path, skip)
 
-    df = pd.read_csv(
-        path, skiprows=skip, sep=r'\s+', header=None,
-        na_values=['-', 'nan', 'NaN', ''], on_bad_lines='skip', engine='c',
-    )
+    df = _read_wind_table(path, skip, year)
+    if df.empty:
+        return {
+            'name': fname, 'lat': lat, 'lon': lon,
+            'ws': np.array([], dtype=float), 'wd': np.array([], dtype=float),
+            't2m': np.array([], dtype=float), 'p0m': np.array([], dtype=float),
+            'n': 0, 'year': year,
+            'z_ref': float(z_ref) if z_ref is not None else Z_REF,
+        }
     df.columns = list(range(df.shape[1]))
 
     if idx is None:
@@ -519,9 +583,6 @@ def read_wind_file(path: str, year: Optional[int] = None):
     # Filtrar filas cuya primera columna no parece fecha ISO
     mask_date = df['dt'].astype(str).str.match(r'\d{4}-\d{2}-\d{2}')
     df = df[mask_date].dropna(subset=['ws'])
-
-    if year is not None:
-        df = df[df['dt'].astype(str).str[:4] == str(year)]
 
     return {
         'name': fname,
@@ -664,15 +725,28 @@ def _compute_site_stats_cached(path: str, year: Optional[int] = None,
     """
     abs_path = os.path.abspath(path)
     try:
-        mtime = int(os.path.getmtime(abs_path))
+        signature = file_signature(abs_path)
     except OSError:
-        mtime = 0
-    cache_key = (abs_path, mtime, year,
+        signature = {'path': abs_path, 'size': 0, 'mtime_ns': 0}
+    cache_key = (abs_path, signature['size'], signature['mtime_ns'], year,
                  None if hub_height_m is None else round(float(hub_height_m), 6),
                  None if z0 is None else round(float(z0), 9))
     with _CACHE_LOCK:
         if cache_key in _SITE_STATS_CACHE:
             return _SITE_STATS_CACHE[cache_key]
+
+    persistent_parts = (
+        _SITE_STATS_CACHE_VERSION,
+        signature,
+        year,
+        None if hub_height_m is None else round(float(hub_height_m), 6),
+        None if z0 is None else round(float(z0), 9),
+    )
+    cached = cache_get(_SITE_STATS_CACHE_NAMESPACE, *persistent_parts)
+    if cached is not None:
+        with _CACHE_LOCK:
+            _SITE_STATS_CACHE[cache_key] = cached
+        return cached
 
     # --- Caché miss: leer y calcular ---
     try:
@@ -695,14 +769,16 @@ def _compute_site_stats_cached(path: str, year: Optional[int] = None,
     }
     with _CACHE_LOCK:
         _SITE_STATS_CACHE[cache_key] = result
+    cache_set(_SITE_STATS_CACHE_NAMESPACE, result, *persistent_parts)
     return result
 
 
-def clear_site_stats_cache():
-    """Vacía el caché de stats. Llámalo si los archivos de datos cambian."""
+def clear_site_stats_cache(persistent: bool = False):
+    """Vacía memoria y, cuando se solicita explícitamente, también disco."""
     with _CACHE_LOCK:
         _SITE_STATS_CACHE.clear()
-    log.info('site_stats cache cleared')
+    removed = clear_namespace(_SITE_STATS_CACHE_NAMESPACE) if persistent else 0
+    log.info('site_stats memory cache cleared (%d persistent entries removed)', removed)
 
 
 def parallel_read_sites(paths: List[str], year: Optional[int] = None,

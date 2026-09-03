@@ -6,7 +6,10 @@ import unittest
 from unittest.mock import patch
 
 import pandas as pd
+import numpy as np
 
+from core import kriging as kriging_module
+from config import Config
 from core.kriging import (
     analyze_sites, clear_site_stats_cache, fit_power_curve_gauss4,
     parallel_read_sites, parse_turbine_filename, read_wind_file,
@@ -91,6 +94,53 @@ class KrigingParserTests(unittest.TestCase):
 
             self.assertLess(era5_stats['v_mean'], era5_stats['v_mean_raw'])
             self.assertGreater(merra2_stats['v_mean'], merra2_stats['v_mean_raw'])
+
+    def test_year_reader_matches_requested_chronological_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'Annual_ERA5_N16,500_W95,000.txt')
+            rows = []
+            for year, base_speed in ((2019, 5.0), (2020, 7.0), (2021, 9.0)):
+                rows.extend([
+                    (f'{year}-01-01T{hour:02d}:00:00', base_speed + hour,
+                     180.0 + hour, 20.0 + hour, 100.0 + hour / 10.0)
+                    for hour in range(3)
+                ])
+            _write_windnavigator(path, _ERA5_HEADER, rows)
+
+            full = read_wind_file(path)
+            annual = read_wind_file(path, year=2020)
+            missing = read_wind_file(path, year=2018)
+
+            self.assertEqual(full['n'], 9)
+            self.assertEqual(annual['n'], 3)
+            np.testing.assert_allclose(annual['ws'], [7.0, 8.0, 9.0])
+            np.testing.assert_allclose(annual['t2m'], [20.0, 21.0, 22.0])
+            np.testing.assert_allclose(annual['p0m'], [100.0, 100.1, 100.2], rtol=1e-6)
+            self.assertEqual(missing['n'], 0)
+            self.assertEqual(missing['z_ref'], 100.0)
+
+    def test_site_stats_persistent_cache_avoids_reparse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'Cached_ERA5_N16,500_W95,000.txt')
+            rows = [
+                (f'2020-01-01T{hour:02d}:00:00', 7.0 + hour / 100.0,
+                 180.0, 25.0, 101.3)
+                for hour in range(24)
+            ]
+            _write_windnavigator(path, _ERA5_HEADER, rows)
+            with patch.object(Config, 'CACHE_FOLDER', os.path.join(tmp, 'cache')):
+                clear_site_stats_cache(persistent=True)
+                first = kriging_module._compute_site_stats_cached(path, year=2020)
+                with kriging_module._CACHE_LOCK:
+                    kriging_module._SITE_STATS_CACHE.clear()
+
+                with patch('core.kriging.read_wind_file', side_effect=AssertionError('reparsed')):
+                    second = kriging_module._compute_site_stats_cached(path, year=2020)
+
+                self.assertEqual(first['_n'], second['_n'])
+                self.assertEqual(first['_name'], second['_name'])
+                self.assertEqual(first['v_mean'], second['v_mean'])
+                clear_site_stats_cache(persistent=True)
 
     def test_analyze_sites_parallelizes_sites_and_fits_each_turbine_once(self):
         with tempfile.TemporaryDirectory() as tmp:
