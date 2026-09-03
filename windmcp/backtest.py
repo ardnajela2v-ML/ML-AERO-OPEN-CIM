@@ -7,8 +7,14 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .mcp import DEFAULT_METHODS, metrics, validate_direction
-from .ml import DEFAULT_ML_METHODS, validate_ml_direction
+from .mcp import (
+    DEFAULT_METHODS,
+    _fit_and_predict,
+    _method_columns,
+    metrics,
+    validate_direction,
+)
+from .ml import DEFAULT_ML_METHODS, fit_ml_model, validate_ml_direction
 
 
 def _available_years(aligned: pd.DataFrame) -> set[int]:
@@ -134,7 +140,7 @@ def select_speed_reconstruction_method(
     )
     if preferred is not None:
         candidates = [preferred]
-        policy = "seasonal_distribution_constraints_then_required_2018_monthly_mapping"
+        policy = "distribution_constraints_then_explicit_preferred_method"
         fallback_used = False
     elif qualified_rows:
         candidates = qualified_rows
@@ -176,6 +182,78 @@ def select_speed_reconstruction_method(
             str(row.get("method")) for row in summary if not row.get("speed_selection_eligible", False)
         ],
         "direction_model_policy": "independent_16_sector_month_conditioned_circular_model_for_wind_rose_only",
+    }
+
+
+def select_speed_model_training_holdout(
+    aligned: pd.DataFrame,
+    training_year: int,
+    mcp_methods: Sequence[str] = DEFAULT_METHODS,
+    ml_methods: Sequence[str] = DEFAULT_ML_METHODS,
+    validation_fraction: float = 0.25,
+) -> Dict[str, object]:
+    """Select the final MCP/ML speed model without consulting the test year.
+
+    Every family is evaluated on the same chronological tail of the configured
+    training year. Distribution constraints are applied first and RMSE/MAE
+    break ties; no method receives a preferred or thesis-specific override.
+    """
+
+    period = aligned.loc[aligned.index.year == int(training_year)].sort_index()
+    period = period.dropna(subset=["wind_speed_obs", "wind_speed_ref"])
+    if len(period) < 40:
+        raise ValueError("Not enough rows to select a speed model in %s" % training_year)
+    split = min(
+        max(int(np.floor(len(period) * (1.0 - float(validation_fraction)))), 20),
+        len(period) - 20,
+    )
+    train = period.iloc[:split]
+    validation = period.iloc[split:]
+    rows: List[Dict[str, object]] = []
+
+    for method in mcp_methods:
+        try:
+            columns = _method_columns(period, method)
+            method_train = train[columns].dropna()
+            method_validation = validation[columns].dropna()
+            _, _, predicted = _fit_and_predict(method, method_train, method_validation)
+            result = metrics(method_validation["wind_speed_obs"], predicted)
+            rows.append({"family": "mcp", "method": method, "status": "ok", **result})
+        except Exception as error:
+            rows.append({"family": "mcp", "method": method, "status": "error", "error": str(error)})
+
+    for method in ml_methods:
+        public_method = "ml_" + str(method).removeprefix("ml_")
+        try:
+            fitted = fit_ml_model(train, str(method).removeprefix("ml_"))
+            predicted_frame = validation[[
+                "wind_speed_obs", "wind_speed_ref",
+                *(["wind_direction_ref"] if "wind_direction_ref" in validation.columns else []),
+            ]].dropna()
+            _, predicted = fitted.predict_frame(predicted_frame)
+            valid = np.isfinite(predicted)
+            result = metrics(predicted_frame.loc[valid, "wind_speed_obs"], predicted[valid])
+            rows.append({"family": "ml", "method": public_method, "status": "ok", **result})
+        except Exception as error:
+            rows.append({"family": "ml", "method": public_method, "status": "error", "error": str(error)})
+
+    successful = [row for row in rows if row["status"] == "ok"]
+    if not successful:
+        raise ValueError("No MCP or ML speed model could be selected in %s" % training_year)
+    selected = select_speed_reconstruction_method(successful, preferred_method=None)
+    return {
+        **selected,
+        "training_year": int(training_year),
+        "selection_scope": "chronological_holdout_inside_training_year_only",
+        "validation_fraction": float(validation_fraction),
+        "fit_period_start": train.index.min().isoformat(),
+        "fit_period_end": train.index.max().isoformat(),
+        "selection_period_start": validation.index.min().isoformat(),
+        "selection_period_end": validation.index.max().isoformat(),
+        "pairs_fit_base": int(len(train)),
+        "pairs_selection_base": int(len(validation)),
+        "candidates": rows,
+        "test_year_used_for_selection": False,
     }
 
 

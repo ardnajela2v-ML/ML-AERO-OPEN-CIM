@@ -19,7 +19,8 @@ from windmcp.mcp import (
 )
 from windmcp.mcp import compare_mcp_methods, fit_mcp_model, predict_mcp, select_mcp_method
 from windmcp.ml import compare_ml_methods, select_ml_method, validate_ml_direction
-from windmcp.backtest import run_walk_forward_backtest
+from windmcp.backtest import run_walk_forward_backtest, select_speed_model_training_holdout
+from windmcp.config import ConfigurationError, MCPConfig
 from windmcp.profile import fit_vertical_profile, normalize_reference_height
 from windmcp.qc import quality_control
 from windmcp.readiness import assess_reconstruction_readiness
@@ -400,6 +401,65 @@ class WindMCPTests(unittest.TestCase):
         self.assertEqual(report["valid_folds"], [{"train_year": 2018, "test_year": 2019}])
         self.assertEqual(report["selected_method"], "linear")
         self.assertEqual(report["summary"][0]["N"], 30)
+
+    def test_speed_selection_does_not_consult_test_year(self):
+        train_index = pd.date_range("2020-01-01", periods=160, freq="1h", tz="UTC")
+        test_index = pd.date_range("2021-01-01", periods=80, freq="1h", tz="UTC")
+        reference = np.linspace(2.0, 14.0, len(train_index) + len(test_index))
+        train_observed = 0.5 + 0.7 * reference[:160] + 0.04 * reference[:160] ** 2
+        frame_a = pd.DataFrame({
+            "wind_speed_ref": reference,
+            "wind_speed_obs": np.r_[train_observed, np.full(80, 1.0)],
+        }, index=train_index.append(test_index))
+        frame_b = frame_a.copy()
+        frame_b.loc[test_index, "wind_speed_obs"] = np.linspace(5.0, 50.0, len(test_index))
+
+        selection_a = select_speed_model_training_holdout(
+            frame_a, 2020, mcp_methods=("linear", "quadratic"), ml_methods=("ridge",)
+        )
+        selection_b = select_speed_model_training_holdout(
+            frame_b, 2020, mcp_methods=("linear", "quadratic"), ml_methods=("ridge",)
+        )
+
+        self.assertEqual(selection_a["selected_method"], selection_b["selected_method"])
+        self.assertEqual(selection_a["selected_metrics"], selection_b["selected_metrics"])
+        self.assertFalse(selection_a["test_year_used_for_selection"])
+        self.assertEqual(selection_a["pairs_fit_base"], 120)
+        self.assertEqual(selection_a["pairs_selection_base"], 40)
+
+    def test_speed_selection_changes_when_training_holdout_changes(self):
+        index = pd.date_range("2020-01-01", periods=160, freq="1h", tz="UTC")
+        reference = np.linspace(2.0, 14.0, len(index))
+        quadratic = 0.5 + 0.7 * reference + 0.04 * reference ** 2
+        linear_tail = quadratic.copy()
+        coefficients = np.polyfit(reference[:120], quadratic[:120], 1)
+        linear_tail[120:] = np.polyval(coefficients, reference[120:])
+        quadratic_frame = pd.DataFrame({
+            "wind_speed_ref": reference, "wind_speed_obs": quadratic,
+        }, index=index)
+        linear_frame = pd.DataFrame({
+            "wind_speed_ref": reference, "wind_speed_obs": linear_tail,
+        }, index=index)
+
+        quadratic_selection = select_speed_model_training_holdout(
+            quadratic_frame, 2020, mcp_methods=("linear", "quadratic"), ml_methods=()
+        )
+        linear_selection = select_speed_model_training_holdout(
+            linear_frame, 2020, mcp_methods=("linear", "quadratic"), ml_methods=()
+        )
+
+        self.assertEqual(quadratic_selection["selected_method"], "quadratic")
+        self.assertEqual(linear_selection["selected_method"], "linear")
+
+    def test_config_requires_training_year_before_test_year(self):
+        base = {
+            "observation_files": ["observation.csv"],
+            "reference_files": ["reference.txt"],
+        }
+        with self.assertRaisesRegex(ConfigurationError, "earlier than test_year"):
+            MCPConfig.from_mapping({**base, "train_year": 2021, "test_year": 2021})
+        with self.assertRaisesRegex(ConfigurationError, "earlier than test_year"):
+            MCPConfig.from_mapping({**base, "train_year": 2022, "test_year": 2021})
 
 
 if __name__ == "__main__":

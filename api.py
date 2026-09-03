@@ -1842,7 +1842,7 @@ def create_app():
                     'result_path': str(result_path),
                     'created_at': result.get('created_at'),
                     'selected_reference': result.get('selected_reference'),
-                    'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+                    'selected_method': result.get('speed_model_selection', {}).get('selected_method'),
                     'status': 'done',
                     'is_current_revision': sess.get('mcp_study', {}).get('study_revision') == study_snapshot['study_revision'],
                 }
@@ -1851,7 +1851,7 @@ def create_app():
                     result={
                         'run_id': run_id,
                         'selected_reference': result.get('selected_reference'),
-                        'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+                        'selected_method': result.get('speed_model_selection', {}).get('selected_method'),
                         'study_revision': study_snapshot['study_revision'],
                     },
                 )
@@ -1959,7 +1959,7 @@ def create_app():
             'target_height_m': target_height_m,
             'selected_reference': result.get('selected_reference'),
             'selected_direction_reference': result.get('selected_direction_reference'),
-            'selected_method': result.get('backtesting_multi_year', {}).get('selected_method'),
+            'selected_method': result.get('speed_model_selection', {}).get('selected_method'),
             'speed_seasonality': result.get('historical_reconstruction_model', {}).get('seasonality'),
             'direction_correction': result.get('direction_correction'),
             'rows': int(len(canonical)),

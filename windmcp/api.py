@@ -70,7 +70,7 @@ def create_app(output_root: str = "runs") -> Flask:
                 "formats": {"observations": ["CERTE"], "references": ["Windnavigator ERA5", "Windnavigator MERRA-2"]},
                 "resolution": "1h",
                 "timezone": "UTC",
-                "artifacts": ["result.json", "run_manifest.json", "reference_ranking.csv", "prediction CSVs", "model comparison 2019", "ML model comparison 2019", "ML forward CSV", "multi-year backtesting CSV", "final HTML report", "uncertainty bands", "QC JSON", "reconstruction_readiness.json", "historical_reconstruction.csv"],
+                "artifacts": ["result.json", "run_manifest.json", "reference_ranking.csv", "prediction CSVs", "test-year model comparison", "test-year ML model comparison", "ML forward CSV", "diagnostic backtesting CSV", "final HTML report", "uncertainty bands", "QC JSON", "reconstruction_readiness.json", "historical_reconstruction.csv"],
             },
         )
 

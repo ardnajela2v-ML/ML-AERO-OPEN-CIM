@@ -714,9 +714,9 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         self.assertGreaterEqual(response.get_json()["n_turbines"], 1)
 
-    def _synthetic_inputs(self):
-        first = pd.date_range("2018-01-01", periods=240, freq="1h")
-        second = pd.date_range("2019-01-01", periods=240, freq="1h")
+    def _synthetic_inputs(self, train_year=2018, test_year=2019):
+        first = pd.date_range(f"{train_year}-01-01", periods=240, freq="1h")
+        second = pd.date_range(f"{test_year}-01-01", periods=240, freq="1h")
         index = first.append(second)
         phase = np.arange(len(index), dtype=float)
         reference = 7.0 + 2.0 * np.sin(phase / 11.0) + 0.3 * np.cos(phase / 3.0)
@@ -741,7 +741,8 @@ class MCPIntegrationTests(unittest.TestCase):
         return observation_csv, ("\n".join(lines) + "\n").encode()
 
     def test_end_to_end_upload_globe_mcp_publish_and_energy_source(self):
-        observation_csv, reference_txt = self._synthetic_inputs()
+        train_year, test_year = 2020, 2021
+        observation_csv, reference_txt = self._synthetic_inputs(train_year, test_year)
         common = {"session_id": self.sid, "latitude": "16.55", "longitude": "-94.955"}
         observation = self.client.post("/api/mcp/uploads", data={
             **common,
@@ -776,8 +777,8 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(study.status_code, 200)
         started = self.client.post("/api/mcp/runs", json={
             "session_id": self.sid,
-            "train_year": 2018,
-            "test_year": 2019,
+            "train_year": train_year,
+            "test_year": test_year,
             "target_height_m": 80,
         })
         self.assertEqual(started.status_code, 202, started.get_data(as_text=True))
@@ -793,9 +794,14 @@ class MCPIntegrationTests(unittest.TestCase):
             f"/api/mcp/runs/{ids['run_id']}?session_id={self.sid}"
         ).get_json()
         self.assertEqual(result["study"]["study_revision"], 1)
-        self.assertIn("quantile_mapping", {row["method"] for row in result["mcp_method_comparison_2019"]})
+        self.assertEqual(result["config"]["train_year"], train_year)
+        self.assertEqual(result["config"]["test_year"], test_year)
+        self.assertEqual(result["mcp_method_comparison"], result["mcp_method_comparison_2019"])
+        self.assertEqual(result["ml_model_comparison"], result["ml_model_comparison_2019"])
+        self.assertEqual(result["ml_validation"], result["ml_validation_2019"])
+        self.assertIn("quantile_mapping", {row["method"] for row in result["mcp_method_comparison"]})
         self.assertIn("seasonal_quantile_mapping", {
-            row["method"] for row in result["mcp_method_comparison_2019"]
+            row["method"] for row in result["mcp_method_comparison"]
         })
         self.assertEqual(len(result["campaign_sensitivity"]), 6)
         visual = result["visualization"]["validation_forward"]
@@ -807,7 +813,16 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertGreater(len(result["visualization"]["historical_monthly"]["timestamps"]), 0)
         self.assertEqual(len(result["visualization"]["gap_treatment"]["yearly"]), 2)
         self.assertIn("direction_correction", result)
-        self.assertFalse(result["backtesting_multi_year"]["selected_method"].startswith("sector_qm_"))
+        self.assertTrue(result["backtesting_multi_year"]["diagnostic_only"])
+        self.assertFalse(result["backtesting_multi_year"]["affects_model_selection"])
+        self.assertFalse(result["speed_model_selection"]["selected_method"].startswith("sector_qm_"))
+        self.assertEqual(
+            result["speed_model_selection"]["selection_scope"],
+            "chronological_holdout_inside_training_year_only",
+        )
+        self.assertFalse(result["speed_model_selection"]["test_year_used_for_selection"])
+        self.assertIsNone(result["speed_model_selection"]["preferred_method"])
+        self.assertFalse(result["speed_model_selection"]["preferred_method_applied"])
         self.assertEqual(
             result["speed_model_selection"]["direction_model_policy"],
             "independent_16_sector_month_conditioned_circular_model_for_wind_rose_only",
@@ -821,14 +836,23 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(result["selected_direction_reference"], result["selected_reference"])
         self.assertEqual(
             result["historical_reconstruction_model"]["method"],
-            "seasonal_quantile_mapping",
+            result["speed_model_selection"]["selected_method"],
         )
-        self.assertIn("monthly_models", result["historical_reconstruction_model"])
-        self.assertTrue(result["speed_model_selection"]["preferred_method_applied"])
-        self.assertEqual(result["historical_reconstruction_model"]["training_year"], 2018)
+        self.assertEqual(result["historical_reconstruction_model"]["training_year"], train_year)
         self.assertEqual(result["historical_reconstruction_model"]["training_pairs"], 240)
         self.assertNotIn("n_sectors", result["historical_reconstruction_model"])
+        self.assertEqual(result["selection_data_policy"]["test_year_used_for_selection"], False)
+        self.assertIn(str(train_year), result["selection_data_policy"]["model_selection"])
+        self.assertIn(str(test_year), result["selection_data_policy"]["final_evaluation"])
         self.assertEqual(result["weibull_provenance"]["model_hindcast"]["method"], "MLE_floc_0")
+        for artifact_path in result["artifacts"].values():
+            self.assertTrue(Path(artifact_path).exists(), artifact_path)
+        self.assertIn(str(test_year), Path(
+            result["artifacts"][result["selected_reference"] + "_model_comparison"]
+        ).name)
+        report_text = Path(result["artifacts"]["final_report_html"]).read_text(encoding="utf-8")
+        self.assertIn(f"Validación {test_year}", report_text)
+        self.assertIn(f"interna de {train_year}", report_text)
         published = self.client.post(f"/api/mcp/runs/{ids['run_id']}/publish", json={"session_id": self.sid})
         self.assertEqual(published.status_code, 200, published.get_data(as_text=True))
         source_id = published.get_json()["source_id"]

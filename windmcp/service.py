@@ -16,8 +16,8 @@ from .data import (ReferenceData, align_observations_and_reference, read_certe_f
                    read_reference_files, resample_hourly)
 from .energy import PowerCurve, compare_period_energy
 from .config import MCPConfig, VERSION, validate_input_files
-from .backtest import run_walk_forward_backtest, select_speed_reconstruction_method
-from .mcp import (EXTENDED_METHODS, SEASONAL_QUANTILE_METHOD,
+from .backtest import run_walk_forward_backtest, select_speed_model_training_holdout
+from .mcp import (EXTENDED_METHODS,
                   apply_seasonal_sector_direction_model, compare_mcp_methods,
                   fit_mcp_model, fit_seasonal_sector_direction_model,
                   fit_weibull_mle, rank_references, select_mcp_method,
@@ -195,7 +195,7 @@ def _direction_reference_selection(
     training_year: int,
     sector_count: int = 16,
 ) -> Dict[str, Any]:
-    """Select direction independently using only blocked holdouts from 2018."""
+    """Select direction independently on blocked training-year holdouts."""
 
     rows: List[Dict[str, Any]] = []
     for name, aligned in aligned_by_name.items():
@@ -244,7 +244,8 @@ def _direction_reference_selection(
             "rose_total_variation_pct_points": rose_distance,
         })
     if not rows:
-        raise ValueError("No reference has enough 2018 direction pairs for seasonal selection")
+        raise ValueError(
+            f"No reference has enough {training_year} direction pairs for seasonal selection")
     rows.sort(key=lambda row: (
         row["rose_total_variation_pct_points"], row["mae_corrected_deg"], row["reference"]
     ))
@@ -253,7 +254,7 @@ def _direction_reference_selection(
     return {
         "selected_reference": rows[0]["reference"],
         "training_year": int(training_year),
-        "selection": "minimum_16_sector_rose_distance_then_circular_mae_on_2018_holdouts",
+        "selection": "minimum_16_sector_rose_distance_then_circular_mae_on_training_holdouts",
         "candidates": rows,
     }
 
@@ -364,6 +365,7 @@ def _validation_chart_data(
     predictions: pd.DataFrame,
     max_points: int = 900,
     sector_count: int = 16,
+    training_year: int | None = None,
 ) -> Dict[str, Any]:
     """Build compact chart payloads for the integrated MCP Lab UI."""
 
@@ -412,7 +414,8 @@ def _validation_chart_data(
     observed_direction = frame.get("observed_wind_direction")
     direction_note = (
         f"Rosa reconstruida con un modelo direccional independiente de {sector_count} sectores, "
-        "entrenado en 2018; este modelo no selecciona ni modifica el método ganador de velocidad."
+        f"entrenado en {training_year if training_year is not None else 'el año de entrenamiento'}; "
+        "este modelo no selecciona ni modifica el método ganador de velocidad."
     )
     if observed_direction is None and estimated_direction is not None:
         observed_direction = estimated_direction
@@ -741,8 +744,10 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     validation_by_reference: Dict[str, Dict[str, Any]] = {}
     artifact_paths: Dict[str, str] = {}
     if training_observation_baseline:
-        baseline_path = output_dir / "certe_2018_training_baseline.json"
+        baseline_path = output_dir / f"certe_{train_year}_training_baseline.json"
         _write_json(baseline_path, training_observation_baseline)
+        artifact_paths["certe_training_baseline_json"] = str(baseline_path)
+        # Temporary compatibility alias for existing AERO clients.
         artifact_paths["certe_2018_training_baseline_json"] = str(baseline_path)
     for name, aligned in aligned_by_name.items():
         try:
@@ -762,20 +767,23 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
                 aligned, train_year=test_year, test_year=train_year, method=reverse_method,
                 direction_sector_count=direction_sector_count,
             )
-            comparison_2019 = compare_mcp_methods(
+            model_comparison = compare_mcp_methods(
                 aligned, train_year=train_year, test_year=test_year, methods=EXTENDED_METHODS
             )
             validation_by_reference[name] = {
                 "method_selection_forward": method_selection_forward,
                 "method_selection_reverse": method_selection_reverse,
-                "model_comparison_2019": comparison_2019,
+                "model_comparison": model_comparison,
+                "model_comparison_2019": model_comparison,
                 "forward": {k: v for k, v in forward.items() if k != "predictions"},
                 "reverse": {k: v for k, v in reverse.items() if k != "predictions"},
                 "chart_data_forward": _validation_chart_data(
-                    forward["predictions"], sector_count=direction_sector_count
+                    forward["predictions"], sector_count=direction_sector_count,
+                    training_year=train_year,
                 ),
                 "chart_data_reverse": _validation_chart_data(
-                    reverse["predictions"], sector_count=direction_sector_count
+                    reverse["predictions"], sector_count=direction_sector_count,
+                    training_year=test_year,
                 ),
                 "coverage": {
                     str(train_year): _period_coverage(aligned, train_year),
@@ -786,10 +794,12 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
             artifact_paths[name + "_reverse"] = _write_validation_artifacts(output_dir, _safe_filename(name) + "_reverse", reverse)
             comparison_frame = pd.DataFrame([
                 {"method": row.get("method"), "status": row.get("status"), **(row.get("metrics") or {})}
-                for row in comparison_2019
+                for row in model_comparison
             ])
-            comparison_path = output_dir / (_safe_filename(name) + "_model_comparison_2019.csv")
+            comparison_path = output_dir / (
+                _safe_filename(name) + f"_model_comparison_{test_year}.csv")
             comparison_frame.to_csv(comparison_path, index=False)
+            artifact_paths[name + "_model_comparison"] = str(comparison_path)
             artifact_paths[name + "_model_comparison_2019"] = str(comparison_path)
             if power_curve is not None:
                 energy_forward, energy_forward_rows = compare_period_energy(
@@ -842,8 +852,9 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         "campaign_sensitivity_csv": str(campaign_sensitivity_path),
     })
     ml_method_selection = select_ml_method(selected_aligned, training_year=train_year)
-    ml_method_comparison_2019 = compare_ml_methods(selected_aligned, train_year=train_year, test_year=test_year)
-    ml_validation_2019 = validate_ml_direction(
+    ml_method_comparison = compare_ml_methods(
+        selected_aligned, train_year=train_year, test_year=test_year)
+    ml_validation = validate_ml_direction(
         selected_aligned,
         train_year=train_year,
         test_year=test_year,
@@ -851,33 +862,35 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         direction_sector_count=direction_sector_count,
     )
     selected_validation["ml_method_selection_forward"] = ml_method_selection
-    selected_validation["ml_model_comparison_2019"] = ml_method_comparison_2019
-    selected_validation["ml_forward"] = {k: v for k, v in ml_validation_2019.items() if k != "predictions"}
-    ml_forward_path = output_dir / (_safe_filename(selected_reference) + "_ml_forward.csv")
-    ml_comparison_path = output_dir / (_safe_filename(selected_reference) + "_ml_model_comparison_2019.csv")
-    _write_validation_artifacts(output_dir, _safe_filename(selected_reference) + "_ml_forward", ml_validation_2019)
+    selected_validation["ml_model_comparison"] = ml_method_comparison
+    selected_validation["ml_model_comparison_2019"] = ml_method_comparison
+    selected_validation["ml_forward"] = {k: v for k, v in ml_validation.items() if k != "predictions"}
+    ml_forward_path = _write_validation_artifacts(
+        output_dir, _safe_filename(selected_reference) + "_ml_forward", ml_validation)
+    ml_comparison_path = output_dir / (
+        _safe_filename(selected_reference) + f"_ml_model_comparison_{test_year}.csv")
     pd.DataFrame([
         {"method": row.get("method"), "status": row.get("status"), **(row.get("metrics") or {})}
-        for row in ml_method_comparison_2019
+        for row in ml_method_comparison
     ]).to_csv(ml_comparison_path, index=False)
     artifact_paths.update({
         selected_reference + "_ml_forward": str(ml_forward_path),
+        selected_reference + "_ml_model_comparison": str(ml_comparison_path),
         selected_reference + "_ml_model_comparison_2019": str(ml_comparison_path),
     })
+    speed_model_selection = select_speed_model_training_holdout(
+        selected_aligned,
+        training_year=train_year,
+        mcp_methods=EXTENDED_METHODS,
+    )
     requested_backtest_folds = [(train_year, test_year)]
     backtesting = run_walk_forward_backtest(
         selected_aligned,
         requested_backtest_folds,
         mcp_methods=EXTENDED_METHODS,
     )
-    rmse_only_method = backtesting.get("selected_method")
-    speed_model_selection = select_speed_reconstruction_method(
-        backtesting["summary"], preferred_method=SEASONAL_QUANTILE_METHOD
-    )
-    backtesting["rmse_only_selected_method"] = rmse_only_method
-    backtesting["selected_method"] = speed_model_selection["selected_method"]
-    backtesting["selected_family"] = speed_model_selection["selected_family"]
-    backtesting["selection"] = speed_model_selection["selection"]
+    backtesting["diagnostic_only"] = True
+    backtesting["affects_model_selection"] = False
     backtesting_path = output_dir / "backtesting_multi_year.csv"
     pd.DataFrame(backtesting["summary"]).to_csv(backtesting_path, index=False)
     artifact_paths["backtesting_multi_year_csv"] = str(backtesting_path)
@@ -949,7 +962,7 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
             direction_sector_count=direction_sector_count,
         )
     # The speed winner and direction winner are intentionally independent.
-    # Replace only the forward rose bearings with the 2018-trained seasonal
+    # Replace only the forward rose bearings with the training-year seasonal
     # model from the best directional reference; speed predictions stay intact.
     forward_predictions = final_forward["predictions"]
     forward_index = pd.DatetimeIndex(pd.to_datetime(
@@ -969,17 +982,19 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     selected_validation["forward"] = {key: value for key, value in final_forward.items() if key != "predictions"}
     selected_validation["reverse"] = {key: value for key, value in final_reverse.items() if key != "predictions"}
     selected_validation["chart_data_forward"] = _validation_chart_data(
-        final_forward["predictions"], sector_count=direction_sector_count
+        final_forward["predictions"], sector_count=direction_sector_count,
+        training_year=train_year,
     )
     forward_roses = selected_validation["chart_data_forward"].get("wind_roses")
     if forward_roses:
         forward_roses["note"] = (
-            f"Validación 2019 sobre horas concurrentes. Dirección reconstruida desde "
+            f"Validación {test_year} sobre horas concurrentes. Dirección reconstruida desde "
             f"{selected_direction_reference} con 16 sectores y calibración mensual entrenada "
-            f"exclusivamente con 2018; mayo de 2019 no se presenta como medición."
+            f"exclusivamente con {train_year}; los huecos de {test_year} no se presentan como medición."
         )
     selected_validation["chart_data_reverse"] = _validation_chart_data(
-        final_reverse["predictions"], sector_count=direction_sector_count
+        final_reverse["predictions"], sector_count=direction_sector_count,
+        training_year=test_year,
     )
     artifact_paths[selected_reference + "_forward"] = _write_validation_artifacts(
         output_dir, _safe_filename(selected_reference) + "_forward", final_forward
@@ -1039,7 +1054,7 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
     )
     # Turbulence is not reconstructed from the hourly rolling variability.
     # Preserve the CERTE logger's native 10-minute mean/std statistics and fit
-    # an explicitly modelled long-term extension using the same fixed 2018
+    # an explicitly modelled long-term extension using the same fixed training-year
     # training policy as the thesis MCP workflow.
     reconstruction_frame, turbulence_products = build_turbulence_products(
         observations,
@@ -1060,7 +1075,7 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         "seasonality": reconstruction_model_summary.get("seasonality"),
         "model_hindcast": {
             **fit_weibull_mle(reconstruction_frame["model_wind_speed"], minimum_points=20),
-            "source": "2018_month_conditioned_speed_model_applied_to_full_selected_reanalysis_history",
+            "source": "training_year_speed_model_applied_to_full_selected_reanalysis_history",
         },
         "project_series": {
             **fit_weibull_mle(reconstruction_frame["long_term_wind_speed"], minimum_points=20),
@@ -1070,7 +1085,7 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
             **fit_weibull_mle(reconstruction_frame["observed_wind_speed"], minimum_points=20),
             "source": "valid_CERTE_observations_only",
         },
-        "validation_2019": {
+        "validation_test_year": {
             key: selected_validation["forward"].get("metrics", {}).get(key)
             for key in (
                 "observed_weibull_k", "predicted_weibull_k", "delta_weibull_k",
@@ -1079,11 +1094,13 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
             )
         },
         "note": (
-            "El Weibull histórico modelado se ajusta al hindcast producido al aplicar el Quantile Mapping "
-            "estacional por mes, entrenado sólo con 2018, a todo el registro de la referencia seleccionada. La serie del "
+            f"El Weibull histórico modelado se ajusta al hindcast producido por {selected_reconstruction_method}, "
+            f"seleccionado sin usar {test_year} y reentrenado sólo con {train_year}, sobre todo el registro de la referencia. La serie del "
             "proyecto conserva CERTE donde existe y usa el hindcast únicamente para completar huecos."
         ),
     }
+    # Temporary compatibility alias; the canonical key is year-neutral.
+    historical_weibull["validation_2019"] = historical_weibull["validation_test_year"]
     reconstruction_summary["weibull"] = historical_weibull
     reconstruction_path = output_dir / "historical_reconstruction.csv"
     reconstruction_annual_path = output_dir / "historical_reconstruction_annual.csv"
@@ -1177,14 +1194,24 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         "reconstruction_readiness": reconstruction_readiness,
         "reconstruction_readiness_by_reference": reconstruction_readiness_by_reference,
         "mcp_method_selection": selected_method_selection,
+        "mcp_method_comparison": selected_validation["model_comparison"],
         "mcp_method_comparison_2019": selected_validation["model_comparison_2019"],
         "ml_method_selection": selected_validation["ml_method_selection_forward"],
+        "ml_model_comparison": selected_validation["ml_model_comparison"],
         "ml_model_comparison_2019": selected_validation["ml_model_comparison_2019"],
+        "ml_validation": selected_validation["ml_forward"],
         "ml_validation_2019": selected_validation["ml_forward"],
         "multi_reference": multi_reference,
         "campaign_sensitivity": campaign_sensitivity_rows,
         "backtesting_multi_year": backtesting,
         "speed_model_selection": speed_model_selection,
+        "selection_data_policy": {
+            "model_selection": f"chronological_holdout_inside_{train_year}",
+            "final_fit": f"all_valid_training_data_from_{train_year}",
+            "final_evaluation": f"held_out_calendar_year_{test_year}",
+            "test_year_used_for_selection": False,
+            "uncertainty": f"post_selection_residuals_from_{test_year}",
+        },
         "historical_reconstruction": reconstruction_summary,
         "historical_reconstruction_model": reconstruction_model_summary,
         "direction_correction": direction_model,

@@ -95,8 +95,8 @@ class MCPConfig:
 
         train_year = int(_number(request.get("train_year", 2018), "train_year", minimum=1900, maximum=2200, integer=True))
         test_year = int(_number(request.get("test_year", 2019), "test_year", minimum=1900, maximum=2200, integer=True))
-        if train_year == test_year:
-            raise ConfigurationError("train_year and test_year must be different")
+        if train_year >= test_year:
+            raise ConfigurationError("train_year must be earlier than test_year")
         ranking_year = int(_number(request.get("ranking_year", train_year), "ranking_year", minimum=1900, maximum=2200, integer=True))
         sector_count = int(_number(request.get("sector_count", 16), "sector_count", minimum=12, maximum=16, integer=True))
         if sector_count not in {12, 16}:

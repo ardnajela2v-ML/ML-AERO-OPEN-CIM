@@ -9555,7 +9555,7 @@ function mcpMethodLabel(value) {
   if (method === 'sector_qm_16') return 'MCP cuantílico sectorial · 16 sectores';
   if (method === 'sector_qm_12') return 'MCP cuantílico sectorial · 12 sectores';
   const labels = {
-    quantile_mapping: 'Mapeo cuantílico', seasonal_quantile_mapping: 'Mapeo cuantílico estacional · 2018',
+    quantile_mapping: 'Mapeo cuantílico', seasonal_quantile_mapping: 'Mapeo cuantílico estacional',
     linear: 'MCP lineal', variance_ratio: 'Variance Ratio',
     quadratic: 'MCP cuadrático', ml_gradient_boosting: 'Gradient Boosting',
     ml_random_forest: 'Random Forest', ml_ridge: 'Ridge', ml_mlp: 'MLP',
@@ -9720,6 +9720,10 @@ async function pollMCPTask(taskId) {
 }
 
 function renderMCPResult(result) {
+  const trainYear = Number(result.config?.train_year);
+  const testYear = Number(result.config?.test_year);
+  const trainLabel = Number.isFinite(trainYear) ? trainYear : 'entrenamiento';
+  const testLabel = Number.isFinite(testYear) ? testYear : 'prueba';
   const studyRefs = result.study?.reference_stations || [];
   const providerByFilename = new Map();
   studyRefs.forEach(ref => (ref.file_ids || []).forEach(name => providerByFilename.set(name, ref.provider)));
@@ -9732,8 +9736,8 @@ function renderMCPResult(result) {
   const modelRows = [];
   const speedSelection = result.speed_model_selection || {};
   const excludedSpeedMethods = new Set(speedSelection.excluded_speed_methods || []);
-  (result.mcp_method_comparison_2019 || []).forEach(row => modelRows.push({ family: 'MCP', ...row }));
-  (result.ml_model_comparison_2019 || []).forEach(row => modelRows.push({ family: 'ML', ...row }));
+  (result.mcp_method_comparison || result.mcp_method_comparison_2019 || []).forEach(row => modelRows.push({ family: 'MCP', ...row }));
+  (result.ml_model_comparison || result.ml_model_comparison_2019 || []).forEach(row => modelRows.push({ family: 'ML', ...row }));
   if (result.multi_reference?.nnls) modelRows.push({ family: 'Multi-ref', ...result.multi_reference.nnls });
   (result.multi_reference?.ml_comparison || []).forEach(row => modelRows.push({ family: 'Multi-ref ML', ...row }));
   document.getElementById('mcp-models-body').innerHTML = modelRows.length ? modelRows.map(row => {
@@ -9747,13 +9751,13 @@ function renderMCPResult(result) {
   const forward = result.validation_forward?.metrics || {};
   const reverse = result.validation_reverse?.metrics || {};
   document.getElementById('mcp-validation-summary').innerHTML = `<div class="mcp-kpis">
-    <div class="mcp-kpi">2018 → 2019<b>RMSE ${mcpFmt(forward.RMSE)} · R² ${mcpFmt(forward.R2)}</b></div>
-    <div class="mcp-kpi">Sensibilidad inversa · no usada para estimar<b>2019 → 2018 · RMSE ${mcpFmt(reverse.RMSE)} · R² ${mcpFmt(reverse.R2)}</b></div>
-    <div class="mcp-kpi">Entrenamiento final<b>2018 exclusivamente · 2019 fuera de muestra</b></div>
+    <div class="mcp-kpi">${trainLabel} → ${testLabel}<b>RMSE ${mcpFmt(forward.RMSE)} · R² ${mcpFmt(forward.R2)}</b></div>
+    <div class="mcp-kpi">Sensibilidad inversa · no usada para estimar<b>${testLabel} → ${trainLabel} · RMSE ${mcpFmt(reverse.RMSE)} · R² ${mcpFmt(reverse.R2)}</b></div>
+    <div class="mcp-kpi">Entrenamiento final<b>${trainLabel} exclusivamente · ${testLabel} fuera de muestra</b></div>
     <div class="mcp-kpi">Ganador de velocidad<b>${mcpEsc(mcpMethodLabel(speedSelection.selected_method || result.backtesting_multi_year?.selected_method))}</b></div>
     <div class="mcp-kpi">Validación de distribución<b>KS ${mcpFmt(forward.KS)} · Δk ${mcpFmt(forward.delta_weibull_k)} · Δλ ${mcpFmt(forward.delta_weibull_lambda)} m/s</b></div>
     <div class="mcp-kpi">Rosa y dirección<b>${mcpEsc(result.selected_direction_reference || result.selected_reference)} · ${Number(result.wind_rose_direction_model?.n_sectors || 16)} sectores estacionales</b></div>
-    <div class="mcp-kpi">Criterio de velocidad<b>Estacionalidad mensual 2018 → validación 2019</b></div>
+    <div class="mcp-kpi">Selección de velocidad<b>Holdout cronológico 75/25 dentro de ${trainLabel} · sin modelo preferido</b></div>
   </div>`;
 
   const hist = result.historical_reconstruction || {};
@@ -9785,10 +9789,10 @@ function renderMCPResult(result) {
       <td>${Number(row.measured_hours).toLocaleString()}</td><td>${mcpFmt(row.measured_availability_pct, 1)}%</td>
       <td>${Number(row.mcp_filled_hours).toLocaleString()}</td><td>${Number(row.unresolved_hours).toLocaleString()}</td>
     </tr>`).join('');
-    const may2019 = (gap.monthly || []).find(row => row.year === 2019 && row.month === 5);
+    const testGap = (gap.monthly || []).find(row => row.year === testYear && row.month === 5);
     const note = document.getElementById('mcp-gap-note');
-    if (note) note.textContent = may2019
-      ? `Mayo de 2019: ${Number(may2019.measured_hours).toLocaleString()} h medidas, ${Number(may2019.mcp_filled_hours).toLocaleString()} h reconstruidas por MCP y ${Number(may2019.unresolved_hours).toLocaleString()} h sin resolver. Los valores reconstruidos nunca se etiquetan como medición.`
+    if (note) note.textContent = testGap
+      ? `Mayo de ${testLabel}: ${Number(testGap.measured_hours).toLocaleString()} h medidas, ${Number(testGap.mcp_filled_hours).toLocaleString()} h reconstruidas por MCP y ${Number(testGap.unresolved_hours).toLocaleString()} h sin resolver. Los valores reconstruidos nunca se etiquetan como medición.`
       : 'Los valores reconstruidos nunca se etiquetan como medición.';
   } else {
     gapBox?.classList.add('hidden');
@@ -9802,8 +9806,8 @@ function renderMCPResult(result) {
     historical_reconstruction_annual_csv: 'Resumen anual', reconstruction_readiness_json: 'Readiness',
     multi_reference_comparison_json: 'Comparación multirreferencia', campaign_sensitivity_csv: 'Sensibilidad de campaña',
     m04_gap_treatment_csv: 'Faltantes M04 CSV', direction_correction_json: 'Corrección direccional JSON',
-    direction_reference_ranking_csv: 'Ranking direccional 2018 CSV',
-    certe_2018_training_baseline_json: 'Control CERTE 2018 JSON',
+    direction_reference_ranking_csv: `Ranking direccional ${trainLabel} CSV`,
+    certe_training_baseline_json: `Control CERTE ${trainLabel} JSON`,
     measured_turbulence_10min_csv: 'TI CERTE medida 10 min CSV',
     historical_turbulence_csv: 'TI histórica modelada CSV',
     turbulence_summary_json: 'Resumen de turbulencia JSON',
