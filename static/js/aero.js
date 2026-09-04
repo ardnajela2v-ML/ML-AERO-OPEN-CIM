@@ -222,9 +222,7 @@ function collectProjectClientState() {
     mcda: projectJsonClone({
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
-      activeScenario: MCDA.activeScenario,
-      scenarioWeights: MCDA.scenarioWeights,
-      scenarioWeightsEdited: MCDA.scenarioWeightsEdited,
+      layoutWeights: MCDA.layoutWeights,
     }),
     parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult }),
     globe: projectJsonClone({
@@ -267,11 +265,18 @@ async function applyProjectClientState(state) {
     }
   }
   if (state.mcda) {
+    const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
     Object.assign(MCDA, state.mcda);
-    MCDA.scenarioWeights = MCDA.scenarioWeights || { base: null, unistmo: null };
-    MCDA.scenarioWeightsEdited = MCDA.scenarioWeightsEdited || { base: false, unistmo: false };
-    const scenarioSelect = document.getElementById('mcda-ranking-scenario');
-    if (scenarioSelect) scenarioSelect.value = MCDA.activeScenario || 'base';
+    MCDA.layoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
+    if (MCDA.lastSpatial?.ranking_scenarios) {
+      MCDA.lastSpatial.ranking = MCDA.lastSpatial.ranking_scenarios.base
+        || MCDA.lastSpatial.ranking;
+      delete MCDA.lastSpatial.ranking_scenarios;
+      MCDA.lastRanking = MCDA.lastSpatial.ranking || MCDA.lastRanking;
+    }
+    delete MCDA.activeScenario;
+    delete MCDA.scenarioWeights;
+    delete MCDA.scenarioWeightsEdited;
     try { await mcdaBuildWeightSliders(); } catch (_) {}
   }
   if (state.parque) Object.assign(PARQUE, state.parque);
@@ -6987,9 +6992,7 @@ const MCDA = {
   lastRanking:  null,   // last TOPSIS result
   lastSpatial:  null,
   defaults:     null,
-  activeScenario: 'base',
-  scenarioWeights: { base: null, unistmo: null },
-  scenarioWeightsEdited: { base: false, unistmo: false },
+  layoutWeights: null,
   scope:        'area',
   miniMap:      null,
   miniBase:     null,
@@ -7008,9 +7011,8 @@ async function mcdaBuildWeightSliders() {
   const container = document.getElementById('mcda-weights');
   if (!container) return;
   const isLayout = MCDA.scope === 'area';
-  const scenario = isLayout ? (d.layout_scenarios?.[MCDA.activeScenario] || d.layout_scenarios?.base) : null;
   const weights = isLayout
-    ? (MCDA.scenarioWeights[MCDA.activeScenario] || scenario?.weights || d.layout_weights)
+    ? (MCDA.layoutWeights || d.layout_weights)
     : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
@@ -7026,7 +7028,7 @@ async function mcdaBuildWeightSliders() {
         <input type="range" min="0" max="0.5" step="0.005" value="${v}"
           data-crit="${k}" class="mcda-w"
           style="flex:1"
-          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberScenarioWeights(true)">
+          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberLayoutWeights()">
         <span style="font-family:var(--font-mono);width:42px;text-align:right">${Number(v).toFixed(3)}</span>
       </div>`;
   }).join('');
@@ -7040,10 +7042,9 @@ function mcdaGetWeights() {
   return out;
 }
 
-function mcdaRememberScenarioWeights(edited = false) {
+function mcdaRememberLayoutWeights() {
   if (MCDA.scope !== 'area') return;
-  MCDA.scenarioWeights[MCDA.activeScenario] = mcdaGetWeights();
-  if (edited) MCDA.scenarioWeightsEdited[MCDA.activeScenario] = true;
+  MCDA.layoutWeights = mcdaGetWeights();
 }
 
 function mcdaUpdateTurbineCount() {
@@ -7169,7 +7170,7 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
   const status = document.getElementById('mcda-mini-status');
   const areaMode = MCDA.scope === 'area';
   if (title) title.textContent = areaMode
-    ? `Mapa TOPSIS — ${MCDA.activeScenario === 'unistmo' ? 'Escenario UNISTMO' : 'base científico'}`
+    ? 'Mapa TOPSIS — base científico'
     : 'Mapa TOPSIS — exploración global';
 
   let focusLayer = null;
@@ -7300,8 +7301,6 @@ function mcdaRenderSpatialMarkers(result) {
 
 function mcdaUpdateScopeUi() {
   const areaMode = MCDA.scope === 'area';
-  const scenarioRow = document.getElementById('mcda-scenario-row');
-  if (scenarioRow) scenarioRow.style.display = areaMode ? '' : 'none';
   document.querySelectorAll('.mcda-subtab').forEach(btn => {
     btn.classList.toggle('is-active', btn.dataset.scope === MCDA.scope);
   });
@@ -7338,9 +7337,6 @@ function mcdaSetScope(scope) {
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
   MCDA.lastSpatial = null;
-  MCDA.activeScenario = 'base';
-  const scenarioSelect = document.getElementById('mcda-ranking-scenario');
-  if (scenarioSelect) scenarioSelect.value = 'base';
   mcdaUpdateScopeUi();
   mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
@@ -7355,39 +7351,14 @@ function mcdaSetScope(scope) {
 async function mcdaResetWeights() {
   const d = await mcdaLoadDefaults();
   const defaults = MCDA.scope === 'area'
-    ? (d.layout_scenarios?.[MCDA.activeScenario]?.weights || d.layout_weights)
+    ? d.layout_weights
     : d.weights;
   document.querySelectorAll('.mcda-w').forEach(el => {
     el.value = defaults[el.dataset.crit];
     el.nextElementSibling.textContent = (+el.value).toFixed(3);
   });
   if (MCDA.scope === 'area') {
-    MCDA.scenarioWeights[MCDA.activeScenario] = { ...defaults };
-    MCDA.scenarioWeightsEdited[MCDA.activeScenario] = false;
-  }
-}
-
-async function mcdaSetRankingScenario(scenario) {
-  mcdaRememberScenarioWeights(false);
-  MCDA.activeScenario = scenario === 'unistmo' ? 'unistmo' : 'base';
-  const help = document.getElementById('mcda-scenario-help');
-  if (help) help.textContent = MCDA.activeScenario === 'unistmo'
-    ? 'UNISTMO calibra los pesos con los valores reales de adaptación al sitio: Cp a la velocidad media, cercanía a la velocidad de Cp máximo y horas dentro de la zona de alta eficiencia. No modifica curvas ni valores técnicos.'
-    : 'El escenario base compara el desempeño integral sin preferencia de fabricante.';
-  await mcdaBuildWeightSliders();
-  const stored = MCDA.lastSpatial?.ranking_scenarios?.[MCDA.activeScenario];
-  const calibration = stored?.weight_calibration;
-  if (help && MCDA.activeScenario === 'unistmo' && calibration) {
-    help.textContent += calibration.achieved
-      ? ` Calibración lograda con margen TOPSIS ${Number(calibration.target_margin).toFixed(4)}; ningún valor técnico fue modificado.`
-      : ' Los datos actuales no permiten colocar al G80 primero únicamente con ponderaciones no negativas; se muestran los pesos de mejor aproximación.';
-  }
-  if (stored) {
-    MCDA.lastRanking = stored;
-    MCDA.lastSpatial.ranking = stored;
-    mcdaRenderRanking(stored);
-    mcdaRenderSpatialMarkers(MCDA.lastSpatial);
-    mcdaRenderMiniMap(MCDA.lastSpatial);
+    MCDA.layoutWeights = { ...defaults };
   }
 }
 
@@ -7477,13 +7448,8 @@ async function mcdaRunAnalysis() {
     body.data_source = WP.activeDataSource;
   }
   if (areaMode) {
-    mcdaRememberScenarioWeights(false);
-    body.layout_weights = MCDA.scenarioWeights.base
-      || MCDA.defaults?.layout_scenarios?.base?.weights
-      || MCDA.defaults?.layout_weights;
-    if (MCDA.scenarioWeightsEdited.unistmo) {
-      body.unistmo_layout_weights = MCDA.scenarioWeights.unistmo;
-    }
+    mcdaRememberLayoutWeights();
+    body.layout_weights = MCDA.layoutWeights || MCDA.defaults?.layout_weights;
     delete body.weights;
   }
   if (areaMode) body.polygon = parkPolygon;
@@ -7526,12 +7492,7 @@ async function mcdaPollStatus() {
     if (r.status === 'done') {
       MCDA.lastSpatial = r.result;
       MCDA.lastAnalysis = r.result?.sites || [];
-      MCDA.lastRanking = r.result?.ranking_scenarios?.[MCDA.activeScenario]
-        || r.result?.ranking || null;
-      const calibratedUnistmo = r.result?.ranking_scenarios?.unistmo?.configured_weights;
-      if (calibratedUnistmo && !MCDA.scenarioWeightsEdited.unistmo) {
-        MCDA.scenarioWeights.unistmo = calibratedUnistmo;
-      }
+      MCDA.lastRanking = r.result?.ranking || null;
       if (MCDA.scope === 'area') mcdaBuildWeightSliders();
       if (MCDA.lastSpatial && MCDA.lastRanking) MCDA.lastSpatial.ranking = MCDA.lastRanking;
       const nSites = MCDA.lastAnalysis.length;
@@ -7562,12 +7523,9 @@ async function mcdaRankNow() {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
         weights: mcdaGetWeights(),
-        profile: MCDA.activeScenario === 'unistmo' ? 'unistmo_v1' : 'balanced_integral_v1',
       });
       MCDA.lastRanking = r;
       MCDA.lastSpatial.ranking = r;
-      MCDA.lastSpatial.ranking_scenarios = MCDA.lastSpatial.ranking_scenarios || {};
-      MCDA.lastSpatial.ranking_scenarios[MCDA.activeScenario] = r;
       mcdaRenderRanking(r);
       mcdaRenderSpatialMarkers(MCDA.lastSpatial);
       mcdaRenderMiniMap(MCDA.lastSpatial);
@@ -7847,9 +7805,6 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', mcdaRunAnalysis);
   if (bRe)  bRe.addEventListener('click', mcdaRankNow);
   if (bRst) bRst.addEventListener('click', mcdaResetWeights);
-  document.getElementById('mcda-ranking-scenario')?.addEventListener('change', event => {
-    mcdaSetRankingScenario(event.target.value);
-  });
   document.getElementById('btn-mcda-turbines-all')?.addEventListener('click', () => {
     document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = true; });
     mcdaUpdateTurbineCount();

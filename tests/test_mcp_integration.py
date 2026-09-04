@@ -94,17 +94,10 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(benchmark['cost_model']['turbine_usd_per_kw'], 780.75)
         self.assertIn('cp_at_site_mean', defaults.get_json()['layout_weights'])
         self.assertIn('hours_near_cpmax', defaults.get_json()['layout_weights'])
+        self.assertNotIn('layout_scenarios', defaults.get_json())
 
         from core.cost_model import CostModel
         self.assertEqual(CostModel.from_defaults().turbine_usd_per_kw, 1800.0)
-
-    def test_mcda_rejects_invalid_unistmo_weights_before_starting_task(self):
-        response = self.client.post('/api/multicriteria/spatial', json={
-            'price_usd_kwh': 0.083, 'project_years': 25,
-            'unistmo_layout_weights': ['invalido'],
-        })
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('unistmo_layout_weights', response.get_json()['error'])
 
     def test_project_export_import_restores_data_configuration_and_client_state(self):
         csv = (

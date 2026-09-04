@@ -99,8 +99,7 @@ from core.farm_mcda import analyze_park_layouts
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
-                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION,
-                                 UNISTMO_LAYOUT_WEIGHTS)
+                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION)
 from core.forecasting import (read_one_column, read_pml, base_year_stats,
                               normalize_fixed_hourly_profile)
 from windmcp.data import read_certe_files, read_reference_files, resample_hourly
@@ -4854,18 +4853,6 @@ def create_app():
             'layout_labels': LAYOUT_LABELS,
             'layout_directions': LAYOUT_DIRECTION,
             'design_cost_benchmark': get_design_cost_benchmark(),
-            'layout_scenarios': {
-                'base': {
-                    'label': 'Escenario base científico',
-                    'profile': 'balanced_integral_v1',
-                    'weights': LAYOUT_WEIGHTS,
-                },
-                'unistmo': {
-                    'label': 'Escenario UNISTMO',
-                    'profile': 'unistmo_v1',
-                    'weights': UNISTMO_LAYOUT_WEIGHTS,
-                },
-            },
         })
 
     @app.route('/api/multicriteria/rank', methods=['POST'])
@@ -4878,13 +4865,10 @@ def create_app():
         body = request.get_json(silent=True) or {}
         weights = body.get('weights')
         mode = body.get('mode', 'pairs')
-        profile = body.get('profile', 'balanced_integral_v1')
-
         if 'alternatives' in body:
             if not isinstance(body['alternatives'], list):
                 return jsonify({'error': 'alternatives must be a list'}), 400
-            result = (rank_layout_alternatives(body['alternatives'], weights=weights,
-                                               profile=profile)
+            result = (rank_layout_alternatives(body['alternatives'], weights=weights)
                       if mode == 'layout_alternatives'
                       else topsis(body['alternatives'], weights=weights))
         elif 'sites_analysis' in body:
@@ -4938,9 +4922,6 @@ def create_app():
                 'lon_max': max(lon_a, lon_b),
             }
         weights = body.get('weights')
-        if (body.get('unistmo_layout_weights') is not None
-                and not isinstance(body.get('unistmo_layout_weights'), dict)):
-            return _err('unistmo_layout_weights debe ser un objeto de pesos')
         mode = body.get('mode') or ('area_turbines' if scope == 'park' else 'pairs')
         year = int(body.get('year', 2018))
         demand_mwh = float(body.get('demand_mwh', 1000))
@@ -5081,7 +5062,6 @@ def create_app():
                             else 'irena_onshore_2024_global_weighted_average'),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
                         weights=body.get('layout_weights'),
-                        unistmo_weights=body.get('unistmo_layout_weights'),
                     )
                     ranking = layout_result['ranking']
                     ranking['mode'] = 'layout_alternatives'

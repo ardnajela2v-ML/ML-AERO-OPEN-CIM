@@ -14,7 +14,7 @@ from core.farm import (
     optimize_layout_structured,
     simulate_wind_farm,
 )
-from core.multicriteria import calibrate_unistmo_weights, rank_layout_alternatives
+from core.multicriteria import rank_layout_alternatives
 
 
 def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
@@ -177,8 +177,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model: Optional[CostModel] = None,
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
-                         weights: Optional[Dict[str, float]] = None,
-                         unistmo_weights: Optional[Dict[str, float]] = None):
+                         weights: Optional[Dict[str, float]] = None):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -383,23 +382,10 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
     ranking = rank_layout_alternatives(alternatives, weights=weights)
-    unistmo_calibration = None
-    if unistmo_weights is None:
-        unistmo_weights, unistmo_calibration = calibrate_unistmo_weights(alternatives)
-    unistmo_ranking = rank_layout_alternatives(
-        alternatives, weights=unistmo_weights, profile='unistmo_v1'
-    )
-    unistmo_ranking['configured_weights'] = dict(unistmo_weights)
-    if unistmo_calibration is not None:
-        unistmo_ranking['weight_calibration'] = unistmo_calibration
     return {
         'analysis_kind': 'farm_layout_mcda_v2',
         'alternatives': alternatives,
         'ranking': ranking,
-        'ranking_scenarios': {
-            'base': ranking,
-            'unistmo': unistmo_ranking,
-        },
         'n_layout_alternatives': len(alternatives),
         'n_requested_models': len(unique_filenames),
         'n_valid_models': len(alternatives),
