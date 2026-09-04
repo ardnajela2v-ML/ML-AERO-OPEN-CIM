@@ -8,7 +8,9 @@ from core.cost_model import CostModel, get_design_cost_benchmark
 from core.farm import (
     WakeModelDomainError,
     _build_structured_grid,
+    _select_spread_candidates,
     _rotate_to_wind_axis,
+    _score_layout_fast,
     effective_wind_per_turbine,
     gaussian_deficit,
     gaussian_min_valid_distance_d,
@@ -127,6 +129,83 @@ class FarmScientificModelTests(unittest.TestCase):
             wake_model='gaussian',
         )
         np.testing.assert_allclose(result, [8.0, 8.0])
+
+    def test_vectorized_spread_selection_matches_scalar_reference(self):
+        rng = np.random.default_rng(20260904)
+        candidates = [
+            {'x': float(x), 'y': float(y), 'v': float(v), 'id': idx}
+            for idx, (x, y, v) in enumerate(rng.normal(size=(120, 3)))
+        ]
+
+        def scalar_reference(rows, count):
+            if count <= 0 or len(rows) <= count:
+                return list(rows)
+            remaining = list(rows)
+            selected = [max(remaining, key=lambda c: c['v'])]
+            remaining.remove(selected[0])
+            while remaining and len(selected) < count:
+                chosen = max(remaining, key=lambda candidate: (
+                    min((candidate['x'] - placed['x']) ** 2
+                        + (candidate['y'] - placed['y']) ** 2
+                        for placed in selected),
+                    candidate['v'],
+                ))
+                selected.append(chosen)
+                remaining.remove(chosen)
+            return selected
+
+        for count in (1, 2, 7, 31, 119, 120, 150):
+            expected = scalar_reference(candidates, count)
+            actual = _select_spread_candidates(candidates, count)
+            self.assertEqual([row['id'] for row in actual],
+                             [row['id'] for row in expected])
+
+    def test_vectorized_spread_selection_preserves_tie_order(self):
+        candidates = [
+            {'x': 0.0, 'y': 0.0, 'v': 10.0, 'id': 'first'},
+            {'x': 1.0, 'y': 0.0, 'v': 8.0, 'id': 'left'},
+            {'x': -1.0, 'y': 0.0, 'v': 8.0, 'id': 'right'},
+        ]
+        selected = _select_spread_candidates(candidates, 2)
+        self.assertEqual([row['id'] for row in selected], ['first', 'left'])
+
+    def test_batched_layout_score_matches_sector_loop(self):
+        layout = [[0.0, 0.0], [500.0, 0.0], [0.0, 500.0], [500.0, 500.0]]
+        directions = np.arange(11.25, 360.0, 22.5)
+        weights = np.arange(1.0, 17.0)
+        weights /= weights.sum()
+        expected = 0.0
+        for direction, weight in zip(directions, weights):
+            v_eff = effective_wind_per_turbine(
+                np.asarray(layout), 8.5, direction,
+                self.turbine.rotor_diameter_m,
+                k=0.04, ct=0.8, wake_model='gaussian')
+            expected += float(np.sum(
+                self.turbine.power_kw_density_corrected(v_eff, 1.18)
+            )) * float(weight)
+        actual = _score_layout_fast(
+            layout, self.turbine.rotor_diameter_m, directions, weights,
+            self.turbine, 0.04, 0.8, 8.5, 1.18,
+            wake_model='gaussian')
+        self.assertAlmostEqual(actual, expected, places=10)
+
+    def test_layout_search_cache_preserves_exact_result(self):
+        kwargs = dict(
+            ws=np.full(200, 8.0), wd=np.full(200, 270.0),
+            s_para_range=(5, 7), s_perp_range=(3, 4),
+            grid_offset_fractions=(0.0, 0.5),
+            wake_model='gaussian', k_wake=0.04,
+        )
+        uncached = optimize_layout_structured(
+            self.polygon, self.turbine, 4, **kwargs)
+        cache = {}
+        optimize_layout_structured(
+            self.polygon, self.turbine, 0, _search_cache=cache, **kwargs)
+        cached = optimize_layout_structured(
+            self.polygon, self.turbine, 4, _search_cache=cache, **kwargs)
+        self.assertEqual(cached, uncached)
+        self.assertTrue(cache['capacity_seeds'])
+        self.assertTrue(cache['configuration_grids'])
 
     def test_layout_respects_exclusion_and_rotor_setback(self):
         exclusion = [[
@@ -310,6 +389,21 @@ class LayoutTopsisTests(unittest.TestCase):
             s_para_range=(5, 7), s_perp_range=(3, 4),
             project_years=20, price_usd_kwh=0.083,
         )
+        serial_result = analyze_park_layouts(
+            sites, [
+                {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
+                {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
+            ], 'aerogeneradores', [
+                'gamesa21_p2000_r45.csv',
+                'acciona16_p1500_r38.5.csv',
+                'gamesa21_p2000_r45.csv',
+            ],
+            demand_mwh=0, commercialization_mode='total_sale',
+            s_para_range=(5, 7), s_perp_range=(3, 4),
+            project_years=20, price_usd_kwh=0.083,
+            _parallel_models=False,
+        )
+        self.assertEqual(result, serial_result)
         self.assertEqual(result['n_layout_alternatives'], 2)
         self.assertEqual(result['n_requested_models'], 2)
         self.assertEqual(result['n_valid_models'], 2)

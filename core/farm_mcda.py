@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, List, Optional
 
 import numpy as np
@@ -177,7 +178,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model: Optional[CostModel] = None,
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
-                         weights: Optional[Dict[str, float]] = None):
+                         weights: Optional[Dict[str, float]] = None,
+                         _parallel_models: bool = True):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -216,12 +218,80 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         if model_key not in seen_models:
             seen_models.add(model_key)
             unique_filenames.append(filename)
+    if _parallel_models and len(unique_filenames) > 1:
+        single_kwargs = {
+            'wind_grid': wind_grid,
+            'exclusions': exclusions,
+            'boundary_setback_m': boundary_setback_m,
+            'min_spacing_d': min_spacing_d,
+            's_para_range': s_para_range,
+            's_perp_range': s_perp_range,
+            'max_wake_loss_pct': max_wake_loss_pct,
+            'wake_model': wake_model,
+            'k_wake': k_wake,
+            'ct': ct,
+            'availability': availability,
+            'electrical_losses': electrical_losses,
+            'curtailment_loss': curtailment_loss,
+            'environmental_loss': environmental_loss,
+            'discount_rate': discount_rate,
+            'project_years': project_years,
+            'price_usd_kwh': price_usd_kwh,
+            'demand_mwh': demand_mwh,
+            'commercialization_mode': commercialization_mode,
+            'grid_limit_mw': grid_limit_mw,
+            'target_height_m': target_height_m,
+            'cost_model': cost_model,
+            'cost_model_origin': cost_model_origin,
+            'uncertainty_components_pct': uncertainty_components_pct,
+            'weights': weights,
+            '_parallel_models': False,
+        }
+
+        def analyze_one(filename):
+            return analyze_park_layouts(
+                sites, polygon, turbines_folder, [filename], **single_kwargs)
+
+        worker_count = min(4, len(unique_filenames))
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            per_model = list(pool.map(analyze_one, unique_filenames))
+        alternatives = [
+            alternative
+            for result in per_model
+            for alternative in result.get('alternatives', [])
+        ]
+        errors = [
+            error
+            for result in per_model
+            for error in result.get('errors', [])
+        ]
+        ranking = rank_layout_alternatives(alternatives, weights=weights)
+        unistmo_ranking = rank_layout_alternatives(
+            alternatives, profile='unistmo_v1')
+        combined = dict(per_model[0])
+        combined.update({
+            'alternatives': alternatives,
+            'ranking': ranking,
+            'ranking_scenarios': {
+                'base': ranking,
+                'unistmo': unistmo_ranking,
+            },
+            'n_layout_alternatives': len(alternatives),
+            'n_requested_models': len(unique_filenames),
+            'n_valid_models': len(alternatives),
+            'errors': errors,
+        })
+        return combined
     for filename in unique_filenames:
         try:
             turbine = PowerCurve.from_file(os.path.join(turbines_folder, os.path.basename(filename)))
             if target_height_m:
                 turbine.hub_height_m = float(target_height_m)
             setback = max(float(boundary_setback_m), turbine.rotor_diameter_m / 2.0)
+            # Candidate grids depend on the turbine geometry and project area,
+            # but not on the requested turbine count. Reuse them while finding
+            # the largest layout that meets the wake-loss limit.
+            layout_search_cache = {}
             capacity = optimize_layout_structured(
                 polygon, turbine, 0, ws=ws, wd=wd, wind_grid=wind_grid,
                 fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
@@ -229,6 +299,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 s_perp_range=tuple(s_perp_range), rho=rho,
                 exclusion_polygons=exclusions, boundary_setback_m=setback,
                 wake_model=wake_model,
+                _search_cache=layout_search_cache,
             )
             physical_max_n = int(capacity.get('max_n_fit') or capacity.get('n_placed') or 0)
             max_n = physical_max_n
@@ -245,13 +316,19 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             selected_n = 0
             wake_trials = []
             for candidate_n in range(max_n, 0, -1):
-                candidate_layout = optimize_layout_structured(
-                    polygon, turbine, candidate_n, ws=ws, wd=wd, wind_grid=wind_grid,
-                    fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
-                    min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
-                    s_perp_range=tuple(s_perp_range), rho=rho,
-                    exclusion_polygons=exclusions, boundary_setback_m=setback,
-                    wake_model=wake_model,
+                candidate_layout = (
+                    capacity
+                    if candidate_n == physical_max_n and max_n == physical_max_n
+                    else optimize_layout_structured(
+                        polygon, turbine, candidate_n, ws=ws, wd=wd,
+                        wind_grid=wind_grid, fallback_wind_ms=mean_speed,
+                        k_wake=k_wake, ct=ct, min_spacing_d=min_spacing_d,
+                        s_para_range=tuple(s_para_range),
+                        s_perp_range=tuple(s_perp_range), rho=rho,
+                        exclusion_polygons=exclusions,
+                        boundary_setback_m=setback, wake_model=wake_model,
+                        _search_cache=layout_search_cache,
+                    )
                 )
                 if int(candidate_layout['n_placed']) != candidate_n:
                     continue

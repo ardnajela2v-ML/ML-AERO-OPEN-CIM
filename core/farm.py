@@ -178,8 +178,9 @@ def _gaussian_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
             -0.5 * np.square(np.abs(dy) / max(sigma_boundary_m, 1e-9)))
         material = near & (boundary_tail > 1e-4)
         if np.any(material):
-            target, source = np.argwhere(material)[0]
-            invalid_x_over_d = float(x_over_d[target, source])
+            invalid_location = np.argwhere(material)[0]
+            target, source = invalid_location[-2:]
+            invalid_x_over_d = float(x_over_d[tuple(invalid_location)])
             raise WakeModelDomainError(
                 'Bastankhah-Porté-Agel fuera de dominio en la estela cercana: '
                 f'x/D={invalid_x_over_d:.3f}, requiere x/D>={min_x_over_d:.3f} '
@@ -999,38 +1000,76 @@ def _score_layout_fast(
     """
     if not layout_xy:
         return 0.0
-    arr = np.array(layout_xy, dtype=float)
-    score = 0.0
-    for s_dir, s_w in zip(sector_dirs.tolist(), sector_weights.tolist()):
-        if s_w <= 0.0:
-            continue
-        v_eff = effective_wind_per_turbine(arr, v_mean, float(s_dir), D,
-                                           k=k_wake, ct=ct,
-                                           wake_model=wake_model)
-        p_kw  = turbine.power_kw_density_corrected(v_eff, rho)
-        score += float(np.sum(p_kw)) * s_w
-    return score
+    arr = np.asarray(layout_xy, dtype=float)
+    directions = np.asarray(sector_dirs, dtype=float)
+    weights = np.asarray(sector_weights, dtype=float)
+    active = weights > 0.0
+    directions = directions[active]
+    weights = weights[active]
+    if not len(directions):
+        return 0.0
+
+    # Evaluate every wind-rose direction in one batch. The last two dimensions
+    # retain the same target/source matrix used by effective_wind_per_turbine;
+    # the leading dimension contains independent sectors.
+    theta = np.deg2rad(90.0 + directions)
+    cos_theta = np.cos(theta)[:, None]
+    sin_theta = np.sin(theta)[:, None]
+    x = arr[:, 0][None, :]
+    y = arr[:, 1][None, :]
+    rotated_x = x * cos_theta - y * sin_theta
+    rotated_y = x * sin_theta + y * cos_theta
+    dx = rotated_x[:, :, None] - rotated_x[:, None, :]
+    dy = rotated_y[:, :, None] - rotated_y[:, None, :]
+    deficits = (
+        _gaussian_deficit_matrix(dx, dy, D, k_wake, ct)
+        if wake_model == 'gaussian'
+        else _jensen_deficit_matrix(dx, dy, D, k_wake, ct)
+    )
+    combined = np.sqrt(np.sum(np.square(deficits), axis=2))
+    v_eff = float(v_mean) * (1.0 - combined)
+    sector_power_kw = np.sum(
+        turbine.power_kw_density_corrected(v_eff, rho), axis=1)
+    # Preserve the previous left-to-right accumulation order.
+    return sum(float(power) * float(weight)
+               for power, weight in zip(sector_power_kw, weights))
 
 
 def _select_spread_candidates(candidates: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
     """Choose an exact-count, spatially spread subset; wind speed breaks ties."""
     if n <= 0 or len(candidates) <= n:
         return list(candidates)
-    remaining = list(candidates)
-    selected = [max(remaining, key=lambda c: c['v'])]
-    remaining.remove(selected[0])
-    while remaining and len(selected) < n:
-        def merit(candidate):
-            min_dist_sq = min(
-                (candidate['x'] - placed['x']) ** 2
-                + (candidate['y'] - placed['y']) ** 2
-                for placed in selected
-            )
-            return min_dist_sq, candidate['v']
-        chosen = max(remaining, key=merit)
-        selected.append(chosen)
-        remaining.remove(chosen)
-    return selected
+    # Keep the original greedy farthest-point rule, but retain each candidate's
+    # minimum distance to the selected set and update it only for the newly
+    # chosen point. This changes the hot loop from repeated Python O(C*N²)
+    # distance scans to O(C*N) vector operations without changing its result.
+    coords = np.asarray([[c['x'], c['y']] for c in candidates], dtype=float)
+    wind = np.asarray([c['v'] for c in candidates], dtype=float)
+    available = np.ones(len(candidates), dtype=bool)
+
+    # np.argmax, like max(list, key=...), keeps the first item on an exact tie.
+    first = int(np.argmax(wind))
+    selected_indices = [first]
+    available[first] = False
+    delta = coords - coords[first]
+    min_dist_sq = np.einsum('ij,ij->i', delta, delta)
+
+    while len(selected_indices) < n:
+        remaining_indices = np.flatnonzero(available)
+        remaining_distances = min_dist_sq[remaining_indices]
+        best_distance = np.max(remaining_distances)
+        distance_ties = remaining_indices[remaining_distances == best_distance]
+        tied_wind = wind[distance_ties]
+        best_wind = np.max(tied_wind)
+        # Candidate order is the final tie-breaker, matching Python's max().
+        chosen = int(distance_ties[np.flatnonzero(tied_wind == best_wind)[0]])
+        selected_indices.append(chosen)
+        available[chosen] = False
+        delta = coords - coords[chosen]
+        distance_to_chosen = np.einsum('ij,ij->i', delta, delta)
+        np.minimum(min_dist_sq, distance_to_chosen, out=min_dist_sq)
+
+    return [candidates[idx] for idx in selected_indices]
 
 
 # ── Structured layout optimisation ───────────────────────────────────────────
@@ -1056,6 +1095,7 @@ def optimize_layout_structured(
         wake_model: str = 'jensen',
         orientation_step_deg: float = 15.0,
         grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
+        _search_cache: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1167,30 +1207,34 @@ def optimize_layout_structured(
     min_perp_d = min(valid_perp_values)
     setback_m = max(0.0, float(boundary_setback_m))
     capacity_seeds: List[Dict[str, Any]] = []
-
-    for orientation_deg in orientations:
-        for along_offset in offset_values:
-            for cross_offset in offset_values:
-                for stagger in stagger_values:
-                    min_diag_d = (math.hypot(stagger * min_perp_d, min_para_d)
-                                  if stagger > 0 else min_para_d)
-                    if min(min_perp_d, min_diag_d) < min_spacing_d:
-                        continue
-                    cands = _build_structured_grid(
-                        poly_xs, poly_ys, lat0, lon0, D,
-                        orientation_deg, min_para_d, min_perp_d, stagger,
-                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                        along_offset, cross_offset,
-                    )
-                    if cands:
-                        capacity_seeds.append({
-                            'orientation_deg': orientation_deg,
-                            'along_offset_fraction': along_offset,
-                            'cross_offset_fraction': cross_offset,
-                            'stagger': stagger,
-                            'n_fit': len(cands),
-                            '_candidates': cands,
-                        })
+    if _search_cache is not None:
+        capacity_seeds = _search_cache.get('capacity_seeds') or []
+    if not capacity_seeds:
+        for orientation_deg in orientations:
+            for along_offset in offset_values:
+                for cross_offset in offset_values:
+                    for stagger in stagger_values:
+                        min_diag_d = (math.hypot(stagger * min_perp_d, min_para_d)
+                                      if stagger > 0 else min_para_d)
+                        if min(min_perp_d, min_diag_d) < min_spacing_d:
+                            continue
+                        cands = _build_structured_grid(
+                            poly_xs, poly_ys, lat0, lon0, D,
+                            orientation_deg, min_para_d, min_perp_d, stagger,
+                            wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                            along_offset, cross_offset,
+                        )
+                        if cands:
+                            capacity_seeds.append({
+                                'orientation_deg': orientation_deg,
+                                'along_offset_fraction': along_offset,
+                                'cross_offset_fraction': cross_offset,
+                                'stagger': stagger,
+                                'n_fit': len(cands),
+                                '_candidates': cands,
+                            })
+        if _search_cache is not None:
+            _search_cache['capacity_seeds'] = capacity_seeds
 
     if not capacity_seeds:
         raise ValueError(
@@ -1214,6 +1258,8 @@ def optimize_layout_structured(
     # Bound runtime while retaining the densest phases and wind-aligned ones.
     viable_seeds = viable_seeds[:48]
     all_configs: List[Dict[str, Any]] = []
+    grid_cache = (_search_cache.setdefault('configuration_grids', {})
+                  if _search_cache is not None else {})
 
     for seed in viable_seeds:
         for s_para_d in para_values:
@@ -1223,12 +1269,21 @@ def optimize_layout_structured(
                               if stagger > 0 else s_para_d)
                 if min(s_perp_d, min_diag_d) < min_spacing_d:
                     continue
-                cands = _build_structured_grid(
-                    poly_xs, poly_ys, lat0, lon0, D,
-                    seed['orientation_deg'], s_para_d, s_perp_d, stagger,
-                    wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                    seed['along_offset_fraction'], seed['cross_offset_fraction'],
+                grid_key = (
+                    seed['orientation_deg'], seed['along_offset_fraction'],
+                    seed['cross_offset_fraction'], stagger,
+                    float(s_para_d), float(s_perp_d),
                 )
+                cands = grid_cache.get(grid_key)
+                if cands is None:
+                    cands = _build_structured_grid(
+                        poly_xs, poly_ys, lat0, lon0, D,
+                        seed['orientation_deg'], s_para_d, s_perp_d, stagger,
+                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                        seed['along_offset_fraction'], seed['cross_offset_fraction'],
+                    )
+                    if _search_cache is not None:
+                        grid_cache[grid_key] = cands
                 if len(cands) < target_n:
                     continue
                 # When evaluating fewer turbines than available grid points,
