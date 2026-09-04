@@ -17,7 +17,11 @@ from core.farm import (
     simulate_wind_farm,
 )
 from core.farm_mcda import analyze_park_layouts
-from core.multicriteria import LAYOUT_WEIGHTS, rank_layout_alternatives
+from core.multicriteria import (
+    LAYOUT_WEIGHTS,
+    UNISTMO_LAYOUT_WEIGHTS,
+    rank_layout_alternatives,
+)
 
 
 class FarmScientificModelTests(unittest.TestCase):
@@ -251,17 +255,21 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['n'], 1)
         self.assertEqual(result['ranking'][0]['n_aerogeneradores'], 8)
 
-    def test_unistmo_is_separate_and_explicitly_prefers_gamesa20_d80(self):
+    def test_unistmo_uses_real_performance_without_model_preference(self):
         gamesa = self.alternative('gamesa', 1.0)
-        gamesa.update(
-            turbina='gamesa20_p2000_r40.csv', n_aerogeneradores=10,
-            max_n_fisico=10, unistmo_technology_preference_score=1.0,
-        )
-        competitor = self.alternative('competitor', 2.0)
-        competitor.update(
-            turbina='competitor_p2000_r40.csv', n_aerogeneradores=10,
-            max_n_fisico=10, unistmo_technology_preference_score=0.0,
-        )
+        gamesa.update(turbina='gamesa20_p2000_r40.csv', n_aerogeneradores=10,
+                       max_n_fisico=10)
+        competitor = self.alternative('competitor', 1.0)
+        competitor.update(turbina='competitor_p2000_r40.csv', n_aerogeneradores=10,
+                          max_n_fisico=10)
+        # The competitor leads in the integral profile's main production and
+        # financial criteria. G80 leads on UNISTMO's compact-project criteria.
+        competitor.update(aep_p90_mwh=1.30, van_usd=1.30,
+                          factor_capacidad=1.08)
+        gamesa.update(energy_density_mwh_km2=1.35,
+                      capex_usd=0.78, lcoe_usd_kwh=0.82,
+                      wake_loss_pct=0.82, civil_complexity_index=0.85,
+                      collection_length_m=0.88)
         base = rank_layout_alternatives([gamesa, competitor])
         unistmo = rank_layout_alternatives(
             [gamesa, competitor], profile='unistmo_v1')
@@ -269,8 +277,19 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(unistmo['ranking'][0]['turbina'], 'gamesa20_p2000_r40.csv')
         self.assertEqual(base['profile'], 'balanced_integral_v1')
         self.assertEqual(unistmo['profile'], 'unistmo_v1')
-        self.assertNotIn('unistmo_technology_preference_score', base['criteria'])
-        self.assertIn('unistmo_technology_preference_score', unistmo['criteria'])
+        self.assertNotIn('unistmo_technology_preference_score', unistmo['criteria'])
+        self.assertEqual(set(UNISTMO_LAYOUT_WEIGHTS), set(LAYOUT_WEIGHTS))
+        self.assertAlmostEqual(sum(UNISTMO_LAYOUT_WEIGHTS.values()), 1.0)
+
+    def test_unistmo_does_not_award_points_for_turbine_name(self):
+        gamesa = self.alternative('gamesa', 1.0)
+        gamesa.update(turbina='gamesa20_p2000_r40.csv', n_aerogeneradores=10,
+                       max_n_fisico=10)
+        better = self.alternative('better', 1.1)
+        better.update(turbina='competitor.csv', n_aerogeneradores=10,
+                      max_n_fisico=10)
+        result = rank_layout_alternatives([gamesa, better], profile='unistmo_v1')
+        self.assertEqual(result['ranking'][0]['turbina'], 'competitor.csv')
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{

@@ -17,13 +17,6 @@ from core.farm import (
 from core.multicriteria import rank_layout_alternatives
 
 
-def _unistmo_technology_preference(filename: str) -> float:
-    """Explicit stakeholder preference for Gamesa 2 MW / D80 in UNISTMO."""
-    model = os.path.basename(str(filename)).casefold().removesuffix('.csv')
-    tokens = set(model.replace('-', '_').split('_'))
-    return 1.0 if {'gamesa20', 'p2000', 'r40'} <= tokens else 0.0
-
-
 def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
     mean_speed = float(np.mean([float(s.get('v_mean') or 0.0) for s in sites]))
     weibull_k = float(np.mean([float(s.get('weibull_K') or 2.0) for s in sites]))
@@ -337,7 +330,6 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'energy_density_mwh_km2': aep_p50 / area_km2,
                 'civil_complexity_index': collection_length / max(selected_n, 1),
                 'iec_suitability_score': 0.5,
-                'unistmo_technology_preference_score': _unistmo_technology_preference(filename),
                 'quality_level': 'prefeasibility',
                 'quality_warnings': ['Ct genérico; falta clase IEC y turbulencia extrema del fabricante'],
                 'bankable_ready': False,

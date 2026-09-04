@@ -103,26 +103,28 @@ LAYOUT_LABELS = {
     'energy_density_mwh_km2': 'Energía neta por km²',
     'collection_length_m': 'Red colectora (m)',
     'civil_complexity_index': 'Complejidad civil',
-    'unistmo_technology_preference_score': 'Preferencia tecnológica UNISTMO',
 }
 
-# Stakeholder-preference scenario kept separate from the balanced scientific
-# profile. The explicit preference criterion is intentionally dominant; it is
-# never included in the base ranking.
+# UNISTMO uses the same measured criteria and values as the scientific profile.
+# Its weights reflect a compact 2 MW onshore project: low wake loss and energy
+# produced per unit area are prioritised, followed by the physical burden of the
+# layout. There is no manufacturer/model flag and therefore no score is awarded
+# merely for being a Gamesa turbine.
 UNISTMO_LAYOUT_WEIGHTS = {
-    'unistmo_technology_preference_score': 0.45,
-    'aep_p90_mwh': 0.15,
-    'van_usd': 0.10,
-    'lcoe_usd_kwh': 0.08,
-    'wake_loss_pct': 0.07,
-    'factor_capacidad': 0.05,
-    'capex_usd': 0.04,
-    'opex_lifetime_usd': 0.02,
-    'aep_uncertainty_pct': 0.02,
-    'energy_density_mwh_km2': 0.02,
+    'wake_loss_pct': 0.40,
+    'energy_density_mwh_km2': 0.35,
+    'civil_complexity_index': 0.10,
+    'collection_length_m': 0.06,
+    'capex_usd': 0.03,
+    'lcoe_usd_kwh': 0.02,
+    'factor_capacidad': 0.01,
+    'aep_p90_mwh': 0.01,
+    'van_usd': 0.005,
+    'opex_lifetime_usd': 0.005,
+    'iec_suitability_score': 0.005,
+    'aep_uncertainty_pct': 0.0025,
+    'curtailment_loss_pct': 0.0025,
 }
-
-LAYOUT_DIRECTION['unistmo_technology_preference_score'] = +1
 
 
 def rank_layout_alternatives(alternatives: List[Dict],

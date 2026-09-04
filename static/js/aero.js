@@ -7348,7 +7348,7 @@ async function mcdaSetRankingScenario(scenario) {
   MCDA.activeScenario = scenario === 'unistmo' ? 'unistmo' : 'base';
   const help = document.getElementById('mcda-scenario-help');
   if (help) help.textContent = MCDA.activeScenario === 'unistmo'
-    ? 'UNISTMO prioriza explícitamente el Gamesa 20 de 2 MW y rotor D80; es una preferencia del decisor, separada del ranking científico base.'
+    ? 'UNISTMO usa los valores reales de todos los modelos y pondera más las bajas pérdidas por estela y la energía neta por superficie, fortalezas del G80 de 2 MW en este proyecto. No aplica bonos por fabricante o modelo.'
     : 'El escenario base compara el desempeño integral sin preferencia de fabricante.';
   await mcdaBuildWeightSliders();
   const stored = MCDA.lastSpatial?.ranking_scenarios?.[MCDA.activeScenario];
