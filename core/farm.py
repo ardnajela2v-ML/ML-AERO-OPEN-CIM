@@ -132,6 +132,75 @@ def gaussian_deficit(distance_x_m: float, lateral_m: float,
     return max(0.0, min(1.0, centre * lateral))
 
 
+def _jensen_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
+                           rotor_d_m: float, k: float, ct: float) -> np.ndarray:
+    """Vectorized Jensen deficits with the same branches as ``jensen_deficit``."""
+    deficits = np.zeros_like(dx, dtype=float)
+    upstream = dx > 0.0
+    if not np.any(upstream):
+        return deficits
+    r0 = float(rotor_d_m) / 2.0
+    dx_valid = dx[upstream]
+    dy_valid = np.abs(dy[upstream])
+    r_wake = r0 + float(k) * dx_valid
+    overlap = np.zeros_like(dx_valid)
+    full = dy_valid <= r_wake - r0
+    partial = (~full) & (dy_valid < r_wake + r0)
+    overlap[full] = 1.0
+    if np.any(partial):
+        overlap[partial] = np.maximum(
+            0.0, (r_wake[partial] - dy_valid[partial]) / r0)
+    ct_safe = max(0.0, 1.0 - float(ct))
+    induction = 0.5 * (1.0 - math.sqrt(ct_safe))
+    values = 2.0 * induction * np.square(r0 / r_wake) * overlap
+    deficits[upstream] = np.clip(values, 0.0, 1.0)
+    return deficits
+
+
+def _gaussian_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
+                             rotor_d_m: float, k: float, ct: float) -> np.ndarray:
+    """Vectorized Gaussian deficits while preserving near-wake rejection."""
+    deficits = np.zeros_like(dx, dtype=float)
+    upstream = dx > 0.0
+    if not np.any(upstream):
+        return deficits
+    rotor = float(rotor_d_m)
+    if rotor <= 0:
+        raise ValueError('rotor_d_m debe ser positivo.')
+    ct_safe = max(0.0, min(0.999, float(ct)))
+    min_x_over_d = gaussian_min_valid_distance_d(k=k, ct=ct_safe)
+    x_over_d = np.zeros_like(dx, dtype=float)
+    x_over_d[upstream] = dx[upstream] / rotor
+    near = upstream & (x_over_d < min_x_over_d)
+    if np.any(near):
+        sigma_boundary_m = math.sqrt(ct_safe / 8.0) * rotor
+        boundary_tail = np.exp(
+            -0.5 * np.square(np.abs(dy) / max(sigma_boundary_m, 1e-9)))
+        material = near & (boundary_tail > 1e-4)
+        if np.any(material):
+            target, source = np.argwhere(material)[0]
+            invalid_x_over_d = float(x_over_d[target, source])
+            raise WakeModelDomainError(
+                'Bastankhah-Porté-Agel fuera de dominio en la estela cercana: '
+                f'x/D={invalid_x_over_d:.3f}, requiere x/D>={min_x_over_d:.3f} '
+                f'para Ct={ct_safe:.3f} y k={float(k):.4f}. '
+                'Aumenta la separación, usa Jensen o aporta un modelo de estela cercana.'
+            )
+    valid = upstream & ~near
+    if not np.any(valid):
+        return deficits
+    sqrt_one_minus_ct = math.sqrt(max(1e-9, 1.0 - ct_safe))
+    beta = 0.5 * (1.0 + sqrt_one_minus_ct) / sqrt_one_minus_ct
+    epsilon = 0.2 * math.sqrt(beta)
+    sigma_over_d = float(k) * x_over_d[valid] + epsilon
+    radical = np.maximum(0.0, 1.0 - ct_safe / (8.0 * np.square(sigma_over_d)))
+    centre = 1.0 - np.sqrt(radical)
+    sigma_m = sigma_over_d * rotor
+    lateral = np.exp(-0.5 * np.square(np.abs(dy[valid]) / np.maximum(sigma_m, 1e-9)))
+    deficits[valid] = np.clip(centre * lateral, 0.0, 1.0)
+    return deficits
+
+
 def effective_wind_per_turbine(layout_xy: np.ndarray, v_free,
                                wind_dir_deg: float, rotor_d_m: float,
                                k: float = 0.075, ct: float = 0.8,
@@ -153,21 +222,19 @@ def effective_wind_per_turbine(layout_xy: np.ndarray, v_free,
     v_eff = np.array(v_free_arr, copy=True)
     if np.all(v_free_arr <= 0) or n <= 1:
         return v_eff
+    if v_free_arr.shape != (n,):
+        raise ValueError('v_free debe ser escalar o contener un valor por turbina.')
 
-    # For each target turbine i, sum squared deficits from all upwind turbines j.
-    for i in range(n):
-        xi, yi = rotated[i]
-        sq_sum = 0.0
-        for j in range(n):
-            if i == j:
-                continue
-            dx = xi - rotated[j, 0]    # >0 if i is downwind of j
-            dy = yi - rotated[j, 1]
-            deficit_fn = gaussian_deficit if wake_model == 'gaussian' else jensen_deficit
-            d_eff = deficit_fn(dx, dy, rotor_d_m, k=k, ct=ct)
-            sq_sum += d_eff ** 2
-        v_eff[i] = v_free_arr[i] * (1.0 - math.sqrt(sq_sum))
-    return v_eff
+    # Rows are target turbines and columns are possible upstream sources.
+    dx = rotated[:, 0, None] - rotated[None, :, 0]
+    dy = rotated[:, 1, None] - rotated[None, :, 1]
+    deficits = (
+        _gaussian_deficit_matrix(dx, dy, rotor_d_m, k, ct)
+        if wake_model == 'gaussian'
+        else _jensen_deficit_matrix(dx, dy, rotor_d_m, k, ct)
+    )
+    combined = np.sqrt(np.sum(np.square(deficits), axis=1))
+    return v_free_arr * (1.0 - combined)
 
 
 # ── Sector binning for performance ────────────────────────────────────────────

@@ -8,8 +8,11 @@ from core.cost_model import CostModel, get_design_cost_benchmark
 from core.farm import (
     WakeModelDomainError,
     _build_structured_grid,
+    _rotate_to_wind_axis,
+    effective_wind_per_turbine,
     gaussian_deficit,
     gaussian_min_valid_distance_d,
+    jensen_deficit,
     optimize_layout_structured,
     simulate_wind_farm,
 )
@@ -56,6 +59,70 @@ class FarmScientificModelTests(unittest.TestCase):
         )
         # A cross-wind pair in the immaterial Gaussian tail is not rejected.
         self.assertEqual(gaussian_deficit(100.0, 300.0, 100.0, k=0.04, ct=0.8), 0.0)
+
+    @staticmethod
+    def _serial_effective_wind(layout, v_free, direction, rotor, k, ct, model):
+        """Reference implementation retained in tests for numerical parity."""
+        points = np.asarray(layout, dtype=float)
+        rotated = _rotate_to_wind_axis(points, direction)
+        speeds = (
+            np.full(len(points), float(v_free), dtype=float)
+            if np.isscalar(v_free)
+            else np.asarray(v_free, dtype=float)
+        )
+        result = speeds.copy()
+        deficit_fn = gaussian_deficit if model == 'gaussian' else jensen_deficit
+        for target in range(len(points)):
+            squared_deficits = 0.0
+            for source in range(len(points)):
+                if target == source:
+                    continue
+                dx = rotated[target, 0] - rotated[source, 0]
+                dy = rotated[target, 1] - rotated[source, 1]
+                squared_deficits += deficit_fn(
+                    dx, dy, rotor, k=k, ct=ct) ** 2
+            result[target] = speeds[target] * (1.0 - math.sqrt(squared_deficits))
+        return result
+
+    def test_vectorized_jensen_matches_scalar_reference(self):
+        rng = np.random.default_rng(20260903)
+        layout = rng.uniform(-1500.0, 1500.0, size=(24, 2))
+        speeds = rng.uniform(5.0, 13.0, size=len(layout))
+        for direction in (0.0, 33.0, 90.0, 217.0, 270.0):
+            expected = self._serial_effective_wind(
+                layout, speeds, direction, 110.0, 0.075, 0.8, 'jensen')
+            actual = effective_wind_per_turbine(
+                layout, speeds, direction, 110.0,
+                k=0.075, ct=0.8, wake_model='jensen')
+            np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
+
+    def test_vectorized_gaussian_matches_scalar_reference(self):
+        # A 500 m grid avoids material near-wake pairs for both tested axes.
+        layout = np.array([
+            [x, y] for x in range(0, 2001, 500) for y in range(0, 1501, 500)
+        ], dtype=float)
+        for direction in (0.0, 270.0):
+            expected = self._serial_effective_wind(
+                layout, 9.0, direction, 100.0, 0.04, 0.8, 'gaussian')
+            actual = effective_wind_per_turbine(
+                layout, 9.0, direction, 100.0,
+                k=0.04, ct=0.8, wake_model='gaussian')
+            np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
+
+    def test_vectorized_gaussian_preserves_near_wake_rejection(self):
+        with self.assertRaisesRegex(WakeModelDomainError, 'fuera de dominio'):
+            effective_wind_per_turbine(
+                np.array([[0.0, 0.0], [100.0, 0.0]]),
+                8.0, 270.0, 100.0, k=0.04, ct=0.8,
+                wake_model='gaussian',
+            )
+        # The same short streamwise separation is harmless outside the wake tail.
+        result = effective_wind_per_turbine(
+            np.array([[0.0, 0.0], [100.0, 300.0]]),
+            8.0, 270.0, 100.0, k=0.04, ct=0.8,
+            wake_model='gaussian',
+        )
+        np.testing.assert_allclose(result, [8.0, 8.0])
 
     def test_layout_respects_exclusion_and_rotor_setback(self):
         exclusion = [[
