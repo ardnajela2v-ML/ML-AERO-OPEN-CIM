@@ -1959,8 +1959,9 @@
         </div>
         <p class="text-muted" style="font-size:.72rem;margin-top:.35rem">
           Los puntos azules y amarillos no son aerogeneradores ni alternativas TOPSIS: son muestras del campo eólico usadas para caracterizar el terreno.
-          Nmax es la capacidad física máxima encontrada. La cantidad final es la mayor que, después de reoptimizar el acomodo,
-          mantiene la pérdida total por estela dentro del límite configurado; se muestra como cantidad final/Nmax físico.
+          Nmax es la máxima capacidad geométrica factible encontrada y no depende de la curva de potencia. Después se aplica el límite de red
+          y finalmente se reduce/reoptimiza hasta cumplir el límite de estela. Un rotor menor nunca tendrá un Nmax inferior al de uno mayor;
+          las cantidades finales sí pueden diferir por la respuesta energética de cada modelo a las estelas.
         </p>
       </div>
 

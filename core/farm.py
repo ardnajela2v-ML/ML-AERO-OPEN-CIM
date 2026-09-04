@@ -1096,6 +1096,7 @@ def optimize_layout_structured(
         orientation_step_deg: float = 15.0,
         grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
         _search_cache: Optional[Dict[str, Any]] = None,
+        _capacity_witness: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1108,7 +1109,7 @@ def optimize_layout_structured(
                   direction so each downwind turbine sits between two
                   upwind neighbours, avoiding direct wake exposure.
 
-      orientation — geometric rotations over 0–180° plus the dominant wind
+      orientation — geometric rotations over 0–180° independent of wind
       grid phase  — fractional translations along both grid axes
 
     Nmax is found first with the minimum permitted row/column spacing across
@@ -1191,7 +1192,9 @@ def optimize_layout_structured(
     step = float(orientation_step_deg)
     if not math.isfinite(step) or step <= 0.0 or step > 90.0:
         step = 15.0
-    raw_orientations = list(np.arange(0.0, 180.0, step)) + [dom_dir % 180.0]
+    # Capacity is purely geometric. Do not add a turbine-specific dominant-wind
+    # angle here: equal rotor diameters must search the exact same geometry.
+    raw_orientations = list(np.arange(0.0, 180.0, step))
     orientations: List[float] = []
     for angle in raw_orientations:
         normalized = round(float(angle) % 180.0, 6)
@@ -1236,6 +1239,40 @@ def optimize_layout_structured(
         if _search_cache is not None:
             _search_cache['capacity_seeds'] = capacity_seeds
 
+    # A layout feasible for a larger rotor is a constructive feasibility proof
+    # for this smaller rotor. Keep its exact coordinates as an additional seed;
+    # this guarantees monotonic geometric capacity without inventing positions.
+    witness_candidates = []
+    if _capacity_witness:
+        witness_xy = _capacity_witness.get('layout_xy_m') or []
+        witness_latlon = _capacity_witness.get('layout_latlon') or []
+        witness_wind = _capacity_witness.get('wind_at_turbines') or []
+        if len(witness_xy) == len(witness_latlon) and witness_xy:
+            for idx, (xy, latlon) in enumerate(zip(witness_xy, witness_latlon)):
+                witness_candidates.append({
+                    'x': float(xy[0]), 'y': float(xy[1]),
+                    'lat': float(latlon[0]), 'lon': float(latlon[1]),
+                    'v': (float(witness_wind[idx]) if idx < len(witness_wind)
+                          else v_mean),
+                    'row': idx,
+                })
+            witness_source_d = float(
+                _capacity_witness.get('source_rotor_m') or D)
+            if witness_source_d + 1e-9 >= D:
+                witness_cfg = _capacity_witness.get('capacity_config') or {}
+                capacity_seeds.append({
+                    'orientation_deg': float(witness_cfg.get('orientation_deg') or 0.0),
+                    'along_offset_fraction': float(
+                        witness_cfg.get('along_offset_fraction') or 0.0),
+                    'cross_offset_fraction': float(
+                        witness_cfg.get('cross_offset_fraction') or 0.0),
+                    'stagger': float(witness_cfg.get('stagger') or 0.0),
+                    'n_fit': len(witness_candidates),
+                    '_candidates': witness_candidates,
+                    '_direct_witness': True,
+                    '_source_rotor_m': witness_source_d,
+                })
+
     if not capacity_seeds:
         raise ValueError(
             'No se encontró ninguna posición factible con las separaciones y retiros indicados.')
@@ -1262,6 +1299,27 @@ def optimize_layout_structured(
                   if _search_cache is not None else {})
 
     for seed in viable_seeds:
+        if seed.get('_direct_witness'):
+            sel = _select_spread_candidates(seed['_candidates'], target_n)
+            layout_xy = [[c['x'], c['y']] for c in sel]
+            score = _score_layout_fast(
+                layout_xy, D, sector_dirs, sector_weights,
+                turbine, k_wake, ct, v_mean, rho_val,
+                wake_model=wake_model,
+            )
+            all_configs.append({
+                's_para_d': None, 's_perp_d': None,
+                'stagger': seed['stagger'],
+                'orientation_deg': seed['orientation_deg'],
+                'along_offset_fraction': seed['along_offset_fraction'],
+                'cross_offset_fraction': seed['cross_offset_fraction'],
+                'n_fit': seed['n_fit'], 'n_used': len(sel),
+                'score_kw': round(score, 1),
+                'capacity_source': 'inherited_larger_rotor_layout',
+                'capacity_source_rotor_m': seed['_source_rotor_m'],
+                '_layout_xy': layout_xy, '_candidates': sel,
+            })
+            continue
         for s_para_d in para_values:
             for s_perp_d in perp_values:
                 stagger = seed['stagger']
@@ -1307,6 +1365,8 @@ def optimize_layout_structured(
                     'n_fit': len(cands),
                     'n_used': len(sel),
                     'score_kw': round(score, 1),
+                    'capacity_source': 'own_geometric_grid_search',
+                    'capacity_source_rotor_m': D,
                     '_layout_xy': layout_xy,
                     '_candidates': sel,
                 })
@@ -1359,13 +1419,17 @@ def optimize_layout_structured(
             'n_configs_tried':  len(all_configs),
         },
         'capacity_config': {
-            's_para_d': min_para_d,
-            's_perp_d': min_perp_d,
+            's_para_d': (None if capacity_seed.get('_direct_witness') else min_para_d),
+            's_perp_d': (None if capacity_seed.get('_direct_witness') else min_perp_d),
             'stagger': capacity_seed['stagger'],
             'orientation_deg': capacity_seed['orientation_deg'],
             'along_offset_fraction': capacity_seed['along_offset_fraction'],
             'cross_offset_fraction': capacity_seed['cross_offset_fraction'],
             'n_fit': max_n_fit,
+            'method': ('inherited_larger_rotor_layout'
+                       if capacity_seed.get('_direct_witness')
+                       else 'own_geometric_grid_search'),
+            'source_rotor_m': float(capacity_seed.get('_source_rotor_m') or D),
         },
         'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
         'exclusion_count': len(exclusion_polys_xy),

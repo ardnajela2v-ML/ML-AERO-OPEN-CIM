@@ -179,7 +179,9 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
                          weights: Optional[Dict[str, float]] = None,
-                         _parallel_models: bool = True):
+                         unistmo_weights: Optional[Dict[str, float]] = None,
+                         _parallel_models: bool = True,
+                         _capacity_witness: Optional[Dict] = None):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -218,7 +220,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         if model_key not in seen_models:
             seen_models.add(model_key)
             unique_filenames.append(filename)
-    if _parallel_models and len(unique_filenames) > 1:
+    if len(unique_filenames) > 1:
         single_kwargs = {
             'wind_grid': wind_grid,
             'exclusions': exclusions,
@@ -245,6 +247,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             'cost_model_origin': cost_model_origin,
             'uncertainty_components_pct': uncertainty_components_pct,
             'weights': weights,
+            'unistmo_weights': unistmo_weights,
             '_parallel_models': False,
         }
 
@@ -252,9 +255,49 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             return analyze_park_layouts(
                 sites, polygon, turbines_folder, [filename], **single_kwargs)
 
-        worker_count = min(4, len(unique_filenames))
-        with ThreadPoolExecutor(max_workers=worker_count) as pool:
-            per_model = list(pool.map(analyze_one, unique_filenames))
+        if _parallel_models:
+            worker_count = min(4, len(unique_filenames))
+            with ThreadPoolExecutor(max_workers=worker_count) as pool:
+                per_model = list(pool.map(analyze_one, unique_filenames))
+        else:
+            per_model = [analyze_one(filename) for filename in unique_filenames]
+
+        # Enforce the physical invariant constructively. If the grid search for
+        # a smaller rotor found fewer positions, rerun it with the larger-rotor
+        # layout as an additional, already-feasible capacity witness.
+        ordered = []
+        for idx, result in enumerate(per_model):
+            rows = result.get('alternatives') or []
+            if rows:
+                ordered.append((
+                    -float(rows[0]['turbine_specification']['rotor_diameter_m']),
+                    idx,
+                ))
+        inherited_witness = None
+        inherited_count = 0
+        for _, idx in sorted(ordered):
+            row = per_model[idx]['alternatives'][0]
+            if inherited_witness and int(row['max_n_fisico']) < inherited_count:
+                repaired_kwargs = dict(single_kwargs)
+                repaired_kwargs['_capacity_witness'] = inherited_witness
+                repaired_result = analyze_park_layouts(
+                    sites, polygon, turbines_folder, [unique_filenames[idx]],
+                    **repaired_kwargs)
+                repaired_rows = repaired_result.get('alternatives') or []
+                if repaired_rows:
+                    per_model[idx] = repaired_result
+                    row = repaired_rows[0]
+            current_count = int(row['max_n_fisico'])
+            if current_count >= inherited_count:
+                inherited_count = current_count
+                inherited_witness = {
+                    'layout_xy_m': row.get('capacity_layout_xy_m') or [],
+                    'layout_latlon': row.get('capacity_layout_latlon') or [],
+                    'wind_at_turbines': row.get('capacity_wind_at_turbines') or [],
+                    'capacity_config': row.get('capacity_config') or {},
+                    'source_rotor_m': float(
+                        row['turbine_specification']['rotor_diameter_m']),
+                }
         alternatives = [
             alternative
             for result in per_model
@@ -267,7 +310,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         ]
         ranking = rank_layout_alternatives(alternatives, weights=weights)
         unistmo_ranking = rank_layout_alternatives(
-            alternatives, profile='unistmo_v1')
+            alternatives, weights=unistmo_weights, profile='unistmo_v1')
         combined = dict(per_model[0])
         combined.update({
             'alternatives': alternatives,
@@ -300,6 +343,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 exclusion_polygons=exclusions, boundary_setback_m=setback,
                 wake_model=wake_model,
                 _search_cache=layout_search_cache,
+                _capacity_witness=_capacity_witness,
             )
             physical_max_n = int(capacity.get('max_n_fit') or capacity.get('n_placed') or 0)
             max_n = physical_max_n
@@ -328,6 +372,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                         exclusion_polygons=exclusions,
                         boundary_setback_m=setback, wake_model=wake_model,
                         _search_cache=layout_search_cache,
+                        _capacity_witness=_capacity_witness,
                     )
                 )
                 if int(candidate_layout['n_placed']) != candidate_n:
@@ -383,6 +428,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'n_optimo_estela': selected_n,
                 'max_n_fisico': physical_max_n,
                 'max_n_tecnico': max_n,
+                'max_n_post_red': max_n,
                 'reducido_por_estela': selected_n < max_n,
                 'max_wake_loss_pct': float(max_wake_loss_pct),
                 'wake_trials': wake_trials,
@@ -390,6 +436,14 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'layout_latlon': layout['layout_latlon'],
                 'layout_xy_m': layout['layout_xy_m'],
                 'layout_config': layout['layout_config'],
+                'capacity_config': capacity.get('capacity_config') or {},
+                'capacity_method': (capacity.get('capacity_config') or {}).get(
+                    'method', 'own_geometric_grid_search'),
+                'capacity_source_rotor_m': (capacity.get('capacity_config') or {}).get(
+                    'source_rotor_m', float(turbine.rotor_diameter_m)),
+                'capacity_layout_latlon': capacity.get('layout_latlon') or [],
+                'capacity_layout_xy_m': capacity.get('layout_xy_m') or [],
+                'capacity_wind_at_turbines': capacity.get('wind_at_turbines') or [],
                 'min_sep_m': layout['min_sep_m'],
                 'area_km2': area_km2,
                 'installed_mw': installed_mw,
@@ -450,7 +504,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             errors.append({'turbine': filename, 'reason': str(exc)})
     ranking = rank_layout_alternatives(alternatives, weights=weights)
     unistmo_ranking = rank_layout_alternatives(
-        alternatives, profile='unistmo_v1'
+        alternatives, weights=unistmo_weights, profile='unistmo_v1'
     )
     return {
         'analysis_kind': 'farm_layout_mcda_v2',

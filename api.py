@@ -4938,6 +4938,16 @@ def create_app():
                 'lon_max': max(lon_a, lon_b),
             }
         weights = body.get('weights')
+        layout_scenario_weights = body.get('layout_scenario_weights')
+        if layout_scenario_weights is None:
+            layout_scenario_weights = {}
+        elif not isinstance(layout_scenario_weights, dict):
+            return _err('layout_scenario_weights debe ser un objeto con base y unistmo')
+        for scenario_name in ('base', 'unistmo'):
+            scenario_value = layout_scenario_weights.get(scenario_name)
+            if scenario_value is not None and not isinstance(scenario_value, dict):
+                return _err(
+                    f'layout_scenario_weights.{scenario_name} debe ser un objeto')
         mode = body.get('mode') or ('area_turbines' if scope == 'park' else 'pairs')
         year = int(body.get('year', 2018))
         demand_mwh = float(body.get('demand_mwh', 1000))
@@ -5077,7 +5087,9 @@ def create_app():
                             'request' if requested_cost_model
                             else 'irena_onshore_2024_global_weighted_average'),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
-                        weights=body.get('layout_weights'),
+                        weights=(layout_scenario_weights.get('base')
+                                 or body.get('layout_weights')),
+                        unistmo_weights=layout_scenario_weights.get('unistmo'),
                     )
                     ranking = layout_result['ranking']
                     ranking['mode'] = 'layout_alternatives'
