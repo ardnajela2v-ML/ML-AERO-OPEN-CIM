@@ -189,6 +189,22 @@ function projectJsonClone(value) {
   catch (_) { return null; }
 }
 
+function mcdaUsesObsoleteReweightedBase(weights) {
+  if (!weights || typeof weights !== 'object') return false;
+  const obsolete = {
+    cp_at_site_mean: 0.08, cpmax_speed_mismatch_ms: 0.07,
+    hours_near_cpmax: 0.10, van_usd: 0.13, lcoe_usd_kwh: 0.09,
+    capex_usd: 0.04, opex_lifetime_usd: 0.03, aep_p90_mwh: 0.12,
+    wake_loss_pct: 0.07, factor_capacidad: 0.06,
+    iec_suitability_score: 0.06, aep_uncertainty_pct: 0.04,
+    curtailment_loss_pct: 0.02, energy_density_mwh_km2: 0.055,
+    collection_length_m: 0.02, civil_complexity_index: 0.015,
+  };
+  return Object.entries(obsolete).every(([key, value]) =>
+    Math.abs(Number(weights[key]) - value) < 1e-9
+  );
+}
+
 function collectProjectClientState() {
   const controls = {};
   document.querySelectorAll('input[id], select[id], textarea[id]').forEach(el => {
@@ -267,7 +283,10 @@ async function applyProjectClientState(state) {
   if (state.mcda) {
     const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
     Object.assign(MCDA, state.mcda);
-    MCDA.layoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
+    const storedLayoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
+    MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(storedLayoutWeights)
+      ? null
+      : storedLayoutWeights;
     if (MCDA.lastSpatial?.ranking_scenarios) {
       MCDA.lastSpatial.ranking = MCDA.lastSpatial.ranking_scenarios.base
         || MCDA.lastSpatial.ranking;

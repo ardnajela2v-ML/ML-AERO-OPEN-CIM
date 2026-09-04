@@ -30,19 +30,20 @@ import numpy as np
 
 
 DEFAULT_WEIGHTS = {
-    # adaptación turbina-sitio (sum 0.25)
-    'cp_at_site_mean':       0.08,
-    'cpmax_speed_mismatch_ms': 0.07,
-    'hours_near_cpmax':      0.10,
-    # technical/resource (sum 0.26)
-    'factor_capacidad':      0.12,
-    'aep_mwh':               0.10,
-    'directional_concentration': 0.04,
-    # economic (sum 0.49)
-    'van_usd':              0.17,
-    'roi':                  0.08,
-    'lcoe_usd_kwh':         0.14,
-    'capex_usd':            0.10,
+    # Pesos científicos originales. Las nuevas métricas se exponen para
+    # auditoría y análisis de sensibilidad, pero no alteran el ranking base.
+    'cp_max':                0.08,
+    'horas_cerca_nominal':   0.07,
+    'cp_at_site_mean':       0.00,
+    'cpmax_speed_mismatch_ms': 0.00,
+    'hours_near_cpmax':      0.00,
+    'factor_capacidad':      0.15,
+    'aep_mwh':               0.13,
+    'directional_concentration': 0.05,
+    'van_usd':               0.18,
+    'roi':                   0.10,
+    'lcoe_usd_kwh':          0.14,
+    'capex_usd':             0.10,
 }
 
 # Direction: +1 = maximize, -1 = minimize (invert before normalization)
@@ -78,22 +79,23 @@ CRITERION_LABELS = {
 
 
 LAYOUT_WEIGHTS = {
-    'cp_at_site_mean': 0.08,
-    'cpmax_speed_mismatch_ms': 0.07,
-    'hours_near_cpmax': 0.10,
-    'van_usd': 0.13,
-    'lcoe_usd_kwh': 0.09,
-    'capex_usd': 0.04,
-    'opex_lifetime_usd': 0.03,
-    'aep_p90_mwh': 0.12,
-    'wake_loss_pct': 0.07,
-    'factor_capacidad': 0.06,
-    'iec_suitability_score': 0.06,
-    'aep_uncertainty_pct': 0.04,
-    'curtailment_loss_pct': 0.02,
-    'energy_density_mwh_km2': 0.055,
-    'collection_length_m': 0.02,
-    'civil_complexity_index': 0.015,
+    # Adaptación turbina-sitio disponible sin cambiar la base histórica.
+    'cp_at_site_mean': 0.00,
+    'cpmax_speed_mismatch_ms': 0.00,
+    'hours_near_cpmax': 0.00,
+    'van_usd': 0.18,
+    'lcoe_usd_kwh': 0.12,
+    'capex_usd': 0.05,
+    'opex_lifetime_usd': 0.05,
+    'aep_p90_mwh': 0.15,
+    'wake_loss_pct': 0.08,
+    'factor_capacidad': 0.07,
+    'iec_suitability_score': 0.10,
+    'aep_uncertainty_pct': 0.06,
+    'curtailment_loss_pct': 0.04,
+    'energy_density_mwh_km2': 0.04,
+    'collection_length_m': 0.03,
+    'civil_complexity_index': 0.03,
 }
 
 LAYOUT_DIRECTION = {

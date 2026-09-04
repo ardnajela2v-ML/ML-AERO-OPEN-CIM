@@ -94,6 +94,11 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(benchmark['cost_model']['turbine_usd_per_kw'], 780.75)
         self.assertIn('cp_at_site_mean', defaults.get_json()['layout_weights'])
         self.assertIn('hours_near_cpmax', defaults.get_json()['layout_weights'])
+        self.assertEqual(defaults.get_json()['layout_weights']['cp_at_site_mean'], 0.0)
+        self.assertEqual(defaults.get_json()['layout_weights']['hours_near_cpmax'], 0.0)
+        self.assertEqual(defaults.get_json()['layout_weights']['van_usd'], 0.18)
+        self.assertEqual(defaults.get_json()['layout_weights']['aep_p90_mwh'], 0.15)
+        self.assertAlmostEqual(sum(defaults.get_json()['layout_weights'].values()), 1.0)
         self.assertNotIn('layout_scenarios', defaults.get_json())
 
         from core.cost_model import CostModel
