@@ -6979,9 +6979,6 @@ const MCDA = {
   lastSpatial:  null,
   defaults:     null,
   activeScenario: 'base',
-  scenarioWeights: { base: null, unistmo: null },
-  rerankTimer: null,
-  rerankRequestId: 0,
   scope:        'area',
   miniMap:      null,
   miniBase:     null,
@@ -7001,8 +6998,7 @@ async function mcdaBuildWeightSliders() {
   if (!container) return;
   const isLayout = MCDA.scope === 'area';
   const scenario = isLayout ? (d.layout_scenarios?.[MCDA.activeScenario] || d.layout_scenarios?.base) : null;
-  const savedWeights = isLayout ? MCDA.scenarioWeights[MCDA.activeScenario] : null;
-  const weights = isLayout ? (savedWeights || scenario?.weights || d.layout_weights) : d.weights;
+  const weights = isLayout ? (scenario?.weights || d.layout_weights) : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
   container.innerHTML = Object.entries(weights).map(([k, v]) => {
@@ -7014,19 +7010,13 @@ async function mcdaBuildWeightSliders() {
         <label style="flex:1;color:var(--text-secondary)">${label}
           <span style="color:${dir>0?'var(--green)':'var(--orange)'};font-size:.7rem">${hint}</span>
         </label>
-        <input type="range" min="0" max="0.5" step="0.0025" value="${v}"
+        <input type="range" min="0" max="0.5" step="0.01" value="${v}"
           data-crit="${k}" class="mcda-w"
           style="flex:1"
-          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(4)">
-        <span style="font-family:var(--font-mono);width:46px;text-align:right">${Number(v).toFixed(4)}</span>
+          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(2)">
+        <span style="font-family:var(--font-mono);width:34px;text-align:right">${v.toFixed(2)}</span>
       </div>`;
   }).join('');
-  document.querySelectorAll('.mcda-w').forEach(el => {
-    el.addEventListener('input', () => {
-      mcdaStoreActiveWeights();
-      mcdaScheduleRerank();
-    });
-  });
 }
 
 function mcdaGetWeights() {
@@ -7035,18 +7025,6 @@ function mcdaGetWeights() {
     out[el.dataset.crit] = parseFloat(el.value);
   });
   return out;
-}
-
-function mcdaStoreActiveWeights() {
-  if (MCDA.scope === 'area') {
-    MCDA.scenarioWeights[MCDA.activeScenario] = mcdaGetWeights();
-  }
-}
-
-function mcdaScheduleRerank() {
-  if (MCDA.scope !== 'area' || MCDA.lastSpatial?.analysis_kind !== 'farm_layout_mcda_v2') return;
-  clearTimeout(MCDA.rerankTimer);
-  MCDA.rerankTimer = setTimeout(() => mcdaRankNow(), 250);
 }
 
 function mcdaUpdateTurbineCount() {
@@ -7295,7 +7273,7 @@ function mcdaRenderSpatialMarkers(result) {
       fillColor: '#2dd4bf', fillOpacity: 0.95,
     }).bindPopup(
       `<b>Layout TOPSIS ganador</b><br>Aerogenerador ${i + 1}<br>` +
-      `${winner.turbina} · final ${winner.n_aerogeneradores} / Nmax geométrico ${winner.max_n_fisico}`
+      `${winner.turbina} · ${winner.n_aerogeneradores}/${winner.max_n_fisico}`
     ).addTo(KRIG.map);
     KRIG.mcdaMarkers.push(marker);
   });
@@ -7337,13 +7315,13 @@ function mcdaUpdateScopeUi() {
 }
 
 function mcdaSetScope(scope) {
-  mcdaStoreActiveWeights();
   MCDA.scope = scope === 'exploratory' ? 'exploratory' : 'area';
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
   MCDA.lastSpatial = null;
+  MCDA.activeScenario = 'base';
   const scenarioSelect = document.getElementById('mcda-ranking-scenario');
-  if (scenarioSelect) scenarioSelect.value = MCDA.activeScenario;
+  if (scenarioSelect) scenarioSelect.value = 'base';
   mcdaUpdateScopeUi();
   mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
@@ -7362,15 +7340,11 @@ async function mcdaResetWeights() {
     : d.weights;
   document.querySelectorAll('.mcda-w').forEach(el => {
     el.value = defaults[el.dataset.crit];
-    el.nextElementSibling.textContent = (+el.value).toFixed(4);
+    el.nextElementSibling.textContent = (+el.value).toFixed(2);
   });
-  mcdaStoreActiveWeights();
-  mcdaScheduleRerank();
 }
 
 async function mcdaSetRankingScenario(scenario) {
-  mcdaStoreActiveWeights();
-  clearTimeout(MCDA.rerankTimer);
   MCDA.activeScenario = scenario === 'unistmo' ? 'unistmo' : 'base';
   const help = document.getElementById('mcda-scenario-help');
   if (help) help.textContent = MCDA.activeScenario === 'unistmo'
@@ -7384,9 +7358,6 @@ async function mcdaSetRankingScenario(scenario) {
     mcdaRenderRanking(stored);
     mcdaRenderSpatialMarkers(MCDA.lastSpatial);
     mcdaRenderMiniMap(MCDA.lastSpatial);
-  }
-  if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') {
-    await mcdaRankNow();
   }
 }
 
@@ -7415,8 +7386,6 @@ async function mcdaRunAnalysis() {
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
-  const defaults = await mcdaLoadDefaults();
-  mcdaStoreActiveWeights();
   const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
   if (!Number.isFinite(projectYears) || projectYears < 5 ||
       !Number.isFinite(marketInputs.price_usd_kwh)) {
@@ -7478,15 +7447,9 @@ async function mcdaRunAnalysis() {
     body.data_source = WP.activeDataSource;
   }
   if (areaMode) {
-    const baseWeights = MCDA.scenarioWeights.base
-      || defaults.layout_scenarios?.base?.weights || defaults.layout_weights;
-    const unistmoWeights = MCDA.scenarioWeights.unistmo
-      || defaults.layout_scenarios?.unistmo?.weights;
-    body.layout_weights = baseWeights;
-    body.layout_scenario_weights = {
-      base: baseWeights,
-      unistmo: unistmoWeights,
-    };
+    body.layout_weights = MCDA.activeScenario === 'base'
+      ? body.weights
+      : (MCDA.defaults?.layout_weights || body.weights);
     delete body.weights;
   }
   if (areaMode) body.polygon = parkPolygon;
@@ -7555,22 +7518,17 @@ async function mcdaPollStatus() {
 
 async function mcdaRankNow() {
   if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') {
-    const scenario = MCDA.activeScenario;
-    const weights = mcdaGetWeights();
-    MCDA.scenarioWeights[scenario] = weights;
-    const requestId = ++MCDA.rerankRequestId;
     try {
       const r = await api('/api/multicriteria/rank', 'POST', {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
-        weights,
-        profile: scenario === 'unistmo' ? 'unistmo_v1' : 'balanced_integral_v1',
+        weights: mcdaGetWeights(),
+        profile: MCDA.activeScenario === 'unistmo' ? 'unistmo_v1' : 'balanced_integral_v1',
       });
-      if (requestId !== MCDA.rerankRequestId || scenario !== MCDA.activeScenario) return;
       MCDA.lastRanking = r;
       MCDA.lastSpatial.ranking = r;
       MCDA.lastSpatial.ranking_scenarios = MCDA.lastSpatial.ranking_scenarios || {};
-      MCDA.lastSpatial.ranking_scenarios[scenario] = r;
+      MCDA.lastSpatial.ranking_scenarios[MCDA.activeScenario] = r;
       mcdaRenderRanking(r);
       mcdaRenderSpatialMarkers(MCDA.lastSpatial);
       mcdaRenderMiniMap(MCDA.lastSpatial);
@@ -7641,21 +7599,12 @@ function mcdaLayoutAuditHtml(a) {
   const losses = a.loss_assumptions || {};
   const wakeValidity = a.wake_model_validity || {};
   const layout = a.layout_config || {};
-  const capacity = a.capacity_config || {};
   const installedKw = Number(spec.rated_power_kw || 0) * Number(a.n_aerogeneradores || 0);
   const basePerKw = installedKw > 0 ? Number(a.base_capex_usd || 0) / installedKw : null;
   const cards = [
     mcdaAuditCard('Capacidad y geometría', [
       ['Modelo', mcdaAuditEscape(a.turbina)],
-      ['Nmax geométrico factible', `<b>${mcdaAuditNumber(a.max_n_fisico, 0)}</b>`],
-      ['Máximo después de red', `<b>${mcdaAuditNumber(a.max_n_post_red ?? a.max_n_tecnico, 0)}</b>`],
-      ['Cantidad final por estelas', `<b>${mcdaAuditNumber(a.n_aerogeneradores, 0)}</b>`],
-      ['Método de capacidad', mcdaAuditEscape(
-        (a.capacity_method || capacity.method) === 'inherited_larger_rotor_layout'
-          ? 'Layout factible heredado de un rotor mayor'
-          : 'Búsqueda geométrica propia'
-      )],
-      ['Rotor origen del layout testigo', `${mcdaAuditNumber(a.capacity_source_rotor_m ?? capacity.source_rotor_m, 1)} m`],
+      ['Cantidad final / Nmax', `<b>${mcdaAuditNumber(a.n_aerogeneradores, 0)} / ${mcdaAuditNumber(a.max_n_fisico, 0)}</b>`],
       ['Potencia unitaria', `${mcdaAuditNumber(spec.rated_power_kw, 0)} kW`],
       ['Potencia instalada', `${mcdaAuditNumber(installedKw / 1000, 3)} MW`],
       ['Diámetro / buje', `${mcdaAuditNumber(spec.rotor_diameter_m, 1)} / ${mcdaAuditNumber(spec.hub_height_m, 1)} m`],
@@ -7721,23 +7670,8 @@ function mcdaLayoutAuditHtml(a) {
     <td>${mcdaAuditMoney(row.decommissioning_usd)}</td><td>${mcdaAuditMoney(row.net_cashflow_usd)}</td>
     <td>${mcdaAuditMoney(row.pv_net_cashflow_usd)}</td><td>${mcdaAuditMoney(row.cumulative_undiscounted_usd)}</td>
   </tr>`).join('');
-  const criterionLabels = MCDA.lastRanking?.labels || {};
-  const criterionRows = Object.entries(a.criterion_audit || {})
-    .sort((left, right) => Number(right[1].positive_separation_pct || 0) - Number(left[1].positive_separation_pct || 0))
-    .map(([key, item]) => `<tr>
-      <td>${mcdaAuditEscape(criterionLabels[key] || key)}</td>
-      <td>${item.direction === 'minimize' ? '↓ minimizar' : '↑ maximizar'}</td>
-      <td>${mcdaAuditNumber(item.raw_value, 4)}</td>
-      <td>${mcdaAuditNumber(Number(item.effective_weight) * 100, 2)}%</td>
-      <td>${mcdaAuditNumber(item.weighted_gap_to_ideal, 6)}</td>
-      <td><b>${mcdaAuditNumber(item.positive_separation_pct, 2)}%</b></td>
-    </tr>`).join('');
   return `<div style="padding:.8rem;background:var(--bg-secondary)">
     <div style="display:flex;gap:.65rem;flex-wrap:wrap">${cards}</div>
-    <details style="margin-top:.7rem" open><summary style="cursor:pointer;font-weight:600">Trazabilidad TOPSIS por criterio</summary>
-      <p class="text-muted" style="font-size:.7rem;margin:.35rem 0">La separación positiva muestra qué proporción de la distancia ponderada respecto a la peor solución aporta cada criterio. Los valores originales no se alteran.</p>
-      <div style="overflow:auto"><table class="tbl"><thead><tr><th>Criterio</th><th>Sentido</th><th>Valor real</th><th>Peso efectivo</th><th>Brecha al ideal</th><th>Separación positiva</th></tr></thead><tbody>${criterionRows || '<tr><td colspan="6">Sin desglose disponible.</td></tr>'}</tbody></table></div>
-    </details>
     <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Pruebas de cantidad y estela</summary>
       <table class="tbl"><thead><tr><th>Turbinas</th><th>Pérdida estela</th></tr></thead><tbody>${wakeRows}</tbody></table>
     </details>
@@ -7757,33 +7691,11 @@ function mcdaToggleAudit(id) {
 
 function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
-  const summaryEl = document.getElementById('mcda-ranking-audit-summary');
   const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
   const top = ranking.slice(0, 100);
   if (!top.length) {
     body.innerHTML = '<tr><td colspan="10" class="text-muted">Sin resultados.</td></tr>';
-    if (summaryEl) summaryEl.style.display = 'none';
     return;
-  }
-  if (summaryEl) {
-    const summary = r.winner_summary || {};
-    const scenario = r.profile === 'unistmo_v1' ? 'Escenario UNISTMO' : 'Escenario base científico';
-    const margin = Number(summary.score_margin);
-    const frequency = Number(summary.winner_frequency);
-    const stable = summary.robust_to_weight_perturbation === true;
-    const topCriteria = Object.entries(top[0].criterion_audit || {})
-      .sort((left, right) => Number(right[1].positive_separation_pct || 0) - Number(left[1].positive_separation_pct || 0))
-      .slice(0, 3)
-      .map(([key, item]) => `${mcdaAuditEscape((r.labels || {})[key] || key)} (${mcdaAuditNumber(item.positive_separation_pct, 1)}%)`)
-      .join(', ');
-    summaryEl.style.display = '';
-    summaryEl.className = `info-box ${stable ? 'green' : 'yellow'}`;
-    const comparison = summary.runner_up
-      ? `${mcdaAuditEscape(summary.winner || top[0].turbina || '')} supera a ${mcdaAuditEscape(summary.runner_up)} por <b>${Number.isFinite(margin) ? margin.toFixed(4) : '—'}</b> puntos TOPSIS.`
-      : `${mcdaAuditEscape(summary.winner || top[0].turbina || '')} es la única alternativa evaluada.`;
-    summaryEl.innerHTML = `<b>${mcdaAuditEscape(scenario)}:</b> ${comparison} ` +
-      `Estabilidad ±${mcdaAuditNumber(summary.sensitivity_variation_pct, 0)}% en cada peso: <b>${Number.isFinite(frequency) ? (frequency * 100).toFixed(1) + '%' : '—'}</b> de escenarios ganados; ${stable ? 'ganador estable' : 'resultado sensible a los pesos'}.` +
-      (topCriteria ? `<br><span class="text-muted">Principales separaciones positivas: ${topCriteria}.</span>` : '');
   }
   body.innerHTML = top.map((a, index) => {
     const medal = a.rank === 1 ? '🥇' : a.rank === 2 ? '🥈' : a.rank === 3 ? '🥉' : a.rank;
@@ -7792,7 +7704,7 @@ function mcdaRenderRanking(r) {
       ? `${a.site || ''}<br><span class="text-muted" style="font-size:.72rem">Mejor sitio: ${a.best_site}</span>`
       : `${(a.site||'').slice(0,30)}${(a.site||'').length>30?'…':''}`;
     const layoutInfo = a.n_aerogeneradores != null
-      ? `<br><span class="text-muted" style="font-size:.72rem"><b>Nmax geométrico ${a.max_n_fisico}</b> · tras red ${a.max_n_post_red ?? a.max_n_tecnico} · <b>final por estela ${a.n_aerogeneradores}</b> · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}%/${Number(a.max_wake_loss_pct ?? 5).toFixed(1)}% máx. · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
+      ? `<br><span class="text-muted" style="font-size:.72rem"><b>${a.n_aerogeneradores}/${a.max_n_fisico}</b> aeros (final/Nmax físico) · estela ${Number(a.wake_loss_pct || 0).toFixed(1)}%/${Number(a.max_wake_loss_pct ?? 5).toFixed(1)}% máx. · P90 ${Math.round(a.aep_p90_mwh || 0).toLocaleString()} MWh` +
         `${a.rank_sensitivity_min != null ? ` · rango sensible #${a.rank_sensitivity_min}–${a.rank_sensitivity_max}` : ''}</span>` +
         `<br><button class="btn-secondary" type="button" style="font-size:.68rem;padding:.2rem .45rem;margin-top:.3rem" onclick="mcdaToggleAudit('mcda-audit-${index}')">Ver todos los resultados y fórmulas</button>`
       : '';
@@ -11472,14 +11384,6 @@ function quickDesignGenerateReport() {
   const te    = QD.results.techno  || WP.technoResult  || {};
   const stats = WP.windStats        || {};
   const turb  = opt.turbine         || te.turbine       || {};
-  const topsisRanking = (typeof MCDA !== 'undefined' && MCDA.lastRanking) ? MCDA.lastRanking : {};
-  const topsisSummary = topsisRanking.winner_summary || {};
-  const topsisWinner = (topsisRanking.ranking || [])[0] || {};
-  const topsisTopCriteria = Object.entries(topsisWinner.criterion_audit || {})
-    .sort((left, right) => Number(right[1].positive_separation_pct || 0) - Number(left[1].positive_separation_pct || 0))
-    .slice(0, 3)
-    .map(([key, item]) => `${(topsisRanking.labels || {})[key] || key} (${Number(item.positive_separation_pct || 0).toFixed(1)}%)`)
-    .join(', ') || '—';
 
   const now       = new Date();
   const dateStr   = now.toLocaleDateString('es-MX', { year:'numeric', month:'long', day:'numeric' });
@@ -11622,18 +11526,7 @@ function quickDesignGenerateReport() {
     </div>
   </div>
 
-  ${section('5. Trazabilidad de la selección TOPSIS', table(
-    row('Escenario', topsisRanking.profile === 'unistmo_v1' ? 'Escenario UNISTMO' : 'Escenario base científico') +
-    row('Ganador', topsisSummary.winner || topsisWinner.turbina || '—') +
-    row('Segundo lugar', topsisSummary.runner_up || '—') +
-    row('Score ganador', topsisSummary.winner_score == null ? '—' : Number(topsisSummary.winner_score).toFixed(4)) +
-    row('Margen TOPSIS', topsisSummary.score_margin == null ? '—' : Number(topsisSummary.score_margin).toFixed(4)) +
-    row('Frecuencia ganador (pesos ±10%)', topsisSummary.winner_frequency == null ? '—' : (Number(topsisSummary.winner_frequency) * 100).toFixed(1) + '%') +
-    row('Principales separaciones positivas', topsisTopCriteria) +
-    row('Robustez local', !topsisSummary.winner ? 'No disponible' : (topsisSummary.robust_to_weight_perturbation ? 'Ganador estable' : 'Resultado sensible; revisar pesos'))
-  ))}
-
-  ${section('6. Impacto ambiental', `
+  ${section('5. Impacto ambiental', `
     ${table(
       row('CO₂ evitado (factor red México 0.454 tCO₂/MWh)', co2Avoided, 'ktCO₂/año') +
       row('Equivalente en árboles plantados', treesEq, 'árboles/año') +
@@ -11642,7 +11535,7 @@ function quickDesignGenerateReport() {
     )}
   `)}
 
-  ${section('7. Conclusión', `
+  ${section('6. Conclusión', `
     <div style="font-size:.88rem;line-height:1.8;color:#d1d5db">
       El proyecto presenta un factor de capacidad de <strong>${cf}</strong> y una generación anual de
       <strong>${aepGWh} GWh</strong> con <strong>${nTurb} aerogeneradores ${turbName}</strong>.

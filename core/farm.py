@@ -178,9 +178,8 @@ def _gaussian_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
             -0.5 * np.square(np.abs(dy) / max(sigma_boundary_m, 1e-9)))
         material = near & (boundary_tail > 1e-4)
         if np.any(material):
-            invalid_location = np.argwhere(material)[0]
-            target, source = invalid_location[-2:]
-            invalid_x_over_d = float(x_over_d[tuple(invalid_location)])
+            target, source = np.argwhere(material)[0]
+            invalid_x_over_d = float(x_over_d[target, source])
             raise WakeModelDomainError(
                 'Bastankhah-Porté-Agel fuera de dominio en la estela cercana: '
                 f'x/D={invalid_x_over_d:.3f}, requiere x/D>={min_x_over_d:.3f} '
@@ -1000,76 +999,38 @@ def _score_layout_fast(
     """
     if not layout_xy:
         return 0.0
-    arr = np.asarray(layout_xy, dtype=float)
-    directions = np.asarray(sector_dirs, dtype=float)
-    weights = np.asarray(sector_weights, dtype=float)
-    active = weights > 0.0
-    directions = directions[active]
-    weights = weights[active]
-    if not len(directions):
-        return 0.0
-
-    # Evaluate every wind-rose direction in one batch. The last two dimensions
-    # retain the same target/source matrix used by effective_wind_per_turbine;
-    # the leading dimension contains independent sectors.
-    theta = np.deg2rad(90.0 + directions)
-    cos_theta = np.cos(theta)[:, None]
-    sin_theta = np.sin(theta)[:, None]
-    x = arr[:, 0][None, :]
-    y = arr[:, 1][None, :]
-    rotated_x = x * cos_theta - y * sin_theta
-    rotated_y = x * sin_theta + y * cos_theta
-    dx = rotated_x[:, :, None] - rotated_x[:, None, :]
-    dy = rotated_y[:, :, None] - rotated_y[:, None, :]
-    deficits = (
-        _gaussian_deficit_matrix(dx, dy, D, k_wake, ct)
-        if wake_model == 'gaussian'
-        else _jensen_deficit_matrix(dx, dy, D, k_wake, ct)
-    )
-    combined = np.sqrt(np.sum(np.square(deficits), axis=2))
-    v_eff = float(v_mean) * (1.0 - combined)
-    sector_power_kw = np.sum(
-        turbine.power_kw_density_corrected(v_eff, rho), axis=1)
-    # Preserve the previous left-to-right accumulation order.
-    return sum(float(power) * float(weight)
-               for power, weight in zip(sector_power_kw, weights))
+    arr = np.array(layout_xy, dtype=float)
+    score = 0.0
+    for s_dir, s_w in zip(sector_dirs.tolist(), sector_weights.tolist()):
+        if s_w <= 0.0:
+            continue
+        v_eff = effective_wind_per_turbine(arr, v_mean, float(s_dir), D,
+                                           k=k_wake, ct=ct,
+                                           wake_model=wake_model)
+        p_kw  = turbine.power_kw_density_corrected(v_eff, rho)
+        score += float(np.sum(p_kw)) * s_w
+    return score
 
 
 def _select_spread_candidates(candidates: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
     """Choose an exact-count, spatially spread subset; wind speed breaks ties."""
     if n <= 0 or len(candidates) <= n:
         return list(candidates)
-    # Keep the original greedy farthest-point rule, but retain each candidate's
-    # minimum distance to the selected set and update it only for the newly
-    # chosen point. This changes the hot loop from repeated Python O(C*N²)
-    # distance scans to O(C*N) vector operations without changing its result.
-    coords = np.asarray([[c['x'], c['y']] for c in candidates], dtype=float)
-    wind = np.asarray([c['v'] for c in candidates], dtype=float)
-    available = np.ones(len(candidates), dtype=bool)
-
-    # np.argmax, like max(list, key=...), keeps the first item on an exact tie.
-    first = int(np.argmax(wind))
-    selected_indices = [first]
-    available[first] = False
-    delta = coords - coords[first]
-    min_dist_sq = np.einsum('ij,ij->i', delta, delta)
-
-    while len(selected_indices) < n:
-        remaining_indices = np.flatnonzero(available)
-        remaining_distances = min_dist_sq[remaining_indices]
-        best_distance = np.max(remaining_distances)
-        distance_ties = remaining_indices[remaining_distances == best_distance]
-        tied_wind = wind[distance_ties]
-        best_wind = np.max(tied_wind)
-        # Candidate order is the final tie-breaker, matching Python's max().
-        chosen = int(distance_ties[np.flatnonzero(tied_wind == best_wind)[0]])
-        selected_indices.append(chosen)
-        available[chosen] = False
-        delta = coords - coords[chosen]
-        distance_to_chosen = np.einsum('ij,ij->i', delta, delta)
-        np.minimum(min_dist_sq, distance_to_chosen, out=min_dist_sq)
-
-    return [candidates[idx] for idx in selected_indices]
+    remaining = list(candidates)
+    selected = [max(remaining, key=lambda c: c['v'])]
+    remaining.remove(selected[0])
+    while remaining and len(selected) < n:
+        def merit(candidate):
+            min_dist_sq = min(
+                (candidate['x'] - placed['x']) ** 2
+                + (candidate['y'] - placed['y']) ** 2
+                for placed in selected
+            )
+            return min_dist_sq, candidate['v']
+        chosen = max(remaining, key=merit)
+        selected.append(chosen)
+        remaining.remove(chosen)
+    return selected
 
 
 # ── Structured layout optimisation ───────────────────────────────────────────
@@ -1095,8 +1056,6 @@ def optimize_layout_structured(
         wake_model: str = 'jensen',
         orientation_step_deg: float = 15.0,
         grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
-        _search_cache: Optional[Dict[str, Any]] = None,
-        _capacity_witness: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1109,7 +1068,7 @@ def optimize_layout_structured(
                   direction so each downwind turbine sits between two
                   upwind neighbours, avoiding direct wake exposure.
 
-      orientation — geometric rotations over 0–180° independent of wind
+      orientation — geometric rotations over 0–180° plus the dominant wind
       grid phase  — fractional translations along both grid axes
 
     Nmax is found first with the minimum permitted row/column spacing across
@@ -1192,9 +1151,7 @@ def optimize_layout_structured(
     step = float(orientation_step_deg)
     if not math.isfinite(step) or step <= 0.0 or step > 90.0:
         step = 15.0
-    # Capacity is purely geometric. Do not add a turbine-specific dominant-wind
-    # angle here: equal rotor diameters must search the exact same geometry.
-    raw_orientations = list(np.arange(0.0, 180.0, step))
+    raw_orientations = list(np.arange(0.0, 180.0, step)) + [dom_dir % 180.0]
     orientations: List[float] = []
     for angle in raw_orientations:
         normalized = round(float(angle) % 180.0, 6)
@@ -1210,68 +1167,30 @@ def optimize_layout_structured(
     min_perp_d = min(valid_perp_values)
     setback_m = max(0.0, float(boundary_setback_m))
     capacity_seeds: List[Dict[str, Any]] = []
-    if _search_cache is not None:
-        capacity_seeds = _search_cache.get('capacity_seeds') or []
-    if not capacity_seeds:
-        for orientation_deg in orientations:
-            for along_offset in offset_values:
-                for cross_offset in offset_values:
-                    for stagger in stagger_values:
-                        min_diag_d = (math.hypot(stagger * min_perp_d, min_para_d)
-                                      if stagger > 0 else min_para_d)
-                        if min(min_perp_d, min_diag_d) < min_spacing_d:
-                            continue
-                        cands = _build_structured_grid(
-                            poly_xs, poly_ys, lat0, lon0, D,
-                            orientation_deg, min_para_d, min_perp_d, stagger,
-                            wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                            along_offset, cross_offset,
-                        )
-                        if cands:
-                            capacity_seeds.append({
-                                'orientation_deg': orientation_deg,
-                                'along_offset_fraction': along_offset,
-                                'cross_offset_fraction': cross_offset,
-                                'stagger': stagger,
-                                'n_fit': len(cands),
-                                '_candidates': cands,
-                            })
-        if _search_cache is not None:
-            _search_cache['capacity_seeds'] = capacity_seeds
 
-    # A layout feasible for a larger rotor is a constructive feasibility proof
-    # for this smaller rotor. Keep its exact coordinates as an additional seed;
-    # this guarantees monotonic geometric capacity without inventing positions.
-    witness_candidates = []
-    if _capacity_witness:
-        witness_xy = _capacity_witness.get('layout_xy_m') or []
-        witness_latlon = _capacity_witness.get('layout_latlon') or []
-        witness_wind = _capacity_witness.get('wind_at_turbines') or []
-        if len(witness_xy) == len(witness_latlon) and witness_xy:
-            for idx, (xy, latlon) in enumerate(zip(witness_xy, witness_latlon)):
-                witness_candidates.append({
-                    'x': float(xy[0]), 'y': float(xy[1]),
-                    'lat': float(latlon[0]), 'lon': float(latlon[1]),
-                    'v': (float(witness_wind[idx]) if idx < len(witness_wind)
-                          else v_mean),
-                    'row': idx,
-                })
-            witness_source_d = float(
-                _capacity_witness.get('source_rotor_m') or D)
-            if witness_source_d + 1e-9 >= D:
-                witness_cfg = _capacity_witness.get('capacity_config') or {}
-                capacity_seeds.append({
-                    'orientation_deg': float(witness_cfg.get('orientation_deg') or 0.0),
-                    'along_offset_fraction': float(
-                        witness_cfg.get('along_offset_fraction') or 0.0),
-                    'cross_offset_fraction': float(
-                        witness_cfg.get('cross_offset_fraction') or 0.0),
-                    'stagger': float(witness_cfg.get('stagger') or 0.0),
-                    'n_fit': len(witness_candidates),
-                    '_candidates': witness_candidates,
-                    '_direct_witness': True,
-                    '_source_rotor_m': witness_source_d,
-                })
+    for orientation_deg in orientations:
+        for along_offset in offset_values:
+            for cross_offset in offset_values:
+                for stagger in stagger_values:
+                    min_diag_d = (math.hypot(stagger * min_perp_d, min_para_d)
+                                  if stagger > 0 else min_para_d)
+                    if min(min_perp_d, min_diag_d) < min_spacing_d:
+                        continue
+                    cands = _build_structured_grid(
+                        poly_xs, poly_ys, lat0, lon0, D,
+                        orientation_deg, min_para_d, min_perp_d, stagger,
+                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                        along_offset, cross_offset,
+                    )
+                    if cands:
+                        capacity_seeds.append({
+                            'orientation_deg': orientation_deg,
+                            'along_offset_fraction': along_offset,
+                            'cross_offset_fraction': cross_offset,
+                            'stagger': stagger,
+                            'n_fit': len(cands),
+                            '_candidates': cands,
+                        })
 
     if not capacity_seeds:
         raise ValueError(
@@ -1295,31 +1214,8 @@ def optimize_layout_structured(
     # Bound runtime while retaining the densest phases and wind-aligned ones.
     viable_seeds = viable_seeds[:48]
     all_configs: List[Dict[str, Any]] = []
-    grid_cache = (_search_cache.setdefault('configuration_grids', {})
-                  if _search_cache is not None else {})
 
     for seed in viable_seeds:
-        if seed.get('_direct_witness'):
-            sel = _select_spread_candidates(seed['_candidates'], target_n)
-            layout_xy = [[c['x'], c['y']] for c in sel]
-            score = _score_layout_fast(
-                layout_xy, D, sector_dirs, sector_weights,
-                turbine, k_wake, ct, v_mean, rho_val,
-                wake_model=wake_model,
-            )
-            all_configs.append({
-                's_para_d': None, 's_perp_d': None,
-                'stagger': seed['stagger'],
-                'orientation_deg': seed['orientation_deg'],
-                'along_offset_fraction': seed['along_offset_fraction'],
-                'cross_offset_fraction': seed['cross_offset_fraction'],
-                'n_fit': seed['n_fit'], 'n_used': len(sel),
-                'score_kw': round(score, 1),
-                'capacity_source': 'inherited_larger_rotor_layout',
-                'capacity_source_rotor_m': seed['_source_rotor_m'],
-                '_layout_xy': layout_xy, '_candidates': sel,
-            })
-            continue
         for s_para_d in para_values:
             for s_perp_d in perp_values:
                 stagger = seed['stagger']
@@ -1327,21 +1223,12 @@ def optimize_layout_structured(
                               if stagger > 0 else s_para_d)
                 if min(s_perp_d, min_diag_d) < min_spacing_d:
                     continue
-                grid_key = (
-                    seed['orientation_deg'], seed['along_offset_fraction'],
-                    seed['cross_offset_fraction'], stagger,
-                    float(s_para_d), float(s_perp_d),
+                cands = _build_structured_grid(
+                    poly_xs, poly_ys, lat0, lon0, D,
+                    seed['orientation_deg'], s_para_d, s_perp_d, stagger,
+                    wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                    seed['along_offset_fraction'], seed['cross_offset_fraction'],
                 )
-                cands = grid_cache.get(grid_key)
-                if cands is None:
-                    cands = _build_structured_grid(
-                        poly_xs, poly_ys, lat0, lon0, D,
-                        seed['orientation_deg'], s_para_d, s_perp_d, stagger,
-                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                        seed['along_offset_fraction'], seed['cross_offset_fraction'],
-                    )
-                    if _search_cache is not None:
-                        grid_cache[grid_key] = cands
                 if len(cands) < target_n:
                     continue
                 # When evaluating fewer turbines than available grid points,
@@ -1365,8 +1252,6 @@ def optimize_layout_structured(
                     'n_fit': len(cands),
                     'n_used': len(sel),
                     'score_kw': round(score, 1),
-                    'capacity_source': 'own_geometric_grid_search',
-                    'capacity_source_rotor_m': D,
                     '_layout_xy': layout_xy,
                     '_candidates': sel,
                 })
@@ -1419,17 +1304,13 @@ def optimize_layout_structured(
             'n_configs_tried':  len(all_configs),
         },
         'capacity_config': {
-            's_para_d': (None if capacity_seed.get('_direct_witness') else min_para_d),
-            's_perp_d': (None if capacity_seed.get('_direct_witness') else min_perp_d),
+            's_para_d': min_para_d,
+            's_perp_d': min_perp_d,
             'stagger': capacity_seed['stagger'],
             'orientation_deg': capacity_seed['orientation_deg'],
             'along_offset_fraction': capacity_seed['along_offset_fraction'],
             'cross_offset_fraction': capacity_seed['cross_offset_fraction'],
             'n_fit': max_n_fit,
-            'method': ('inherited_larger_rotor_layout'
-                       if capacity_seed.get('_direct_witness')
-                       else 'own_geometric_grid_search'),
-            'source_rotor_m': float(capacity_seed.get('_source_rotor_m') or D),
         },
         'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
         'exclusion_count': len(exclusion_polys_xy),

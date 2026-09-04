@@ -8,9 +8,7 @@ from core.cost_model import CostModel, get_design_cost_benchmark
 from core.farm import (
     WakeModelDomainError,
     _build_structured_grid,
-    _select_spread_candidates,
     _rotate_to_wind_axis,
-    _score_layout_fast,
     effective_wind_per_turbine,
     gaussian_deficit,
     gaussian_min_valid_distance_d,
@@ -130,83 +128,6 @@ class FarmScientificModelTests(unittest.TestCase):
         )
         np.testing.assert_allclose(result, [8.0, 8.0])
 
-    def test_vectorized_spread_selection_matches_scalar_reference(self):
-        rng = np.random.default_rng(20260904)
-        candidates = [
-            {'x': float(x), 'y': float(y), 'v': float(v), 'id': idx}
-            for idx, (x, y, v) in enumerate(rng.normal(size=(120, 3)))
-        ]
-
-        def scalar_reference(rows, count):
-            if count <= 0 or len(rows) <= count:
-                return list(rows)
-            remaining = list(rows)
-            selected = [max(remaining, key=lambda c: c['v'])]
-            remaining.remove(selected[0])
-            while remaining and len(selected) < count:
-                chosen = max(remaining, key=lambda candidate: (
-                    min((candidate['x'] - placed['x']) ** 2
-                        + (candidate['y'] - placed['y']) ** 2
-                        for placed in selected),
-                    candidate['v'],
-                ))
-                selected.append(chosen)
-                remaining.remove(chosen)
-            return selected
-
-        for count in (1, 2, 7, 31, 119, 120, 150):
-            expected = scalar_reference(candidates, count)
-            actual = _select_spread_candidates(candidates, count)
-            self.assertEqual([row['id'] for row in actual],
-                             [row['id'] for row in expected])
-
-    def test_vectorized_spread_selection_preserves_tie_order(self):
-        candidates = [
-            {'x': 0.0, 'y': 0.0, 'v': 10.0, 'id': 'first'},
-            {'x': 1.0, 'y': 0.0, 'v': 8.0, 'id': 'left'},
-            {'x': -1.0, 'y': 0.0, 'v': 8.0, 'id': 'right'},
-        ]
-        selected = _select_spread_candidates(candidates, 2)
-        self.assertEqual([row['id'] for row in selected], ['first', 'left'])
-
-    def test_batched_layout_score_matches_sector_loop(self):
-        layout = [[0.0, 0.0], [500.0, 0.0], [0.0, 500.0], [500.0, 500.0]]
-        directions = np.arange(11.25, 360.0, 22.5)
-        weights = np.arange(1.0, 17.0)
-        weights /= weights.sum()
-        expected = 0.0
-        for direction, weight in zip(directions, weights):
-            v_eff = effective_wind_per_turbine(
-                np.asarray(layout), 8.5, direction,
-                self.turbine.rotor_diameter_m,
-                k=0.04, ct=0.8, wake_model='gaussian')
-            expected += float(np.sum(
-                self.turbine.power_kw_density_corrected(v_eff, 1.18)
-            )) * float(weight)
-        actual = _score_layout_fast(
-            layout, self.turbine.rotor_diameter_m, directions, weights,
-            self.turbine, 0.04, 0.8, 8.5, 1.18,
-            wake_model='gaussian')
-        self.assertAlmostEqual(actual, expected, places=10)
-
-    def test_layout_search_cache_preserves_exact_result(self):
-        kwargs = dict(
-            ws=np.full(200, 8.0), wd=np.full(200, 270.0),
-            s_para_range=(5, 7), s_perp_range=(3, 4),
-            grid_offset_fractions=(0.0, 0.5),
-            wake_model='gaussian', k_wake=0.04,
-        )
-        uncached = optimize_layout_structured(
-            self.polygon, self.turbine, 4, **kwargs)
-        cache = {}
-        optimize_layout_structured(
-            self.polygon, self.turbine, 0, _search_cache=cache, **kwargs)
-        cached = optimize_layout_structured(
-            self.polygon, self.turbine, 4, _search_cache=cache, **kwargs)
-        self.assertEqual(cached, uncached)
-        self.assertTrue(cache['capacity_seeds'])
-        self.assertTrue(cache['configuration_grids'])
-
     def test_layout_respects_exclusion_and_rotor_setback(self):
         exclusion = [[
             {'lat': 16.503, 'lon': -94.997}, {'lat': 16.503, 'lon': -94.993},
@@ -253,25 +174,6 @@ class FarmScientificModelTests(unittest.TestCase):
         self.assertEqual(result['n_placed'], result['max_n_fit'])
         self.assertGreater(result['layout_config']['n_configs_tried'], 0)
         self.assertIn('orientation_deg', result['capacity_config'])
-
-    def test_equal_rotors_have_equal_wind_independent_geometric_capacity(self):
-        gamesa = PowerCurve.from_file('aerogeneradores/gamesa20_p2000_r40.csv')
-        vestas = PowerCurve.from_file('aerogeneradores/vestas20_p2000_r40.csv')
-        self.assertEqual(gamesa.rotor_diameter_m, vestas.rotor_diameter_m)
-        kwargs = dict(
-            ws=np.linspace(4.0, 14.0, 240),
-            wd=np.concatenate([np.full(180, 15.0), np.full(60, 255.0)]),
-            min_spacing_d=3, s_para_range=(3,), s_perp_range=(3,),
-            orientation_step_deg=30, grid_offset_fractions=(0.0, 0.5),
-            wake_model='jensen',
-        )
-        gamesa_result = optimize_layout_structured(
-            self.polygon, gamesa, 0, **kwargs)
-        vestas_result = optimize_layout_structured(
-            self.polygon, vestas, 0, **kwargs)
-        self.assertEqual(gamesa_result['max_n_fit'], vestas_result['max_n_fit'])
-        self.assertEqual(gamesa_result['capacity_config'],
-                         vestas_result['capacity_config'])
 
     def test_technoeconomic_uses_user_project_life_and_price(self):
         result = TechnoEconomicAnalyzer().analyze(
@@ -326,22 +228,6 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['excluded'][0]['label'], 'missing')
         self.assertGreater(result['sensitivity_scenarios'], 1)
         self.assertIn('rank_sensitivity_min', result['ranking'][0])
-        self.assertIn('criterion_audit', result['ranking'][0])
-        self.assertEqual(set(result['ranking'][0]['criterion_audit']),
-                         set(result['criteria']))
-        self.assertAlmostEqual(
-            sum(item['positive_separation_pct']
-                for item in result['ranking'][0]['criterion_audit'].values()),
-            100.0,
-        )
-        summary = result['winner_summary']
-        self.assertEqual(summary['winner'], result['ranking'][0]['label'])
-        self.assertEqual(summary['runner_up'], result['ranking'][1]['label'])
-        self.assertAlmostEqual(
-            summary['score_margin'],
-            result['ranking'][0]['topsis_score'] - result['ranking'][1]['topsis_score'],
-        )
-        self.assertEqual(summary['sensitivity_variation_pct'], 10.0)
 
     def test_layout_topsis_rejects_partial_capacity_and_duplicate_models(self):
         full = self.alternative('full', 2.0)
@@ -411,8 +297,6 @@ class LayoutTopsisTests(unittest.TestCase):
             'sectorial': {'frequency_pct': [2, 2, 3, 4, 6, 8, 12, 18,
                                               16, 10, 6, 4, 3, 2, 2, 2]},
         }]
-        custom_unistmo = {key: 0.0 for key in UNISTMO_LAYOUT_WEIGHTS}
-        custom_unistmo['van_usd'] = 1.0
         result = analyze_park_layouts(
             sites, [
                 {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
@@ -425,24 +309,7 @@ class LayoutTopsisTests(unittest.TestCase):
             demand_mwh=0, commercialization_mode='total_sale',
             s_para_range=(5, 7), s_perp_range=(3, 4),
             project_years=20, price_usd_kwh=0.083,
-            unistmo_weights=custom_unistmo,
         )
-        serial_result = analyze_park_layouts(
-            sites, [
-                {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
-                {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
-            ], 'aerogeneradores', [
-                'gamesa21_p2000_r45.csv',
-                'acciona16_p1500_r38.5.csv',
-                'gamesa21_p2000_r45.csv',
-            ],
-            demand_mwh=0, commercialization_mode='total_sale',
-            s_para_range=(5, 7), s_perp_range=(3, 4),
-            project_years=20, price_usd_kwh=0.083,
-            unistmo_weights=custom_unistmo,
-            _parallel_models=False,
-        )
-        self.assertEqual(result, serial_result)
         self.assertEqual(result['n_layout_alternatives'], 2)
         self.assertEqual(result['n_requested_models'], 2)
         self.assertEqual(result['n_valid_models'], 2)
@@ -450,8 +317,7 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(len({row['turbina'] for row in result['alternatives']}), 2)
         self.assertTrue(all(
             row['n_aerogeneradores'] == row['n_optimo_estela']
-            and row['n_aerogeneradores'] <= row['max_n_post_red']
-            and row['max_n_post_red'] <= row['max_n_fisico']
+            and row['n_aerogeneradores'] <= row['max_n_fisico']
             for row in result['alternatives']
         ))
         self.assertTrue(all(
@@ -465,12 +331,6 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['ranking']['n'], 2)
         self.assertEqual(result['ranking_scenarios']['base']['n'], 2)
         self.assertEqual(result['ranking_scenarios']['unistmo']['n'], 2)
-        unistmo_effective = result['ranking_scenarios']['unistmo']['weights']
-        self.assertEqual(unistmo_effective['van_usd'], 1.0)
-        self.assertTrue(all(
-            value == 0.0 for key, value in unistmo_effective.items()
-            if key != 'van_usd'
-        ))
         self.assertEqual(len(result['ranking']['ranking']), 2)
         self.assertEqual(
             {row['turbina'] for row in result['ranking']['ranking']},
@@ -498,59 +358,6 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(len(winner['cashflow_table']), 20)
         self.assertIn('base_capex', winner['economic_formulas'])
         self.assertIn('aep_gross_theoretical_mwh', winner['energy_balance'])
-
-    def test_catalog_capacity_is_monotonic_for_rectangular_and_irregular_parks(self):
-        sites = [{
-            'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
-            'sectorial': {'frequency_pct': [6.25] * 16},
-        }]
-        polygons = [
-            [
-                {'lat': 16.500, 'lon': -95.000},
-                {'lat': 16.500, 'lon': -94.990},
-                {'lat': 16.510, 'lon': -94.990},
-                {'lat': 16.510, 'lon': -95.000},
-            ],
-            [
-                {'lat': 16.500, 'lon': -95.000},
-                {'lat': 16.501, 'lon': -94.989},
-                {'lat': 16.507, 'lon': -94.991},
-                {'lat': 16.511, 'lon': -94.996},
-                {'lat': 16.506, 'lon': -95.001},
-            ],
-        ]
-        models = [
-            'gamesa20_p2000_r40.csv', 'vestas20_p2000_r40.csv',
-            'gamesa21_p2000_r45.csv', 'Vestas40_p4000_r58.5.csv',
-            'Vestas80_p8000_r82.csv',
-        ]
-        for polygon in polygons:
-            result = analyze_park_layouts(
-                sites, polygon, 'aerogeneradores', models,
-                min_spacing_d=3, s_para_range=(3,), s_perp_range=(3,),
-                max_wake_loss_pct=99.0, wake_model='jensen',
-                project_years=20, price_usd_kwh=0.083,
-            )
-            rows = sorted(
-                result['alternatives'],
-                key=lambda row: row['turbine_specification']['rotor_diameter_m'],
-            )
-            capacities = [row['max_n_fisico'] for row in rows]
-            self.assertEqual(capacities, sorted(capacities, reverse=True))
-            by_rotor = {}
-            for row in rows:
-                rotor = row['turbine_specification']['rotor_diameter_m']
-                by_rotor.setdefault(rotor, set()).add(row['max_n_fisico'])
-                coords = np.asarray(row['capacity_layout_xy_m'], dtype=float)
-                if len(coords) > 1:
-                    delta = coords[:, None, :] - coords[None, :, :]
-                    distances = np.sqrt(np.sum(delta * delta, axis=2))
-                    np.fill_diagonal(distances, np.inf)
-                    self.assertGreaterEqual(
-                        float(distances.min()) + 1e-8, 3.0 * rotor)
-                self.assertLessEqual(row['n_aerogeneradores'], row['max_n_post_red'])
-                self.assertLessEqual(row['max_n_post_red'], row['max_n_fisico'])
-            self.assertTrue(all(len(values) == 1 for values in by_rotor.values()))
 
     def test_zero_wake_limit_reduces_and_reoptimises_until_compliant(self):
         sites = [{
