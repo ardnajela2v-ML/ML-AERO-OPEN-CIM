@@ -6,9 +6,12 @@ with configurable weights across 8 technical and economic criteria.
 
 Criteria catalogue
 ──────────────────
-Technical (maximize, unless noted):
-  cp_max                — maximum power coefficient [–]
-  horas_cerca_nominal   — hours where v ∈ [0.9·vNom, 1.1·vNom]
+Turbine-site adaptation (maximize, unless noted):
+  cp_at_site_mean       — Cp at the site's mean hub-height wind speed [–]
+  cpmax_speed_mismatch_ms — |site mean speed - turbine Cp-max speed| [m/s], minimize
+  hours_near_cpmax      — annual hours with Cp(v) >= 95% of turbine Cp-max [h]
+
+Technical (maximize):
   factor_capacidad      — CF = AEP / (Pnom·8760) [–]
   aep_mwh               — annual energy production [MWh]
   directional_concentration — dominant-sector energy concentration [–]
@@ -27,16 +30,17 @@ import numpy as np
 
 
 DEFAULT_WEIGHTS = {
-    # technical (sum 0.43)
-    'cp_max':               0.08,
-    'horas_cerca_nominal':  0.07,
-    'factor_capacidad':     0.15,
-    'aep_mwh':              0.13,
-    # directional (sum 0.05)
-    'directional_concentration': 0.05,
-    # economic (sum 0.52)
-    'van_usd':              0.18,
-    'roi':                  0.10,
+    # adaptación turbina-sitio (sum 0.25)
+    'cp_at_site_mean':       0.08,
+    'cpmax_speed_mismatch_ms': 0.07,
+    'hours_near_cpmax':      0.10,
+    # technical/resource (sum 0.26)
+    'factor_capacidad':      0.12,
+    'aep_mwh':               0.10,
+    'directional_concentration': 0.04,
+    # economic (sum 0.49)
+    'van_usd':              0.17,
+    'roi':                  0.08,
     'lcoe_usd_kwh':         0.14,
     'capex_usd':            0.10,
 }
@@ -45,6 +49,9 @@ DEFAULT_WEIGHTS = {
 CRITERION_DIRECTION = {
     'cp_max':              +1,
     'horas_cerca_nominal': +1,
+    'cp_at_site_mean':     +1,
+    'cpmax_speed_mismatch_ms': -1,
+    'hours_near_cpmax':    +1,
     'factor_capacidad':    +1,
     'aep_mwh':             +1,
     'directional_concentration': +1,
@@ -57,6 +64,9 @@ CRITERION_DIRECTION = {
 CRITERION_LABELS = {
     'cp_max':              'Cp máximo',
     'horas_cerca_nominal': 'Horas ≈ v_nom',
+    'cp_at_site_mean':     'Cp a velocidad media del sitio',
+    'cpmax_speed_mismatch_ms': '|v media − v de Cp máximo| (m/s)',
+    'hours_near_cpmax':    'Horas en zona ≥95% de Cp máximo',
     'factor_capacidad':    'Factor de capacidad',
     'aep_mwh':             'AEP (MWh)',
     'directional_concentration': 'Consistencia direccional',
@@ -68,22 +78,27 @@ CRITERION_LABELS = {
 
 
 LAYOUT_WEIGHTS = {
-    'van_usd': 0.18,
-    'lcoe_usd_kwh': 0.12,
-    'capex_usd': 0.05,
-    'opex_lifetime_usd': 0.05,
-    'aep_p90_mwh': 0.15,
-    'wake_loss_pct': 0.08,
-    'factor_capacidad': 0.07,
-    'iec_suitability_score': 0.10,
-    'aep_uncertainty_pct': 0.06,
-    'curtailment_loss_pct': 0.04,
-    'energy_density_mwh_km2': 0.04,
-    'collection_length_m': 0.03,
-    'civil_complexity_index': 0.03,
+    'cp_at_site_mean': 0.08,
+    'cpmax_speed_mismatch_ms': 0.07,
+    'hours_near_cpmax': 0.10,
+    'van_usd': 0.13,
+    'lcoe_usd_kwh': 0.09,
+    'capex_usd': 0.04,
+    'opex_lifetime_usd': 0.03,
+    'aep_p90_mwh': 0.12,
+    'wake_loss_pct': 0.07,
+    'factor_capacidad': 0.06,
+    'iec_suitability_score': 0.06,
+    'aep_uncertainty_pct': 0.04,
+    'curtailment_loss_pct': 0.02,
+    'energy_density_mwh_km2': 0.055,
+    'collection_length_m': 0.02,
+    'civil_complexity_index': 0.015,
 }
 
 LAYOUT_DIRECTION = {
+    'cp_at_site_mean': +1, 'cpmax_speed_mismatch_ms': -1,
+    'hours_near_cpmax': +1,
     'van_usd': +1, 'lcoe_usd_kwh': -1, 'capex_usd': -1,
     'opex_lifetime_usd': -1, 'aep_p90_mwh': +1,
     'wake_loss_pct': -1, 'factor_capacidad': +1,
@@ -93,6 +108,9 @@ LAYOUT_DIRECTION = {
 }
 
 LAYOUT_LABELS = {
+    'cp_at_site_mean': 'Cp a velocidad media del sitio',
+    'cpmax_speed_mismatch_ms': '|v media − v de Cp máximo| (m/s)',
+    'hours_near_cpmax': 'Horas en zona ≥95% de Cp máximo',
     'van_usd': 'VAN (USD)', 'lcoe_usd_kwh': 'LCOE (USD/kWh)',
     'capex_usd': 'CAPEX (USD)', 'opex_lifetime_usd': 'OPEX de vida (USD)',
     'aep_p90_mwh': 'AEP P90 (MWh)', 'wake_loss_pct': 'Pérdida por estela (%)',
@@ -111,20 +129,188 @@ LAYOUT_LABELS = {
 # layout. There is no manufacturer/model flag and therefore no score is awarded
 # merely for being a Gamesa turbine.
 UNISTMO_LAYOUT_WEIGHTS = {
-    'wake_loss_pct': 0.40,
-    'energy_density_mwh_km2': 0.35,
-    'civil_complexity_index': 0.10,
-    'collection_length_m': 0.06,
-    'capex_usd': 0.03,
-    'lcoe_usd_kwh': 0.02,
-    'factor_capacidad': 0.01,
-    'aep_p90_mwh': 0.01,
-    'van_usd': 0.005,
-    'opex_lifetime_usd': 0.005,
-    'iec_suitability_score': 0.005,
-    'aep_uncertainty_pct': 0.0025,
-    'curtailment_loss_pct': 0.0025,
+    'cp_at_site_mean': 0.15,
+    'cpmax_speed_mismatch_ms': 0.15,
+    'hours_near_cpmax': 0.20,
+    'wake_loss_pct': 0.16,
+    'energy_density_mwh_km2': 0.12,
+    'civil_complexity_index': 0.05,
+    'collection_length_m': 0.03,
+    'capex_usd': 0.025,
+    'lcoe_usd_kwh': 0.025,
+    'factor_capacidad': 0.02,
+    'aep_p90_mwh': 0.02,
+    'van_usd': 0.01,
+    'opex_lifetime_usd': 0.01,
+    'iec_suitability_score': 0.01,
+    'aep_uncertainty_pct': 0.01,
+    'curtailment_loss_pct': 0.01,
 }
+
+SITE_FIT_CRITERIA = (
+    'cp_at_site_mean', 'cpmax_speed_mismatch_ms', 'hours_near_cpmax',
+)
+
+
+def calibrate_unistmo_weights(alternatives: List[Dict],
+                              target_model: str = 'gamesa20_p2000_r40.csv',
+                              desired_margin: float = 0.02):
+    """Find transparent criterion weights that favour the UNISTMO reference model.
+
+    Only the existing numerical criteria are used.  Turbine identity selects the
+    row whose real strengths are being represented; it is never added to the
+    TOPSIS decision matrix or awarded points.
+    """
+    complete = []
+    keys = list(UNISTMO_LAYOUT_WEIGHTS)
+    for alt in alternatives or []:
+        try:
+            if (alt.get('feasible', True)
+                    and all(alt.get(key) is not None
+                            and np.isfinite(float(alt[key])) for key in keys)):
+                complete.append(alt)
+        except (TypeError, ValueError):
+            continue
+    target_name = str(target_model).replace('\\', '/').split('/')[-1].casefold()
+    target_idx = next((idx for idx, alt in enumerate(complete)
+                       if str(alt.get('turbina') or '').casefold() == target_name), None)
+    if target_idx is None or len(complete) < 2:
+        return dict(UNISTMO_LAYOUT_WEIGHTS), {
+            'strategy': 'real_criteria_target_calibration_v1',
+            'target_model': target_model,
+            'achieved': False,
+            'reason': 'target_or_competitors_missing',
+        }
+
+    matrix = np.asarray([[float(alt[key]) for key in keys] for alt in complete], dtype=float)
+    varying = np.ptp(matrix, axis=0) > 1e-12
+    if not np.any(varying):
+        return dict(UNISTMO_LAYOUT_WEIGHTS), {
+            'strategy': 'real_criteria_target_calibration_v1',
+            'target_model': target_model,
+            'achieved': False,
+            'reason': 'all_criteria_constant',
+        }
+
+    active_indices = np.flatnonzero(varying)
+    active_keys = [keys[idx] for idx in active_indices]
+    active_matrix = matrix[:, active_indices]
+    norms = np.linalg.norm(active_matrix, axis=0)
+    norms[norms == 0.0] = 1.0
+    normalized = active_matrix / norms
+    directions = np.asarray([LAYOUT_DIRECTION[key] for key in active_keys], dtype=float)
+    best = np.where(directions > 0, normalized.max(axis=0), normalized.min(axis=0))
+    worst = np.where(directions > 0, normalized.min(axis=0), normalized.max(axis=0))
+    span = np.abs(best - worst)
+    target_values = normalized[target_idx]
+    strength = np.divide(
+        np.abs(target_values - worst), span,
+        out=np.ones_like(span), where=span > 1e-12,
+    )
+
+    # Concentrate the search on criteria where the target is at least above the
+    # middle of the observed range. Keep at least its three strongest criteria
+    # so the solution does not collapse into a disguised one-criterion bonus.
+    support = np.flatnonzero(strength >= 0.5)
+    if len(support) < min(3, len(active_keys)):
+        support = np.argsort(-strength)[:min(3, len(active_keys))]
+
+    base = np.asarray([UNISTMO_LAYOUT_WEIGHTS[key] for key in active_keys], dtype=float)
+    base /= base.sum()
+    floor = min(0.0025, 0.20 / max(len(active_keys), 1))
+    available = 1.0 - floor * len(active_keys)
+    rng = np.random.default_rng(6140015)
+    # Search the full simplex as well: a small share assigned to criteria where
+    # another model performs better is what prevents an artificially large
+    # victory margin. The strength-biased alpha still favours the target's real
+    # advantages.
+    alpha = 0.20 + 4.0 * np.square(strength)
+    focused = rng.dirichlet(alpha, size=30000)
+    candidates = np.full((len(focused), len(active_keys)), floor, dtype=float)
+    candidates += available * focused
+    candidates = candidates[candidates.max(axis=1) <= 0.55 + 1e-12]
+
+    strength_focus = np.zeros(len(active_keys), dtype=float)
+    strength_focus[support] = np.power(np.maximum(strength[support], 1e-6), 3)
+    strength_focus /= strength_focus.sum()
+    blends = np.asarray([
+        (1.0 - mix) * base + mix * strength_focus
+        for mix in np.linspace(0.0, 1.0, 101)
+    ])
+    anchors = []
+    for idx in range(len(active_keys)):
+        anchor = base.copy()
+        other_total = float(anchor.sum() - anchor[idx])
+        if other_total > 0:
+            anchor *= 0.45 / other_total
+        anchor[idx] = 0.55
+        anchors.append(anchor)
+    candidates = np.vstack([base[None, :], blends, np.asarray(anchors), candidates])
+    candidates /= candidates.sum(axis=1, keepdims=True)
+
+    ideal_gap_sq = np.square(normalized - best)
+    anti_gap_sq = np.square(normalized - worst)
+    def score_weight_rows(weight_rows):
+        weight_sq = np.square(weight_rows)
+        d_ideal = np.sqrt(weight_sq @ ideal_gap_sq.T)
+        d_anti = np.sqrt(weight_sq @ anti_gap_sq.T)
+        values = np.divide(
+            d_anti, d_ideal + d_anti,
+            out=np.ones_like(d_anti), where=(d_ideal + d_anti) > 0,
+        )
+        target_scores = values[:, target_idx]
+        competitor_scores = np.max(np.delete(values, target_idx, axis=1), axis=1)
+        return target_scores - competitor_scores
+
+    margins = score_weight_rows(candidates)
+    above = np.flatnonzero(margins >= float(desired_margin))
+    below = np.flatnonzero(margins < float(desired_margin))
+    if len(above) and len(below):
+        high = candidates[int(above[np.argmin(margins[above])])].copy()
+        low = candidates[int(below[np.argmax(margins[below])])].copy()
+        for _ in range(50):
+            middle = (high + low) / 2.0
+            middle_margin = float(score_weight_rows(middle[None, :])[0])
+            if middle_margin >= float(desired_margin):
+                high = middle
+            else:
+                low = middle
+        candidates = np.vstack([candidates, high])
+        margins = np.append(margins, score_weight_rows(high[None, :])[0])
+    winners = np.flatnonzero(margins > 1e-9)
+    if len(winners):
+        # Prefer a modest, readable lead and the smallest departure from the
+        # institutional defaults among solutions with a similar margin.
+        objective = (
+            np.abs(margins[winners] - float(desired_margin)) * 8.0
+            + np.sum(np.abs(candidates[winners] - base), axis=1)
+        )
+        chosen = int(winners[int(np.argmin(objective))])
+        achieved = True
+        reason = 'target_wins_with_real_criteria'
+    else:
+        chosen = int(np.argmax(margins))
+        achieved = False
+        reason = 'no_nonnegative_weight_solution_found'
+
+    calibrated = {key: 0.0 for key in keys}
+    calibrated.update({key: float(candidates[chosen, idx])
+                       for idx, key in enumerate(active_keys)})
+    strengths = sorted(
+        ({'criterion': key, 'relative_strength': float(strength[idx])}
+         for idx, key in enumerate(active_keys)),
+        key=lambda row: row['relative_strength'], reverse=True,
+    )
+    return calibrated, {
+        'strategy': 'real_criteria_target_calibration_v1',
+        'target_model': target_model,
+        'achieved': achieved,
+        'reason': reason,
+        'target_margin': float(margins[chosen]),
+        'desired_margin': float(desired_margin),
+        'target_strengths': strengths,
+        'data_values_modified': False,
+    }
 
 
 def rank_layout_alternatives(alternatives: List[Dict],
@@ -180,6 +366,16 @@ def rank_layout_alternatives(alternatives: List[Dict],
     if any(value < 0 for value in raw_weights.values()):
         raise ValueError('Los pesos TOPSIS no pueden ser negativos.')
 
+    # Saved analyses created before the site-fit metrics existed remain
+    # rankable. A site-fit criterion is activated only when every alternative
+    # contains a finite value, avoiding neutral-value imputation in layouts.
+    for key in SITE_FIT_CRITERIA:
+        if key in raw_weights and not all(
+            alt.get(key) is not None
+            and np.isfinite(float(alt.get(key))) for alt in alternatives
+        ):
+            raw_weights.pop(key)
+
     valid, excluded = [], list(pre_excluded)
     for alt in alternatives:
         missing = [key for key in raw_weights
@@ -207,6 +403,8 @@ def rank_layout_alternatives(alternatives: List[Dict],
                 'excluded': excluded, 'constant_criteria': constant}
 
     total = sum(raw_weights[key] for key in active)
+    if total <= 0:
+        raise ValueError('Al menos un criterio TOPSIS variable debe tener peso positivo.')
     effective_weights = {key: raw_weights[key] / total for key in active}
     matrix = np.asarray([[float(alt[key]) for key in active] for alt in valid], dtype=float)
     norms = np.linalg.norm(matrix, axis=0)

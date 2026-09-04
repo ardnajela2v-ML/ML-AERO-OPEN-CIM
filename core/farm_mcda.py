@@ -8,13 +8,13 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 from core.cost_model import CostModel
-from core.energy import PowerCurve
+from core.energy import PowerCurve, compute_site_cp_fit
 from core.farm import (
     gaussian_min_valid_distance_d,
     optimize_layout_structured,
     simulate_wind_farm,
 )
-from core.multicriteria import rank_layout_alternatives
+from core.multicriteria import calibrate_unistmo_weights, rank_layout_alternatives
 
 
 def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
@@ -177,7 +177,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model: Optional[CostModel] = None,
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
-                         weights: Optional[Dict[str, float]] = None):
+                         weights: Optional[Dict[str, float]] = None,
+                         unistmo_weights: Optional[Dict[str, float]] = None):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -298,6 +299,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             installed_mw = selected_n * turbine.rated_power_kw / 1000.0
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
             area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
+            curve_points = list(turbine._raw_points)
+            cp_fit = compute_site_cp_fit(
+                ws,
+                [point[0] for point in curve_points],
+                [point[1] for point in curve_points],
+                turbine.rotor_diameter_m,
+                rho=rho, dt_hours=1.0, max_w=turbine.cut_out,
+                near_cp_fraction=0.95,
+            )
             alternatives.append({
                 'label': f'layout::{filename}::wake-optimal',
                 'site': f'Parque óptimo por estela ({selected_n}/{physical_max_n} aeros)',
@@ -326,6 +336,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'curtailment_loss_pct': curtailment_loss * 100.0,
                 'environmental_loss_pct': environmental_loss * 100.0,
                 'factor_capacidad': factor_capacity,
+                **cp_fit,
                 'collection_length_m': collection_length,
                 'energy_density_mwh_km2': aep_p50 / area_km2,
                 'civil_complexity_index': collection_length / max(selected_n, 1),
@@ -372,9 +383,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
     ranking = rank_layout_alternatives(alternatives, weights=weights)
+    unistmo_calibration = None
+    if unistmo_weights is None:
+        unistmo_weights, unistmo_calibration = calibrate_unistmo_weights(alternatives)
     unistmo_ranking = rank_layout_alternatives(
-        alternatives, profile='unistmo_v1'
+        alternatives, weights=unistmo_weights, profile='unistmo_v1'
     )
+    unistmo_ranking['configured_weights'] = dict(unistmo_weights)
+    if unistmo_calibration is not None:
+        unistmo_ranking['weight_calibration'] = unistmo_calibration
     return {
         'analysis_kind': 'farm_layout_mcda_v2',
         'alternatives': alternatives,

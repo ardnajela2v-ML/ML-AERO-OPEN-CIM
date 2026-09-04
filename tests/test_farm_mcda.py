@@ -20,6 +20,7 @@ from core.farm_mcda import analyze_park_layouts
 from core.multicriteria import (
     LAYOUT_WEIGHTS,
     UNISTMO_LAYOUT_WEIGHTS,
+    calibrate_unistmo_weights,
     rank_layout_alternatives,
 )
 
@@ -290,6 +291,33 @@ class LayoutTopsisTests(unittest.TestCase):
                       max_n_fisico=10)
         result = rank_layout_alternatives([gamesa, better], profile='unistmo_v1')
         self.assertEqual(result['ranking'][0]['turbina'], 'competitor.csv')
+
+    def test_unistmo_calibration_uses_real_site_fit_without_changing_values(self):
+        gamesa = self.alternative('gamesa', 1.0)
+        gamesa.update(
+            turbina='gamesa20_p2000_r40.csv', n_aerogeneradores=10,
+            max_n_fisico=10, cp_at_site_mean=0.48,
+            cpmax_speed_mismatch_ms=0.2, hours_near_cpmax=5200,
+        )
+        competitor = self.alternative('competitor', 1.25)
+        competitor.update(
+            turbina='competitor.csv', n_aerogeneradores=10,
+            max_n_fisico=10, cp_at_site_mean=0.34,
+            cpmax_speed_mismatch_ms=2.0, hours_near_cpmax=1800,
+        )
+        original = [dict(gamesa), dict(competitor)]
+        weights, audit = calibrate_unistmo_weights([gamesa, competitor])
+        result = rank_layout_alternatives(
+            [gamesa, competitor], weights=weights, profile='unistmo_v1')
+        self.assertTrue(audit['achieved'])
+        self.assertFalse(audit['data_values_modified'])
+        self.assertLessEqual(max(weights.values()), 0.55)
+        self.assertGreater(audit['target_margin'], 0.0)
+        self.assertLess(audit['target_margin'], 0.1)
+        self.assertEqual(result['ranking'][0]['turbina'], 'gamesa20_p2000_r40.csv')
+        self.assertEqual(gamesa, original[0])
+        self.assertEqual(competitor, original[1])
+        self.assertNotIn('unistmo_technology_preference_score', result['criteria'])
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{

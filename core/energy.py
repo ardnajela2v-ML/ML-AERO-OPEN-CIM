@@ -71,6 +71,70 @@ def hellmann_alpha_by_zone(zone: str = 'default') -> float:
     }
     return _ALPHAS.get(zone.lower(), _ALPHAS['default'])
 
+
+def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
+                        rotor_diameter_m, rho=1.225, dt_hours=1.0,
+                        max_w=25.0, near_cp_fraction=0.95):
+    """Measure how closely a turbine's efficient Cp region matches a site."""
+    ws = np.asarray(ws_series, dtype=float)
+    ws = ws[np.isfinite(ws) & (ws >= 0.0)]
+    curve_v = np.asarray(curve_ws, dtype=float)
+    curve_p = np.asarray(curve_power_kw, dtype=float)
+    valid_curve = np.isfinite(curve_v) & np.isfinite(curve_p)
+    curve_v = curve_v[valid_curve]
+    curve_p = np.maximum(curve_p[valid_curve], 0.0)
+    if not len(ws) or len(curve_v) < 2 or float(rotor_diameter_m) <= 0:
+        return {
+            'cp_at_site_mean': 0.0, 'cp_max_turbine': 0.0,
+            'ws_at_cp_max_ms': 0.0, 'cpmax_speed_mismatch_ms': None,
+            'hours_near_cpmax': 0.0, 'near_cpmax_pct': 0.0,
+            'near_cp_fraction': float(near_cp_fraction),
+        }
+    order = np.argsort(curve_v)
+    curve_v, curve_p = curve_v[order], curve_p[order]
+    area = np.pi * (float(rotor_diameter_m) / 2.0) ** 2
+    # The catalogue curves are specified at the standard reference density.
+    # Applying the platform's linear density correction to power and using the
+    # site's density in 0.5*rho*A*v^3 cancels exactly, so Cp(v) is evaluated at
+    # the same 1.225 kg/m3 reference without distorting turbine comparisons.
+    density = 1.225
+
+    def cp_for_speed(speed):
+        speed = np.asarray(speed, dtype=float)
+        power_kw = np.interp(speed, curve_v, curve_p, left=0.0, right=0.0)
+        power_kw = np.where(speed <= float(max_w), power_kw, 0.0)
+        kinetic_kw = 0.5 * density * area * np.power(np.maximum(speed, 0.01), 3) / 1000.0
+        return np.clip(np.divide(
+            power_kw, kinetic_kw, out=np.zeros_like(power_kw), where=kinetic_kw > 0,
+        ), 0.0, 16.0 / 27.0)
+
+    positive_curve = curve_v[curve_p > 0.0]
+    search_low = max(0.5, float(positive_curve.min()) if len(positive_curve) else 0.5)
+    search_high = min(float(max_w), float(curve_v.max()))
+    search_ws = np.arange(search_low, search_high + 0.025, 0.05)
+    search_cp = cp_for_speed(search_ws)
+    cp_max = float(search_cp.max()) if len(search_cp) else 0.0
+    ws_at_cpmax = float(search_ws[int(np.argmax(search_cp))]) if cp_max > 0 else 0.0
+    site_mean = float(np.mean(ws))
+    cp_at_mean = float(cp_for_speed(np.asarray([site_mean]))[0])
+    hourly_cp = cp_for_speed(ws)
+    near_mask = (hourly_cp >= cp_max * float(near_cp_fraction)
+                 if cp_max > 0 else np.zeros(len(ws), dtype=bool))
+    hours_near = float(np.count_nonzero(near_mask) * float(dt_hours))
+    total_hours = float(len(ws) * float(dt_hours))
+    return {
+        'cp_at_site_mean': cp_at_mean,
+        'cp_max_turbine': cp_max,
+        'ws_at_cp_max_ms': ws_at_cpmax,
+        'cpmax_speed_mismatch_ms': abs(site_mean - ws_at_cpmax),
+        'hours_near_cpmax': hours_near,
+        'near_cpmax_pct': hours_near / total_hours * 100.0 if total_hours > 0 else 0.0,
+        'near_cp_fraction': float(near_cp_fraction),
+        'site_mean_speed_ms': site_mean,
+        'cp_reference_density_kg_m3': density,
+    }
+
+
 def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.001):
     """
     Logarithmic wind profile.

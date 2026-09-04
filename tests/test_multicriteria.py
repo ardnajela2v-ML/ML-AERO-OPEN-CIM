@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
+
+from core.energy import compute_site_cp_fit
 from core.multicriteria import topsis
 
 
 def _alt(label, **kw):
-    base = dict(cp_max=0.4, horas_cerca_nominal=2000, factor_capacidad=0.35,
+    base = dict(cp_max=0.4, horas_cerca_nominal=2000,
+                cp_at_site_mean=0.42, cpmax_speed_mismatch_ms=0.2,
+                hours_near_cpmax=2400, factor_capacidad=0.35,
                 aep_mwh=50000, directional_concentration=0.6,
                 van_usd=10_000_000, roi=0.15, lcoe_usd_kwh=0.06,
                 capex_usd=40_000_000)
@@ -55,6 +60,36 @@ class TopsisRankReversalTests(unittest.TestCase):
         # Antes del fix, un CAPEX ausente se reflejaba a col_max (el mejor
         # valor posible) y podía subir de rank artificialmente.
         self.assertEqual(c_rank_before, c_rank_after)
+
+
+class TurbineSiteCpFitTests(unittest.TestCase):
+    @staticmethod
+    def curve_with_cp_peak(peak_speed):
+        speeds = np.arange(3.0, 16.0, 0.5)
+        cp = 0.18 + 0.30 * np.exp(-0.5 * ((speeds - peak_speed) / 1.2) ** 2)
+        area = np.pi * 40.0 ** 2
+        power_kw = cp * 0.5 * 1.225 * area * speeds ** 3 / 1000.0
+        return speeds, power_kw
+
+    def test_mean_speed_match_and_hours_near_cpmax_are_turbine_specific(self):
+        site_wind = np.concatenate([np.full(7000, 9.8), np.full(1760, 6.0)])
+        results = {}
+        for peak in (8.0, 10.0, 11.0):
+            curve_ws, curve_kw = self.curve_with_cp_peak(peak)
+            results[peak] = compute_site_cp_fit(
+                site_wind, curve_ws, curve_kw, rotor_diameter_m=80.0,
+                rho=1.225, dt_hours=1.0,
+            )
+        self.assertLess(results[10.0]['cpmax_speed_mismatch_ms'],
+                        results[8.0]['cpmax_speed_mismatch_ms'])
+        self.assertLess(results[10.0]['cpmax_speed_mismatch_ms'],
+                        results[11.0]['cpmax_speed_mismatch_ms'])
+        self.assertGreater(results[10.0]['cp_at_site_mean'],
+                           results[8.0]['cp_at_site_mean'])
+        self.assertGreater(results[10.0]['hours_near_cpmax'],
+                           results[8.0]['hours_near_cpmax'])
+        self.assertAlmostEqual(results[10.0]['site_mean_speed_ms'],
+                               float(np.mean(site_wind)))
 
 
 if __name__ == '__main__':

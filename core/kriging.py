@@ -29,6 +29,7 @@ from scipy.stats import weibull_min as wbl_dist
 from scipy.interpolate import interp1d
 from core.cache import clear_namespace, file_signature, get as cache_get, set as cache_set
 from core.cost_model import CostModel
+from core.energy import compute_site_cp_fit
 
 warnings.filterwarnings('ignore')
 log = logging.getLogger(__name__)
@@ -858,6 +859,10 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     else:
         rated_v = 12.0
     n_hours_near_rated = int(np.sum((ws_hub >= 0.9 * rated_v) & (ws_hub <= 1.1 * rated_v)))
+    cp_fit = compute_site_cp_fit(
+        ws_hub, curve_x, curve_y, rotor_m, rho=rho, dt_hours=dt_h,
+        max_w=max_w, near_cp_fraction=0.95,
+    )
     p_max_curve = float(np.max(ps))
     # FC con horas reales del registro (no 8760 fijo); si el archivo cubre <1 año
     # el FC queda correcto en lugar de subestimado.
@@ -907,6 +912,7 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
         'cp_prom':              cp_prom,
         'factor_capacidad':     float(fc),
         'horas_cerca_nominal':  n_hours_near_rated,
+        **cp_fit,
         'potencia_wh_sitio':    pt,
         'n_aerogeneradores':    n,
         'aep_mwh':              float(pan / 1e6),
