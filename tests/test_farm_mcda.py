@@ -307,6 +307,22 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['excluded'][0]['label'], 'missing')
         self.assertGreater(result['sensitivity_scenarios'], 1)
         self.assertIn('rank_sensitivity_min', result['ranking'][0])
+        self.assertIn('criterion_audit', result['ranking'][0])
+        self.assertEqual(set(result['ranking'][0]['criterion_audit']),
+                         set(result['criteria']))
+        self.assertAlmostEqual(
+            sum(item['positive_separation_pct']
+                for item in result['ranking'][0]['criterion_audit'].values()),
+            100.0,
+        )
+        summary = result['winner_summary']
+        self.assertEqual(summary['winner'], result['ranking'][0]['label'])
+        self.assertEqual(summary['runner_up'], result['ranking'][1]['label'])
+        self.assertAlmostEqual(
+            summary['score_margin'],
+            result['ranking'][0]['topsis_score'] - result['ranking'][1]['topsis_score'],
+        )
+        self.assertEqual(summary['sensitivity_variation_pct'], 10.0)
 
     def test_layout_topsis_rejects_partial_capacity_and_duplicate_models(self):
         full = self.alternative('full', 2.0)

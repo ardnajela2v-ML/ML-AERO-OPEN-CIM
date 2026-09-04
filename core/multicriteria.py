@@ -202,9 +202,27 @@ def rank_layout_alternatives(alternatives: List[Dict],
         else:
             active.append(key)
     if not active:
-        ranked = [dict(alt, topsis_score=1.0, rank=i + 1) for i, alt in enumerate(valid)]
+        ranked = [dict(
+            alt, topsis_score=1.0, rank=i + 1,
+            dist_ideal=0.0, dist_antiideal=0.0,
+            criterion_audit={}, rank_sensitivity_min=i + 1,
+            rank_sensitivity_max=i + 1,
+            winner_frequency=1.0 if i == 0 else 0.0,
+        ) for i, alt in enumerate(valid)]
+        winner_name = ranked[0].get('turbina') or ranked[0].get('label')
         return {'ranking': ranked, 'weights': {}, 'n': len(ranked),
-                'excluded': excluded, 'constant_criteria': constant}
+                'excluded': excluded, 'constant_criteria': constant,
+                'criteria': [], 'labels': LAYOUT_LABELS, 'profile': profile,
+                'sensitivity_scenarios': 0,
+                'winner_summary': {
+                    'winner': winner_name, 'runner_up': None,
+                    'winner_score': 1.0, 'runner_up_score': None,
+                    'score_margin': None, 'score_margin_pct_of_runner_up': None,
+                    'winner_frequency': 1.0, 'rank_sensitivity_min': 1,
+                    'rank_sensitivity_max': 1,
+                    'robust_to_weight_perturbation': True,
+                    'sensitivity_variation_pct': 10.0,
+                }}
 
     total = sum(raw_weights[key] for key in active)
     effective_weights = {key: raw_weights[key] / total for key in active}
@@ -226,8 +244,31 @@ def rank_layout_alternatives(alternatives: List[Dict],
     scores = np.divide(d_anti, denom, out=np.ones_like(d_anti), where=denom > 0)
     ranked = []
     for idx, alt in enumerate(valid):
-        ranked.append(dict(alt, topsis_score=float(scores[idx]),
-                           dist_ideal=float(d_ideal[idx]), dist_antiideal=float(d_anti[idx])))
+        ideal_sq = np.square(weighted[idx] - ideal)
+        antiideal_sq = np.square(weighted[idx] - anti)
+        positive_total = float(antiideal_sq.sum())
+        criterion_audit = {}
+        for j, key in enumerate(active):
+            criterion_audit[key] = {
+                'raw_value': float(matrix[idx, j]),
+                'direction': 'maximize' if LAYOUT_DIRECTION[key] > 0 else 'minimize',
+                'effective_weight': float(effective_weights[key]),
+                'normalized_value': float(matrix[idx, j] / norms[j]),
+                'weighted_value': float(weighted[idx, j]),
+                'weighted_gap_to_ideal': float(abs(weighted[idx, j] - ideal[j])),
+                'weighted_distance_from_antiideal': float(abs(weighted[idx, j] - anti[j])),
+                'positive_separation_pct': (
+                    float(antiideal_sq[j] / positive_total * 100.0)
+                    if positive_total > 0 else 0.0
+                ),
+            }
+        ranked.append(dict(
+            alt,
+            topsis_score=float(scores[idx]),
+            dist_ideal=float(d_ideal[idx]),
+            dist_antiideal=float(d_anti[idx]),
+            criterion_audit=criterion_audit,
+        ))
     ranked.sort(key=lambda row: row['topsis_score'], reverse=True)
     for idx, row in enumerate(ranked, 1):
         row['rank'] = idx
@@ -265,11 +306,38 @@ def rank_layout_alternatives(alternatives: List[Dict],
         row['rank_sensitivity_min'] = min(history)
         row['rank_sensitivity_max'] = max(history)
         row['winner_frequency'] = winner_counts[row.get('label')] / len(scenarios)
+    winner = ranked[0]
+    runner_up = ranked[1] if len(ranked) > 1 else None
+    score_margin = (
+        float(winner['topsis_score'] - runner_up['topsis_score'])
+        if runner_up else None
+    )
+    winner_summary = {
+        'winner': winner.get('turbina') or winner.get('label'),
+        'runner_up': ((runner_up.get('turbina') or runner_up.get('label'))
+                      if runner_up else None),
+        'winner_score': float(winner['topsis_score']),
+        'runner_up_score': (float(runner_up['topsis_score']) if runner_up else None),
+        'score_margin': score_margin,
+        'score_margin_pct_of_runner_up': (
+            score_margin / float(runner_up['topsis_score']) * 100.0
+            if runner_up and float(runner_up['topsis_score']) != 0 else None
+        ),
+        'winner_frequency': float(winner['winner_frequency']),
+        'rank_sensitivity_min': int(winner['rank_sensitivity_min']),
+        'rank_sensitivity_max': int(winner['rank_sensitivity_max']),
+        'robust_to_weight_perturbation': bool(
+            winner['winner_frequency'] == 1.0
+            and winner['rank_sensitivity_max'] == 1
+        ),
+        'sensitivity_variation_pct': 10.0,
+    }
     return {'ranking': ranked, 'weights': effective_weights, 'n': len(ranked),
             'criteria': active, 'labels': LAYOUT_LABELS,
             'constant_criteria': constant, 'excluded': excluded,
             'profile': profile,
-            'sensitivity_scenarios': len(scenarios)}
+            'sensitivity_scenarios': len(scenarios),
+            'winner_summary': winner_summary}
 
 
 def _normalize_weights(weights: Optional[Dict[str, float]]) -> Dict[str, float]:
