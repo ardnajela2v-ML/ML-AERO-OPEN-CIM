@@ -205,6 +205,18 @@ function mcdaUsesObsoleteReweightedBase(weights) {
   );
 }
 
+function mcdaMergeLayoutWeightSchema(storedWeights, defaultWeights) {
+  const stored = storedWeights && typeof storedWeights === 'object'
+    ? storedWeights
+    : {};
+  return Object.fromEntries(Object.entries(defaultWeights || {}).map(([key, fallback]) => {
+    const saved = Number(stored[key]);
+    return [key, Object.prototype.hasOwnProperty.call(stored, key) && Number.isFinite(saved)
+      ? saved
+      : Number(fallback)];
+  }));
+}
+
 function collectProjectClientState() {
   const controls = {};
   document.querySelectorAll('input[id], select[id], textarea[id]').forEach(el => {
@@ -7030,9 +7042,12 @@ async function mcdaBuildWeightSliders() {
   const container = document.getElementById('mcda-weights');
   if (!container) return;
   const isLayout = MCDA.scope === 'area';
-  const weights = isLayout
-    ? (MCDA.layoutWeights || d.layout_weights)
-    : d.weights;
+  if (isLayout) {
+    MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(MCDA.layoutWeights)
+      ? { ...d.layout_weights }
+      : mcdaMergeLayoutWeightSchema(MCDA.layoutWeights, d.layout_weights);
+  }
+  const weights = isLayout ? MCDA.layoutWeights : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
   container.innerHTML = Object.entries(weights).map(([k, v]) => {
