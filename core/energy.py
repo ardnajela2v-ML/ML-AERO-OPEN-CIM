@@ -100,6 +100,8 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
             'resource_operational_availability_pct': 0.0,
             'resource_operational_hours': 0.0,
             'resource_non_generation_hours': 0.0,
+            'hours_at_or_above_90pct_rated': 0.0,
+            'at_or_above_90pct_rated_pct': 0.0,
             'site_series_samples_total': int(raw_ws.size),
             'site_series_samples_valid': int(valid_ws.sum()),
             'site_series_samples_missing': int(raw_ws.size - valid_ws.sum()),
@@ -139,6 +141,11 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
     hourly_power = np.interp(ws, curve_v, curve_p, left=0.0, right=0.0)
     hourly_power = np.where(ws <= float(max_w), hourly_power, 0.0)
     operating_mask = hourly_power > 0.0
+    rated_power_kw = float(curve_p.max()) if len(curve_p) else 0.0
+    near_rated_mask = (
+        hourly_power >= 0.90 * rated_power_kw
+        if rated_power_kw > 0 else np.zeros(len(ws), dtype=bool)
+    )
     near_mask = (hourly_cp >= cp_max * float(near_cp_fraction)
                  if cp_max > 0 else np.zeros(len(ws), dtype=bool))
     sample_hours = float(dt_hours)
@@ -146,6 +153,7 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
     annualization = 8760.0 / total_hours if total_hours > 0 else 0.0
     hours_near_raw = float(np.count_nonzero(near_mask) * sample_hours)
     operating_hours_raw = float(np.count_nonzero(operating_mask) * sample_hours)
+    near_rated_hours_raw = float(np.count_nonzero(near_rated_mask) * sample_hours)
     non_generation_hours_raw = max(0.0, total_hours - operating_hours_raw)
     cut_in = float(positive_curve.min()) if len(positive_curve) else 0.0
     below_cut_in_raw = float(np.count_nonzero(ws < cut_in) * sample_hours)
@@ -171,6 +179,11 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
         'resource_operational_hours': operating_hours_raw * annualization,
         'resource_non_generation_hours': non_generation_hours_raw * annualization,
         'resource_non_generation_hours_observed_total': non_generation_hours_raw,
+        'hours_at_or_above_90pct_rated': near_rated_hours_raw * annualization,
+        'hours_at_or_above_90pct_rated_observed_total': near_rated_hours_raw,
+        'at_or_above_90pct_rated_pct': (
+            near_rated_hours_raw / total_hours * 100.0 if total_hours > 0 else 0.0
+        ),
         'hours_below_cut_in_observed_total': below_cut_in_raw,
         'hours_above_cut_out_observed_total': above_cut_out_raw,
         'site_series_samples_total': int(raw_ws.size),

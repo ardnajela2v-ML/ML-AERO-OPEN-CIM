@@ -7073,6 +7073,8 @@ async function mcdaBuildWeightSliders() {
   const economicKeys = new Set([
     'capex_usd', 'opex_lifetime_usd', 'lcoe_usd_kwh', 'van_usd',
     'benefit_cost_ratio', 'payback_years', 'irr', 'roi',
+    'capex_usd_per_installed_kw', 'opex_usd_per_installed_kw_year',
+    'van_usd_per_installed_mw', 'discounted_payback_years',
   ]);
   const entries = Object.entries(weights);
   const renderGroup = (title, rows) => `
@@ -7696,6 +7698,8 @@ function mcdaLayoutAuditHtml(a) {
       ['Disponibilidad operativa del recurso', `<b>${mcdaAuditNumber(a.resource_operational_availability_pct, 2)}%</b>`],
       ['Horas operativas equivalentes', `${mcdaAuditNumber(a.resource_operational_hours, 1)} h/año`],
       ['Horas sin generación por recurso', `${mcdaAuditNumber(a.resource_non_generation_hours, 1)} h/año`],
+      ['Horas con potencia ≥90% nominal', `<b>${mcdaAuditNumber(a.hours_at_or_above_90pct_rated, 1)} h/año</b>`],
+      ['Tiempo con potencia ≥90% nominal', `${mcdaAuditNumber(a.at_or_above_90pct_rated_pct, 2)}%`],
     ]),
     mcdaAuditCard('CAPEX auditable', [
       ['Referencia de diseño', mcdaAuditEscape(costBenchmark.label || econ.cost_model_origin)],
@@ -7713,6 +7717,7 @@ function mcdaLayoutAuditHtml(a) {
       ['CAPEX base', `<b>${mcdaAuditMoney(a.base_capex_usd)}</b>`],
       ['Cable colector adicional', mcdaAuditMoney(a.collection_cable_cost_usd)],
       ['CAPEX total', `<b>${mcdaAuditMoney(a.capex_usd)}</b>`],
+      ['CAPEX específico', `<b>${mcdaAuditMoney(a.capex_usd_per_installed_kw)} /kW</b>`],
       ['CAPEX base implícito', `<b>${mcdaAuditMoney(basePerKw)} /kW instalado</b>`],
       ['Control suma porcentajes', `${mcdaAuditNumber(Number(cap.pct_total_check) * 100, 2)}%`],
     ]),
@@ -7726,10 +7731,12 @@ function mcdaLayoutAuditHtml(a) {
       ['Ingreso año 1', mcdaAuditMoney(a.annual_revenue_year1_usd)],
       ['Tasa / horizonte', `${mcdaAuditNumber(Number(econ.discount_rate) * 100, 2)}% / ${mcdaAuditNumber(econ.project_years, 0)} años`],
       ['VAN / VPN', `<b>${mcdaAuditMoney(a.van_usd)}</b>`],
+      ['VAN normalizado', `<b>${mcdaAuditMoney(a.van_usd_per_installed_mw)} /MW instalado</b>`],
       ['Relación beneficio/costo', `<b>${mcdaAuditNumber(a.benefit_cost_ratio, 3)}</b>`],
       ['ROI (VAN/CAPEX)', mcdaAuditNumber(a.roi, 3)],
       ['TIR', a.irr == null ? '—' : `${mcdaAuditNumber(Number(a.irr) * 100, 2)}%`],
       ['PRI / periodo de recuperación', a.payback_years == null ? '> horizonte del proyecto' : `${mcdaAuditNumber(a.payback_years, 2)} años`],
+      ['Periodo de recuperación descontado', a.discounted_payback_years == null ? '> horizonte del proyecto' : `${mcdaAuditNumber(a.discounted_payback_years, 2)} años`],
       ['LCOE', `${mcdaAuditNumber(a.lcoe_usd_kwh, 5)} USD/kWh`],
       ['Origen modelo', mcdaAuditEscape(econ.cost_model_origin)],
     ]),

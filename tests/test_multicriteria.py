@@ -112,6 +112,18 @@ class TurbineSiteCpFitTests(unittest.TestCase):
                         result['cp_effective_operating'])
         self.assertGreater(result['cp_effective_operating'], 0.0)
 
+    def test_hours_above_ninety_percent_rated_use_full_valid_series(self):
+        result = compute_site_cp_fit(
+            np.asarray([5.0, 10.0, 15.0, 25.0]),
+            np.asarray([0.0, 5.0, 10.0, 15.0, 25.0]),
+            np.asarray([0.0, 100.0, 900.0, 1000.0, 0.0]),
+            rotor_diameter_m=80.0, dt_hours=1.0, max_w=25.0,
+        )
+        self.assertAlmostEqual(result['at_or_above_90pct_rated_pct'], 50.0)
+        self.assertAlmostEqual(result['hours_at_or_above_90pct_rated'], 4380.0)
+        self.assertAlmostEqual(
+            result['hours_at_or_above_90pct_rated_observed_total'], 2.0)
+
 
 if __name__ == '__main__':
     unittest.main()

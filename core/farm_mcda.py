@@ -93,7 +93,9 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     cashflows = [-capex]
     pv_costs, pv_energy, pv_revenue = capex, 0.0, 0.0
     cumulative = -capex
+    discounted_cumulative = -capex
     payback = None
+    discounted_payback = None
     cashflow_table = []
     pv_opex = 0.0
     pv_decommissioning = 0.0
@@ -111,6 +113,14 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
                 if net > 0 else float(year)
             )
         factor = (1.0 + discount_rate) ** year
+        discounted_net = net / factor
+        previous_discounted_cumulative = discounted_cumulative
+        discounted_cumulative += discounted_net
+        if discounted_payback is None and discounted_cumulative >= 0:
+            discounted_payback = (
+                year - 1 + (-previous_discounted_cumulative) / discounted_net
+                if discounted_net > 0 else float(year)
+            )
         discounted_opex = annual_opex / factor
         discounted_terminal = terminal / factor
         pv_opex += discounted_opex
@@ -128,6 +138,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
             'discount_factor': factor,
             'pv_net_cashflow_usd': net / factor,
             'cumulative_undiscounted_usd': cumulative,
+            'cumulative_discounted_usd': discounted_cumulative,
         })
     van = sum(value / ((1.0 + discount_rate) ** year) for year, value in enumerate(cashflows))
     installed_kw = float(turbine.rated_power_kw) * int(n_turbines)
@@ -140,10 +151,14 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'opex_lifetime_usd': annual_opex * project_years,
         'opex_present_value_usd': pv_opex,
         'van_usd': van,
+        'van_usd_per_installed_mw': (
+            van / (installed_kw / 1000.0) if installed_kw > 0 else None
+        ),
         'benefit_cost_ratio': pv_revenue / pv_costs if pv_costs > 0 else None,
         'roi': van / capex if capex > 0 else None,
         'irr': _irr(cashflows),
         'payback_years': payback,
+        'discounted_payback_years': discounted_payback,
         'lcoe_usd_kwh': pv_costs / pv_energy if pv_energy > 0 else None,
         'collection_cable_cost_usd': cable_cost,
         'decommissioning_usd': decommissioning,
@@ -160,6 +175,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
             'npv': 'Σ net_cashflow_t ÷ (1 + discount_rate)^t, incluyendo CAPEX en t=0',
             'benefit_cost_ratio': 'PV(ingresos) ÷ PV(CAPEX + OPEX + desmantelamiento)',
             'payback': 'año anterior + saldo pendiente ÷ flujo neto del año',
+            'discounted_payback': 'primer cruce de CAPEX + Σ flujo_neto_t ÷ (1 + tasa)^t',
             'lcoe': 'PV(CAPEX + OPEX + desmantelamiento) ÷ PV(energía neta)',
         },
     }

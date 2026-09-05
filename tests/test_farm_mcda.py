@@ -284,6 +284,16 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertIn('payback_years', changed['zero_weight_criteria'])
         self.assertIn('irr', changed['zero_weight_criteria'])
         self.assertIn('roi', changed['zero_weight_criteria'])
+        self.assertIn('hours_at_or_above_90pct_rated',
+                      changed['zero_weight_criteria'])
+        self.assertIn('capex_usd_per_installed_kw',
+                      changed['zero_weight_criteria'])
+        self.assertIn('opex_usd_per_installed_kw_year',
+                      changed['zero_weight_criteria'])
+        self.assertIn('van_usd_per_installed_mw',
+                      changed['zero_weight_criteria'])
+        self.assertIn('discounted_payback_years',
+                      changed['zero_weight_criteria'])
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
@@ -369,6 +379,20 @@ class LayoutTopsisTests(unittest.TestCase):
             winner['capex_usd'] * winner['economic_assumptions']['opex_pct_capex'],
             delta=1e-6,
         )
+        self.assertAlmostEqual(
+            winner['capex_usd_per_installed_kw'],
+            winner['capex_usd'] / installed_kw,
+        )
+        self.assertAlmostEqual(
+            winner['opex_usd_per_installed_kw_year'],
+            winner['opex_usd_anual'] / installed_kw,
+        )
+        self.assertAlmostEqual(
+            winner['van_usd_per_installed_mw'],
+            winner['van_usd'] / (installed_kw / 1000.0),
+        )
+        self.assertGreaterEqual(
+            winner['discounted_payback_years'], winner['payback_years'])
         self.assertEqual(len(winner['cashflow_table']), 20)
         self.assertIn('base_capex', winner['economic_formulas'])
         self.assertIn('aep_gross_theoretical_mwh', winner['energy_balance'])
