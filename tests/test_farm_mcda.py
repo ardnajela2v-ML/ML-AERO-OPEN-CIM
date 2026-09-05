@@ -254,6 +254,33 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['n'], 1)
         self.assertEqual(result['ranking'][0]['n_aerogeneradores'], 8)
 
+    def test_new_hourly_metrics_do_not_change_base_ranking_while_weight_is_zero(self):
+        first = self.alternative('first', 1.0)
+        second = self.alternative('second', 1.2)
+        baseline = rank_layout_alternatives([first, second])
+        changed_first = dict(
+            first, cp_at_site_mean=0.01, cpmax_speed_mismatch_ms=20.0,
+            hours_near_cpmax=0.0, cp_effective_full_series=0.01,
+            resource_operational_availability_pct=1.0,
+        )
+        changed_second = dict(
+            second, cp_at_site_mean=0.59, cpmax_speed_mismatch_ms=0.0,
+            hours_near_cpmax=8760.0, cp_effective_full_series=0.59,
+            resource_operational_availability_pct=100.0,
+        )
+        changed = rank_layout_alternatives([changed_first, changed_second])
+        self.assertEqual(
+            [row['label'] for row in baseline['ranking']],
+            [row['label'] for row in changed['ranking']],
+        )
+        np.testing.assert_allclose(
+            [row['topsis_score'] for row in baseline['ranking']],
+            [row['topsis_score'] for row in changed['ranking']],
+        )
+        self.assertIn('cp_effective_full_series', changed['zero_weight_criteria'])
+        self.assertIn('resource_operational_availability_pct',
+                      changed['zero_weight_criteria'])
+
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
             'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
@@ -272,6 +299,14 @@ class LayoutTopsisTests(unittest.TestCase):
             demand_mwh=0, commercialization_mode='total_sale',
             s_para_range=(5, 7), s_perp_range=(3, 4),
             project_years=20, price_usd_kwh=0.083,
+            historical_wind={
+                'ws': np.asarray([np.nan, 4.0, 8.0, 12.0, 30.0]),
+                'dt_hours': 1.0,
+                'measurement_height_m': 80.0,
+                'source_id': 'observed',
+                'source_kind': 'observed',
+                'source_label': 'Serie histórica de prueba',
+            },
         )
         self.assertEqual(result['n_layout_alternatives'], 2)
         self.assertEqual(result['n_requested_models'], 2)
@@ -293,6 +328,13 @@ class LayoutTopsisTests(unittest.TestCase):
         ))
         self.assertEqual(result['ranking']['n'], 2)
         self.assertNotIn('ranking_scenarios', result)
+        self.assertTrue(all(
+            row['site_fit_source']['method'] == 'complete_historical_series'
+            and row['site_fit_source']['source_id'] == 'observed'
+            and row['site_series_samples_total'] == 5
+            and row['site_series_samples_valid'] == 4
+            for row in result['alternatives']
+        ))
         self.assertEqual(len(result['ranking']['ranking']), 2)
         self.assertEqual(
             {row['turbina'] for row in result['ranking']['ranking']},

@@ -75,9 +75,14 @@ def hellmann_alpha_by_zone(zone: str = 'default') -> float:
 def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
                         rotor_diameter_m, rho=1.225, dt_hours=1.0,
                         max_w=25.0, near_cp_fraction=0.95):
-    """Measure how closely a turbine's efficient Cp region matches a site."""
-    ws = np.asarray(ws_series, dtype=float)
-    ws = ws[np.isfinite(ws) & (ws >= 0.0)]
+    """Measure turbine/resource fit over every valid record of a wind series.
+
+    Hour counts are annualised to 8,760 h so multi-year histories remain
+    comparable. Raw totals and data coverage are returned separately.
+    """
+    raw_ws = np.asarray(ws_series, dtype=float)
+    valid_ws = np.isfinite(raw_ws) & (raw_ws >= 0.0)
+    ws = raw_ws[valid_ws]
     curve_v = np.asarray(curve_ws, dtype=float)
     curve_p = np.asarray(curve_power_kw, dtype=float)
     valid_curve = np.isfinite(curve_v) & np.isfinite(curve_p)
@@ -88,6 +93,19 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
             'cp_at_site_mean': 0.0, 'cp_max_turbine': 0.0,
             'ws_at_cp_max_ms': 0.0, 'cpmax_speed_mismatch_ms': None,
             'hours_near_cpmax': 0.0, 'near_cpmax_pct': 0.0,
+            'cp_effective_full_series': 0.0,
+            'cp_effective_operating': 0.0,
+            'cp_max_reached_at_site': 0.0,
+            'cp_peak_access_ratio': 0.0,
+            'resource_operational_availability_pct': 0.0,
+            'resource_operational_hours': 0.0,
+            'resource_non_generation_hours': 0.0,
+            'site_series_samples_total': int(raw_ws.size),
+            'site_series_samples_valid': int(valid_ws.sum()),
+            'site_series_samples_missing': int(raw_ws.size - valid_ws.sum()),
+            'site_series_valid_hours_observed_total': 0.0,
+            'site_series_annualization_factor': 0.0,
+            'site_series_dt_hours': float(dt_hours),
             'near_cp_fraction': float(near_cp_fraction),
         }
     order = np.argsort(curve_v)
@@ -118,17 +136,49 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
     site_mean = float(np.mean(ws))
     cp_at_mean = float(cp_for_speed(np.asarray([site_mean]))[0])
     hourly_cp = cp_for_speed(ws)
+    hourly_power = np.interp(ws, curve_v, curve_p, left=0.0, right=0.0)
+    hourly_power = np.where(ws <= float(max_w), hourly_power, 0.0)
+    operating_mask = hourly_power > 0.0
     near_mask = (hourly_cp >= cp_max * float(near_cp_fraction)
                  if cp_max > 0 else np.zeros(len(ws), dtype=bool))
-    hours_near = float(np.count_nonzero(near_mask) * float(dt_hours))
-    total_hours = float(len(ws) * float(dt_hours))
+    sample_hours = float(dt_hours)
+    total_hours = float(len(ws) * sample_hours)
+    annualization = 8760.0 / total_hours if total_hours > 0 else 0.0
+    hours_near_raw = float(np.count_nonzero(near_mask) * sample_hours)
+    operating_hours_raw = float(np.count_nonzero(operating_mask) * sample_hours)
+    non_generation_hours_raw = max(0.0, total_hours - operating_hours_raw)
+    cut_in = float(positive_curve.min()) if len(positive_curve) else 0.0
+    below_cut_in_raw = float(np.count_nonzero(ws < cut_in) * sample_hours)
+    above_cut_out_raw = float(np.count_nonzero(ws > float(max_w)) * sample_hours)
+    cp_max_site = float(hourly_cp.max()) if len(hourly_cp) else 0.0
     return {
         'cp_at_site_mean': cp_at_mean,
         'cp_max_turbine': cp_max,
+        'cp_max_reached_at_site': cp_max_site,
+        'cp_peak_access_ratio': cp_max_site / cp_max if cp_max > 0 else 0.0,
+        'cp_effective_full_series': float(np.mean(hourly_cp)),
+        'cp_effective_operating': (
+            float(np.mean(hourly_cp[operating_mask])) if np.any(operating_mask) else 0.0
+        ),
         'ws_at_cp_max_ms': ws_at_cpmax,
         'cpmax_speed_mismatch_ms': abs(site_mean - ws_at_cpmax),
-        'hours_near_cpmax': hours_near,
-        'near_cpmax_pct': hours_near / total_hours * 100.0 if total_hours > 0 else 0.0,
+        'hours_near_cpmax': hours_near_raw * annualization,
+        'hours_near_cpmax_observed_total': hours_near_raw,
+        'near_cpmax_pct': hours_near_raw / total_hours * 100.0 if total_hours > 0 else 0.0,
+        'resource_operational_availability_pct': (
+            operating_hours_raw / total_hours * 100.0 if total_hours > 0 else 0.0
+        ),
+        'resource_operational_hours': operating_hours_raw * annualization,
+        'resource_non_generation_hours': non_generation_hours_raw * annualization,
+        'resource_non_generation_hours_observed_total': non_generation_hours_raw,
+        'hours_below_cut_in_observed_total': below_cut_in_raw,
+        'hours_above_cut_out_observed_total': above_cut_out_raw,
+        'site_series_samples_total': int(raw_ws.size),
+        'site_series_samples_valid': int(valid_ws.sum()),
+        'site_series_samples_missing': int(raw_ws.size - valid_ws.sum()),
+        'site_series_valid_hours_observed_total': total_hours,
+        'site_series_annualization_factor': annualization,
+        'site_series_dt_hours': sample_hours,
         'near_cp_fraction': float(near_cp_fraction),
         'site_mean_speed_ms': site_mean,
         'cp_reference_density_kg_m3': density,

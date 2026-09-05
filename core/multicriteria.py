@@ -10,6 +10,8 @@ Turbine-site adaptation (maximize, unless noted):
   cp_at_site_mean       — Cp at the site's mean hub-height wind speed [–]
   cpmax_speed_mismatch_ms — |site mean speed - turbine Cp-max speed| [m/s], minimize
   hours_near_cpmax      — annual hours with Cp(v) >= 95% of turbine Cp-max [h]
+  cp_effective_full_series — mean Cp over every valid record in the series [–]
+  resource_operational_availability_pct — share of valid time with P(v) > 0 [%]
 
 Technical (maximize):
   factor_capacidad      — CF = AEP / (Pnom·8760) [–]
@@ -37,6 +39,8 @@ DEFAULT_WEIGHTS = {
     'cp_at_site_mean':       0.00,
     'cpmax_speed_mismatch_ms': 0.00,
     'hours_near_cpmax':      0.00,
+    'cp_effective_full_series': 0.00,
+    'resource_operational_availability_pct': 0.00,
     'factor_capacidad':      0.15,
     'aep_mwh':               0.13,
     'directional_concentration': 0.05,
@@ -53,6 +57,8 @@ CRITERION_DIRECTION = {
     'cp_at_site_mean':     +1,
     'cpmax_speed_mismatch_ms': -1,
     'hours_near_cpmax':    +1,
+    'cp_effective_full_series': +1,
+    'resource_operational_availability_pct': +1,
     'factor_capacidad':    +1,
     'aep_mwh':             +1,
     'directional_concentration': +1,
@@ -68,6 +74,8 @@ CRITERION_LABELS = {
     'cp_at_site_mean':     'Cp a velocidad media del sitio',
     'cpmax_speed_mismatch_ms': '|v media − v de Cp máximo| (m/s)',
     'hours_near_cpmax':    'Horas en zona ≥95% de Cp máximo',
+    'cp_effective_full_series': 'Cp efectivo sobre la serie completa',
+    'resource_operational_availability_pct': 'Disponibilidad operativa del recurso (%)',
     'factor_capacidad':    'Factor de capacidad',
     'aep_mwh':             'AEP (MWh)',
     'directional_concentration': 'Consistencia direccional',
@@ -83,6 +91,8 @@ LAYOUT_WEIGHTS = {
     'cp_at_site_mean': 0.00,
     'cpmax_speed_mismatch_ms': 0.00,
     'hours_near_cpmax': 0.00,
+    'cp_effective_full_series': 0.00,
+    'resource_operational_availability_pct': 0.00,
     'van_usd': 0.18,
     'lcoe_usd_kwh': 0.12,
     'capex_usd': 0.05,
@@ -101,6 +111,8 @@ LAYOUT_WEIGHTS = {
 LAYOUT_DIRECTION = {
     'cp_at_site_mean': +1, 'cpmax_speed_mismatch_ms': -1,
     'hours_near_cpmax': +1,
+    'cp_effective_full_series': +1,
+    'resource_operational_availability_pct': +1,
     'van_usd': +1, 'lcoe_usd_kwh': -1, 'capex_usd': -1,
     'opex_lifetime_usd': -1, 'aep_p90_mwh': +1,
     'wake_loss_pct': -1, 'factor_capacidad': +1,
@@ -113,6 +125,8 @@ LAYOUT_LABELS = {
     'cp_at_site_mean': 'Cp a velocidad media del sitio',
     'cpmax_speed_mismatch_ms': '|v media − v de Cp máximo| (m/s)',
     'hours_near_cpmax': 'Horas en zona ≥95% de Cp máximo',
+    'cp_effective_full_series': 'Cp efectivo sobre la serie completa',
+    'resource_operational_availability_pct': 'Disponibilidad operativa del recurso (%)',
     'van_usd': 'VAN (USD)', 'lcoe_usd_kwh': 'LCOE (USD/kWh)',
     'capex_usd': 'CAPEX (USD)', 'opex_lifetime_usd': 'OPEX de vida (USD)',
     'aep_p90_mwh': 'AEP P90 (MWh)', 'wake_loss_pct': 'Pérdida por estela (%)',
@@ -127,6 +141,7 @@ LAYOUT_LABELS = {
 
 SITE_FIT_CRITERIA = (
     'cp_at_site_mean', 'cpmax_speed_mismatch_ms', 'hours_near_cpmax',
+    'cp_effective_full_series', 'resource_operational_availability_pct',
 )
 
 
@@ -188,9 +203,12 @@ def rank_layout_alternatives(alternatives: List[Dict],
         ):
             raw_weights.pop(key)
 
+    zero_weight_criteria = [key for key, value in raw_weights.items() if value == 0]
+    scored_weights = {key: value for key, value in raw_weights.items() if value > 0}
+
     valid, excluded = [], list(pre_excluded)
     for alt in alternatives:
-        missing = [key for key in raw_weights
+        missing = [key for key in scored_weights
                    if alt.get(key) is None or not np.isfinite(float(alt.get(key))) ]
         if missing or not alt.get('feasible', True):
             excluded.append({'label': alt.get('label'), 'missing': missing,
@@ -203,7 +221,7 @@ def rank_layout_alternatives(alternatives: List[Dict],
 
     active = []
     constant = []
-    for key in raw_weights:
+    for key in scored_weights:
         values = np.asarray([float(alt[key]) for alt in valid], dtype=float)
         if np.ptp(values) <= 1e-12:
             constant.append(key)
@@ -214,10 +232,10 @@ def rank_layout_alternatives(alternatives: List[Dict],
         return {'ranking': ranked, 'weights': {}, 'n': len(ranked),
                 'excluded': excluded, 'constant_criteria': constant}
 
-    total = sum(raw_weights[key] for key in active)
+    total = sum(scored_weights[key] for key in active)
     if total <= 0:
         raise ValueError('Al menos un criterio TOPSIS variable debe tener peso positivo.')
-    effective_weights = {key: raw_weights[key] / total for key in active}
+    effective_weights = {key: scored_weights[key] / total for key in active}
     matrix = np.asarray([[float(alt[key]) for key in active] for alt in valid], dtype=float)
     norms = np.linalg.norm(matrix, axis=0)
     norms[norms == 0] = 1.0
@@ -278,6 +296,7 @@ def rank_layout_alternatives(alternatives: List[Dict],
     return {'ranking': ranked, 'weights': effective_weights, 'n': len(ranked),
             'criteria': active, 'labels': LAYOUT_LABELS,
             'constant_criteria': constant, 'excluded': excluded,
+            'zero_weight_criteria': zero_weight_criteria,
             'profile': 'balanced_integral_v1',
             'sensitivity_scenarios': len(scenarios)}
 
@@ -345,6 +364,8 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None,
                     'note': 'Ninguna alternativa pasó el filtro de viabilidad.'}
 
     w = _normalize_weights(weights)
+    zero_weight_criteria = [key for key, value in w.items() if value == 0]
+    w = {key: value for key, value in w.items() if value > 0}
     criteria = list(w.keys())
     n = len(alternatives)
 
@@ -407,7 +428,8 @@ def topsis(alternatives: List[Dict], weights: Optional[Dict[str, float]] = None,
         entry['rank'] = k + 1
 
     return {'ranking': ranked, 'weights': w, 'n': n,
-            'criteria': criteria, 'labels': CRITERION_LABELS}
+            'criteria': criteria, 'labels': CRITERION_LABELS,
+            'zero_weight_criteria': zero_weight_criteria}
 
 
 def rank_sites_turbines(sites_analysis: List[Dict],

@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 from core.cost_model import CostModel
-from core.energy import PowerCurve, compute_site_cp_fit
+from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellmann
 from core.farm import (
     gaussian_min_valid_distance_d,
     optimize_layout_structured,
@@ -177,7 +177,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model: Optional[CostModel] = None,
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
-                         weights: Optional[Dict[str, float]] = None):
+                         weights: Optional[Dict[str, float]] = None,
+                         historical_wind: Optional[Dict] = None):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -299,14 +300,45 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
             area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
             curve_points = list(turbine._raw_points)
+            cp_ws = ws
+            cp_dt_hours = 1.0
+            cp_source = {
+                'method': 'weibull_8760_fallback',
+                'source_id': None,
+                'rows': int(len(ws)),
+                'measurement_height_m': float(turbine.hub_height_m),
+                'analysis_height_m': float(turbine.hub_height_m),
+            }
+            if historical_wind and historical_wind.get('ws') is not None:
+                historical_ws = np.asarray(historical_wind.get('ws'), dtype=float)
+                if np.isfinite(historical_ws).any():
+                    source_height = float(
+                        historical_wind.get('measurement_height_m')
+                        or turbine.hub_height_m
+                    )
+                    analysis_height = float(turbine.hub_height_m)
+                    cp_ws = extrapolate_wind_hellmann(
+                        historical_ws, source_height, analysis_height)
+                    cp_dt_hours = float(historical_wind.get('dt_hours') or 1.0)
+                    cp_source = {
+                        'method': 'complete_historical_series',
+                        'source_id': historical_wind.get('source_id'),
+                        'source_kind': historical_wind.get('source_kind'),
+                        'source_label': historical_wind.get('source_label'),
+                        'rows': int(len(historical_ws)),
+                        'measurement_height_m': source_height,
+                        'analysis_height_m': analysis_height,
+                        'dt_hours': cp_dt_hours,
+                    }
             cp_fit = compute_site_cp_fit(
-                ws,
+                cp_ws,
                 [point[0] for point in curve_points],
                 [point[1] for point in curve_points],
                 turbine.rotor_diameter_m,
-                rho=rho, dt_hours=1.0, max_w=turbine.cut_out,
+                rho=rho, dt_hours=cp_dt_hours, max_w=turbine.cut_out,
                 near_cp_fraction=0.95,
             )
+            cp_fit['site_fit_source'] = cp_source
             alternatives.append({
                 'label': f'layout::{filename}::wake-optimal',
                 'site': f'Parque óptimo por estela ({selected_n}/{physical_max_n} aeros)',

@@ -91,6 +91,27 @@ class TurbineSiteCpFitTests(unittest.TestCase):
         self.assertAlmostEqual(results[10.0]['site_mean_speed_ms'],
                                float(np.mean(site_wind)))
 
+    def test_full_series_metrics_exclude_missing_and_annualize_hours(self):
+        curve_ws, curve_kw = self.curve_with_cp_peak(10.0)
+        result = compute_site_cp_fit(
+            np.asarray([np.nan, 2.0, 10.0, 30.0]),
+            curve_ws, curve_kw, rotor_diameter_m=80.0,
+            rho=1.225, dt_hours=0.5, max_w=25.0,
+        )
+        self.assertEqual(result['site_series_samples_total'], 4)
+        self.assertEqual(result['site_series_samples_valid'], 3)
+        self.assertEqual(result['site_series_samples_missing'], 1)
+        self.assertAlmostEqual(result['site_series_valid_hours_observed_total'], 1.5)
+        self.assertAlmostEqual(result['resource_operational_availability_pct'], 100.0 / 3.0)
+        self.assertAlmostEqual(result['resource_operational_hours'], 2920.0)
+        self.assertAlmostEqual(result['resource_non_generation_hours'], 5840.0)
+        self.assertAlmostEqual(result['hours_below_cut_in_observed_total'], 0.5)
+        self.assertAlmostEqual(result['hours_above_cut_out_observed_total'], 0.5)
+        self.assertGreater(result['cp_effective_full_series'], 0.0)
+        self.assertLess(result['cp_effective_full_series'],
+                        result['cp_effective_operating'])
+        self.assertGreater(result['cp_effective_operating'], 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

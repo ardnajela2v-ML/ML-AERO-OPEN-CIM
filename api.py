@@ -4904,9 +4904,31 @@ def create_app():
         except (TypeError, ValueError) as exc:
             return _err(str(exc))
         source_info = None
+        historical_wind = None
         if body.get('session_id'):
-            source_info = _analysis_source_info(
-                get_session(str(body['session_id'])), body)
+            source_session = get_session(str(body['session_id']))
+            source_info = _analysis_source_info(source_session, body)
+            source_frame = _analysis_df(source_session, body)
+            if source_frame is not None and len(source_frame):
+                source_ws_col = _energy_ws_col(source_session, body)
+                if source_ws_col in source_frame.columns:
+                    source_id, source_record = _analysis_source_record(source_session, body)
+                    source_record = source_record or {}
+                    source_height = (
+                        source_record.get('target_height_m')
+                        or source_record.get('measurement_height_m')
+                        or _sess_ws_h(body, source_session, 'measurement_height_m')
+                    )
+                    historical_wind = {
+                        'ws': pd.to_numeric(
+                            source_frame[source_ws_col], errors='coerce'
+                        ).to_numpy(dtype=float),
+                        'dt_hours': _infer_dt_h(source_frame.index),
+                        'measurement_height_m': float(source_height),
+                        'source_id': source_id,
+                        'source_kind': source_record.get('kind') or source_info.get('kind'),
+                        'source_label': source_record.get('label') or source_info.get('label'),
+                    }
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None
         bounds = body.get('area_bounds') or body.get('bounds') or None
@@ -5062,6 +5084,7 @@ def create_app():
                             else 'irena_onshore_2024_global_weighted_average'),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
                         weights=body.get('layout_weights'),
+                        historical_wind=historical_wind,
                     )
                     ranking = layout_result['ranking']
                     ranking['mode'] = 'layout_alternatives'

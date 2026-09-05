@@ -7462,10 +7462,8 @@ async function mcdaRunAnalysis() {
     exclusion_polygons: exclusionPolygons,
     boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
   };
-  if (WP.activeDataSource) {
-    body.session_id = WP.sessionId;
-    body.data_source = WP.activeDataSource;
-  }
+  if (WP.sessionId) body.session_id = WP.sessionId;
+  if (WP.activeDataSource) body.data_source = WP.activeDataSource;
   if (areaMode) {
     mcdaRememberLayoutWeights();
     body.layout_weights = MCDA.layoutWeights || MCDA.defaults?.layout_weights;
@@ -7645,13 +7643,26 @@ function mcdaLayoutAuditHtml(a) {
       ['Incertidumbre combinada', `${mcdaAuditNumber(a.aep_uncertainty_pct, 2)}%`],
     ]),
     mcdaAuditCard('Adaptación aerodinámica al sitio', [
+      ['Fuente temporal', mcdaAuditEscape(
+        a.site_fit_source?.method === 'complete_historical_series'
+          ? `${a.site_fit_source?.source_label || a.site_fit_source?.source_id || 'Serie histórica activa'} · serie completa`
+          : 'Fallback Weibull sintético de 8,760 h'
+      )],
+      ['Registros válidos / totales', `${mcdaAuditNumber(a.site_series_samples_valid, 0)} / ${mcdaAuditNumber(a.site_series_samples_total, 0)}`],
       ['Velocidad media del sitio', `${mcdaAuditNumber(a.site_mean_speed_ms, 2)} m/s`],
       ['Cp a velocidad media', `<b>${mcdaAuditNumber(a.cp_at_site_mean, 4)}</b>`],
+      ['Cp efectivo sobre la serie completa', `<b>${mcdaAuditNumber(a.cp_effective_full_series, 4)}</b>`],
+      ['Cp medio durante operación', mcdaAuditNumber(a.cp_effective_operating, 4)],
       ['Cp máximo de la turbina', mcdaAuditNumber(a.cp_max_turbine, 4)],
+      ['Cp máximo alcanzado en el sitio', mcdaAuditNumber(a.cp_max_reached_at_site, 4)],
+      ['Acceso al pico Cp de la curva', `${mcdaAuditNumber(Number(a.cp_peak_access_ratio) * 100, 2)}%`],
       ['Velocidad de Cp máximo', `${mcdaAuditNumber(a.ws_at_cp_max_ms, 2)} m/s`],
       ['Diferencia |v media − v Cp máx.|', `<b>${mcdaAuditNumber(a.cpmax_speed_mismatch_ms, 2)} m/s</b>`],
       ['Horas en zona ≥95% Cp máximo', `<b>${mcdaAuditNumber(a.hours_near_cpmax, 1)} h/año</b>`],
       ['Tiempo en zona ≥95% Cp máximo', `${mcdaAuditNumber(a.near_cpmax_pct, 2)}%`],
+      ['Disponibilidad operativa del recurso', `<b>${mcdaAuditNumber(a.resource_operational_availability_pct, 2)}%</b>`],
+      ['Horas operativas equivalentes', `${mcdaAuditNumber(a.resource_operational_hours, 1)} h/año`],
+      ['Horas sin generación por recurso', `${mcdaAuditNumber(a.resource_non_generation_hours, 1)} h/año`],
     ]),
     mcdaAuditCard('CAPEX auditable', [
       ['Referencia de diseño', mcdaAuditEscape(costBenchmark.label || econ.cost_model_origin)],
@@ -7734,7 +7745,7 @@ function mcdaRenderRanking(r) {
         `<br><button class="btn-secondary" type="button" style="font-size:.68rem;padding:.2rem .45rem;margin-top:.3rem" onclick="mcdaToggleAudit('mcda-audit-${index}')">Ver todos los resultados y fórmulas</button>`
       : '';
     const cpFitInfo = Number.isFinite(Number(a.cp_at_site_mean))
-      ? `<br><span class="text-muted" style="font-size:.72rem">Cp(v̄) <b>${Number(a.cp_at_site_mean).toFixed(4)}</b> · v Cp máx. ${Number(a.ws_at_cp_max_ms).toFixed(2)} m/s · diferencia ${Number(a.cpmax_speed_mismatch_ms).toFixed(2)} m/s · zona eficiente ${Math.round(Number(a.hours_near_cpmax)).toLocaleString()} h</span>`
+      ? `<br><span class="text-muted" style="font-size:.72rem">Cp(v̄) <b>${Number(a.cp_at_site_mean).toFixed(4)}</b> · Cp efectivo ${Number(a.cp_effective_full_series).toFixed(4)} · disponibilidad recurso ${Number(a.resource_operational_availability_pct).toFixed(1)}% · zona eficiente ${Math.round(Number(a.hours_near_cpmax)).toLocaleString()} h/año</span>`
       : '';
     return `<tr ${highlight}>
       <td><strong>${medal}</strong></td>
