@@ -209,7 +209,7 @@ class LayoutTopsisTests(unittest.TestCase):
         directions = {
             'lcoe_usd_kwh', 'capex_usd', 'opex_lifetime_usd', 'wake_loss_pct',
             'aep_uncertainty_pct', 'curtailment_loss_pct', 'collection_length_m',
-            'civil_complexity_index',
+            'civil_complexity_index', 'payback_years',
         }
         row = {'label': label, 'feasible': True}
         for key in LAYOUT_WEIGHTS:
@@ -280,6 +280,10 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertIn('cp_effective_full_series', changed['zero_weight_criteria'])
         self.assertIn('resource_operational_availability_pct',
                       changed['zero_weight_criteria'])
+        self.assertIn('benefit_cost_ratio', changed['zero_weight_criteria'])
+        self.assertIn('payback_years', changed['zero_weight_criteria'])
+        self.assertIn('irr', changed['zero_weight_criteria'])
+        self.assertIn('roi', changed['zero_weight_criteria'])
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{
@@ -345,6 +349,12 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertGreater(winner['aep_mwh'], 0)
         self.assertGreater(winner['capex_usd'], 0)
         self.assertTrue(math.isfinite(winner['lcoe_usd_kwh']))
+        self.assertGreater(winner['benefit_cost_ratio'], 0.0)
+        self.assertEqual(winner['benefit_cost_ratio'] > 1.0,
+                         winner['van_usd'] > 0.0)
+        self.assertGreater(winner['irr'], 0.0)
+        self.assertGreater(winner['roi'], 0.0)
+        self.assertGreater(winner['payback_years'], 0.0)
         installed_kw = (
             winner['turbine_specification']['rated_power_kw']
             * winner['n_aerogeneradores']

@@ -91,7 +91,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     annual_opex = cost_model.opex_annual_usd(capex)
     decommissioning = capex * max(0.0, decommissioning_pct) / 100.0
     cashflows = [-capex]
-    pv_costs, pv_energy = capex, 0.0
+    pv_costs, pv_energy, pv_revenue = capex, 0.0, 0.0
     cumulative = -capex
     payback = None
     cashflow_table = []
@@ -103,14 +103,19 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         terminal = decommissioning if year == project_years else 0.0
         net = revenue - annual_opex - terminal
         cashflows.append(net)
+        previous_cumulative = cumulative
         cumulative += net
         if payback is None and cumulative >= 0:
-            payback = year
+            payback = (
+                year - 1 + (-previous_cumulative) / net
+                if net > 0 else float(year)
+            )
         factor = (1.0 + discount_rate) ** year
         discounted_opex = annual_opex / factor
         discounted_terminal = terminal / factor
         pv_opex += discounted_opex
         pv_decommissioning += discounted_terminal
+        pv_revenue += revenue / factor
         pv_costs += discounted_opex + discounted_terminal
         pv_energy += energy * 1000.0 / factor
         cashflow_table.append({
@@ -135,6 +140,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'opex_lifetime_usd': annual_opex * project_years,
         'opex_present_value_usd': pv_opex,
         'van_usd': van,
+        'benefit_cost_ratio': pv_revenue / pv_costs if pv_costs > 0 else None,
         'roi': van / capex if capex > 0 else None,
         'irr': _irr(cashflows),
         'payback_years': payback,
@@ -152,6 +158,8 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
             'annual_opex': 'capex_usd × opex_pct_capex',
             'annual_revenue': 'aep_p50_mwh × 1000 × price_usd_kwh',
             'npv': 'Σ net_cashflow_t ÷ (1 + discount_rate)^t, incluyendo CAPEX en t=0',
+            'benefit_cost_ratio': 'PV(ingresos) ÷ PV(CAPEX + OPEX + desmantelamiento)',
+            'payback': 'año anterior + saldo pendiente ÷ flujo neto del año',
             'lcoe': 'PV(CAPEX + OPEX + desmantelamiento) ÷ PV(energía neta)',
         },
     }

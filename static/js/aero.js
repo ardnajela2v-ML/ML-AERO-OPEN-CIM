@@ -7050,7 +7050,7 @@ async function mcdaBuildWeightSliders() {
   const weights = isLayout ? MCDA.layoutWeights : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
-  container.innerHTML = Object.entries(weights).map(([k, v]) => {
+  const renderWeight = ([k, v]) => {
     const dir = directions[k];
     const label = labels[k];
     const hint = dir > 0 ? '↑ max' : '↓ min';
@@ -7065,7 +7065,25 @@ async function mcdaBuildWeightSliders() {
           oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberLayoutWeights()">
         <span style="font-family:var(--font-mono);width:42px;text-align:right">${Number(v).toFixed(3)}</span>
       </div>`;
-  }).join('');
+  };
+  if (!isLayout) {
+    container.innerHTML = Object.entries(weights).map(renderWeight).join('');
+    return;
+  }
+  const economicKeys = new Set([
+    'capex_usd', 'opex_lifetime_usd', 'lcoe_usd_kwh', 'van_usd',
+    'benefit_cost_ratio', 'payback_years', 'irr', 'roi',
+  ]);
+  const entries = Object.entries(weights);
+  const renderGroup = (title, rows) => `
+    <section style="border:1px solid var(--border);border-radius:8px;padding:.65rem;display:grid;gap:.5rem">
+      <h5 style="grid-column:1/-1;font-size:.78rem;margin:0;color:var(--text-primary)">${title}</h5>
+      ${rows.map(renderWeight).join('')}
+    </section>`;
+  container.innerHTML = [
+    renderGroup('1. Adaptabilidad técnica y energética', entries.filter(([key]) => !economicKeys.has(key))),
+    renderGroup('2. Evaluación económica', entries.filter(([key]) => economicKeys.has(key))),
+  ].join('');
 }
 
 function mcdaGetWeights() {
@@ -7707,8 +7725,11 @@ function mcdaLayoutAuditHtml(a) {
       ['Precio energía', `${mcdaAuditNumber(econ.price_usd_kwh, 4)} USD/kWh`],
       ['Ingreso año 1', mcdaAuditMoney(a.annual_revenue_year1_usd)],
       ['Tasa / horizonte', `${mcdaAuditNumber(Number(econ.discount_rate) * 100, 2)}% / ${mcdaAuditNumber(econ.project_years, 0)} años`],
-      ['VAN / ROI', `${mcdaAuditMoney(a.van_usd)} / ${mcdaAuditNumber(a.roi, 3)}`],
-      ['TIR / payback', `${a.irr == null ? '—' : mcdaAuditNumber(Number(a.irr) * 100, 2) + '%'} / ${mcdaAuditNumber(a.payback_years, 1)} años`],
+      ['VAN / VPN', `<b>${mcdaAuditMoney(a.van_usd)}</b>`],
+      ['Relación beneficio/costo', `<b>${mcdaAuditNumber(a.benefit_cost_ratio, 3)}</b>`],
+      ['ROI (VAN/CAPEX)', mcdaAuditNumber(a.roi, 3)],
+      ['TIR', a.irr == null ? '—' : `${mcdaAuditNumber(Number(a.irr) * 100, 2)}%`],
+      ['PRI / periodo de recuperación', a.payback_years == null ? '> horizonte del proyecto' : `${mcdaAuditNumber(a.payback_years, 2)} años`],
       ['LCOE', `${mcdaAuditNumber(a.lcoe_usd_kwh, 5)} USD/kWh`],
       ['Origen modelo', mcdaAuditEscape(econ.cost_model_origin)],
     ]),
