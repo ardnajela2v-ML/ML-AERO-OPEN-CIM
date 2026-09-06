@@ -4868,7 +4868,15 @@ def create_app():
         if 'alternatives' in body:
             if not isinstance(body['alternatives'], list):
                 return jsonify({'error': 'alternatives must be a list'}), 400
-            result = (rank_layout_alternatives(body['alternatives'], weights=weights)
+            alternatives = body['alternatives']
+            if mode == 'layout_alternatives' and body.get('polygon'):
+                from core.farm_mcda import add_effective_area_metrics
+                try:
+                    alternatives = add_effective_area_metrics(
+                        alternatives, body['polygon'], body.get('exclusion_polygons'))
+                except (ValueError, TypeError, KeyError) as exc:
+                    return _err(str(exc))
+            result = (rank_layout_alternatives(alternatives, weights=weights)
                       if mode == 'layout_alternatives'
                       else topsis(body['alternatives'], weights=weights))
         elif 'sites_analysis' in body:

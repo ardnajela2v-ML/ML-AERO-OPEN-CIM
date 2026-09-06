@@ -16,11 +16,40 @@ from core.farm import (
     optimize_layout_structured,
     simulate_wind_farm,
 )
-from core.farm_mcda import analyze_park_layouts
+from core.farm_mcda import analyze_park_layouts, effective_park_area, add_effective_area_metrics
 from core.multicriteria import (
     LAYOUT_WEIGHTS,
     rank_layout_alternatives,
 )
+
+
+class EffectiveAreaTests(unittest.TestCase):
+    @staticmethod
+    def rectangle(x0, y0, x1, y1):
+        return [dict(lon=x, lat=y) for x, y in
+                [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]]
+
+    def test_exclusions_are_unioned_and_clipped_to_property(self):
+        polygon = self.rectangle(0, 0, .01, .01)
+        exclusions = [self.rectangle(-.01, 0, .004, .01),
+                      self.rectangle(.002, 0, .006, .01)]
+        area = effective_park_area(polygon, exclusions)
+        self.assertAlmostEqual(area['effective_area_km2'] / area['gross_area_km2'], .4)
+        rows = add_effective_area_metrics([
+            dict(aep_p90_mwh=100, van_usd=200, rotor_diameter=80),
+            dict(aep_p90_mwh=200, van_usd=-100, rotor_diameter=120),
+        ], polygon, exclusions)
+        for row in rows:
+            self.assertEqual(row['effective_area_km2'], area['effective_area_km2'])
+            self.assertAlmostEqual(row['aep_p90_mwh_per_effective_km2'],
+                                   row['aep_p90_mwh'] / area['effective_area_km2'])
+            self.assertAlmostEqual(row['van_usd_per_effective_km2'],
+                                   row['van_usd'] / area['effective_area_km2'])
+
+    def test_fully_excluded_property_is_rejected(self):
+        polygon = self.rectangle(0, 0, .01, .01)
+        with self.assertRaises(ValueError):
+            effective_park_area(polygon, [polygon])
 
 
 class FarmScientificModelTests(unittest.TestCase):
@@ -204,6 +233,37 @@ class FarmScientificModelTests(unittest.TestCase):
 
 
 class LayoutTopsisTests(unittest.TestCase):
+    def test_each_of_eight_criteria_can_drive_selection(self):
+        from core.multicriteria import LAYOUT_DIRECTION
+        self.assertEqual(len(LAYOUT_WEIGHTS), 8)
+        for criterion in LAYOUT_WEIGHTS:
+            with self.subTest(criterion=criterion):
+                a = self.alternative('a', 1.0)
+                b = self.alternative('b', 1.0)
+                a[criterion] = 2.0 if LAYOUT_DIRECTION[criterion] > 0 else 0.5
+                weights = {key: float(key == criterion) for key in LAYOUT_WEIGHTS}
+                result = rank_layout_alternatives([a, b], weights=weights)
+                self.assertEqual(result['ranking'][0]['label'], 'a')
+                self.assertEqual(result['criteria'], [criterion])
+
+    def test_retired_weights_from_old_projects_cannot_affect_ranking(self):
+        from core.multicriteria import LAYOUT_AUDIT_ONLY
+        alternatives = [self.alternative('a', 1.0), self.alternative('b', 2.0)]
+        baseline = rank_layout_alternatives(alternatives)
+        for i, row in enumerate(alternatives):
+            row.update({key: 100000.0 if i == 0 else 0.01
+                        for key in LAYOUT_AUDIT_ONLY})
+        result = rank_layout_alternatives(
+            alternatives, weights={key: 0.5 for key in LAYOUT_AUDIT_ONLY})
+        self.assertEqual([row['label'] for row in baseline['ranking']],
+                         [row['label'] for row in result['ranking']])
+        np.testing.assert_allclose(
+            [row['topsis_score'] for row in baseline['ranking']],
+            [row['topsis_score'] for row in result['ranking']])
+        for key in LAYOUT_AUDIT_ONLY:
+            self.assertNotIn(key, result['weights'])
+            self.assertIn(key, result['ranking'][0])
+
     @staticmethod
     def alternative(label, scale):
         directions = {
@@ -220,7 +280,7 @@ class LayoutTopsisTests(unittest.TestCase):
         complete_a = self.alternative('a', 1.0)
         complete_b = self.alternative('b', 2.0)
         incomplete = self.alternative('missing', 3.0)
-        incomplete['van_usd'] = None
+        incomplete['lcoe_usd_kwh'] = None
         result = rank_layout_alternatives([complete_a, complete_b, incomplete])
         self.assertEqual(result['n'], 2)
         self.assertEqual(result['ranking'][0]['label'], 'b')
@@ -255,9 +315,14 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(result['ranking'][0]['n_aerogeneradores'], 8)
 
     def test_new_hourly_metrics_do_not_change_base_ranking_while_weight_is_zero(self):
+        weights = dict(LAYOUT_WEIGHTS)
+        for key in ('cp_effective_full_series', 'hours_near_cpmax',
+                    'benefit_cost_ratio', 'van_usd_per_effective_km2',
+                    'discounted_payback_years'):
+            weights[key] = 0.0
         first = self.alternative('first', 1.0)
         second = self.alternative('second', 1.2)
-        baseline = rank_layout_alternatives([first, second])
+        baseline = rank_layout_alternatives([first, second], weights=weights)
         changed_first = dict(
             first, cp_at_site_mean=0.01, cpmax_speed_mismatch_ms=20.0,
             hours_near_cpmax=0.0, cp_effective_full_series=0.01,
@@ -268,7 +333,7 @@ class LayoutTopsisTests(unittest.TestCase):
             hours_near_cpmax=8760.0, cp_effective_full_series=0.59,
             resource_operational_availability_pct=100.0,
         )
-        changed = rank_layout_alternatives([changed_first, changed_second])
+        changed = rank_layout_alternatives([changed_first, changed_second], weights=weights)
         self.assertEqual(
             [row['label'] for row in baseline['ranking']],
             [row['label'] for row in changed['ranking']],
@@ -278,19 +343,8 @@ class LayoutTopsisTests(unittest.TestCase):
             [row['topsis_score'] for row in changed['ranking']],
         )
         self.assertIn('cp_effective_full_series', changed['zero_weight_criteria'])
-        self.assertIn('resource_operational_availability_pct',
-                      changed['zero_weight_criteria'])
         self.assertIn('benefit_cost_ratio', changed['zero_weight_criteria'])
-        self.assertIn('payback_years', changed['zero_weight_criteria'])
-        self.assertIn('irr', changed['zero_weight_criteria'])
-        self.assertIn('roi', changed['zero_weight_criteria'])
-        self.assertIn('hours_at_or_above_90pct_rated',
-                      changed['zero_weight_criteria'])
-        self.assertIn('capex_usd_per_installed_kw',
-                      changed['zero_weight_criteria'])
-        self.assertIn('opex_usd_per_installed_kw_year',
-                      changed['zero_weight_criteria'])
-        self.assertIn('van_usd_per_installed_mw',
+        self.assertIn('van_usd_per_effective_km2',
                       changed['zero_weight_criteria'])
         self.assertIn('discounted_payback_years',
                       changed['zero_weight_criteria'])
@@ -357,6 +411,8 @@ class LayoutTopsisTests(unittest.TestCase):
         winner = result['ranking']['ranking'][0]
         self.assertEqual(winner['n_aerogeneradores'], winner['n_optimo_estela'])
         self.assertGreater(winner['aep_mwh'], 0)
+        self.assertAlmostEqual(winner['aep_p90_mwh_per_installed_mw'],
+                               winner['aep_p90_mwh'] / winner['installed_mw'])
         self.assertGreater(winner['capex_usd'], 0)
         self.assertTrue(math.isfinite(winner['lcoe_usd_kwh']))
         self.assertGreater(winner['benefit_cost_ratio'], 0.0)

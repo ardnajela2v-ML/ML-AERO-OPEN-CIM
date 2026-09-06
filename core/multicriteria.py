@@ -90,39 +90,35 @@ CRITERION_LABELS = {
 
 
 LAYOUT_WEIGHTS = {
-    # Adaptación turbina-sitio disponible sin cambiar la base histórica.
-    'cp_at_site_mean': 0.00,
-    'cpmax_speed_mismatch_ms': 0.00,
-    'hours_near_cpmax': 0.00,
-    'cp_effective_full_series': 0.00,
-    'resource_operational_availability_pct': 0.00,
-    'hours_at_or_above_90pct_rated': 0.00,
-    # Indicadores económicos adicionales disponibles para la nueva
-    # ponderación; permanecen inactivos hasta que el usuario asigne pesos.
-    'benefit_cost_ratio': 0.00,
-    'payback_years': 0.00,
-    'irr': 0.00,
-    'roi': 0.00,
-    'capex_usd_per_installed_kw': 0.00,
-    'opex_usd_per_installed_kw_year': 0.00,
-    'van_usd_per_installed_mw': 0.00,
-    'discounted_payback_years': 0.00,
-    'van_usd': 0.18,
-    'lcoe_usd_kwh': 0.12,
-    'capex_usd': 0.05,
-    'opex_lifetime_usd': 0.05,
-    'aep_p90_mwh': 0.15,
-    'wake_loss_pct': 0.08,
-    'factor_capacidad': 0.07,
-    'iec_suitability_score': 0.10,
-    'aep_uncertainty_pct': 0.06,
-    'curtailment_loss_pct': 0.04,
-    'energy_density_mwh_km2': 0.04,
-    'collection_length_m': 0.03,
-    'civil_complexity_index': 0.03,
+    # Agreed reference: technical 60%, economic 40%.
+    'cp_effective_full_series': 0.20,
+    'hours_near_cpmax': 0.20,
+    'factor_capacidad': 0.10,
+    'aep_p90_mwh_per_effective_km2': 0.10,
+    'discounted_payback_years': 0.20,
+    'van_usd_per_effective_km2': 0.10,
+    'benefit_cost_ratio': 0.075,
+    'lcoe_usd_kwh': 0.025,
 }
 
+# These values remain available in the alternative audit, but are no longer
+# eligible for park ranking, including when loading weights from older projects.
+LAYOUT_AUDIT_ONLY = (
+    'aep_p90_mwh_per_installed_mw', 'van_usd_per_installed_mw',
+    'cp_at_site_mean', 'hours_at_or_above_90pct_rated', 'capex_usd',
+    'aep_p90_mwh', 'wake_loss_pct', 'energy_density_mwh_km2',
+    'collection_length_m', 'cpmax_speed_mismatch_ms',
+    'resource_operational_availability_pct',
+    'capex_usd_per_installed_kw', 'opex_usd_per_installed_kw_year',
+    'opex_lifetime_usd', 'iec_suitability_score', 'aep_uncertainty_pct',
+    'curtailment_loss_pct', 'civil_complexity_index', 'van_usd',
+    'roi', 'irr', 'payback_years',
+)
+
 LAYOUT_DIRECTION = {
+    'aep_p90_mwh_per_effective_km2': +1,
+    'van_usd_per_effective_km2': +1,
+    'aep_p90_mwh_per_installed_mw': +1,
     'cp_at_site_mean': +1, 'cpmax_speed_mismatch_ms': -1,
     'hours_near_cpmax': +1,
     'cp_effective_full_series': +1,
@@ -143,6 +139,9 @@ LAYOUT_DIRECTION = {
 }
 
 LAYOUT_LABELS = {
+    'aep_p90_mwh_per_effective_km2': 'AEP P90 por área efectiva (MWh/km²·año)',
+    'van_usd_per_effective_km2': 'VAN por área efectiva (USD/km²)',
+    'aep_p90_mwh_per_installed_mw': 'AEP P90 específico (MWh/MW instalado·año)',
     'cp_at_site_mean': 'Cp a velocidad media del sitio',
     'cpmax_speed_mismatch_ms': '|v media − v de Cp máximo| (m/s)',
     'hours_near_cpmax': 'Horas en zona ≥95% de Cp máximo',
@@ -167,6 +166,11 @@ LAYOUT_LABELS = {
     'collection_length_m': 'Red colectora (m)',
     'civil_complexity_index': 'Complejidad civil',
 }
+
+LAYOUT_DIRECTION = {key: value for key, value in LAYOUT_DIRECTION.items()
+                    if key in LAYOUT_WEIGHTS}
+LAYOUT_LABELS = {key: value for key, value in LAYOUT_LABELS.items()
+                 if key in LAYOUT_WEIGHTS}
 
 SITE_FIT_CRITERIA = (
     'cp_at_site_mean', 'cpmax_speed_mismatch_ms', 'hours_near_cpmax',

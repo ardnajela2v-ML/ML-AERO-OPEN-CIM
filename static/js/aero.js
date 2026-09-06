@@ -207,8 +207,12 @@ function mcdaUsesObsoleteReweightedBase(weights) {
 
 function mcdaMergeLayoutWeightSchema(storedWeights, defaultWeights) {
   const stored = storedWeights && typeof storedWeights === 'object'
-    ? storedWeights
+    ? { ...storedWeights }
     : {};
+  if (!Object.prototype.hasOwnProperty.call(stored, 'aep_p90_mwh_per_installed_mw')
+      && Object.prototype.hasOwnProperty.call(stored, 'aep_p90_mwh')) {
+    stored.aep_p90_mwh_per_installed_mw = stored.aep_p90_mwh;
+  }
   return Object.fromEntries(Object.entries(defaultWeights || {}).map(([key, fallback]) => {
     const saved = Number(stored[key]);
     return [key, Object.prototype.hasOwnProperty.call(stored, key) && Number.isFinite(saved)
@@ -251,6 +255,7 @@ function collectProjectClientState() {
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
       layoutWeights: MCDA.layoutWeights,
+      weightSchema: MCDA.weightSchema,
     }),
     parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult }),
     globe: projectJsonClone({
@@ -295,6 +300,7 @@ async function applyProjectClientState(state) {
   if (state.mcda) {
     const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
     Object.assign(MCDA, state.mcda);
+    MCDA.weightSchema = state.mcda.weightSchema || null;
     const storedLayoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
     MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(storedLayoutWeights)
       ? null
@@ -7043,9 +7049,11 @@ async function mcdaBuildWeightSliders() {
   if (!container) return;
   const isLayout = MCDA.scope === 'area';
   if (isLayout) {
-    MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(MCDA.layoutWeights)
+    MCDA.layoutWeights = MCDA.weightSchema !== 'effective-area-v1'
+      || mcdaUsesObsoleteReweightedBase(MCDA.layoutWeights)
       ? { ...d.layout_weights }
       : mcdaMergeLayoutWeightSchema(MCDA.layoutWeights, d.layout_weights);
+    MCDA.weightSchema = 'effective-area-v1';
   }
   const weights = isLayout ? MCDA.layoutWeights : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
@@ -7074,7 +7082,7 @@ async function mcdaBuildWeightSliders() {
     'capex_usd', 'opex_lifetime_usd', 'lcoe_usd_kwh', 'van_usd',
     'benefit_cost_ratio', 'payback_years', 'irr', 'roi',
     'capex_usd_per_installed_kw', 'opex_usd_per_installed_kw_year',
-    'van_usd_per_installed_mw', 'discounted_payback_years',
+    'van_usd_per_installed_mw', 'van_usd_per_effective_km2', 'discounted_payback_years',
   ]);
   const entries = Object.entries(weights);
   const renderGroup = (title, rows) => `
@@ -7085,6 +7093,7 @@ async function mcdaBuildWeightSliders() {
   container.innerHTML = [
     renderGroup('1. Adaptabilidad técnica y energética', entries.filter(([key]) => !economicKeys.has(key))),
     renderGroup('2. Evaluación económica', entries.filter(([key]) => economicKeys.has(key))),
+    '<p class="text-muted" style="grid-column:1/-1;font-size:.75rem">Área efectiva: predio menos la unión de exclusiones permanentes, común a todas las turbinas. Los retiros afectan el acomodo, no el denominador. Los pesos se normalizan entre criterios válidos y variables.</p>',
   ].join('');
 }
 
@@ -7395,7 +7404,7 @@ function mcdaSetScope(scope) {
   mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
   if (body) {
-    body.innerHTML = '<tr><td colspan="10" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>';
+    mcdaRenderRanking({ranking: [], note: 'Ejecuta el análisis para ver el ranking.'});
   }
   const status = document.getElementById('mcda-status');
   if (status) status.textContent = 'Sin análisis';
@@ -7575,6 +7584,8 @@ async function mcdaRankNow() {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
         weights: mcdaGetWeights(),
+        polygon: MCDA.lastSpatial.comparison_polygon || mcdaParkPolygon(),
+        exclusion_polygons: MCDA.lastSpatial.comparison_exclusions || mcdaExclusionPolygons(),
       });
       MCDA.lastRanking = r;
       MCDA.lastSpatial.ranking = r;
@@ -7658,6 +7669,8 @@ function mcdaLayoutAuditHtml(a) {
       ['Potencia instalada', `${mcdaAuditNumber(installedKw / 1000, 3)} MW`],
       ['Diámetro / buje', `${mcdaAuditNumber(spec.rotor_diameter_m, 1)} / ${mcdaAuditNumber(spec.hub_height_m, 1)} m`],
       ['Área útil', `${mcdaAuditNumber(a.area_km2, 4)} km²`],
+      ['Área efectiva común', `${mcdaAuditNumber(a.effective_area_km2, 6)} km²`],
+      ['Exclusiones dentro del predio', `${mcdaAuditNumber(a.area_provenance?.excluded_area_km2, 6)} km²`],
       ['Separación layout', `${mcdaAuditNumber(layout.s_para_d, 2)}D × ${mcdaAuditNumber(layout.s_perp_d, 2)}D`],
       ['Orientación / tipo', `${mcdaAuditNumber(layout.orientation_deg, 1)}° · ${mcdaAuditEscape(layout.layout_type)}`],
       ['Colector MST', `${mcdaAuditNumber(a.collection_length_m, 1)} m`],
@@ -7668,6 +7681,8 @@ function mcdaLayoutAuditHtml(a) {
       ['AEP después de estela', `${mcdaAuditNumber(energy.aep_after_wake_operational_mwh, 1)} MWh`],
       ['AEP P50 final', `${mcdaAuditNumber(energy.aep_p50_after_all_losses_mwh, 1)} MWh`],
       ['AEP P90', `${mcdaAuditNumber(energy.aep_p90_mwh, 1)} MWh`],
+      ['AEP P90 por área efectiva', `${mcdaAuditNumber(a.aep_p90_mwh_per_effective_km2, 1)} MWh/km²·año`],
+      ['AEP P90 específico', `${mcdaAuditNumber(a.aep_p90_mwh_per_installed_mw, 1)} MWh/MW instalado·año`],
       ['Factor de capacidad', `${mcdaAuditNumber(Number(a.factor_capacidad) * 100, 2)}%`],
       ['Estela', `${mcdaAuditNumber(losses.wake_loss_pct, 2)}%`],
       ['Dominio estela', wakeValidity.model === 'gaussian'
@@ -7731,6 +7746,7 @@ function mcdaLayoutAuditHtml(a) {
       ['Ingreso año 1', mcdaAuditMoney(a.annual_revenue_year1_usd)],
       ['Tasa / horizonte', `${mcdaAuditNumber(Number(econ.discount_rate) * 100, 2)}% / ${mcdaAuditNumber(econ.project_years, 0)} años`],
       ['VAN / VPN', `<b>${mcdaAuditMoney(a.van_usd)}</b>`],
+      ['VAN por área efectiva', `${mcdaAuditMoney(a.van_usd_per_effective_km2)} /km²`],
       ['VAN normalizado', `<b>${mcdaAuditMoney(a.van_usd_per_installed_mw)} /MW instalado</b>`],
       ['Relación beneficio/costo', `<b>${mcdaAuditNumber(a.benefit_cost_ratio, 3)}</b>`],
       ['ROI (VAN/CAPEX)', mcdaAuditNumber(a.roi, 3)],
@@ -7771,9 +7787,30 @@ function mcdaToggleAudit(id) {
 function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
   const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
+  const parkMode = MCDA.scope === 'area';
+  const columns = [
+    ['cp_effective_full_series', 'Cp efectivo', '—', 4, 1],
+    ['hours_near_cpmax', 'Horas ≥95% Cp máx.', 'h/año', 1, 1],
+    ['factor_capacidad', 'FC neto', '%', 2, 100],
+    ['aep_p90_mwh_per_effective_km2', 'AEP P90 / área efectiva', 'MWh/km²·año', 1, 1],
+    ['discounted_payback_years', 'Recuperación descontada', 'años', 2, 1],
+    ['van_usd_per_effective_km2', 'VAN / área efectiva', 'USD/km²', 0, 1],
+    ['benefit_cost_ratio', 'B/C', '—', 3, 1],
+    ['lcoe_usd_kwh', 'LCOE', 'USD/kWh', 5, 1],
+  ];
+  const head = document.querySelector('#mcda-rank-tbl thead');
+  const applied = r?.weights || {};
+  if (head) head.innerHTML = parkMode
+    ? '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th>' + columns.map(([key, label, unit]) => {
+      const direction = ['discounted_payback_years', 'lcoe_usd_kwh'].includes(key) ? '↓' : '↑';
+      const weight = applied[key] == null ? 'Sin peso efectivo' : `${(100 * applied[key]).toFixed(1)}% efectivo`;
+      return `<th style="min-width:115px">${label} ${direction}<br><small>${unit}</small><br><small>${weight}</small></th>`;
+    }).join('') + '</tr>'
+    : '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th><th>CF</th><th>AEP (MWh)</th><th>VAN (USD)</th><th>LCOE</th><th>ROI</th><th>CAPEX (USD)</th></tr>';
+  const columnCount = parkMode ? 12 : 10;
   const top = ranking.slice(0, 100);
   if (!top.length) {
-    body.innerHTML = '<tr><td colspan="10" class="text-muted">Sin resultados.</td></tr>';
+    body.innerHTML = `<tr><td colspan="${columnCount}" class="text-muted">Sin resultados. ${mcdaAuditEscape(r?.note || '')}</td></tr>`;
     return;
   }
   body.innerHTML = top.map((a, index) => {
@@ -7793,15 +7830,21 @@ function mcdaRenderRanking(r) {
     return `<tr ${highlight}>
       <td><strong>${medal}</strong></td>
       <td title="${a.site||''}">${siteText}</td>
-      <td>${a.turbina||''}${cpFitInfo}${layoutInfo}</td>
+      <td style="min-width:220px;max-width:300px">${a.turbina||''}${parkMode ? '' : cpFitInfo}${layoutInfo}</td>
       <td><strong>${a.topsis_score.toFixed(4)}</strong></td>
-      <td>${(a.factor_capacidad*100).toFixed(1)}%</td>
+      ${parkMode ? columns.map(([key, label, unit, digits, scale]) => {
+        const value = a[key];
+        const display = value == null || !Number.isFinite(Number(value))
+          ? 'No calculado'
+          : (Number(value) * scale).toLocaleString('es-MX', {minimumFractionDigits: digits, maximumFractionDigits: digits});
+        return `<td data-criterion="${key}" style="white-space:nowrap;font-variant-numeric:tabular-nums">${display}</td>`;
+      }).join('') : `<td>${(a.factor_capacidad*100).toFixed(1)}%</td>
       <td>${Number.isFinite(Number(a.aep_mwh)) ? Math.round(a.aep_mwh).toLocaleString() : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.van_usd)) ? Math.round(a.van_usd).toLocaleString() : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.lcoe_usd_kwh)) ? Number(a.lcoe_usd_kwh).toFixed(4) : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.roi)) ? Number(a.roi).toFixed(2) : 'No calculado'}</td>
-      <td>${Number.isFinite(Number(a.capex_usd)) ? Math.round(a.capex_usd).toLocaleString() : 'No calculado'}</td>
-    </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="10">${mcdaLayoutAuditHtml(a)}</td></tr>`;
+      <td>${Number.isFinite(Number(a.capex_usd)) ? Math.round(a.capex_usd).toLocaleString() : 'No calculado'}</td>`}
+    </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="${columnCount}">${mcdaLayoutAuditHtml(a)}</td></tr>`;
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico
   syncTopsisWinnerToModules();

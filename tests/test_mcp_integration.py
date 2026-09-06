@@ -92,26 +92,21 @@ class MCPIntegrationTests(unittest.TestCase):
         benchmark = defaults.get_json()['design_cost_benchmark']
         self.assertEqual(benchmark['total_installed_usd_per_kw'], 1041.0)
         self.assertEqual(benchmark['cost_model']['turbine_usd_per_kw'], 780.75)
-        self.assertIn('cp_at_site_mean', defaults.get_json()['layout_weights'])
         self.assertIn('hours_near_cpmax', defaults.get_json()['layout_weights'])
         self.assertIn('cp_effective_full_series', defaults.get_json()['layout_weights'])
-        self.assertIn('resource_operational_availability_pct', defaults.get_json()['layout_weights'])
-        self.assertEqual(defaults.get_json()['layout_weights']['cp_at_site_mean'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['hours_near_cpmax'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['cp_effective_full_series'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['resource_operational_availability_pct'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['benefit_cost_ratio'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['payback_years'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['irr'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['roi'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['hours_at_or_above_90pct_rated'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['capex_usd_per_installed_kw'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['opex_usd_per_installed_kw_year'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['van_usd_per_installed_mw'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['discounted_payback_years'], 0.0)
-        self.assertEqual(defaults.get_json()['layout_weights']['van_usd'], 0.18)
-        self.assertEqual(defaults.get_json()['layout_weights']['aep_p90_mwh'], 0.15)
+        self.assertEqual(len(defaults.get_json()['layout_weights']), 8)
+        self.assertEqual(defaults.get_json()['layout_weights'], {
+            'cp_effective_full_series': .20, 'hours_near_cpmax': .20,
+            'factor_capacidad': .10, 'aep_p90_mwh_per_effective_km2': .10,
+            'discounted_payback_years': .20, 'van_usd_per_effective_km2': .10,
+            'benefit_cost_ratio': .075, 'lcoe_usd_kwh': .025,
+        })
         self.assertAlmostEqual(sum(defaults.get_json()['layout_weights'].values()), 1.0)
+        from core.multicriteria import LAYOUT_AUDIT_ONLY
+        for key in LAYOUT_AUDIT_ONLY:
+            self.assertNotIn(key, defaults.get_json()['layout_weights'])
+            self.assertNotIn(key, defaults.get_json()['layout_directions'])
+            self.assertNotIn(key, defaults.get_json()['layout_labels'])
         self.assertNotIn('layout_scenarios', defaults.get_json())
 
         from core.cost_model import CostModel

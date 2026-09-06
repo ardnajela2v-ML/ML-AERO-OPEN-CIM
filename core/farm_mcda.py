@@ -10,11 +10,62 @@ import numpy as np
 from core.cost_model import CostModel
 from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellmann
 from core.farm import (
+    _latlon_to_xy,
     gaussian_min_valid_distance_d,
     optimize_layout_structured,
     simulate_wind_farm,
 )
 from core.multicriteria import rank_layout_alternatives
+
+
+def effective_park_area(polygon, exclusions=None):
+    """Common land area: polygon minus union of permanent exclusions.
+
+    Use the layout's local projection. Overlapping exclusions count once;
+    portions outside the property do not reduce its area. Rotor setbacks
+    affect placement, not this common comparison denominator.
+    """
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+    lat0 = float(np.mean([p['lat'] for p in polygon]))
+    lon0 = float(np.mean([p['lon'] for p in polygon]))
+
+    def shape(points):
+        if len(points) < 3:
+            raise ValueError('Cada polígono de área requiere al menos tres vértices.')
+        xs, ys = _latlon_to_xy([p['lat'] for p in points],
+                              [p['lon'] for p in points], lat0, lon0)
+        geom = Polygon(zip(xs, ys))
+        if not geom.is_valid or geom.area <= 0:
+            raise ValueError('Polígono inválido para calcular el área efectiva.')
+        return geom
+
+    land = shape(polygon)
+    excluded = unary_union([shape(points) for points in (exclusions or [])])
+    usable = land.difference(excluded)
+    if usable.area <= 0:
+        raise ValueError('Las exclusiones no dejan área efectiva disponible.')
+    return {
+        'gross_area_km2': land.area / 1e6,
+        'excluded_area_km2': (land.area - usable.area) / 1e6,
+        'effective_area_km2': usable.area / 1e6,
+        'method': 'property_minus_union_of_permanent_exclusions',
+    }
+
+
+def add_effective_area_metrics(alternatives, polygon, exclusions=None):
+    area = effective_park_area(polygon, exclusions)
+    rows = []
+    for alternative in alternatives:
+        row = dict(alternative, effective_area_km2=area['effective_area_km2'],
+                   area_provenance=area)
+        for source, target in [('aep_p90_mwh', 'aep_p90_mwh_per_effective_km2'),
+                               ('van_usd', 'van_usd_per_effective_km2')]:
+            value = row.get(source)
+            row[target] = (float(value) / area['effective_area_km2']
+                           if value is not None and np.isfinite(float(value)) else None)
+        rows.append(row)
+    return rows
 
 
 def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
@@ -385,6 +436,9 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'aep_mwh': aep_p50,
                 'aep_p50_mwh': aep_p50,
                 'aep_p90_mwh': aep_p90,
+                'aep_p90_mwh_per_installed_mw': (
+                    aep_p90 / installed_mw if installed_mw > 0 else None
+                ),
                 'aep_uncertainty_pct': uncertainty_pct,
                 'uncertainty_components_pct': uncertainty_components,
                 'wake_loss_pct': sim['wake_loss_pct'],
@@ -437,9 +491,12 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             })
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
+    alternatives = add_effective_area_metrics(alternatives, polygon, exclusions)
     ranking = rank_layout_alternatives(alternatives, weights=weights)
     return {
         'analysis_kind': 'farm_layout_mcda_v2',
+        'comparison_polygon': polygon,
+        'comparison_exclusions': exclusions or [],
         'alternatives': alternatives,
         'ranking': ranking,
         'n_layout_alternatives': len(alternatives),

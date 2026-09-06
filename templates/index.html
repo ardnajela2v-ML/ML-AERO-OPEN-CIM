@@ -1965,11 +1965,13 @@
         <table class="tbl" id="mcda-rank-tbl">
           <thead><tr>
             <th>#</th><th>Sitio</th><th>Turbina</th>
-            <th>Score</th><th>CF</th><th>AEP (MWh)</th>
-            <th>VAN (USD)</th><th>LCOE</th><th>ROI</th><th>CAPEX (USD)</th>
+            <th>Score</th><th>Cp efectivo ↑</th><th>Horas ≥95% Cp máx. ↑ (h/año)</th>
+            <th>FC neto ↑ (%)</th><th>AEP P90 / área efectiva ↑ (MWh/km²·año)</th>
+            <th>Recuperación descontada ↓ (años)</th><th>VAN / área efectiva ↑ (USD/km²)</th>
+            <th>B/C ↑</th><th>LCOE ↓ (USD/kWh)</th>
           </tr></thead>
           <tbody id="mcda-rank-body">
-            <tr><td colspan="10" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>
+            <tr><td colspan="12" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>
           </tbody>
         </table>
       </div>
@@ -3211,6 +3213,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260905-topsis-metrics-v3"></script>
+<script src="/static/js/aero.js?v=20260905-topsis-effective-area"></script>
 </body>
 </html>
