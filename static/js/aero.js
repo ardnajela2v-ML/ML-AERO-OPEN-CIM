@@ -8640,6 +8640,18 @@ function parqueSelectTurbina(el, forceKey) {
     const height = winner.turbine_specification?.hub_height_m;
     if (height) document.getElementById('parque-ws-h').value = height;
     document.getElementById('parque-n-turbines').value = winner.n_aerogeneradores;
+    document.getElementById('parque-n-turbines').max = winner.n_aerogeneradores;
+    const ctx = winner.energy_context;
+    const limits = winner.layout_constraints;
+    if (ctx && limits) {
+      for (const [id, value] of [['parque-min-sep-d', limits.min_spacing_d],
+        ['parque-row-sep-d', limits.s_para_range[0]], ['parque-col-sep-d', limits.s_perp_range[0]],
+        ['parque-max-wake-loss', limits.max_wake_loss_pct], ['parque-kwake', ctx.k_wake],
+        ['parque-ct', ctx.ct], ['parque-avail', ctx.availability * 100],
+        ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors]]) {
+        document.getElementById(id).value = value;
+      }
+    }
   }
   parqueUpdateRecommendation();
 }
@@ -8705,7 +8717,131 @@ async function parqueUpdateRecommendation() {
 }
 
 // ── Optimización y simulación ─────────────────────────────────────────────────
+async function parqueOptimizeTopsis(winner) {
+  if (!winner.energy_context || !winner.layout_constraints) {
+    toast('Ejecuta TOPSIS del parque nuevamente para guardar la base de comparación.', 'warning'); return;
+  }
+  const ctx = winner.energy_context;
+  const limits = winner.layout_constraints;
+  const unchanged = [['parque-ws-h', ctx.wind_height_m], ['parque-min-sep-d', limits.min_spacing_d],
+    ['parque-row-sep-d', limits.s_para_range[0]], ['parque-col-sep-d', limits.s_perp_range[0]],
+    ['parque-max-wake-loss', limits.max_wake_loss_pct], ['parque-kwake', ctx.k_wake],
+    ['parque-ct', ctx.ct], ['parque-avail', ctx.availability * 100],
+    ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors]]
+    .every(([id, value]) => Math.abs(Number(document.getElementById(id).value) - value) < 1e-6);
+  if (!unchanged) {
+    toast('Los parámetros cambiaron. Ejecuta TOPSIS nuevamente o selecciona otra vez su alternativa para recuperar la base comparable.', 'warning'); return;
+  }
+  const currentPolygon = MAPA.parkPoints?.length >= 3 ? MAPA.parkPoints : KRIG.parkPoints;
+  const saved = winner.layout_constraints.polygon;
+  if (currentPolygon?.length !== saved.length || currentPolygon.some((p, i) =>
+      Math.abs(p[0] - saved[i].lat) > 1e-8 || Math.abs(p[1] - saved[i].lon) > 1e-8)) {
+    toast('El polígono cambió. Ejecuta TOPSIS nuevamente para comparar el mismo terreno.', 'warning'); return;
+  }
+  let exclusions;
+  try { exclusions = mcdaExclusionPolygons(); } catch (e) { toast(e.message, 'warning'); return; }
+  if (JSON.stringify(exclusions) !== JSON.stringify(winner.layout_constraints.exclusions || [])) {
+    toast('Las exclusiones cambiaron. Ejecuta TOPSIS nuevamente.', 'warning'); return;
+  }
+  const progress = document.getElementById('parque-progress-wrap');
+  const fill = document.getElementById('parque-progress-fill');
+  const label = document.getElementById('parque-progress-text');
+  const button = document.getElementById('btn-parque-optimize');
+  progress.style.display = ''; fill.style.width = '35%'; button.disabled = true;
+  label.textContent = 'Comparando familias, orientaciones y separaciones con la base energética TOPSIS…';
+  try {
+    const result = await api('/api/farm/refine_topsis', 'POST', {
+      alternative: winner,
+      n_turbines: Number(document.getElementById('parque-n-turbines').value) || 0,
+      layout_type: document.getElementById('parque-layout-type').value || 'auto',
+    });
+    if (result.error) throw new Error(result.error);
+    // A response for an older selection must never replace the current model.
+    if (parqueSelectedTopsis() !== winner) return;
+    const latestPolygon = MAPA.parkPoints?.length >= 3 ? MAPA.parkPoints : KRIG.parkPoints;
+    if (latestPolygon?.length !== saved.length || latestPolygon.some((p, i) =>
+        Math.abs(p[0] - saved[i].lat) > 1e-8 || Math.abs(p[1] - saved[i].lon) > 1e-8)) {
+      throw new Error('El polígono cambió durante la búsqueda. Ejecuta TOPSIS nuevamente.');
+    }
+    PARQUE.optResult = result;
+    parqueApplyConfiguration(result.comparison.selected_id);
+    fill.style.width = '100%';
+    toast(`${result.comparison.evaluated_count} layouts evaluados; seleccionada la mayor energía dentro del límite de estela.`, 'success');
+    if (WP._qdPipelineReady && QD.active) {
+      qdSetStep(4, 'Parque optimizado ✓');
+      setTimeout(() => quickDesignContinueAfterParque(PARQUE.optResult), 800);
+    }
+  } catch (e) {
+    document.getElementById('parque-status').textContent = 'No se pudo completar la comparación';
+    toast(e.message, 'error');
+  } finally {
+    progress.style.display = 'none'; label.textContent = ''; button.disabled = false;
+  }
+}
+
+function parqueRenderComparison() {
+  const container = document.getElementById('parque-config-comparison');
+  if (!container) return;
+  const comparison = PARQUE.optResult?.comparison;
+  container.style.display = comparison ? '' : 'none';
+  if (!comparison) { container.innerHTML = ''; return; }
+  const esc = value => String(value ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  container.innerHTML = `<div class="card-header"><span class="card-title">Configuraciones · ${esc(PARQUE.optResult.turbine_key || PARQUE.optResult.turbine?.name)}</span></div>
+    <div class="card-body"><p class="text-muted">Misma curva, altura, viento, densidad y pérdidas que TOPSIS. Se maximiza P50 dentro de ${parqueFmt(comparison.max_wake_loss_pct, 2)}% de estela.
+    ${comparison.same_count ? 'Misma cantidad de turbinas.' : 'Cantidad reducida: el cambio de energía también incluye este efecto.'}</p>
+    <div style="overflow-x:auto"><table class="data-table" style="width:100%"><thead><tr>
+    <th>Configuración</th><th>N</th><th>Separación / giro</th><th>P50 parque<br>MWh/año</th><th>Media/turbina<br>MWh/año</th><th>Estela %</th><th>Δ energía<br>MWh/año</th><th>Resultado</th>
+    </tr></thead><tbody>${comparison.winners.map(row => {
+      const cfg = row.layout_config || {};
+      const tags = [row.id === comparison.max_energy_id ? 'Mayor energía' : '',
+        row.id === comparison.min_wake_id ? 'Menor estela' : '', row.pareto ? 'Pareto' : ''].filter(Boolean).join(' · ');
+      const active = row.id === comparison.selected_id;
+      return `<tr><td>${esc(row.label)}</td><td>${row.n_placed}</td>
+        <td>${parqueFmt(cfg.s_para_d, 1)}D × ${parqueFmt(cfg.s_perp_d, 1)}D / ${parqueFmt(cfg.orientation_deg, 0)}°</td>
+        <td>${parqueFmt(row.aep_p50_mwh, 1)}</td><td>${parqueFmt(row.aep_per_turbine_mwh, 1)}</td>
+        <td>${parqueFmt(row.wake_loss_pct, 2)}</td><td>${parqueFmt(row.aep_gain_mwh, 1)}</td>
+        <td>${esc(tags)} ${active ? '<strong>Aplicada</strong>' : row.feasible
+          ? `<button class="btn-secondary" onclick="parqueApplyConfiguration('${esc(row.id)}')">Aplicar</button>` : 'Solo referencia'}</td></tr>`;
+    }).join('')}</tbody></table></div>
+    <p class="text-muted">${comparison.evaluated_count} layouts evaluados. ${esc(comparison.search_method)}. La búsqueda es aproximada; no certifica un óptimo global. Pareto identifica opciones sin otra evaluada que mejore energía o estela sin empeorar la otra.</p>
+    ${comparison.errors.map(e => `<p class="text-muted">${esc(e.family)}: ${esc(e.reason)}</p>`).join('')}</div>`;
+}
+
+function parqueApplyConfiguration(id) {
+  const result = PARQUE.optResult;
+  if (result?.turbine_key && result.turbine_key !== document.getElementById('parque-turbine')?.value) {
+    toast('Selecciona la turbina de esta comparación antes de aplicar su layout.', 'warning'); return;
+  }
+  const row = result?.comparison?.winners.find(c => c.id === id);
+  if (!row?.feasible) return;
+  PARQUE.optResult = {...result, ...row, comparison: {...result.comparison, selected_id: id}};
+  PARQUE.result = row.simulation;
+  const sim = row.simulation;
+  const layer = document.getElementById('parque-map-layer')?.value || 'wind';
+  parqueRenderKrigingLayer(layer);
+  parqueRenderPolygon();
+  parquePlotTurbinesOnMap(row.layout_latlon, sim.turbines);
+  document.getElementById('parque-kpis').style.display = '';
+  for (const [key, value, digits] of [['aep', sim.aep_mwh / 1000, 3], ['wl', sim.wake_loss_pct, 2],
+       ['cf', sim.cf_pct, 2], ['mw', sim.installed_mw, 3], ['flh', sim.flh, 0], ['dir', sim.dominant_dir_deg, 0]]) {
+    document.getElementById(`parque-kpi-${key}`).textContent = parqueFmt(value, digits) + (key === 'dir' ? '°' : '');
+  }
+  document.getElementById('parque-status').textContent = `${row.label} · ${row.n_placed} turbinas · ${sim.installed_mw} MW`;
+  document.getElementById('parque-info').textContent = `${result.turbine?.name || result.turbine_key} · ⌀${result.D_m}m`;
+  document.getElementById('parque-layout-meta').textContent = `Área: ${parqueFmt(result.area_km2, 3)} km² · Separación mínima: ${parqueFmt(result.min_sep_m, 0)} m`;
+  const badge = document.getElementById('parque-layout-badge');
+  badge.textContent = row.label; badge.style.display = '';
+  document.getElementById('parque-rec-aep').textContent = parqueFmt(row.aep_per_turbine_mwh, 1);
+  document.getElementById('parque-rec-n').textContent = row.n_placed;
+  document.getElementById('parque-energy-basis').textContent = `${row.label} · P50 del parque: ${parqueFmt(sim.aep_mwh, 1)} MWh/año · Potencia media/turbina: ${parqueFmt(sim.mean_power_per_turbine_kw, 1)} kW. Base energética TOPSIS.`;
+  parqueRenderAEPChart(sim.turbines, row.layout_latlon);
+  parqueRenderTable(row.layout_latlon, row.wind_at_turbines, sim.turbines);
+}
+
 async function parqueOptimize() {
+  const topsis = parqueSelectedTopsis();
+  if (topsis) { await parqueOptimizeTopsis(topsis); return; }
   let polygon = null;
   if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) polygon = MAPA.parkPoints;
   else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) polygon = KRIG.parkPoints;
@@ -8791,9 +8927,9 @@ async function parqueOptimize() {
     const lcfg = r.layout_config;
     const lBadge = document.getElementById('parque-layout-badge');
     if (lBadge && lcfg) {
-      const typeLabel = lcfg.layout_type === 'tresbolillo' ? '⬡ Tresbolillo'
-                      : lcfg.layout_type === 'alineado'    ? '▦ Alineado'
-                      : '⚙ GSP';
+      const typeLabel = ({tresbolillo: '⬡ Tresbolillo', staggered: '⬡ Tresbolillo',
+        alineado: '▦ Alineado', aligned: '▦ Alineado', offset_quarter: 'Desplazado ¼ de fila',
+        offset_three_quarters: 'Desplazado ¾ de fila'})[lcfg.layout_type] || '⚙ GSP';
       const spacings = (lcfg.s_para_d != null && lcfg.s_perp_d != null)
         ? ` · ${lcfg.s_para_d}D×${lcfg.s_perp_d}D` : '';
       const dirLabel = lcfg.dominant_dir_deg != null
@@ -8877,6 +9013,7 @@ function parqueRenderAEPChart(turbines, layoutLatlon) {
 }
 
 function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
+  parqueRenderComparison();
   const tb = document.getElementById('parque-tbl-body');
   if (!tb || !layoutLatlon) return;
   const simRows = Array.isArray(simTurbines) ? simTurbines : [];
@@ -8933,6 +9070,7 @@ async function parqueRenderWakeChart(rotorD) {
 // ── Reset ─────────────────────────────────────────────────────────────────────
 function parqueReset() {
   PARQUE.result = null; PARQUE.optResult = null;
+  parqueRenderComparison();
   parqueClearTurbineMarkers();
   if (PARQUE.wakeGroup  && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.wakeGroup);   PARQUE.wakeGroup   = null; }
   if (PARQUE.windOverlay && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }

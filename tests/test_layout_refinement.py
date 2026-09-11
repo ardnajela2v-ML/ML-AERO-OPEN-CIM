@@ -58,3 +58,111 @@ class EnergyBasisTests(unittest.TestCase):
         evaluate, *_ = energy_evaluator(row['energy_context'], self.turbine)
         self.assertAlmostEqual(evaluate(points)['aep_mwh'], row['aep_p50_mwh'])
         self.assertEqual(row['layout_constraints']['polygon'], polygon)
+
+
+class LayoutRefinementTests(EnergyBasisTests):
+    def alternative(self):
+        from core.farm import _latlon_to_xy
+        import numpy as np
+        polygon = [dict(lat=0, lon=0), dict(lat=0, lon=.01),
+                   dict(lat=.01, lon=.01), dict(lat=.01, lon=0)]
+        latlon = [[.003, .003], [.003, .008]]
+        x, y = _latlon_to_xy([p[0] for p in latlon], [p[1] for p in latlon], .005, .005)
+        points = np.column_stack([x, y]).tolist()
+        evaluate, *_ = energy_evaluator(self.context, self.turbine)
+        sim = evaluate(points)
+        return dict(turbina='gamesa21_p2000_r45.csv', n_aerogeneradores=2,
+            layout_latlon=latlon, layout_xy_m=points,
+            layout_config={'stagger': 0, 'layout_type': 'alineado'},
+            aep_p50_mwh=sim['aep_mwh'], energy_context=self.context,
+            turbine_specification={key: getattr(self.turbine, key) for key in
+                ('rated_power_kw', 'rotor_diameter_m', 'hub_height_m')},
+            layout_constraints=dict(polygon=polygon, exclusions=[], boundary_setback_m=45,
+                min_spacing_d=3, s_para_range=[5], s_perp_range=[3], max_wake_loss_pct=99))
+
+    def test_real_family_winners_preserve_topsis_energy_and_count(self):
+        from core.layout_refinement import refine_topsis_layout
+        row = self.alternative()
+        result = refine_topsis_layout(row, self.turbine)
+        comparison = result['comparison']
+        self.assertTrue(comparison['same_count'])
+        self.assertGreaterEqual(result['simulation']['aep_mwh'], row['aep_p50_mwh'] - .05)
+        self.assertEqual({r['family'] for r in comparison['winners']},
+            {'topsis', 'aligned', 'staggered', 'offset_quarter', 'offset_three_quarters'})
+        for winner in comparison['winners']:
+            self.assertEqual(winner['n_placed'], 2)
+            self.assertEqual(winner['simulation']['wake_model'], 'jensen')
+            self.assertAlmostEqual(winner['aep_per_turbine_mwh'] * 2, winner['aep_p50_mwh'])
+        self.assertEqual(result['aep_p50_mwh'], max(r['aep_p50_mwh'] for r in comparison['winners']))
+        least = next(r for r in comparison['winners'] if r['id'] == comparison['min_wake_id'])
+        self.assertEqual(least['wake_loss_pct'], min(r['wake_loss_pct'] for r in comparison['winners']))
+
+    def test_changed_energy_and_invalid_geometry_are_rejected(self):
+        from core.layout_refinement import refine_topsis_layout
+        row = self.alternative()
+        row['aep_p50_mwh'] *= 2
+        with self.assertRaisesRegex(ValueError, 'reproducible'):
+            refine_topsis_layout(row, self.turbine)
+        row = self.alternative()
+        row['layout_constraints']['exclusions'] = [row['layout_constraints']['polygon']]
+        with self.assertRaisesRegex(ValueError, 'geometría'):
+            refine_topsis_layout(row, self.turbine)
+
+    def test_family_filter_does_not_apply_baseline_of_another_family(self):
+        from core.layout_refinement import refine_topsis_layout
+        result = refine_topsis_layout(self.alternative(), self.turbine, layout_type='staggered')
+        self.assertEqual(result['family'], 'staggered')
+        self.assertFalse(result['comparison']['winners'][0]['feasible'])
+
+    def test_more_turbines_than_topsis_requires_new_ranking(self):
+        from core.layout_refinement import refine_topsis_layout
+        with self.assertRaisesRegex(ValueError, 'aumentar'):
+            refine_topsis_layout(self.alternative(), self.turbine, n_turbines=3)
+
+    def test_endpoint_returns_comparison_and_rejects_stale_energy(self):
+        from api import create_app
+        client = create_app().test_client()
+        row = self.alternative()
+        response = client.post('/api/farm/refine_topsis', json={
+            'alternative': row, 'layout_type': 'aligned'})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['turbine_key'], row['turbina'])
+        self.assertIn('comparison', response.get_json())
+        row['aep_p50_mwh'] *= 2
+        response = client.post('/api/farm/refine_topsis', json={'alternative': row})
+        self.assertEqual(response.status_code, 400)
+
+    def test_gaussian_refinement_preserves_topsis_wake_model(self):
+        from core.layout_refinement import refine_topsis_layout
+        self.context['wake_model'] = 'gaussian'
+        self.context['k_wake'] = .04
+        row = self.alternative()
+        result = refine_topsis_layout(row, self.turbine, layout_type='aligned')
+        self.assertEqual(result['simulation']['wake_model'], 'gaussian')
+        self.assertGreaterEqual(result['simulation']['aep_mwh'], row['aep_p50_mwh'] - .05)
+
+    def test_full_energy_selects_later_feasible_candidate_and_retains_least_wake(self):
+        from core.layout_refinement import refine_topsis_layout
+        import numpy as np
+        row = self.alternative()
+        row['aep_p50_mwh'] = 100
+        row['layout_constraints']['max_wake_loss_pct'] = 5
+        layouts = [dict(layout_xy_m=[[-300, y], [300, y]],
+                        layout_latlon=[[0, 0], [0, 0]], wind_at_turbines=[8, 8],
+                        layout_config={}) for y in [100, 200, 300]]
+        def evaluate(points):
+            energy, loss = {100: (500, 8), 200: (150, 4), 300: (120, 1)}.get(
+                round(points[0][1]), (100, 3))
+            return dict(aep_mwh=energy, wake_loss_pct=loss, turbines=[])
+        with patch('core.layout_refinement.energy_evaluator',
+                   return_value=(evaluate, np.array([8.]), np.array([270.]), 8, 1.225)), \
+             patch('core.farm.optimize_layout_structured', return_value={
+                 'candidate_layouts': layouts, 'layout_config': {'dominant_dir_deg': 270}}):
+            result = refine_topsis_layout(row, self.turbine, layout_type='aligned')
+        self.assertEqual(result['aep_p50_mwh'], 150)
+        self.assertEqual(result['wake_loss_pct'], 4)
+        least = next(c for c in result['comparison']['winners']
+                     if c['id'] == result['comparison']['min_wake_id'])
+        self.assertEqual(least['wake_loss_pct'], 1)
+        self.assertTrue(least['pareto'])
+        self.assertTrue(result['pareto'])

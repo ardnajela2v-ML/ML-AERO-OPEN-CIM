@@ -3980,6 +3980,25 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/farm/refine_topsis', methods=['POST'])
+    def farm_refine_topsis():
+        from core.layout_refinement import refine_topsis_layout
+        body = request.get_json(silent=True) or {}
+        alternative = body.get('alternative') or {}
+        filename = os.path.basename(str(alternative.get('turbina') or ''))
+        if not filename.endswith('.csv'):
+            return _err('Selecciona un modelo del ranking TOPSIS del parque.')
+        try:
+            turbine = PowerCurve.from_file(os.path.join(Config.TURBINES_FOLDER, filename))
+            turbine = _power_curve_at_hub_height(
+                turbine, alternative.get('turbine_specification', {}).get('hub_height_m'))
+            result = refine_topsis_layout(alternative, turbine,
+                layout_type=body.get('layout_type', 'auto'),
+                n_turbines=int(body.get('n_turbines') or 0))
+            return jsonify(numpy_to_python(result))
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            return _err(str(exc), 400)
+
     @app.route('/api/farm/session_demand', methods=['POST'])
     def farm_session_demand():
         """

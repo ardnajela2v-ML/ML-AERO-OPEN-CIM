@@ -2118,7 +2118,7 @@
               <input class="form-input" type="number" id="parque-max-wake-loss" value="5" step="0.5" min="0" max="30">
             </div>
             <div>
-              <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">k estela (NOJ)</label>
+              <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">k estela (modelo TOPSIS)</label>
               <input class="form-input" type="number" id="parque-kwake" value="0.075" step="0.005" min="0.01" max="0.20">
             </div>
             <div>
@@ -2142,11 +2142,13 @@
               </select>
             </div>
             <div style="grid-column:1/-1">
-              <label class="form-label" title="Tipo de disposición del parque. 'Auto' prueba alineado y tresbolillo y elige el que maximiza AEP.">Tipo layout</label>
+              <label class="form-label" title="Tipo de disposición del parque. 'Auto' compara alineado, tresbolillo y desplazados con la base TOPSIS y el límite de estela.">Tipo layout</label>
               <select class="form-select" id="parque-layout-type">
                 <option value="auto" selected>🔍 Auto (busca mejor)</option>
                 <option value="aligned">▦ Solo alineado</option>
                 <option value="staggered">⬡ Solo tresbolillo</option>
+                <option value="offset_quarter">Desplazado ¼ de fila</option>
+                <option value="offset_three_quarters">Desplazado ¾ de fila</option>
               </select>
             </div>
             <div>
@@ -2166,6 +2168,7 @@
           <div id="parque-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-top:.5rem">
             <div id="parque-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
           </div>
+          <p class="text-muted" style="font-size:.72rem">Con TOPSIS se conservan su modelo de estela, recurso y pérdidas. Para cambiar esos supuestos, vuelve a ejecutar TOPSIS. La cantidad 0 usa la de TOPSIS; puedes reducirla para comparar.</p>
           <p id="parque-progress-text" style="font-size:.72rem;color:var(--text-muted);margin:.25rem 0 0"></p>
         </div>
       </div>
@@ -2185,6 +2188,8 @@
     <span class="badge" id="parque-layout-badge"
       style="display:none;background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
   </div>
+
+  <div class="card mt-2" id="parque-config-comparison" style="display:none"></div>
 
   <!-- KPIs del parque -->
   <div class="kpi-row mt-2" id="parque-kpis" style="display:none">
@@ -3214,6 +3219,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260905-topsis-effective-area"></script>
+<script src="/static/js/aero.js?v=20260910-topsis-layout-comparison"></script>
 </body>
 </html>

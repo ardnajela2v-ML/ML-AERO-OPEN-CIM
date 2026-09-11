@@ -1056,6 +1056,7 @@ def optimize_layout_structured(
         wake_model: str = 'jensen',
         orientation_step_deg: float = 15.0,
         grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
+        candidate_limit: int = 0,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1211,6 +1212,13 @@ def optimize_layout_structured(
     viable_seeds = [c for c in capacity_seeds if c['n_fit'] >= target_n]
     viable_seeds.sort(key=lambda c: (
         -c['n_fit'], half_turn_delta(c['orientation_deg'], dom_dir)))
+    if candidate_limit > 0:
+        # Retain phases from every viable rotation for the refinement shortlist.
+        groups = {}
+        for seed in viable_seeds:
+            groups.setdefault(seed['orientation_deg'], []).append(seed)
+        viable_seeds = [group[i] for i in range(max(map(len, groups.values()), default=0))
+                        for group in groups.values() if i < len(group)]
     # Bound runtime while retaining the densest phases and wind-aligned ones.
     viable_seeds = viable_seeds[:48]
     all_configs: List[Dict[str, Any]] = []
@@ -1276,7 +1284,26 @@ def optimize_layout_structured(
         for c in top5
     ]
 
+    candidate_layouts = []
+    if candidate_limit > 0:
+        seen = set()
+        for config in sorted(all_configs, key=lambda c: -c['score_kw']):
+            signature = tuple(sorted(tuple(round(v, 3) for v in p)
+                                     for p in config['_layout_xy']))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            candidate_layouts.append({
+                'layout_xy_m': config['_layout_xy'],
+                'layout_latlon': [[p['lat'], p['lon']] for p in config['_candidates']],
+                'wind_at_turbines': [p['v'] for p in config['_candidates']],
+                'layout_config': {k: v for k, v in config.items() if not k.startswith('_')},
+            })
+            if len(candidate_layouts) >= candidate_limit:
+                break
+
     return {
+        'candidate_layouts': candidate_layouts,
         'n_placed':         n_placed,
         'n_requested':      int(n_turbines),
         'n_candidates':     len(placed),
