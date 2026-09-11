@@ -193,6 +193,63 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(
             restored['client_state']['mcda']['large_result'][-1], 99_999)
 
+    def test_project_snapshot_restores_outputs_and_portable_run_artifacts(self):
+        from inspect import getclosurevars
+        get_session = getclosurevars(self.app.view_functions['export_project']).nonlocals['get_session']
+        session = get_session(self.sid)
+        run_dir = Path(Config.MCP_RUNS_FOLDER) / 'portable-run'
+        run_dir.mkdir()
+        artifact = run_dir / 'historical.csv'
+        artifact.write_text('timestamp,wind_speed\n2018-01-01,8.5\n')
+        result_path = run_dir / 'result.json'
+        result_path.write_text(json.dumps({
+            'run_id': 'portable-run', 'metrics': {'r2': 0.987},
+            'artifacts': {'historical_reconstruction_csv': str(artifact)},
+        }))
+        calibration_path = run_dir / 'calibration.json'
+        calibration_path.write_text(json.dumps({'calibration_id': 'portable-cal', 'nodes': [1, 2]}))
+        session.update({
+            'mcp_runs': {'portable-run': {'result_path': str(result_path), 'study_revision': 1}},
+            'mcp_study': {'study_revision': 1},
+            'kriging_calibrations': {'portable-cal': {'result_path': str(calibration_path)}},
+            'df_energy': pd.DataFrame({'energy_kwh': [12.5, 19.25]}),
+        })
+        wp = {key: {'saved': [1, 2, 3]} for key in (
+            'advancedResult', 'hybridResult', 'qcResult', 'mcpResult', 'energySimulation')}
+        exported = self.client.post('/api/projects/export', json={
+            'session_id': self.sid, 'client_state': {'schema_version': 1, 'snapshot_version': 2, 'wp': wp},
+        })
+        self.assertEqual(exported.status_code, 200)
+        artifact.unlink()
+        result_path.unlink()
+        calibration_path.unlink()
+        self.client.delete(f'/api/sessions/{self.sid}')
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'portable.aeroproj'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        payload = imported.get_json()
+        sid = payload['session_id']
+        self.assertEqual(payload['client_state']['wp'], wp)
+        pd.testing.assert_frame_equal(get_session(sid)['df_energy'], pd.DataFrame({'energy_kwh': [12.5, 19.25]}))
+        self.assertEqual(self.client.get(f'/api/projects/restored/{sid}').get_json(), payload)
+        run = self.client.get(f'/api/mcp/runs/portable-run?session_id={sid}')
+        self.assertEqual(run.status_code, 200)
+        self.assertEqual(run.get_json()['metrics']['r2'], 0.987)
+        download = self.client.get(f'/api/mcp/runs/portable-run/artifacts/historical_reconstruction_csv?session_id={sid}')
+        self.assertEqual(download.status_code, 200)
+        self.assertIn(b'2018-01-01,8.5', download.data)
+        calibration = self.client.get(f'/api/kriging/calibrations/portable-cal?session_id={sid}')
+        self.assertEqual(calibration.status_code, 200)
+        self.assertEqual(calibration.get_json()['nodes'], [1, 2])
+        # Re-saving an imported project must keep it portable too.
+        again = self.client.post('/api/projects/export', json={'session_id': sid, 'client_state': payload['client_state']})
+        self.assertEqual(again.status_code, 200)
+        imported_again = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(again.data), 'again.aeroproj'),
+        }, content_type='multipart/form-data').get_json()
+        self.assertEqual(self.client.get(f"/api/mcp/runs/portable-run?session_id={imported_again['session_id']}").status_code, 200)
+
     def test_project_import_rejects_non_project_file(self):
         response = self.client.post('/api/projects/import', data={
             'file': (io.BytesIO(b'not a zip'), 'fake.aeroproj'),

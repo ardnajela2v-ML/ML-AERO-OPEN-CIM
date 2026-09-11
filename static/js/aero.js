@@ -1498,7 +1498,13 @@ async function api(url, method = 'GET', body = null) {
 
 async function apiFD(url, formData) {
   const res = await fetch(url, { method: 'POST', body: formData });
-  const json = await res.json();
+  let json;
+  try { json = await res.json(); }
+  catch {
+    throw new Error(res.status === 413
+      ? 'El archivo es demasiado grande para subirlo.'
+      : `HTTP ${res.status}`);
+  }
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
   return json;
 }

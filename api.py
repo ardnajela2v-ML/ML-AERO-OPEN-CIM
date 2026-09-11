@@ -113,8 +113,9 @@ def create_app():
                 template_folder='templates',
                 static_folder='static')
     app.config.from_object(Config)
-    # Tope de upload: 100 MB
-    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024
+    # Tope de upload: proyectos con reconstrucción histórica completa
+    # (series horarias MERRA-2/ERA5 + CSVs de estudios) superan fácil 100 MB.
+    app.config['MAX_CONTENT_LENGTH'] = 750 * 1024 * 1024
 
     # CORS con whitelist desde Config (ALLOWED_ORIGINS) o fallback localhost
     CORS(app, origins=getattr(Config, 'ALLOWED_ORIGINS',
@@ -175,6 +176,11 @@ def create_app():
     @app.errorhandler(400)
     def _bad_request(e):
         return jsonify({'error': str(getattr(e, 'description', 'Bad Request'))}), 400
+
+    @app.errorhandler(413)
+    def _too_large(e):
+        limit_mb = app.config['MAX_CONTENT_LENGTH'] / (1024 * 1024)
+        return jsonify({'error': f'El archivo supera el límite de subida ({limit_mb:.0f} MB).'}), 413
 
     def _require_sid(body):
         """Devuelve session_id válido o aborta 400 con JSON."""
@@ -339,14 +345,14 @@ def create_app():
         return obj
 
     PROJECT_FORMAT = 'aero-open-cim-project'
-    PROJECT_FORMAT_VERSION = 1
+    PROJECT_FORMAT_VERSION = 2
     PROJECT_SESSION_KEYS = {
         'df', 'meta', 'wind_speed_col', 'wd_col', 'ws_height_m',
         'extrapolation_method', 'qc_report', 'park_configuration',
         'mcp_study', 'reanalysis_study', 'active_study_mode',
         'mcp_uploads', 'mcp_runs', 'data_sources',
         'active_data_source', 'wind_stats', 'wind_advanced',
-        'hybrid_result', 'energy_summary', 'market', 'demand', 'pml',
+        'hybrid_result', 'energy_summary', 'df_energy', 'market', 'demand', 'pml',
         'kriging_calibrations', 'active_kriging_calibration_id',
     }
 
@@ -374,9 +380,15 @@ def create_app():
             value = str(value)
         if isinstance(value, str) and (
                 key_hint == '_path' or key_hint == 'result_path'
-                or key_hint.endswith(('_artifact', '_csv', '_json'))) and os.path.isfile(value):
+                or key_hint.endswith(('_artifact', '_csv', '_json', '_html', '_png', '_pdf'))) and os.path.isfile(value):
             filename = secure_filename(Path(value).name) or 'artifact.bin'
             entry = f'files/{uuid.uuid4().hex[:12]}_{filename}'
+            # Result JSON contains references to CSV/report artifacts. Embed these
+            # too and rewrite them on import, rather than retaining host paths.
+            if key_hint == 'result_path' and filename.endswith('.json'):
+                contents = json.loads(Path(value).read_text(encoding='utf-8'))
+                contents = _project_encode(contents, archive, path + '.contents')
+                return {'__type__': 'project_json', 'name': filename, 'contents': contents}
             archive.write(value, entry)
             return {'__type__': 'project_file', 'entry': entry, 'name': filename}
         if isinstance(value, dict):
@@ -389,7 +401,7 @@ def create_app():
                 if str(key) != '_last_access'
             }
         if isinstance(value, (list, tuple, set)):
-            item_hint = '_path' if key_hint == '_path' else ''
+            item_hint = '_path' if key_hint == '_path' or key_hint.endswith('_files') else ''
             return [
                 _project_encode(item, archive, f'{path}.{index}', item_hint)
                 for index, item in enumerate(value)
@@ -415,6 +427,12 @@ def create_app():
             return np.asarray(value.get('value', []))
         if marker == 'datetime':
             return pd.Timestamp(value.get('value'))
+        if marker == 'project_json':
+            filename = secure_filename(str(value.get('name') or 'result.json'))
+            destination = restore_dir / (uuid.uuid4().hex[:10] + '_' + filename)
+            contents = _project_decode(value.get('contents'), archive, restore_dir)
+            destination.write_text(json.dumps(contents, ensure_ascii=False), encoding='utf-8')
+            return str(destination.resolve())
         if marker == 'project_file':
             entry = str(value.get('entry', ''))
             if not entry.startswith('files/'):
@@ -973,8 +991,8 @@ def create_app():
         if request.headers.get('X-Aero-Content-Encoding', '').casefold() == 'gzip':
             try:
                 raw_body = gzip.decompress(request.get_data(cache=False))
-                if len(raw_body) > 500 * 1024 * 1024:
-                    return _err('El estado descomprimido del proyecto excede 500 MB.', 413)
+                if len(raw_body) > 750 * 1024 * 1024:
+                    return _err('El estado descomprimido del proyecto excede 750 MB.', 413)
                 body = json.loads(raw_body.decode('utf-8'))
             except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 return _err(f'No se pudo leer el estado comprimido del proyecto: {exc}')
@@ -1017,6 +1035,12 @@ def create_app():
             download_name=f'{safe_project_name}.aeroproj', max_age=0,
         )
 
+    @app.route('/api/projects/restored/<sid>', methods=['GET'])
+    def restored_project_state(sid):
+        if sid not in sessions or not sessions[sid].get('_project_payload'):
+            return _err('El proyecto restaurado ya no está disponible. Abre el archivo nuevamente.', 404)
+        return jsonify(get_session(sid)['_project_payload'])
+
     @app.route('/api/projects/import', methods=['POST'])
     def import_project():
         project_file = request.files.get('file')
@@ -1030,14 +1054,14 @@ def create_app():
                 members = archive.infolist()
                 if len(members) > 5000:
                     raise ValueError('El proyecto contiene demasiados archivos.')
-                if sum(member.file_size for member in members) > 500 * 1024 * 1024:
-                    raise ValueError('El proyecto descomprimido excede 500 MB.')
+                if sum(member.file_size for member in members) > 1536 * 1024 * 1024:
+                    raise ValueError('El proyecto descomprimido excede 1.5 GB.')
                 if archive.testzip() is not None:
                     raise ValueError('El archivo está dañado (CRC inválido).')
                 manifest = json.loads(archive.read('manifest.json').decode('utf-8'))
                 if manifest.get('format') != PROJECT_FORMAT:
                     raise ValueError('El archivo no es un proyecto de AERO OPEN CIM.')
-                if int(manifest.get('format_version', 0)) != PROJECT_FORMAT_VERSION:
+                if int(manifest.get('format_version', 0)) not in {1, PROJECT_FORMAT_VERSION}:
                     raise ValueError(
                         f"Versión de proyecto no compatible: {manifest.get('format_version')}.")
                 sid = str(uuid.uuid4())
@@ -1054,6 +1078,7 @@ def create_app():
                 'pml': legacy_models['pml']
             } if isinstance(legacy_models, dict) and isinstance(
                 legacy_models.get('pml'), dict) else {}
+        restored['_project_restore_dir'] = str(restore_dir.resolve())
         restored['_last_access'] = time.time()
         with _sessions_lock:
             sessions[sid] = restored
@@ -1061,6 +1086,9 @@ def create_app():
         if isinstance(client_state, dict) and isinstance(client_state.get('wp'), dict):
             active_wp_keys = {
                 'windStats', 'technoResult', 'energyResult',
+                'advancedResult', 'hybridResult', 'qcResult', 'mcpResult',
+                'energySimulation', 'marketResults', 'farmResult', 'farmLayout', 'turbineComparison',
+                'technoInputsInitialized', 'technoInputsDirty',
                 'technoActiveScenario', 'technoScenarios', 'levParams',
                 'technoFinalLoss', 'referenceHeight', 'referenceMethod',
                 'mcpStudy', 'reanalysisStudy', 'studyMode', 'mcpRunId',
@@ -1070,14 +1098,16 @@ def create_app():
                 key: value for key, value in client_state['wp'].items()
                 if key in active_wp_keys
             }
-        return jsonify({
+        payload = {
             'session_id': sid,
             'project_name': manifest.get('project_name') or 'Proyecto restaurado',
             'exported_at': manifest.get('exported_at'),
             'format_version': PROJECT_FORMAT_VERSION,
             'restored_keys': sorted(key for key in restored if not key.startswith('_')),
             'client_state': client_state,
-        }), 201
+        }
+        restored['_project_payload'] = payload
+        return jsonify(payload), 201
 
     # ─── MCP STUDY / CATALOG ─────────────────────────────────────────────────
 
@@ -1873,7 +1903,9 @@ def create_app():
             return None, None
         result_path = Path(record['result_path']).resolve()
         root = Path(Config.MCP_RUNS_FOLDER).resolve()
-        if root not in result_path.parents or not result_path.is_file():
+        imported_root = sess.get('_project_restore_dir')
+        permitted = root in result_path.parents or (imported_root and Path(imported_root) == result_path.parent)
+        if not permitted or not result_path.is_file():
             return record, None
         return record, json.loads(result_path.read_text(encoding='utf-8'))
 
@@ -1903,7 +1935,9 @@ def create_app():
             return jsonify({'error': 'Artefacto no encontrado'}), 404
         path = Path(value).resolve()
         run_root = (Path(Config.MCP_RUNS_FOLDER) / run_id).resolve()
-        if run_root not in path.parents or not path.is_file():
+        imported_root = get_session(sid).get('_project_restore_dir')
+        permitted = run_root in path.parents or (imported_root and Path(imported_root) == path.parent)
+        if not permitted or not path.is_file():
             return jsonify({'error': 'Ruta de artefacto inválida'}), 403
         return send_file(path, as_attachment=True, download_name=path.name)
 
@@ -4469,7 +4503,9 @@ def create_app():
             return None, None
         path = Path(str(record.get('result_path', ''))).resolve()
         root = (Path(Config.KRIGING_RUNS_FOLDER) / str(calibration_id)).resolve()
-        if root not in path.parents or not path.is_file():
+        imported_root = sess.get('_project_restore_dir')
+        permitted = root in path.parents or (imported_root and Path(imported_root) == path.parent)
+        if not permitted or not path.is_file():
             return record, None
         return record, json.loads(path.read_text(encoding='utf-8'))
 
