@@ -8977,10 +8977,9 @@ function parqueReset() {
 // ── Activación del módulo ─────────────────────────────────────────────────────
 function parqueActivate() {
   parqueInitMap();
-  if (WP.importedProject && PARQUE.optResult) {
-    renderSavedPark(PARQUE.optResult, PARQUE.layerKey || 'wind', PARQUE.optResult.turbine?.name || '');
-    return;
-  }
+  // Un proyecto importado se abre mostrando su resultado guardado, pero el
+  // módulo debe seguir siendo interactivo: sin esto, la turbina/TOPSIS/mapa
+  // nunca se inicializaban de nuevo y quedaba imposible modificar nada.
   parqueLoadTurbines();
   parquePopulateTopsisRanking();
   // La configuración comercial gobierna la demanda del diseño. En venta
@@ -9009,11 +9008,15 @@ function parqueActivate() {
     parqueLoadDemandFromSession();
   }
   const layerKey = document.getElementById('parque-map-layer')?.value || 'wind';
-  parqueRenderKrigingLayer(layerKey);
-  parqueRenderPolygon();
   if (PARQUE.optResult?.layout_latlon) {
-    parquePlotTurbinesOnMap(PARQUE.optResult.layout_latlon, PARQUE.result?.turbines || null);
+    // renderSavedPark ya pinta capa Kriging + polígono + turbinas + KPIs/tabla;
+    // llamarlo aquí (no solo en el primer render tras importar) evita que un
+    // resultado existente se quede sin repintar al reactivar el módulo.
+    renderSavedPark(PARQUE.optResult, PARQUE.layerKey || layerKey, PARQUE.optResult.turbine_key || PARQUE.optResult.turbine?.name || '');
     if (PARQUE.wakeVisible) parqueRenderWakeCones();
+  } else {
+    parqueRenderKrigingLayer(layerKey);
+    parqueRenderPolygon();
   }
   setTimeout(() => PARQUE.map && PARQUE.map.invalidateSize(), 120);
 }
