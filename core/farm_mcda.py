@@ -86,7 +86,7 @@ def _joint_synthetic_wind(sites: List[Dict], n_hours: int = 8760):
     counts = np.floor(frequencies * n_hours).astype(int)
     counts[np.argmax(frequencies)] += n_hours - int(counts.sum())
     directions = np.concatenate([
-        np.full(int(count), (idx + 0.5) * 360.0 / n_sectors)
+        np.full(int(count), idx * 360.0 / n_sectors)
         for idx, count in enumerate(counts) if count > 0
     ])
     # Deterministic permutation prevents an artificial speed-direction trend.
@@ -321,6 +321,13 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             sim = None
             selected_n = 0
             wake_trials = []
+            def evaluate_layout(points):
+                return simulate_wind_farm(
+                    points, turbine, ws, wd, k_wake=k_wake, ct=ct,
+                    n_sectors=36, availability=availability,
+                    electrical_losses=electrical_losses,
+                    wake_model=wake_model, rho_override=rho,
+                )
             for candidate_n in range(max_n, 0, -1):
                 candidate_layout = optimize_layout_structured(
                     polygon, turbine, candidate_n, ws=ws, wd=wd, wind_grid=wind_grid,
@@ -329,20 +336,19 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                     s_perp_range=tuple(s_perp_range), rho=rho,
                     exclusion_polygons=exclusions, boundary_setback_m=setback,
                     wake_model=wake_model,
+                    layout_evaluator=evaluate_layout,
+                    max_wake_loss_pct=float(max_wake_loss_pct),
                 )
                 if int(candidate_layout['n_placed']) != candidate_n:
                     continue
-                candidate_sim = simulate_wind_farm(
-                    candidate_layout['layout_xy_m'], turbine, ws, wd,
-                    k_wake=k_wake, ct=ct, n_sectors=36,
-                    availability=availability,
-                    electrical_losses=electrical_losses,
-                    wake_model=wake_model, rho_override=rho,
-                )
+                candidate_sim = candidate_layout.get('constraint_evaluation')
+                if candidate_sim is None:
+                    continue
                 if candidate_sim.get('error'):
                     continue
                 trial_wake = float(candidate_sim.get('wake_loss_pct') or 0.0)
-                wake_trials.append({'n': candidate_n, 'wake_loss_pct': trial_wake})
+                wake_trials.append({'n': candidate_n, 'wake_loss_pct': trial_wake,
+                                    'n_layouts_evaluated': candidate_layout['n_layouts_evaluated']})
                 if trial_wake <= float(max_wake_loss_pct) + 1e-9:
                     layout = candidate_layout
                     sim = candidate_sim

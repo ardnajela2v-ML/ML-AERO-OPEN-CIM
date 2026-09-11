@@ -251,10 +251,10 @@ def bin_wind_to_sectors(ws: np.ndarray, wd: np.ndarray, n_sectors: int = 36):
     ws = ws[valid]
     wd = wd[valid] % 360.0
     if ws.size == 0:
-        sectors = np.linspace(0, 360, n_sectors, endpoint=False) + 180.0 / n_sectors
+        sectors = np.linspace(0, 360, n_sectors, endpoint=False)
         return sectors, np.array([0.0]), np.zeros((n_sectors, 1))
     sector_width = 360.0 / n_sectors
-    sector_idx = (wd / sector_width).astype(int) % n_sectors
+    sector_idx = ((wd + sector_width / 2.0) % 360.0 / sector_width).astype(int) % n_sectors
     ws_max = max(1.0, math.ceil(ws.max() + 1))
     ws_bins = np.arange(0, ws_max + 1, 1.0)
     bin_idx = np.clip((ws / 1.0).astype(int), 0, len(ws_bins) - 2)
@@ -263,7 +263,7 @@ def bin_wind_to_sectors(ws: np.ndarray, wd: np.ndarray, n_sectors: int = 36):
     for s, b in zip(sector_idx, bin_idx):
         freq[s, b] += 1
     freq /= freq.sum() if freq.sum() > 0 else 1
-    sector_centres = np.arange(n_sectors) * sector_width + sector_width / 2
+    sector_centres = np.arange(n_sectors) * sector_width
     ws_centres = ws_bins[:-1] + 0.5
     return sector_centres, ws_centres, freq
 
@@ -275,10 +275,10 @@ def dominant_direction(wd: np.ndarray, n_sectors: int = 36) -> float:
         return 0.0
     wd = wd[valid] % 360.0
     sector_width = 360.0 / n_sectors
-    sector_idx = (wd / sector_width).astype(int) % n_sectors
+    sector_idx = ((wd + sector_width / 2.0) % 360.0 / sector_width).astype(int) % n_sectors
     counts = np.bincount(sector_idx, minlength=n_sectors)
     s = int(np.argmax(counts))
-    return float(s * sector_width + sector_width / 2)
+    return float(s * sector_width)
 
 
 def energy_weighted_dominant_direction(
@@ -302,7 +302,7 @@ def energy_weighted_dominant_direction(
     """
     valid = np.isfinite(ws) & np.isfinite(wd) & (ws > 0)
     sector_width = 360.0 / n_sectors
-    sector_dirs = np.arange(n_sectors) * sector_width + sector_width / 2.0
+    sector_dirs = np.arange(n_sectors) * sector_width
 
     if not valid.any():
         return 270.0, sector_dirs, np.ones(n_sectors) / n_sectors * 100.0
@@ -312,7 +312,7 @@ def energy_weighted_dominant_direction(
 
     sector_energy = np.zeros(n_sectors)
     p_kw = turbine.power_kw_density_corrected(ws_v, rho)
-    sector_idx = (wd_v / sector_width).astype(int) % n_sectors
+    sector_idx = ((wd_v + sector_width / 2.0) % 360.0 / sector_width).astype(int) % n_sectors
     np.add.at(sector_energy, sector_idx, p_kw)
 
     total_e = sector_energy.sum()
@@ -499,6 +499,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     installed_kw = rated_kw * n
     cf = e_total_annual_kwh / (installed_kw * 8760.0) if installed_kw > 0 else 0.0
     dom_dir = dominant_direction(wd, n_sectors)
+    energy_dir, rose_dirs, rose_energy = energy_weighted_dominant_direction(
+        ws, wd, turbine, n_sectors=16, rho=rho_mean)
 
     # Per-turbine free-stream comparison:
     #   aep_gross_mwh  → BRUTO (sin estela, sin pérdidas operativas)
@@ -551,6 +553,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         'cf_pct':         round(100.0 * cf, 2),
         'flh':            round(e_total_annual_kwh / installed_kw, 1) if installed_kw > 0 else 0.0,
         'dominant_dir_deg': round(dom_dir, 1),
+        'dominant_energy_dir_deg': energy_dir,
+        'direction_convention': 'meteorological_from_north_clockwise_centered_sectors',
+        'energy_rose': {'directions_deg': rose_dirs.tolist(), 'energy_pct': rose_energy.tolist()},
         'hours':          round(total_hours, 1),
         'dt_h':           round(dt_h, 4),
         'years_in_record': round(total_hours / 8760.0, 4) if total_hours > 0 else 0,
@@ -1057,6 +1062,8 @@ def optimize_layout_structured(
         orientation_step_deg: float = 15.0,
         grid_offset_fractions: Tuple = (0.0, 0.25, 0.5, 0.75),
         candidate_limit: int = 0,
+        layout_evaluator=None,
+        max_wake_loss_pct: Optional[float] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1220,7 +1227,8 @@ def optimize_layout_structured(
         viable_seeds = [group[i] for i in range(max(map(len, groups.values()), default=0))
                         for group in groups.values() if i < len(group)]
     # Bound runtime while retaining the densest phases and wind-aligned ones.
-    viable_seeds = viable_seeds[:48]
+    if layout_evaluator is None:
+        viable_seeds = viable_seeds[:48]
     all_configs: List[Dict[str, Any]] = []
 
     for seed in viable_seeds:
@@ -1272,6 +1280,28 @@ def optimize_layout_structured(
             'con las restricciones indicadas.')
 
     best = max(all_configs, key=lambda c: c['score_kw'])
+    # A fast-score winner failing the wake constraint does not make this
+    # turbine count infeasible. Check distinct generated layouts before
+    # allowing the caller to decrement the count.
+    evaluation = None
+    evaluated_layouts = 0
+    if layout_evaluator is not None:
+        seen_layouts = set()
+        for config in sorted(all_configs, key=lambda c: -c['score_kw']):
+            signature = tuple(sorted(tuple(point) for point in config['_layout_xy']))
+            if signature in seen_layouts:
+                continue
+            seen_layouts.add(signature)
+            result = layout_evaluator(config['_layout_xy'])
+            evaluated_layouts += 1
+            loss = result.get('wake_loss_pct')
+            if result.get('error') or loss is None or not math.isfinite(float(loss)):
+                continue
+            if evaluation is None or float(loss) < float(evaluation['wake_loss_pct']):
+                best, evaluation = config, result
+            if max_wake_loss_pct is not None and float(loss) <= max_wake_loss_pct + 1e-9:
+                best, evaluation = config, result
+                break
     placed       = best['_candidates']
     layout_latlon = [[p['lat'], p['lon']] for p in placed]
     layout_xy_m   = [[p['x'],  p['y']]   for p in placed]
@@ -1327,6 +1357,9 @@ def optimize_layout_structured(
             'along_offset_fraction': best['along_offset_fraction'],
             'cross_offset_fraction': best['cross_offset_fraction'],
             'dominant_dir_deg': round(dom_dir, 1),
+            'dominant_energy_dir_deg': round(dom_dir, 1),
+            'direction_convention': 'meteorological_from_north_clockwise_centered_sectors',
+            'energy_rose': {'directions_deg': sector_dirs.tolist(), 'energy_pct': sector_energy_pct.tolist()},
             'layout_type':      'tresbolillo' if best['stagger'] >= 0.25 else 'alineado',
             'n_configs_tried':  len(all_configs),
         },
@@ -1343,6 +1376,9 @@ def optimize_layout_structured(
         'exclusion_count': len(exclusion_polys_xy),
         'wake_model': wake_model,
         'top_configs':          top5_clean,
+        'constraint_evaluation': evaluation,
+        'n_layouts_evaluated': evaluated_layouts,
+        'search_method': 'structured_candidates_first_feasible' if layout_evaluator else 'fast_energy_score',
         'sector_energy_pct':    [round(v, 2) for v in sector_energy_pct.tolist()],
         'sector_dirs_deg':      [round(v, 1) for v in sector_dirs.tolist()],
     }

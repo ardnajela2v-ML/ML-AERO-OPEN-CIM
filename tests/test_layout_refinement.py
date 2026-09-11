@@ -88,7 +88,7 @@ class LayoutRefinementTests(EnergyBasisTests):
         self.assertTrue(comparison['same_count'])
         self.assertGreaterEqual(result['simulation']['aep_mwh'], row['aep_p50_mwh'] - .05)
         self.assertEqual({r['family'] for r in comparison['winners']},
-            {'topsis', 'aligned', 'staggered', 'offset_quarter', 'offset_three_quarters'})
+            {'topsis', 'topsis_improved', 'aligned', 'staggered'})
         for winner in comparison['winners']:
             self.assertEqual(winner['n_placed'], 2)
             self.assertEqual(winner['simulation']['wake_model'], 'jensen')

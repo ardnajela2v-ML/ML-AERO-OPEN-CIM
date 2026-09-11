@@ -168,12 +168,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadTurbineList();   // populate turbine dropdown from aerogeneradores
   bindGlobeStage();          // pantalla inicial: globo terráqueo + selección de sitio
   setStatus('Plataforma iniciada — define el área en Globe; MCP sólo se usa cuando existe una estación real.');
+  const pending = sessionStorage.getItem('aero-project-session');
+  if (pending) {
+    sessionStorage.removeItem('aero-project-session');
+    try {
+      const restored = await api(`/api/projects/restored/${encodeURIComponent(pending)}`);
+      WP.importedProject = true;
+      await applyProjectClientState(restored.client_state || {});
+      setStatus(`Proyecto restaurado: ${restored.project_name}`);
+      toast(`Proyecto “${restored.project_name}” cargado con sus resultados guardados.`, 'success');
+    } catch (error) { toast(error.message, 'error'); }
+  }
+
 });
 
 // ─── SESSION ──────────────────────────────────────────────────────────────────
 async function initSession() {
   try {
-    const r = await api('/api/session/new', 'POST', {});
+    const pending = sessionStorage.getItem('aero-project-session');
+    WP.importedProject = !!pending;
+    const r = pending ? { session_id: pending } : await api('/api/session/new', 'POST', {});
     WP.sessionId = r.session_id;
     document.getElementById('session-label').textContent = `Sesión ${r.session_id}`;
     document.getElementById('session-dot').classList.add('active');
@@ -227,13 +241,21 @@ function collectProjectClientState() {
     if (el.type === 'file' || el.type === 'password') return;
     controls[el.id] = (el.type === 'checkbox' || el.type === 'radio')
       ? { checked: !!el.checked }
-      : { value: el.value };
+      : { value: el.value, ...(el.tagName === 'SELECT' ? { options: Array.from(el.options, o => ({ value: o.value, text: o.text, source: o.dataset.source })) } : {}) };
   });
   return {
     schema_version: 1,
+    snapshot_version: 2,
     controls,
+    view: { modules: Array.from(document.querySelectorAll('.module.active'), el => el.id),
+      nav: document.querySelector('.nav-btn.active')?.dataset.module, collapsed: GLOBE.collapsed },
     wp: projectJsonClone({
       windStats: WP.windStats, technoResult: WP.technoResult,
+      advancedResult: WP.advancedResult, hybridResult: WP.hybridResult,
+      qcResult: WP.qcResult, mcpResult: WP.mcpResult,
+      energySimulation: WP.energySimulation, marketResults: WP.marketResults,
+      farmResult: WP.farmResult, farmLayout: WP.farmLayout, turbineComparison: WP.turbineComparison,
+      technoInputsInitialized: WP.technoInputsInitialized, technoInputsDirty: WP.technoInputsDirty,
       energyResult: WP.energyResult, technoActiveScenario: WP.technoActiveScenario,
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
@@ -244,6 +266,7 @@ function collectProjectClientState() {
     }),
     krig: projectJsonClone({
       sites: KRIG.sites, selected: Array.from(KRIG.selected || []),
+      guidedMcp: KRIG.guidedMcp, curveIdx: KRIG.curveIdx, areaBounds: KRIG.areaBounds,
       principal: KRIG.principal, result: KRIG.result, layerKey: KRIG.layerKey,
       mode: KRIG.mode, parkPoints: KRIG.parkPoints, optimal: KRIG.optimal,
       poi: KRIG.poi, calibrationId: KRIG.calibrationId,
@@ -254,12 +277,18 @@ function collectProjectClientState() {
     mcda: projectJsonClone({
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
+      defaults: MCDA.defaults, turbines: MCDA.turbines,
       layoutWeights: MCDA.layoutWeights,
       weightSchema: MCDA.weightSchema,
     }),
-    parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult }),
+    parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult,
+      wakeProfile: PARQUE.wakeProfile, layerKey: PARQUE.layerKey }),
+    mapa: projectJsonClone({ result: MAPA.result, sites: MAPA.sites, grid: MAPA.grid,
+      var: MAPA.var, mode: MAPA.mode, areaBounds: MAPA.areaBounds, parkPoints: MAPA.parkPoints }),
+    risk: projectJsonClone(_riskData),
+    quickDesign: projectJsonClone({ station: QD.station, refHeight: QD.refHeight, results: QD.results, params: QD.params }),
     globe: projectJsonClone({
-      poi: GLOBE.poi, master: GLOBE.master,
+      poi: GLOBE.poi, master: GLOBE.master, sites: GLOBE.sites,
       observedStation: GLOBE.observedStation,
       mcpReferences: Array.from(GLOBE.mcpReferences || []),
       studyMode: GLOBE.studyMode,
@@ -269,10 +298,13 @@ function collectProjectClientState() {
 }
 
 async function applyProjectClientState(state) {
-  if (!state || Number(state.schema_version || 1) !== 1) return;
+  if (!state || Number(state.schema_version || 1) !== 1) throw new Error('Versión del estado visual no compatible.');
   Object.entries(state.controls || {}).forEach(([id, saved]) => {
     const el = document.getElementById(id);
     if (!el) return;
+    if (el.tagName === 'SELECT' && Array.isArray(saved.options)) {
+      el.replaceChildren(...saved.options.map(o => { const option = new Option(o.text, o.value); if (o.source) option.dataset.source = o.source; return option; }));
+    }
     if ('checked' in saved) el.checked = !!saved.checked;
     else if ('value' in saved) el.value = saved.value;
   });
@@ -287,6 +319,7 @@ async function applyProjectClientState(state) {
       || { inputs: null, result: null, leveraged: null };
     WP.technoActiveScenario = 'integrated';
     WP.technoScenarios = { integrated };
+    if (!integrated.result && WP.technoResult) integrated.result = WP.technoResult;
     krig3ActivatePublishedSource();
   }
   if (state.krig) {
@@ -317,6 +350,9 @@ async function applyProjectClientState(state) {
     try { await mcdaBuildWeightSliders(); } catch (_) {}
   }
   if (state.parque) Object.assign(PARQUE, state.parque);
+  if (state.mapa) Object.assign(MAPA, state.mapa);
+  _riskData = state.risk || null;
+  Object.assign(QD, state.quickDesign || {}, { active: false });
   if (state.globe) {
     Object.assign(GLOBE, state.globe);
     GLOBE.mcpReferences = new Set(state.globe.mcpReferences || []);
@@ -329,13 +365,26 @@ async function applyProjectClientState(state) {
   }
   if (WP.referenceHeight != null) applyReferenceHeightToUI(WP.referenceHeight);
   try { await loadParkConfiguration({ quiet: true }); } catch (_) {}
-  try { await loadMCPStudy(); } catch (_) {}
+  try { await loadMCPStudy(state.wp?.mcpStudy || null); } catch (_) {}
   if (MCDA.lastRanking) {
     try { mcdaRenderRanking(MCDA.lastRanking); } catch (_) {}
   }
   if (MCDA.lastSpatial) {
     try { mcdaRenderMiniMap(MCDA.lastSpatial); } catch (_) {}
   }
+  Object.entries(state.controls || {}).forEach(([id, saved]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if ('checked' in saved) el.checked = !!saved.checked;
+    else if ('value' in saved) el.value = saved.value;
+  });
+  if (state.view?.collapsed || (!state.view && WP.windStats)) collapseGlobeStage();
+  if (state.view?.modules?.length) {
+    document.querySelectorAll('.module').forEach(el => el.classList.toggle('active', state.view.modules.includes(el.id)));
+    document.querySelectorAll('.nav-btn[data-module]').forEach(el => el.classList.toggle('active', el.dataset.module === state.view.nav));
+  }
+  await renderSavedProjectResults();
+  if (!state.snapshot_version) toast('Proyecto anterior: se muestran los resultados disponibles; lo que no se guardó no puede recuperarse del archivo.', 'warning');
   updateExportSessionInfo();
 }
 
@@ -396,12 +445,9 @@ async function importProjectFile(file) {
   try {
     toast('Validando y restaurando proyecto…', 'info');
     const restored = await apiFD('/api/projects/import', form);
-    WP.sessionId = restored.session_id;
-    document.getElementById('session-label').textContent = `Sesión ${restored.session_id}`;
-    document.getElementById('session-dot').classList.add('active');
-    await applyProjectClientState(restored.client_state || {});
-    setStatus(`Proyecto restaurado: ${restored.project_name}`);
-    toast(`Proyecto “${restored.project_name}” restaurado. Puedes continuar trabajando.`, 'success');
+    // Reinitialize the page so a previous project's charts and state cannot leak.
+    sessionStorage.setItem('aero-project-session', restored.session_id);
+    window.location.reload();
   } catch (error) {
     toast(`No se pudo abrir el proyecto: ${error.message}`, 'error');
   }
@@ -679,6 +725,7 @@ async function uploadFile(file) {
 
     // meta grid
     const meta = r.meta;
+    WP.meta = meta;
     const grid = document.getElementById('meta-grid');
     grid.innerHTML = '';
     const items = [
@@ -725,43 +772,8 @@ async function runQC() {
       session_id: WP.sessionId, data_source: WP.activeDataSource, target_col: targetCol
     });
 
-    const rpt = r.report;
-    const container = document.getElementById('qc-results');
-    container.classList.remove('hidden');
-
-    const checks = [
-      { key: 'qc_missing',  label: 'Datos Faltantes', detail: `${rpt.pct_missing}%` },
-      { key: 'qc_gaps',     label: 'Gaps Consecutivos', detail: `máx ${rpt.max_consecutive_gap_periods} periodos` },
-      { key: 'qc_physical', label: 'Límites Físicos', detail: `${rpt.n_out_physical} fuera de rango` },
-      { key: 'qc_spikes',   label: 'Picos / Spikes', detail: `${rpt.n_spikes} detectados` },
-      { key: 'qc_frozen',   label: 'Sensor Congelado', detail: `${rpt.n_frozen_periods} periodos` },
-      { key: 'overall',     label: 'Estado General', detail: '' },
-    ];
-
-    container.innerHTML = checks.map(c => `
-      <div class="qc-item ${rpt[c.key] || 'PASS'}">
-        <div class="qc-label">${c.label}</div>
-        <div class="qc-status">${rpt[c.key] || 'PASS'}</div>
-        <div class="qc-detail">${c.detail}</div>
-      </div>
-    `).join('');
-
-    // stats pills
-    const stats = rpt.stats || {};
-    const statsEl = document.getElementById('qc-stats-grid');
-    statsEl.classList.remove('hidden');
-    statsEl.innerHTML = [
-      ['Media', stats.mean, 'm/s'], ['σ', stats.std, 'm/s'],
-      ['Mín', stats.min, 'm/s'], ['P50', stats.p50, 'm/s'], ['Máx', stats.max, 'm/s'],
-    ].map(([l, v, u]) =>
-      `<div class="stat-pill">${l}: <span>${v ?? '—'} ${u}</span></div>`
-    ).join('');
-
-    // Weibull
-    if (rpt.weibull) {
-      statsEl.innerHTML += `<div class="stat-pill">Weibull k: <span>${rpt.weibull.k}</span></div>`;
-      statsEl.innerHTML += `<div class="stat-pill">Weibull λ: <span>${rpt.weibull.lambda} m/s</span></div>`;
-    }
+    WP.qcResult = r;
+    renderSavedQC(r);
 
     toast(`QC completado: ${rpt.overall}`, rpt.overall === 'PASS' ? 'success' : 'warn');
     setStatus(`QC: ${rpt.overall} — ${rpt.pct_missing}% faltantes, ${rpt.n_spikes} picos`);
@@ -1043,36 +1055,9 @@ async function runEnergy() {
       turbine: turbineCfg, simulation: simCfg
     });
 
-    // KPIs
-    const kpis = document.getElementById('energy-kpis');
-    kpis.classList.remove('hidden');
-    document.getElementById('kpi-cf').textContent     = `${r.summary.capacity_factor_pct}%`;
-    document.getElementById('kpi-aep').textContent    = r.aep?.aep_p50_mwh?.toLocaleString() ?? r.summary.energy_net_mwh?.toLocaleString();
-    document.getElementById('kpi-flh').textContent    = Math.round(r.summary.full_load_hours).toLocaleString();
-    document.getElementById('kpi-energy-net').textContent = r.summary.energy_net_mwh?.toLocaleString();
-    document.getElementById('kpi-p90').textContent    = r.aep?.aep_p90_mwh?.toLocaleString() ?? '—';
-
-    // P-values card
-    if (r.aep && r.aep.aep_p50_mwh) {
-      const aepCard = document.getElementById('aep-card');
-      aepCard.classList.remove('hidden');
-      document.getElementById('p-value-row').innerHTML = [
-        ['P10', r.aep.aep_p10_mwh, 'p10'],
-        ['P50', r.aep.aep_p50_mwh, 'p50'],
-        ['P75', r.aep.aep_p75_mwh, 'p75'],
-        ['P90', r.aep.aep_p90_mwh, 'p90'],
-      ].map(([l, v, cls]) => `
-        <div class="p-val-item ${cls}">
-          <div class="p-val-label">${l}</div>
-          <div class="p-val-value">${v?.toLocaleString() ?? '—'} MWh</div>
-        </div>`).join('');
-    }
-
-    renderPowerCurveChart(r.turbine);
-    renderMonthlyEnergyChart(r.monthly);
-    renderPowerTimeseries(r.timeseries);
-    renderSensitivityChart(r.sensitivity || []);
-    populateTurbineFicha(r.turbine, r.summary, simCfg);
+    WP.energyResult = r;
+    WP.energySimulation = simCfg;
+    renderSavedEnergy(r, simCfg);
 
     toast('Simulación completada', 'success');
     setStatus(`CF: ${r.summary.capacity_factor_pct}% | FLH: ${Math.round(r.summary.full_load_hours)} h | AEP P50: ${r.aep?.aep_p50_mwh?.toLocaleString()} MWh`);
@@ -1219,18 +1204,8 @@ async function compareTurbines() {
       ws_height_m: wsH(),
     });
 
-    const tbody = document.getElementById('turbine-comp-tbody');
-    tbody.innerHTML = (r.comparison || []).map((t, i) => `
-      <tr ${i === 0 ? 'class="best-row"' : ''}>
-        <td class="model-name">${i === 0 ? '★ ' : ''}${t.name}</td>
-        <td>${t.rated_power_kw?.toLocaleString()}</td>
-        <td>${t.rotor_diameter_m}</td>
-        <td>${t.hub_height_m}</td>
-        <td style="color:${i===0?'var(--green)':''}">${t.capacity_factor_pct}%</td>
-        <td>${t.full_load_hours?.toLocaleString()}</td>
-        <td>${t.mean_power_kw?.toLocaleString()}</td>
-        <td><span class="badge badge--${i===0?'success':'info'}">#${t.rank}</span></td>
-      </tr>`).join('');
+    WP.turbineComparison = r;
+    renderSavedTurbineComparison(r);
 
     toast('Comparación completada', 'success');
   } catch (e) {
@@ -1313,7 +1288,10 @@ function bindFarmLayout() {
     updateTurbinesTable();
   });
 
+  WP.restoreFarmLayout = saved => { turbines = projectJsonClone(saved || []); drawLayout(); updateTurbinesTable(); };
+
   function drawLayout() {
+    WP.farmLayout = projectJsonClone(turbines);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // Draw grid
@@ -1425,21 +1403,8 @@ async function runFarmSimulation() {
       electrical_losses: parseFloat(document.getElementById('elec-losses').value) / 100 || 0.0,
     });
 
-    // Update KPIs
-    document.getElementById('farm-n-turbines').textContent = r.n_turbines;
-    document.getElementById('farm-installed-mw').textContent = r.installed_mw;
-    document.getElementById('farm-aep-mwh').textContent = r.aep_mwh.toLocaleString();
-    document.getElementById('farm-cf-pct').textContent = `${r.cf_pct}%`;
-    document.getElementById('farm-wake-loss-pct').textContent = `${r.wake_loss_pct}%`;
-    document.getElementById('farm-flh').textContent = r.flh;
-
-    // Update per-turbine table
-    r.turbines.forEach(turbine => {
-      document.getElementById(`aep-${turbine.i}`).textContent = turbine.aep_mwh;
-      document.getElementById(`aep-no-wake-${turbine.i}`).textContent = turbine.aep_no_wake_mwh;
-      document.getElementById(`wake-loss-${turbine.i}`).textContent = `${turbine.wake_loss_pct}%`;
-      document.getElementById(`cf-${turbine.i}`).textContent = `${turbine.cf_pct}%`;
-    });
+    WP.farmResult = r;
+    renderSavedFarm(r);
 
     toast('Simulación del parque completada', 'success');
   } catch (e) {
@@ -1566,13 +1531,8 @@ async function calcOverviewStats() {
       session_id: WP.sessionId, data_source: WP.activeDataSource,
     });
     WP.windStats = r;
-    renderOverviewKPIs(r.overview);
-    renderDailyTS(r.overview?.daily_series);
-    renderHistogramOverview(r.histogram);
-    renderMClimOverview(r.climatology);
-    renderHourlyOverview(r.diurnal);
-    renderPowerDensityChart(r.overview);
-    document.getElementById('overview-status').textContent = 'Listo';
+    renderSavedOverview(r);
+
     toast('Estadísticas calculadas', 'success');
     setStatus('Análisis de sitio completado.');
   } catch (e) {
@@ -1858,20 +1818,8 @@ async function calcWindAnalysis() {
       session_id: WP.sessionId, data_source: WP.activeDataSource,
     });
     WP.windStats = r;
-    renderWindRose(r.rose);
-    renderDiurnal(r.diurnal);
-    renderClimatology(r.climatology);
-    renderExtremes(r.extremes);
-    renderWbHist(r.histogram);
-    renderHistColored(r.histogram);
-    renderMonthlyWS(r.climatology);
-    renderMonthHourHeatmap(r.month_hour_heatmap);
-    populateSectorTable(r.sectors);
-    if (r.sectors?.dominant_sectors) {
-      const bd = document.getElementById('wind-badge-dom');
-      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
-    }
-    document.getElementById('wind-status').textContent = 'Listo';
+    renderSavedWind(r);
+
     toast('Análisis de viento completado', 'success');
     setStatus('Análisis de viento completado.');
   } catch (e) {
@@ -4540,61 +4488,7 @@ async function runAdvanced() {
     });
     WP.advancedResult = r;
 
-    // KPI row
-    const kpiRow = document.getElementById('adv-kpi-row');
-    kpiRow.style.display = '';
-    const turbulence = r.turbulence || {};
-    const measuredTI  = turbulence.measured_10min || {};
-    const hourlyVar   = turbulence.hourly_variability || r.wind_speed_variability || {};
-    const historicalTI = turbulence.historical_model || {};
-    const hasMeasuredTI = measuredTI.available === true;
-    const ti = hasMeasuredTI ? measuredTI : hourlyVar;
-    const sh = r.shear;
-    const rp = r.return_periods;
-
-    const _set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
-    _set('adv-kpi-ti',    hasMeasuredTI && ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
-    _set('adv-kpi-ti15',  hasMeasuredTI && ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
-    _set('adv-kpi-source', hasMeasuredTI ? 'CERTE 10 min' : 'Sin TI medida');
-    _set('adv-kpi-source-sub', hasMeasuredTI
-      ? `Entrenamiento ${measuredTI.training_year} · ${Number(measuredTI.logger_pair_coverage_pct || 0).toFixed(1)}% cobertura nativa`
-      : 'La serie horaria sólo aporta variabilidad');
-    _set('adv-kpi-alpha', sh?.alpha != null ? sh.alpha.toFixed(3) : '—');
-    _set('adv-kpi-v50',   rp?.v_50year != null ? rp.v_50year + ' m/s' : '—');
-
-    const badgeSource = document.getElementById('adv-badge-ti-source');
-    if (badgeSource) {
-      badgeSource.textContent = hasMeasuredTI ? 'Medido · CERTE 10 min' : 'Proxy · horario';
-      badgeSource.className = `cbadge ${hasMeasuredTI ? 'g' : 'r'}`;
-      badgeSource.title = ti?.note || r.ti_warning || '';
-    }
-    _set('adv-ti-chart-title', hasMeasuredTI
-      ? 'TI medida CERTE vs velocidad'
-      : 'Variabilidad interhoraria vs velocidad · no es TI');
-    const provenanceTitle = document.getElementById('adv-ti-provenance-title');
-    const provenanceText  = document.getElementById('adv-ti-provenance');
-    if (provenanceTitle) provenanceTitle.textContent = hasMeasuredTI
-      ? `Turbulencia medida CERTE ${measuredTI.training_year}`
-      : 'No hay turbulencia medida en la fuente activa';
-    if (provenanceText) provenanceText.textContent = hasMeasuredTI
-      ? `Se usan ${Number(measuredTI.N || 0).toLocaleString()} ventanas nativas de ${measuredTI.native_resolution_minutes || 10} minutos a ${measuredTI.measurement_height_m || 80} m. TI = σ₁₀min / V̄₁₀min. La serie MCP horaria permanece separada y la clase IEC no se asigna automáticamente.`
-      : `${measuredTI.reason || 'No se encontraron media y desviación estándar nativas.'} ${r.ti_warning || ''}`;
-    _set('adv-badge-alpha',  `α = ${sh?.alpha?.toFixed(3) || '—'}`);
-    _set('adv-badge-z0',     `z₀ = ${sh?.z0 ?? '—'} m`);
-    _set('adv-badge-method', rp?.method || 'Gumbel');
-    if (r.sectors?.dominant_sectors) {
-      const bd = document.getElementById('wind-badge-dom');
-      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
-    }
-
-    renderTIChart(ti, hasMeasuredTI);
-    renderHistoricalTurbulenceChart(historicalTI);
-    renderTurbulenceTraceability(measuredTI, historicalTI, hourlyVar);
-    renderShearChart(sh);
-    renderHubKPIs(sh?.hub);
-    populateSectorTable(r.sectors);
-    renderReturnChart(rp);
-    populateReturnTable(rp);
+    renderSavedAdvanced(r);
 
     toast('Análisis avanzado completo', 'success');
     setStatus('Recurso avanzado calculado.');
@@ -4928,21 +4822,7 @@ async function runHybrid() {
     const r = await api('/api/hybrid/simulate', 'POST', body);
     WP.hybridResult = r;
 
-    // KPI row
-    document.getElementById('hyb-kpi-row').style.display = '';
-    document.getElementById('hyb-kpi-rf').textContent   = (r.renewable_fraction ?? 0).toFixed(1) + '%';
-    document.getElementById('hyb-kpi-lcoe').textContent  = r.economics?.lcoe_usd_kwh?.toFixed(4) ?? '—';
-    document.getElementById('hyb-kpi-npc').textContent   = r.economics?.npc ? '$' + Math.round(r.economics.npc).toLocaleString() : '—';
-    document.getElementById('hyb-kpi-co2').textContent   = r.economics?.co2_saved_t_yr ?? '—';
-    document.getElementById('hyb-kpi-lpsp').textContent  = (r.lpsp_pct ?? 0).toFixed(3) + '%';
-    document.getElementById('hyb-kpi-fuel').textContent  = r.fuel_liters ? Math.round(r.fuel_liters).toLocaleString() : '—';
-
-    const n = r.traces?.step ? Math.round(r.traces.load.length) : 0;
-    document.getElementById('hyb-badge-pts').textContent = `${n} puntos`;
-
-    renderHybridDispatch(r.traces);
-    renderHybridEnergy(r);
-    populateHybridCapex(r.economics);
+    renderSavedHybrid(r);
 
     toast('Simulación híbrida completa', 'success');
     setStatus('Sistema híbrido simulado.');
@@ -7784,6 +7664,19 @@ function mcdaToggleAudit(id) {
   if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
+// Display-only ratios: never added to the alternative or sent as ranking weights.
+function mcdaInformationalRatios(a) {
+  const divide = (value, denominator) => value != null && denominator != null
+    && Number.isFinite(Number(value)) && Number.isFinite(Number(denominator))
+    && Number(denominator) > 0 ? Number(value) / Number(denominator) : null;
+  return {
+    van_capex_display: divide(a.van_usd, a.capex_usd),
+    van_mw_display: divide(a.van_usd, a.installed_mw),
+    aep_p50_mw_display: divide(a.aep_p50_mwh ?? a.aep_mwh, a.installed_mw),
+    aep_p90_mw_display: divide(a.aep_p90_mwh, a.installed_mw),
+  };
+}
+
 function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
   const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
@@ -7807,7 +7700,7 @@ function mcdaRenderRanking(r) {
       return `<th style="min-width:115px">${label} ${direction}<br><small>${unit}</small><br><small>${weight}</small></th>`;
     }).join('') + '</tr>'
     : '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th><th>CF</th><th>AEP (MWh)</th><th>VAN (USD)</th><th>LCOE</th><th>ROI</th><th>CAPEX (USD)</th></tr>';
-  const columnCount = parkMode ? 12 : 10;
+  const columnCount = parkMode ? 4 + columns.length : 10;
   const top = ranking.slice(0, 100);
   if (!top.length) {
     body.innerHTML = `<tr><td colspan="${columnCount}" class="text-muted">Sin resultados. ${mcdaAuditEscape(r?.note || '')}</td></tr>`;
@@ -7832,8 +7725,8 @@ function mcdaRenderRanking(r) {
       <td title="${a.site||''}">${siteText}</td>
       <td style="min-width:220px;max-width:300px">${a.turbina||''}${parkMode ? '' : cpFitInfo}${layoutInfo}</td>
       <td><strong>${a.topsis_score.toFixed(4)}</strong></td>
-      ${parkMode ? columns.map(([key, label, unit, digits, scale]) => {
-        const value = a[key];
+      ${parkMode ? columns.map(([key, label, unit, digits, scale, displayKey]) => {
+        const value = a[displayKey || key];
         const display = value == null || !Number.isFinite(Number(value))
           ? 'No calculado'
           : (Number(value) * scale).toLocaleString('es-MX', {minimumFractionDigits: digits, maximumFractionDigits: digits});
@@ -8253,7 +8146,8 @@ function _parkTurbineIconHtml(num, color) {
     '</div>';
 }
 
-function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
+function parquePlotTurbinesOnMap(layoutLatlon, simTurbines, result = PARQUE.optResult) {
+  parqueSyncWakeDirection(result);
   parqueClearTurbineMarkers();
   const map = parqueInitMap();
   if (!map || !layoutLatlon) return;
@@ -8281,6 +8175,9 @@ function parquePlotTurbinesOnMap(layoutLatlon, simTurbines) {
     m.addTo(map);
     PARQUE.turbineMarkers.push(m);
   });
+  const direction = parqueModelWindDirection(result);
+  if (direction !== null) parqueWakeDirectionCaption(direction);
+  if (PARQUE.wakeVisible) parqueRenderWakeCones();
 }
 
 function parqueMarkEdited() {
@@ -8419,6 +8316,35 @@ function parqueToggleMapLock() {
   }
 }
 
+function parqueModelWindDirection(result = PARQUE.optResult) {
+  for (const raw of [result?.simulation?.dominant_energy_dir_deg,
+       result?.layout_config?.dominant_dir_deg, result?.simulation?.dominant_dir_deg]) {
+    if (raw !== null && raw !== undefined && Number.isFinite(Number(raw))) {
+      return ((Number(raw) % 360) + 360) % 360;
+    }
+  }
+  return null;
+}
+
+function parqueSyncWakeDirection(result = PARQUE.optResult) {
+  const direction = parqueModelWindDirection(result);
+  const input = document.getElementById('parque-wake-dir');
+  if (input) {
+    input.value = direction === null ? '' : direction;
+  }
+  return direction;
+}
+
+function parqueWakeDirectionCaption(windFrom) {
+  const label = document.getElementById('parque-wake-direction-note');
+  if (!label) return;
+  const model = parqueModelWindDirection();
+  const manual = model === null || Math.abs(((windFrom - model + 540) % 360) - 180) > .01;
+  const windTo = (windFrom + 180) % 360;
+  label.textContent = `${manual ? 'Vista manual' : 'Dirección del cálculo'}: viento desde ${parqueFmt(windFrom, 1)}° → estela hacia ${parqueFmt(windTo, 1)}°. ` +
+    'Los conos ilustran una dirección; la energía se calcula con toda la distribución de viento de TOPSIS. El giro de las filas es independiente.';
+}
+
 // ── Wake cone visualization ───────────────────────────────────────────────────
 function parqueRenderWakeCones() {
   const map = parqueInitMap();
@@ -8426,7 +8352,15 @@ function parqueRenderWakeCones() {
 
   if (PARQUE.wakeGroup) { map.removeLayer(PARQUE.wakeGroup); PARQUE.wakeGroup = null; }
 
-  const windFrom = parseFloat(document.getElementById('parque-wake-dir')?.value ?? 270) || 270;
+  const requestedDirection = parseFloat(document.getElementById('parque-wake-dir')?.value);
+  const windFrom = Number.isFinite(requestedDirection)
+    ? ((requestedDirection % 360) + 360) % 360 : parqueModelWindDirection();
+  if (windFrom === null) {
+    const note = document.getElementById('parque-wake-direction-note');
+    if (note) note.textContent = 'Sin dirección calculada. Ejecuta TOPSIS y optimiza el layout.';
+    return;
+  }
+  parqueWakeDirectionCaption(windFrom);
   const layoutLatlon = PARQUE.optResult.layout_latlon;
   const D   = PARQUE.optResult.D_m || 80;
   const k   = parseFloat(document.getElementById('parque-kwake')?.value)  || 0.075;
@@ -8824,7 +8758,7 @@ function parqueApplyConfiguration(id) {
   parquePlotTurbinesOnMap(row.layout_latlon, sim.turbines);
   document.getElementById('parque-kpis').style.display = '';
   for (const [key, value, digits] of [['aep', sim.aep_mwh / 1000, 3], ['wl', sim.wake_loss_pct, 2],
-       ['cf', sim.cf_pct, 2], ['mw', sim.installed_mw, 3], ['flh', sim.flh, 0], ['dir', sim.dominant_dir_deg, 0]]) {
+       ['cf', sim.cf_pct, 2], ['mw', sim.installed_mw, 3], ['flh', sim.flh, 0], ['dir', parqueModelWindDirection(PARQUE.optResult), 1]]) {
     document.getElementById(`parque-kpi-${key}`).textContent = parqueFmt(value, digits) + (key === 'dir' ? '°' : '');
   }
   document.getElementById('parque-status').textContent = `${row.label} · ${row.n_placed} turbinas · ${sim.installed_mw} MW`;
@@ -8912,61 +8846,8 @@ async function parqueOptimize() {
     PARQUE.optResult = r;
     PARQUE.result    = r.simulation || null;
 
-    // Actualizar mapa
-    parqueRenderKrigingLayer(layerKey);
-    parqueRenderPolygon();
-    parquePlotTurbinesOnMap(r.layout_latlon, r.simulation?.turbines || null);
+    renderSavedPark(r, layerKey, turbineKey);
 
-    // KPIs
-    const sim = r.simulation;
-    statusEl.textContent = sim
-      ? `${r.n_placed} turbinas · ${r.installed_mw} MW · ${sim.hours?.toLocaleString()||'—'} h`
-      : `${r.n_placed} turbinas colocadas (sin serie temporal)`;
-
-    // Layout config badge (tresbolillo / alineado / spacings / direction)
-    const lcfg = r.layout_config;
-    const lBadge = document.getElementById('parque-layout-badge');
-    if (lBadge && lcfg) {
-      const typeLabel = ({tresbolillo: '⬡ Tresbolillo', staggered: '⬡ Tresbolillo',
-        alineado: '▦ Alineado', aligned: '▦ Alineado', offset_quarter: 'Desplazado ¼ de fila',
-        offset_three_quarters: 'Desplazado ¾ de fila'})[lcfg.layout_type] || '⚙ GSP';
-      const spacings = (lcfg.s_para_d != null && lcfg.s_perp_d != null)
-        ? ` · ${lcfg.s_para_d}D×${lcfg.s_perp_d}D` : '';
-      const dirLabel = lcfg.dominant_dir_deg != null
-        ? ` · Dir ${Math.round(lcfg.dominant_dir_deg)}°` : '';
-      const nTried = lcfg.n_configs_tried > 0 ? ` (${lcfg.n_configs_tried} configs)` : '';
-      lBadge.textContent = typeLabel + spacings + dirLabel + nTried;
-      lBadge.style.display = '';
-    } else if (lBadge) { lBadge.style.display = 'none'; }
-
-    document.getElementById('parque-layout-meta').textContent =
-      `Área: ${r.area_km2} km² · D: ${r.D_m}m · Sep. mín: ${r.min_sep_m}m · ${r.n_candidates} candidatos`;
-
-    document.getElementById('parque-info').textContent =
-      `${r.turbine?.name||turbineKey} · ⌀${r.D_m}m`;
-
-    if (sim) {
-      if (sim.error === 'wind_series_invalid') {
-        toast('⚠ Serie de viento con todos-NaN — se usó síntesis Weibull para AEP. Recarga datos en Data Hub.', 'warn', 7000);
-      }
-      // Auto-update wake direction from energy-weighted dominant direction
-      const wdirEl = document.getElementById('parque-wake-dir');
-      const domDir = r.layout_config?.dominant_dir_deg ?? sim.dominant_dir_deg;
-      if (wdirEl && domDir != null) wdirEl.value = Math.round(domDir);
-
-      document.getElementById('parque-kpis').style.display = '';
-      document.getElementById('parque-kpi-aep').textContent = parqueFmt(Number(sim.aep_mwh) / 1000, 3, '0.000');
-      document.getElementById('parque-kpi-wl').textContent  = parqueFmt(sim.wake_loss_pct, 2, '0.00');
-      document.getElementById('parque-kpi-cf').textContent  = parqueFmt(sim.cf_pct, 2, '0.00');
-      document.getElementById('parque-kpi-mw').textContent  = parqueFmt(sim.installed_mw ?? r.installed_mw, 3, '0.000');
-      document.getElementById('parque-kpi-flh').textContent = parqueFmt(sim.flh, 0, '0');
-      document.getElementById('parque-kpi-dir').textContent = parqueFmt(sim.dominant_dir_deg, 0, '0') + '°';
-      parqueRenderAEPChart(sim.turbines, r.layout_latlon);
-      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, sim.turbines);
-    } else {
-      document.getElementById('parque-kpis').style.display = 'none';
-      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, null);
-    }
     parqueRenderWakeChart(r.D_m);
     progFill.style.width = '100%';
     setTimeout(() => { progWrap.style.display = 'none'; }, 800);
@@ -9038,12 +8919,13 @@ function parqueRenderTable(layoutLatlon, windAtTurbines, simTurbines) {
   }).join('');
 }
 
-async function parqueRenderWakeChart(rotorD) {
+async function parqueRenderWakeChart(rotorD, savedProfile = null) {
   const rotor = rotorD || (PARQUE.optResult && PARQUE.optResult.D_m) || 80;
   const k  = parseFloat(document.getElementById('parque-kwake')?.value) || 0.075;
   const ct = parseFloat(document.getElementById('parque-ct')?.value)    || 0.8;
   try {
-    const r = await api('/api/farm/wake_profile', 'POST', { rotor_d_m: rotor, k_wake: k, ct });
+    const r = savedProfile || await api('/api/farm/wake_profile', 'POST', { rotor_d_m: rotor, k_wake: k, ct });
+    PARQUE.wakeProfile = r;
     destroyChart('parque-wake');
     const ctx = document.getElementById('parque-wake-chart')?.getContext('2d');
     if (!ctx) return;
@@ -9096,6 +8978,10 @@ function parqueReset() {
 // ── Activación del módulo ─────────────────────────────────────────────────────
 function parqueActivate() {
   parqueInitMap();
+  if (WP.importedProject && PARQUE.optResult) {
+    renderSavedPark(PARQUE.optResult, PARQUE.layerKey || 'wind', PARQUE.optResult.turbine?.name || '');
+    return;
+  }
   parqueLoadTurbines();
   parquePopulateTopsisRanking();
   // La configuración comercial gobierna la demanda del diseño. En venta
@@ -9757,6 +9643,8 @@ async function syncParkCommercialFile(category) {
 }
 
 function _renderMarketResult(category, r) {
+  WP.marketResults ||= {};
+  WP.marketResults[category] = r;
   // Badge
   const badge = document.getElementById(`market-${category}-badge`);
   if (badge) {
@@ -9864,7 +9752,7 @@ function bindMCPLab() {
     }
   });
   document.querySelector('.nav-btn[data-module="mcp"]')?.addEventListener('click', () => {
-    setTimeout(() => loadMCPStudy(), 30);
+    setTimeout(() => loadMCPStudy(WP.importedProject ? WP.mcpStudy : null), 30);
   });
 }
 
@@ -9890,7 +9778,7 @@ async function persistMCPTargetHeight() {
   return targetHeight;
 }
 
-async function loadMCPStudy() {
+async function loadMCPStudy(savedStudy = null) {
   if (!WP.sessionId) return;
   if (WP.studyMode === 'reanalysis_only') {
     WP.mcpStudy = null;
@@ -9905,7 +9793,7 @@ async function loadMCPStudy() {
     return;
   }
   try {
-    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'GET');
+    const study = savedStudy || await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/mcp-study`, 'GET');
     WP.mcpStudy = study;
     document.getElementById('mcp-study-revision').textContent = `Revisión ${study.study_revision}`;
     const obs = study.observed_station;
@@ -10009,6 +9897,11 @@ async function pollMCPTask(taskId) {
 }
 
 function renderMCPResult(result) {
+  WP.mcpResult = result;
+  document.getElementById('mcp-run-status').textContent = 'Completado';
+  const published = WP.activeDataSource === `mcp:${WP.mcpRunId}`;
+  document.getElementById('mcp-publish-status').textContent = published ? 'Publicado' : 'No publicado';
+  document.getElementById('btn-mcp-publish').disabled = published;
   const trainYear = Number(result.config?.train_year);
   const testYear = Number(result.config?.test_year);
   const trainLabel = Number.isFinite(trainYear) ? trainYear : 'entrenamiento';
@@ -10406,8 +10299,8 @@ async function bindGlobeStage() {
   // Click loader to advance early
   document.getElementById('globe-loader')?.addEventListener('click', () => switchToGlobeApp());
 
-  // Pre-cargar catálogo de sitios para que el globo los pueda mostrar
-  globePreloadSites();
+  // Imported snapshots already contain the stations and their statistics.
+  if (!WP.importedProject) globePreloadSites();
 }
 
 function fetchWorldAtlas() {
@@ -11018,7 +10911,7 @@ function globeHaversineKm(lat1, lon1, lat2, lon2) {
 
 async function globeFilterByRadius() {
   if (!GLOBE.poi) return;
-  if (!GLOBE.sites.length) await globePreloadSites();
+  if (!GLOBE.sites.length && !WP.importedProject) await globePreloadSites();
   const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
   const inside = [];
   GLOBE.sites.forEach(s => {
@@ -12673,4 +12566,320 @@ function updateResumenVerdict() {
   vVal.textContent = label;
   if (vSub) vSub.textContent = sub;
   vCta?.removeAttribute('disabled');
+}
+
+function renderSavedOverview(r) {
+    renderOverviewKPIs(r.overview);
+    renderDailyTS(r.overview?.daily_series);
+    renderHistogramOverview(r.histogram);
+    renderMClimOverview(r.climatology);
+    renderHourlyOverview(r.diurnal);
+    renderPowerDensityChart(r.overview);
+    document.getElementById('overview-status').textContent = 'Listo';
+}
+
+function renderSavedWind(r) {
+    renderWindRose(r.rose);
+    renderDiurnal(r.diurnal);
+    renderClimatology(r.climatology);
+    renderExtremes(r.extremes);
+    renderWbHist(r.histogram);
+    renderHistColored(r.histogram);
+    renderMonthlyWS(r.climatology);
+    renderMonthHourHeatmap(r.month_hour_heatmap);
+    populateSectorTable(r.sectors);
+    if (r.sectors?.dominant_sectors) {
+      const bd = document.getElementById('wind-badge-dom');
+      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
+    }
+    document.getElementById('wind-status').textContent = 'Listo';
+}
+
+function renderSavedAdvanced(r) {
+    // KPI row
+    const kpiRow = document.getElementById('adv-kpi-row');
+    kpiRow.style.display = '';
+    const turbulence = r.turbulence || {};
+    const measuredTI  = turbulence.measured_10min || {};
+    const hourlyVar   = turbulence.hourly_variability || r.wind_speed_variability || {};
+    const historicalTI = turbulence.historical_model || {};
+    const hasMeasuredTI = measuredTI.available === true;
+    const ti = hasMeasuredTI ? measuredTI : hourlyVar;
+    const sh = r.shear;
+    const rp = r.return_periods;
+
+    const _set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val; };
+    _set('adv-kpi-ti',    hasMeasuredTI && ti?.ti_overall != null ? (ti.ti_overall * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-ti15',  hasMeasuredTI && ti?.ti_15ms    != null ? (ti.ti_15ms    * 100).toFixed(1) + '%' : '—');
+    _set('adv-kpi-source', hasMeasuredTI ? 'CERTE 10 min' : 'Sin TI medida');
+    _set('adv-kpi-source-sub', hasMeasuredTI
+      ? `Entrenamiento ${measuredTI.training_year} · ${Number(measuredTI.logger_pair_coverage_pct || 0).toFixed(1)}% cobertura nativa`
+      : 'La serie horaria sólo aporta variabilidad');
+    _set('adv-kpi-alpha', sh?.alpha != null ? sh.alpha.toFixed(3) : '—');
+    _set('adv-kpi-v50',   rp?.v_50year != null ? rp.v_50year + ' m/s' : '—');
+
+    const badgeSource = document.getElementById('adv-badge-ti-source');
+    if (badgeSource) {
+      badgeSource.textContent = hasMeasuredTI ? 'Medido · CERTE 10 min' : 'Proxy · horario';
+      badgeSource.className = `cbadge ${hasMeasuredTI ? 'g' : 'r'}`;
+      badgeSource.title = ti?.note || r.ti_warning || '';
+    }
+    _set('adv-ti-chart-title', hasMeasuredTI
+      ? 'TI medida CERTE vs velocidad'
+      : 'Variabilidad interhoraria vs velocidad · no es TI');
+    const provenanceTitle = document.getElementById('adv-ti-provenance-title');
+    const provenanceText  = document.getElementById('adv-ti-provenance');
+    if (provenanceTitle) provenanceTitle.textContent = hasMeasuredTI
+      ? `Turbulencia medida CERTE ${measuredTI.training_year}`
+      : 'No hay turbulencia medida en la fuente activa';
+    if (provenanceText) provenanceText.textContent = hasMeasuredTI
+      ? `Se usan ${Number(measuredTI.N || 0).toLocaleString()} ventanas nativas de ${measuredTI.native_resolution_minutes || 10} minutos a ${measuredTI.measurement_height_m || 80} m. TI = σ₁₀min / V̄₁₀min. La serie MCP horaria permanece separada y la clase IEC no se asigna automáticamente.`
+      : `${measuredTI.reason || 'No se encontraron media y desviación estándar nativas.'} ${r.ti_warning || ''}`;
+    _set('adv-badge-alpha',  `α = ${sh?.alpha?.toFixed(3) || '—'}`);
+    _set('adv-badge-z0',     `z₀ = ${sh?.z0 ?? '—'} m`);
+    _set('adv-badge-method', rp?.method || 'Gumbel');
+    if (r.sectors?.dominant_sectors) {
+      const bd = document.getElementById('wind-badge-dom');
+      if (bd) bd.textContent = `Dom: ${r.sectors.dominant_sectors.join(', ')}`;
+    }
+
+    renderTIChart(ti, hasMeasuredTI);
+    renderHistoricalTurbulenceChart(historicalTI);
+    renderTurbulenceTraceability(measuredTI, historicalTI, hourlyVar);
+    renderShearChart(sh);
+    renderHubKPIs(sh?.hub);
+    populateSectorTable(r.sectors);
+    renderReturnChart(rp);
+    populateReturnTable(rp);
+
+}
+
+function renderSavedHybrid(r) {
+    // KPI row
+    document.getElementById('hyb-kpi-row').style.display = '';
+    document.getElementById('hyb-kpi-rf').textContent   = (r.renewable_fraction ?? 0).toFixed(1) + '%';
+    document.getElementById('hyb-kpi-lcoe').textContent  = r.economics?.lcoe_usd_kwh?.toFixed(4) ?? '—';
+    document.getElementById('hyb-kpi-npc').textContent   = r.economics?.npc ? '$' + Math.round(r.economics.npc).toLocaleString() : '—';
+    document.getElementById('hyb-kpi-co2').textContent   = r.economics?.co2_saved_t_yr ?? '—';
+    document.getElementById('hyb-kpi-lpsp').textContent  = (r.lpsp_pct ?? 0).toFixed(3) + '%';
+    document.getElementById('hyb-kpi-fuel').textContent  = r.fuel_liters ? Math.round(r.fuel_liters).toLocaleString() : '—';
+
+    const n = r.traces?.step ? Math.round(r.traces.load.length) : 0;
+    document.getElementById('hyb-badge-pts').textContent = `${n} puntos`;
+
+    renderHybridDispatch(r.traces);
+    renderHybridEnergy(r);
+    populateHybridCapex(r.economics);
+
+}
+
+function renderSavedEnergy(r, simCfg) {
+    // KPIs
+    const kpis = document.getElementById('energy-kpis');
+    kpis.classList.remove('hidden');
+    document.getElementById('kpi-cf').textContent     = `${r.summary.capacity_factor_pct}%`;
+    document.getElementById('kpi-aep').textContent    = r.aep?.aep_p50_mwh?.toLocaleString() ?? r.summary.energy_net_mwh?.toLocaleString();
+    document.getElementById('kpi-flh').textContent    = Math.round(r.summary.full_load_hours).toLocaleString();
+    document.getElementById('kpi-energy-net').textContent = r.summary.energy_net_mwh?.toLocaleString();
+    document.getElementById('kpi-p90').textContent    = r.aep?.aep_p90_mwh?.toLocaleString() ?? '—';
+
+    // P-values card
+    if (r.aep && r.aep.aep_p50_mwh) {
+      const aepCard = document.getElementById('aep-card');
+      aepCard.classList.remove('hidden');
+      document.getElementById('p-value-row').innerHTML = [
+        ['P10', r.aep.aep_p10_mwh, 'p10'],
+        ['P50', r.aep.aep_p50_mwh, 'p50'],
+        ['P75', r.aep.aep_p75_mwh, 'p75'],
+        ['P90', r.aep.aep_p90_mwh, 'p90'],
+      ].map(([l, v, cls]) => `
+        <div class="p-val-item ${cls}">
+          <div class="p-val-label">${l}</div>
+          <div class="p-val-value">${v?.toLocaleString() ?? '—'} MWh</div>
+        </div>`).join('');
+    }
+
+    renderPowerCurveChart(r.turbine);
+    renderMonthlyEnergyChart(r.monthly);
+    renderPowerTimeseries(r.timeseries);
+    renderSensitivityChart(r.sensitivity || []);
+    populateTurbineFicha(r.turbine, r.summary, simCfg);
+
+}
+
+function renderSavedQC(r) {
+    const rpt = r.report;
+    const container = document.getElementById('qc-results');
+    container.classList.remove('hidden');
+
+    const checks = [
+      { key: 'qc_missing',  label: 'Datos Faltantes', detail: `${rpt.pct_missing}%` },
+      { key: 'qc_gaps',     label: 'Gaps Consecutivos', detail: `máx ${rpt.max_consecutive_gap_periods} periodos` },
+      { key: 'qc_physical', label: 'Límites Físicos', detail: `${rpt.n_out_physical} fuera de rango` },
+      { key: 'qc_spikes',   label: 'Picos / Spikes', detail: `${rpt.n_spikes} detectados` },
+      { key: 'qc_frozen',   label: 'Sensor Congelado', detail: `${rpt.n_frozen_periods} periodos` },
+      { key: 'overall',     label: 'Estado General', detail: '' },
+    ];
+
+    container.innerHTML = checks.map(c => `
+      <div class="qc-item ${rpt[c.key] || 'PASS'}">
+        <div class="qc-label">${c.label}</div>
+        <div class="qc-status">${rpt[c.key] || 'PASS'}</div>
+        <div class="qc-detail">${c.detail}</div>
+      </div>
+    `).join('');
+
+    // stats pills
+    const stats = rpt.stats || {};
+    const statsEl = document.getElementById('qc-stats-grid');
+    statsEl.classList.remove('hidden');
+    statsEl.innerHTML = [
+      ['Media', stats.mean, 'm/s'], ['σ', stats.std, 'm/s'],
+      ['Mín', stats.min, 'm/s'], ['P50', stats.p50, 'm/s'], ['Máx', stats.max, 'm/s'],
+    ].map(([l, v, u]) =>
+      `<div class="stat-pill">${l}: <span>${v ?? '—'} ${u}</span></div>`
+    ).join('');
+
+    // Weibull
+    if (rpt.weibull) {
+      statsEl.innerHTML += `<div class="stat-pill">Weibull k: <span>${rpt.weibull.k}</span></div>`;
+      statsEl.innerHTML += `<div class="stat-pill">Weibull λ: <span>${rpt.weibull.lambda} m/s</span></div>`;
+    }
+
+}
+
+function renderSavedPark(r, layerKey, turbineKey) {
+  const statusEl = document.getElementById('parque-status');
+    // Actualizar mapa
+    parqueRenderKrigingLayer(layerKey);
+    parqueRenderPolygon();
+    parquePlotTurbinesOnMap(r.layout_latlon, r.simulation?.turbines || null, r);
+
+    // KPIs
+    const sim = r.simulation;
+    statusEl.textContent = sim
+      ? `${r.n_placed} turbinas · ${r.installed_mw} MW · ${sim.hours?.toLocaleString()||'—'} h`
+      : `${r.n_placed} turbinas colocadas (sin serie temporal)`;
+
+    // Layout config badge (tresbolillo / alineado / spacings / direction)
+    const lcfg = r.layout_config;
+    const lBadge = document.getElementById('parque-layout-badge');
+    if (lBadge && lcfg) {
+      const typeLabel = ({tresbolillo: '⬡ Tresbolillo', staggered: '⬡ Tresbolillo',
+        alineado: '▦ Alineado', aligned: '▦ Alineado',
+        topsis_improved: '★ TOPSIS mejorado'})[lcfg.layout_type] || '⚙ GSP';
+      const spacings = (lcfg.s_para_d != null && lcfg.s_perp_d != null)
+        ? ` · ${lcfg.s_para_d}D×${lcfg.s_perp_d}D` : '';
+      const dirLabel = lcfg.dominant_dir_deg != null
+        ? ` · Dir ${Math.round(lcfg.dominant_dir_deg)}°` : '';
+      const nTried = lcfg.n_configs_tried > 0 ? ` (${lcfg.n_configs_tried} configs)` : '';
+      lBadge.textContent = typeLabel + spacings + dirLabel + nTried;
+      lBadge.style.display = '';
+    } else if (lBadge) { lBadge.style.display = 'none'; }
+
+    document.getElementById('parque-layout-meta').textContent =
+      `Área: ${r.area_km2} km² · D: ${r.D_m}m · Sep. mín: ${r.min_sep_m}m · ${r.n_candidates} candidatos`;
+
+    document.getElementById('parque-info').textContent =
+      `${r.turbine?.name||turbineKey} · ⌀${r.D_m}m`;
+
+    if (sim) {
+      if (sim.error === 'wind_series_invalid') {
+        toast('⚠ Serie de viento con todos-NaN — se usó síntesis Weibull para AEP. Recarga datos en Data Hub.', 'warn', 7000);
+      }
+      // Preserve the same direction used when the wake cones were drawn.
+      parqueSyncWakeDirection(r);
+
+      document.getElementById('parque-kpis').style.display = '';
+      document.getElementById('parque-kpi-aep').textContent = parqueFmt(Number(sim.aep_mwh) / 1000, 3, '0.000');
+      document.getElementById('parque-kpi-wl').textContent  = parqueFmt(sim.wake_loss_pct, 2, '0.00');
+      document.getElementById('parque-kpi-cf').textContent  = parqueFmt(sim.cf_pct, 2, '0.00');
+      document.getElementById('parque-kpi-mw').textContent  = parqueFmt(sim.installed_mw ?? r.installed_mw, 3, '0.000');
+      document.getElementById('parque-kpi-flh').textContent = parqueFmt(sim.flh, 0, '0');
+      document.getElementById('parque-kpi-dir').textContent = parqueFmt(parqueModelWindDirection(r), 1) + '°';
+      parqueRenderAEPChart(sim.turbines, r.layout_latlon);
+      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, sim.turbines);
+    } else {
+      document.getElementById('parque-kpis').style.display = 'none';
+      parqueRenderTable(r.layout_latlon, r.wind_at_turbines, null);
+    }
+}
+
+// Only render stored outputs here. Never invoke run/optimize/pipeline handlers.
+async function renderSavedProjectResults() {
+  const failures = [];
+  const show = async (label, fn) => {
+    try { await fn(); } catch (error) { failures.push(label); console.error(label, error); }
+  };
+  for (const [category, result] of Object.entries(WP.marketResults || {})) {
+    if (MARKET_CATS.includes(category)) await show('Mercado', () => _renderMarketResult(category, result));
+  }
+  if (WP.farmLayout) await show('Layout', () => WP.restoreFarmLayout?.(WP.farmLayout));
+  if (WP.farmResult) await show('Simulación del parque', () => renderSavedFarm(WP.farmResult));
+  if (WP.turbineComparison) await show('Comparación de turbinas', () => renderSavedTurbineComparison(WP.turbineComparison));
+  if (WP.qcResult) await show('Calidad', () => renderSavedQC(WP.qcResult));
+  if (WP.windStats) {
+    await show('Resumen', () => renderSavedOverview(WP.windStats));
+    await show('Viento', () => renderSavedWind(WP.windStats));
+  }
+  if (WP.advancedResult) await show('Recurso avanzado', () => renderSavedAdvanced(WP.advancedResult));
+  if (WP.energyResult?.summary) await show('Energía', () => renderSavedEnergy(WP.energyResult, WP.energySimulation || {}));
+  if (WP.hybridResult) await show('Híbrido', () => renderSavedHybrid(WP.hybridResult));
+  if (WP.mcpResult) await show('MCP', () => renderMCPResult(WP.mcpResult));
+  if (KRIG.calibration) await show('Calibración', () => krig3RenderCalibration(KRIG.calibration));
+  if (KRIG.result) await show('Kriging', () => {
+    document.querySelectorAll('.krig3-tab-phys').forEach(el => { el.style.display = KRIG.result.physical ? '' : 'none'; });
+    document.querySelectorAll('.krig3-tab-mcp').forEach(el => { el.style.display = KRIG.result.calibration_id && KRIG.result[el.dataset.layer] ? '' : 'none'; });
+    krig3SetLayer(KRIG.layerKey || 'wind');
+    krig3PopulateCurveSelect();
+    krig3RenderCurve();
+    krig3ZoomToPrincipal();
+    document.getElementById('krig3-status').textContent = `${KRIG.result.n_sites || KRIG.sites.length} sitios · resultado guardado`;
+  });
+  if (MAPA.result) await show('Mapa', () => mapaRenderVariable(MAPA.var || 'speed'));
+  if (PARQUE.optResult) await show('Parque', () => {
+    parqueInitMap();
+    renderSavedPark(PARQUE.optResult, PARQUE.layerKey || 'wind', PARQUE.optResult.turbine?.name || '');
+  });
+  if (PARQUE.wakeProfile) await show('Estelas', () => parqueRenderWakeChart(PARQUE.optResult?.D_m, PARQUE.wakeProfile));
+  if (WP.technoScenarios?.integrated?.result) await show('Economía', renderTechnoScenarioResult);
+  if (_riskData) await show('Riesgo', () => renderRiskSection(_riskData));
+  updateResumenHeader();
+  updateResumenVerdict();
+  if (failures.length) toast(`Resultados guardados; no se pudieron mostrar: ${failures.join(', ')}`, 'warning');
+}
+
+function renderSavedFarm(r) {
+    // Update KPIs
+    document.getElementById('farm-n-turbines').textContent = r.n_turbines;
+    document.getElementById('farm-installed-mw').textContent = r.installed_mw;
+    document.getElementById('farm-aep-mwh').textContent = r.aep_mwh.toLocaleString();
+    document.getElementById('farm-cf-pct').textContent = `${r.cf_pct}%`;
+    document.getElementById('farm-wake-loss-pct').textContent = `${r.wake_loss_pct}%`;
+    document.getElementById('farm-flh').textContent = r.flh;
+
+    // Update per-turbine table
+    r.turbines.forEach(turbine => {
+      document.getElementById(`aep-${turbine.i}`).textContent = turbine.aep_mwh;
+      document.getElementById(`aep-no-wake-${turbine.i}`).textContent = turbine.aep_no_wake_mwh;
+      document.getElementById(`wake-loss-${turbine.i}`).textContent = `${turbine.wake_loss_pct}%`;
+      document.getElementById(`cf-${turbine.i}`).textContent = `${turbine.cf_pct}%`;
+    });
+
+}
+
+function renderSavedTurbineComparison(r) {
+    const tbody = document.getElementById('turbine-comp-tbody');
+    tbody.innerHTML = (r.comparison || []).map((t, i) => `
+      <tr ${i === 0 ? 'class="best-row"' : ''}>
+        <td class="model-name">${i === 0 ? '★ ' : ''}${t.name}</td>
+        <td>${t.rated_power_kw?.toLocaleString()}</td>
+        <td>${t.rotor_diameter_m}</td>
+        <td>${t.hub_height_m}</td>
+        <td style="color:${i===0?'var(--green)':''}">${t.capacity_factor_pct}%</td>
+        <td>${t.full_load_hours?.toLocaleString()}</td>
+        <td>${t.mean_power_kw?.toLocaleString()}</td>
+        <td><span class="badge badge--${i===0?'success':'info'}">#${t.rank}</span></td>
+      </tr>`).join('');
+
 }

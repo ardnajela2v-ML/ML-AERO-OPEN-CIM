@@ -60,3 +60,40 @@ test('comparison dispatches selected ranked model rather than an unrelated wind 
   await run('parqueOptimize()');
   assert.equal(run('window.dispatched'), 'selected.csv');
 });
+
+test('map synchronization uses energetic NNW, preserves north zero and ignores grid rotation', () => {
+  const {run, element} = context();
+  element('parque-wake-dir').value = '270';
+  run(`PARQUE.optResult={layout_config:{orientation_deg:90, dominant_dir_deg:337.5},
+    simulation:{dominant_energy_dir_deg:337.5, dominant_dir_deg:340}};
+    parqueSyncWakeDirection();`);
+  assert.equal(element('parque-wake-dir').value, 337.5);
+  run('PARQUE.optResult.simulation.dominant_energy_dir_deg = 0; parqueSyncWakeDirection();');
+  assert.equal(element('parque-wake-dir').value, 0);
+  run('PARQUE.optResult = {}; parqueSyncWakeDirection();');
+  assert.equal(element('parque-wake-dir').value, '');
+});
+
+test('NNW cones point SSE and north zero points south, not east', () => {
+  const {run, element, sandbox} = context();
+  sandbox.polygons = [];
+  sandbox.L = {layerGroup: () => ({addTo() {}}), polygon: points => {
+    sandbox.polygons.push(points); return {addTo() {}};
+  }};
+  run(`parqueInitMap = () => ({removeLayer(){}});
+    PARQUE.optResult={layout_latlon:[[16,-95]], D_m:90, simulation:{dominant_energy_dir_deg:337.5}};
+    PARQUE.turbineMarkers=[];`);
+  element('parque-wake-dir').value = '337.5';
+  run('parqueRenderWakeCones()');
+  let far = sandbox.polygons[0].slice(2);
+  assert.ok((far[0][0] + far[1][0]) / 2 < 16, 'downwind south');
+  assert.ok((far[0][1] + far[1][1]) / 2 > -95, 'downwind east');
+  assert.match(element('parque-wake-direction-note').textContent, /337.5° → estela hacia 157.5°/);
+  sandbox.polygons.length=0;
+  element('parque-wake-dir').value='0';
+  run('parqueRenderWakeCones()');
+  far = sandbox.polygons[0].slice(2);
+  assert.ok((far[0][0]+far[1][0])/2 < 16);
+  assert.equal((far[0][1]+far[1][1])/2, -95);
+  assert.match(element('parque-wake-direction-note').textContent, /Vista manual/);
+});

@@ -80,6 +80,22 @@ class FarmScientificModelTests(unittest.TestCase):
             'reject_material_interaction_outside_domain',
         )
 
+    def test_wake_constraint_checks_second_layout_before_reducing_count(self):
+        calls = []
+        def evaluate(points):
+            calls.append(points)
+            return {'wake_loss_pct': 8.0 if len(calls) == 1 else 4.0}
+        result = optimize_layout_structured(
+            self.polygon, self.turbine, 2,
+            s_para_range=(5,), s_perp_range=(3,),
+            orientation_step_deg=90, grid_offset_fractions=(0, .5),
+            layout_evaluator=evaluate, max_wake_loss_pct=5,
+        )
+        self.assertEqual(result['n_placed'], 2)
+        self.assertEqual(result['n_layouts_evaluated'], 2)
+        self.assertEqual(result['constraint_evaluation']['wake_loss_pct'], 4)
+        self.assertEqual(result['layout_xy_m'], calls[1])
+
     def test_gaussian_near_wake_domain_is_not_clipped_to_full_deficit(self):
         minimum = gaussian_min_valid_distance_d(k=0.04, ct=0.8)
         self.assertAlmostEqual(minimum, 1.546, places=3)

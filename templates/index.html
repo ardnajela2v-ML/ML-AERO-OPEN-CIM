@@ -2147,8 +2147,6 @@
                 <option value="auto" selected>🔍 Auto (busca mejor)</option>
                 <option value="aligned">▦ Solo alineado</option>
                 <option value="staggered">⬡ Solo tresbolillo</option>
-                <option value="offset_quarter">Desplazado ¼ de fila</option>
-                <option value="offset_three_quarters">Desplazado ¾ de fila</option>
               </select>
             </div>
             <div>
@@ -2157,7 +2155,7 @@
             </div>
             <div>
               <label class="form-label" title="Dirección FROM donde viene el viento para visualizar estelas en mapa (0=N, 90=E, 270=O)">Dir. estela (°)</label>
-              <input class="form-input" type="number" id="parque-wake-dir" value="270" step="5" min="0" max="359">
+              <input class="form-input" type="number" id="parque-wake-dir" value="" placeholder="Desde TOPSIS" step="0.5" min="0" max="359.9">
             </div>
           </div>
           <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">
@@ -2188,6 +2186,8 @@
     <span class="badge" id="parque-layout-badge"
       style="display:none;background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
   </div>
+
+  <p id="parque-wake-direction-note" class="text-muted" style="font-size:.75rem">La dirección visual se sincroniza con el resultado del parque.</p>
 
   <div class="card mt-2" id="parque-config-comparison" style="display:none"></div>
 
@@ -3219,6 +3219,6 @@
 <!-- ─── TOAST NOTIFICATIONS ──────────────────────── -->
 <div class="toast-container" id="toast-container"></div>
 
-<script src="/static/js/aero.js?v=20260910-topsis-layout-comparison"></script>
+<script src="/static/js/aero.js?v=20260910-wind-direction-consistency"></script>
 </body>
 </html>
