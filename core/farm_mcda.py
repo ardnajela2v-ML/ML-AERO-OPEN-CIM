@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 
 from core.cost_model import CostModel
+from core.layout_refinement import build_energy_context
 from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellmann
 from core.farm import (
     _latlon_to_xy,
@@ -462,6 +463,18 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                     'rotor_diameter_m': float(turbine.rotor_diameter_m),
                     'hub_height_m': float(turbine.hub_height_m or 0.0),
                 },
+                'energy_context': build_energy_context(
+                    sites, turbine, wake_model=wake_model, k_wake=k_wake, ct=ct,
+                    availability=availability, electrical_losses=electrical_losses,
+                    curtailment_loss=curtailment_loss, environmental_loss=environmental_loss),
+                'layout_constraints': {
+                    'polygon': polygon, 'exclusions': exclusions or [],
+                    'boundary_setback_m': setback, 'min_spacing_d': min_spacing_d,
+                    's_para_range': list(s_para_range), 's_perp_range': list(s_perp_range),
+                    'max_wake_loss_pct': float(max_wake_loss_pct),
+                },
+                'aep_per_turbine_mwh': aep_p50 / selected_n,
+                'mean_power_per_turbine_kw': aep_p50 / selected_n * 1000 / 8760,
                 'energy_balance': {
                     'aep_gross_theoretical_mwh': sim['aep_gross_mwh'],
                     'aep_net_pre_wake_mwh': sim.get('aep_net_pre_wake_mwh'),

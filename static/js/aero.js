@@ -8635,11 +8635,39 @@ function parqueSelectTurbina(el, forceKey) {
     }
   }
   parqueSyncHubHeightFromTurbine(true);
+  const winner = parqueSelectedTopsis();
+  if (winner) {
+    const height = winner.turbine_specification?.hub_height_m;
+    if (height) document.getElementById('parque-ws-h').value = height;
+    document.getElementById('parque-n-turbines').value = winner.n_aerogeneradores;
+  }
   parqueUpdateRecommendation();
+}
+
+function parqueSelectedTopsis() {
+  const key = document.getElementById('parque-turbine')?.value;
+  return (MCDA.lastRanking?.ranking || []).find(row => row.turbina === key &&
+    Number(row.n_aerogeneradores) > 0 && Array.isArray(row.layout_latlon)) || null;
+}
+
+function parqueShowTopsisEnergy(row) {
+  const n = Number(row.n_aerogeneradores);
+  const total = Number(row.aep_p50_mwh ?? row.aep_mwh);
+  document.getElementById('parque-rec-n').textContent = n;
+  document.getElementById('parque-rec-aep').textContent = parqueFmt(total / n, 1);
+  const basis = document.getElementById('parque-energy-basis');
+  if (basis) basis.textContent = `TOPSIS · P50 del parque: ${parqueFmt(total, 1)} MWh/año · ` +
+    `Media por turbina: ${parqueFmt(total / n, 1)} MWh/año · ` +
+    `Potencia media por turbina: ${parqueFmt(total / n * 1000 / 8760, 1)} kW · ` +
+    `Estela: ${parqueFmt(row.wake_loss_pct, 2)}%. Incluye las pérdidas de TOPSIS.`;
 }
 
 // ── Recomendación n° turbinas ─────────────────────────────────────────────────
 async function parqueUpdateRecommendation() {
+  const winner = parqueSelectedTopsis();
+  if (winner) { parqueShowTopsisEnergy(winner); return; }
+  const basis = document.getElementById('parque-energy-basis');
+  if (basis) basis.textContent = 'Estimación independiente para cubrir demanda; incluye estela supuesta del 8%. Ejecuta TOPSIS del parque para usar su base energética.';
   const turbineKey = document.getElementById('parque-turbine')?.value;
   const demand     = parseFloat(document.getElementById('parque-demand')?.value) || 5000;
   if (!turbineKey) return;
@@ -8668,6 +8696,7 @@ async function parqueUpdateRecommendation() {
       availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
       electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
     });
+    if (parqueSelectedTopsis() || document.getElementById('parque-turbine')?.value !== turbineKey) return;
     document.getElementById('parque-rec-n').textContent   = r.n_turbines;
     document.getElementById('parque-rec-aep').textContent = r.aep_single_net_mwh?.toLocaleString() || '—';
     const nInp = document.getElementById('parque-n-turbines');
