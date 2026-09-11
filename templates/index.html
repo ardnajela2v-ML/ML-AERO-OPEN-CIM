@@ -2599,7 +2599,7 @@
         <div class="form-grid-2">
           <div>
             <label class="form-label">Aerogenerador</label>
-            <select class="form-select" id="te-turbine">
+            <select class="form-select" id="te-turbine" disabled>
               <option value="SG_8.0_167">Siemens Gamesa SG 8.0-167 (8 MW)</option>
               <option value="V150_4.5">Vestas V150-4.5 MW</option>
               <option value="E126_7.58">Enercon E126 7.58 MW</option>
@@ -2608,10 +2608,12 @@
               style="display:none;margin-top:.3rem;font-size:.68rem;padding:.2rem .5rem;
                      background:rgba(34,197,94,.12);color:#22c55e;
                      border:1px solid rgba(34,197,94,.3);border-radius:4px">—</div>
+            <div class="text-muted" style="font-size:.68rem;margin-top:.2rem">Definido por el layout aplicado en Diseño y optimización del parque.</div>
           </div>
           <div>
             <label class="form-label">N° de aerogeneradores</label>
-            <input type="number" class="form-input" id="te-nturbines" value="10" min="1">
+            <input type="number" class="form-input" id="te-nturbines" value="10" min="1" disabled>
+            <div class="text-muted" style="font-size:.68rem;margin-top:.2rem">Definido por el layout aplicado en Diseño y optimización del parque.</div>
           </div>
           <div>
             <label class="form-label">Demanda anual (MWh)</label>

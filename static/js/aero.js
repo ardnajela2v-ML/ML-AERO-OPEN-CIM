@@ -2184,7 +2184,7 @@ function bindTechno() {
     toast('Parámetros actualizados desde las secciones anteriores.', 'success');
   });
   [
-    'te-turbine','te-nturbines','te-demand','te-price','te-price-escalation',
+    'te-demand','te-price','te-price-escalation',
     'te-inflation','te-rate','te-years','te-fx','te-price-mode',
     'cm-turbine-usd-kw','cm-turbines-pct','cm-civil-pct',
     'cm-elec-pct','cm-install-pct','cm-eng-pct','cm-misc-pct','cm-opex-pct',
@@ -2624,22 +2624,22 @@ function technoUpdateModeHints() {
     : '<span style="color:#d97706">⚠ Carga y publica el PML 2018 en Configuración del parque.</span>';
 }
 
-function technoWindResultCompatible(source) {
-  if (!WP.activeDataSource || WP.activeDataSource === 'observed') return true;
-  if (WP.activeDataSource.startsWith('mcp:')
-      && document.getElementById('krig3-manual-mode')?.checked) return true;
-  const sourceId = typeof source === 'string' ? source : source?.source_id;
-  return sourceId === WP.activeDataSource;
-}
-
-function technoCompatibleWinner() {
-  return technoWindResultCompatible(MCDA.lastSpatial?.data_source)
-    ? (MCDA.lastRanking?.ranking?.[0] || null) : null;
-}
-
-function technoCompatibleParkResult() {
-  return technoWindResultCompatible(PARQUE.result?.data_source)
-    ? PARQUE.result : null;
+/** El tecnoeconómico siempre se alimenta del layout aplicado en "Diseño y
+ * optimización del parque" (PARQUE.optResult/PARQUE.result) — nunca de un
+ * AEP recalculado sin estela. Si no hay layout aplicado, devuelve null y
+ * el cálculo tecnoeconómico se bloquea en vez de inventar un número. */
+function technoParkLayout() {
+  const opt = PARQUE.optResult;
+  const sim = PARQUE.result;
+  const nPlaced = Number(opt?.n_placed ?? sim?.n_turbines);
+  const aep = Number(sim?.aep_mwh);
+  if (!opt || !sim || !(nPlaced > 0) || !Number.isFinite(aep) || aep <= 0) return null;
+  return {
+    turbine_key: opt.turbine_key || null,
+    turbine_name: opt.turbine?.name || sim.turbine?.name || null,
+    n_placed: nPlaced,
+    aep_mwh: aep,
+  };
 }
 
 function technoIntegratedDefaults() {
@@ -2652,12 +2652,9 @@ function technoIntegratedDefaults() {
   if (WP.parkConfiguration?.base_interest_rate_pct != null) base.rate = Number(WP.parkConfiguration.base_interest_rate_pct).toFixed(2);
   if (WP.parkConfiguration?.base_fx_mxn_usd != null) base.fx = Number(WP.parkConfiguration.base_fx_mxn_usd).toFixed(2);
   if (parkMarketTrajectory('pml')?.length) base.priceMode = 'pml8760';
-  const winner = technoCompatibleWinner();
-  const parkResult = technoCompatibleParkResult();
-  if (winner?.turbina) base.turbine = winner.turbina;
-  if (Number(winner?.n_aerogeneradores) > 0) base.nTurbines = Number(winner.n_aerogeneradores);
-  else if (parkResult?.turbine?.name) base.turbine = parkResult.turbine.name;
-  if (!Number(winner?.n_aerogeneradores) && parkResult?.turbines?.length) base.nTurbines = parkResult.turbines.length;
+  const layout = technoParkLayout();
+  if (layout?.turbine_key) base.turbine = layout.turbine_key;
+  if (layout?.n_placed > 0) base.nTurbines = layout.n_placed;
   return base;
 }
 
@@ -2674,15 +2671,10 @@ function technoPullProjectInputs({ force = false } = {}) {
 function technoRefreshScenarioView() {
   const badge = document.getElementById('te-scenario-badge');
   const status = document.getElementById('te-scenario-status');
-  const winner = technoCompatibleWinner();
-  const parkResult = technoCompatibleParkResult();
+  const layout = technoParkLayout();
   const sources = [];
-  if (winner) sources.push(`TOPSIS: ${winner.turbina || 'alternativa ganadora'}${winner.n_aerogeneradores ? ` · ${winner.n_aerogeneradores} aeros` : ''}`);
-  else if (parkResult?.turbines?.length) sources.push(`Parque: ${parkResult.turbines.length} aeros`);
-  if (WP.activeDataSource?.startsWith('mcp:') && !document.getElementById('krig3-manual-mode')?.checked
-      && ((MCDA.lastRanking && !winner) || (PARQUE.result && !parkResult))) {
-    sources.push('Resultados eólicos anteriores omitidos: pertenecen a otra fuente');
-  }
+  if (layout) sources.push(`Parque: ${layout.turbine_name || layout.turbine_key || 'turbina aplicada'} · ${layout.n_placed} aeros · AEP ${Math.round(layout.aep_mwh).toLocaleString()} MWh/año (con estela)`);
+  else sources.push('⚠ Sin layout aplicado: ejecuta y aplica una configuración en Diseño y optimización del parque.');
   if (WP.parkConfiguration) sources.push(`Configuración comercial: revisión ${WP.parkConfiguration.configuration_revision || 0}`);
   if (WP.activeDataSource?.startsWith('mcp:')) sources.push(`Recurso: reconstrucción histórica MCP (${WP.activeDataSource})`);
   else if (WP.studyMode === 'reanalysis_only') sources.push(`Recurso: ERA5/MERRA-2 del área (${WP.activeDataSource}) · sin MCP`);
@@ -2837,15 +2829,17 @@ async function calcTechnoEconomic() {
       toast('Captura un precio de energía válido y una vida del proyecto entre 5 y 40 años.', 'warn');
       return;
     }
+    // El AEP financiero SIEMPRE viene del layout aplicado en "Diseño y
+    // optimización del parque" (ya incluye estela, disponibilidad y
+    // pérdidas eléctricas) — nunca de un recálculo sin estela. Sin layout
+    // aplicado, no hay número confiable que mostrar: se bloquea el cálculo.
+    const layout = technoParkLayout();
+    if (!layout) {
+      toast('Ejecuta y aplica una configuración en "Diseño y optimización del parque" antes de calcular el análisis financiero.', 'warn');
+      setStatus('Falta aplicar un layout de parque.');
+      return;
+    }
     setStatus('Calculando análisis tecnoeconómico…');
-    // Una sola evaluación, con precedencia trazable de recurso:
-    // parque/TOPSIS compatible → fuente eólica activa
-    // (hindcast MCP publicado o, sólo en modo manual, serie observada).
-    const winner = technoCompatibleWinner();
-    const parkResult = technoCompatibleParkResult();
-    const parkAepValue = winner?.aep_p50_mwh ?? winner?.aep_mwh ?? parkResult?.aep_mwh;
-    const parkAep = Number.isFinite(Number(parkAepValue)) && Number(parkAepValue) > 0
-      ? Number(parkAepValue) : null;
 
     const fxScalar = Number.isFinite(inputs.fx) && inputs.fx > 0 ? inputs.fx : null;
     const builtPrice = technoBuildPriceSeries(inputs.priceMode, inputs.years, fxScalar);
@@ -2857,10 +2851,10 @@ async function calcTechnoEconomic() {
       session_id:    WP.sessionId,
       data_source:   WP.activeDataSource,
       scenario:      scenarioKey,
-      n_turbines:    inputs.nTurbines,
+      n_turbines:    layout.n_placed,
       ws_height_m:   wsH(),
-      annual_energy_mwh: Number.isFinite(Number(parkAep)) ? Number(parkAep) : null,
-      turbine: { builtin_model: inputs.turbine },
+      annual_energy_mwh: layout.aep_mwh,
+      turbine: { builtin_model: layout.turbine_key || inputs.turbine },
       financial: {
         demand_mwh:           inputs.demand,
         energy_price_usd_kwh: inputs.price,
@@ -7753,7 +7747,6 @@ function syncTopsisWinnerToModules() {
   if (typeof MCDA === 'undefined' || !MCDA.lastRanking) return;
   const ranking = MCDA.lastRanking.ranking || [];
   if (!ranking.length) return;
-  if (!technoCompatibleWinner()) return;
 
   // Unique turbines by key, sorted by TOPSIS score
   const seen = new Set();
@@ -8236,7 +8229,7 @@ async function parqueRecalcEditedLayout() {
   try {
     const r = await api('/api/farm/simulate', 'POST', body);
     PARQUE.result = r;
-    PARQUE.optResult = Object.assign({}, PARQUE.optResult, { simulation: r, layout_latlon: layoutLatLon });
+    PARQUE.optResult = Object.assign({}, PARQUE.optResult, { simulation: r, layout_latlon: layoutLatLon, turbine_key: turbineKey });
     // Update marker colors
     const simTurbines = r.turbines || [];
     const aeps = simTurbines.map(t => Number(t?.aep_mwh)).filter(Number.isFinite);
@@ -8849,7 +8842,7 @@ async function parqueOptimize() {
     if (r.error) throw new Error(r.error);
     progFill.style.width = '90%';
 
-    PARQUE.optResult = r;
+    PARQUE.optResult = { ...r, turbine_key: turbineKey };
     PARQUE.result    = r.simulation || null;
 
     renderSavedPark(r, layerKey, turbineKey);
