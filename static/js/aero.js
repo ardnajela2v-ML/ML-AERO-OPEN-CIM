@@ -325,9 +325,22 @@ async function applyProjectClientState(state) {
   if (state.krig) {
     Object.assign(KRIG, state.krig);
     KRIG.selected = new Set(state.krig.selected || []);
+    // areaBounds se guarda como el clon JSON plano de un L.LatLngBounds
+    // ({_southWest, _northEast}); sin reconstruirlo como instancia real,
+    // map.fitBounds()/.contains() lo rechazan ("Bounds are not valid") y
+    // el rectángulo del área nunca se vuelve a dibujar tras importar.
+    const savedBounds = state.krig.areaBounds;
+    KRIG.areaBounds = (savedBounds && savedBounds._southWest && savedBounds._northEast)
+      ? L.latLngBounds(
+          [savedBounds._southWest.lat, savedBounds._southWest.lng],
+          [savedBounds._northEast.lat, savedBounds._northEast.lng])
+      : null;
     if (Array.isArray(state.krig.parkPoints)) {
       KRIG.parkPoints = state.krig.parkPoints;
       try { krig3InitMap(); krig3RenderParkLayer(true); } catch (_) {}
+    }
+    if (KRIG.areaBounds) {
+      try { krig3InitMap(); krig3RenderAreaLayer(); } catch (_) {}
     }
   }
   if (state.mcda) {
@@ -5187,15 +5200,21 @@ function krig3AreaMouseUp(e) {
   KRIG.areaStart = null;
   KRIG.map.dragging.enable();
   if (KRIG.areaDraft) { KRIG.map.removeLayer(KRIG.areaDraft); KRIG.areaDraft = null; }
-  if (KRIG.areaLayer) KRIG.map.removeLayer(KRIG.areaLayer);
   KRIG.areaBounds = bounds;
-  KRIG.areaLayer = L.rectangle(bounds, {
-    color: '#22c55e', weight: 2, fillOpacity: 0.08,
-  }).addTo(KRIG.map);
+  krig3RenderAreaLayer();
   KRIG.map.fitBounds(bounds, { padding: [24, 24] });
   toast('Área de estudio fijada.', 'success');
   krig3RenderOptimalList();
   if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
+}
+
+function krig3RenderAreaLayer() {
+  if (KRIG.areaLayer && KRIG.map) KRIG.map.removeLayer(KRIG.areaLayer);
+  KRIG.areaLayer = null;
+  if (!KRIG.areaBounds || !KRIG.map) return;
+  KRIG.areaLayer = L.rectangle(KRIG.areaBounds, {
+    color: '#22c55e', weight: 2, fillOpacity: 0.08,
+  }).addTo(KRIG.map);
 }
 
 function krig3ClearArea() {
@@ -6427,7 +6446,12 @@ function krigHslToRgb(h, s, l) {
 // Si no hay parque principal, encuadra al extent del grid para que el overlay sea visible.
 function krig3ZoomToPrincipal() {
   if (!KRIG.map) return;
-  if (KRIG.areaBounds) {
+  // El contenedor puede seguir en display:none si la pestaña aún no está
+  // activa (p.ej. justo tras restaurar un proyecto importado); sin esto
+  // fitBounds calcula sobre un mapa de tamaño 0 y puede fallar o quedar mal
+  // encuadrado incluso con un bounds válido.
+  KRIG.map.invalidateSize();
+  if (KRIG.areaBounds && typeof KRIG.areaBounds.isValid === 'function' && KRIG.areaBounds.isValid()) {
     KRIG.map.fitBounds(KRIG.areaBounds, { padding: [24, 24] });
     return;
   }
