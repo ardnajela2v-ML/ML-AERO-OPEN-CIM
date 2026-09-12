@@ -2299,6 +2299,8 @@ function bindTechno() {
   document.getElementById('fin-modal-cancel')?.addEventListener('click', closeFinancingModal);
   document.getElementById('financing-modal-backdrop')?.addEventListener('click', closeFinancingModal);
   document.getElementById('btn-calc-sensitivity')?.addEventListener('click', calcSensitivity);
+  document.getElementById('btn-gsens-run')?.addEventListener('click', runGlobalSensitivity);
+  document.getElementById('gsens-metric')?.addEventListener('change', renderGlobalSensitivity);
 
   // Toggle de % pérdidas eléctricas finales — re-escala AEP/VAN/LCOE/flujos en cliente
   const lossEn  = document.getElementById('te-final-loss-enable');
@@ -3024,6 +3026,141 @@ async function calcSensitivity() {
   } catch (e) {
     setStatus('Error en análisis de riesgo: ' + e.message);
   }
+}
+
+// ─── SENSIBILIDAD GLOBAL — MONTE CARLO + RANDOM FOREST (ML) ─────────────────
+const GSENS = { result: null };
+
+async function runGlobalSensitivity() {
+  const sc = WP.technoScenarios[WP.technoActiveScenario];
+  const r  = sc?.result;
+  if (!r?.analysis || !WP.sessionId) { toast('Corre primero el análisis tecnoeconómico.', 'warn'); return; }
+  const a = r.analysis;
+  const stored = sc.inputs || {};
+  const inp    = technoCollectInputs();
+  const price  = stored.price || inp.price;
+  const rate   = stored.rate  || inp.rate;
+  const nSamples = Math.max(100, Math.min(3000, parseInt(document.getElementById('gsens-n-samples')?.value) || 800));
+  const body = {
+    session_id: WP.sessionId,
+    turbine:    { builtin_model: stored.turbine || inp.turbine },
+    n_turbines: stored.nTurbines || inp.nTurbines,
+    base_annual_kwh: a.annual_energy_kwh || 0,
+    n_samples: nSamples,
+    financial: {
+      energy_price_usd_kwh: price,
+      discount_rate_pct:    rate,
+      project_years:        stored.years || inp.years,
+      annual_inflation_pct: stored.inflation ?? inp.inflation ?? 0,
+      cost_model:           stored.costModel || technoCollectCostModel(),
+    },
+  };
+  // Reusa P10/P90 del AEP ya calculado (si existe) en vez de inventar un rango de viento.
+  const aep = WP.energyResult?.aep;
+  if (aep?.aep_p10_mwh != null && aep?.aep_p90_mwh != null) {
+    body.aep_p10_mwh = aep.aep_p10_mwh;
+    body.aep_p90_mwh = aep.aep_p90_mwh;
+  }
+  const btn = document.getElementById('btn-gsens-run');
+  if (btn) btn.disabled = true;
+  document.getElementById('gsens-status').textContent = 'Ejecutando…';
+  document.getElementById('gsens-progress-text').textContent =
+    `Generando ${nSamples} escenarios Monte Carlo y entrenando Random Forest…`;
+  try {
+    const data = await api('/api/energy/global_sensitivity', 'POST', body);
+    GSENS.result = data;
+    document.getElementById('gsens-status').textContent = `${data.n_samples} muestras`;
+    document.getElementById('gsens-progress-text').textContent = '';
+    document.getElementById('gsens-results').style.display = '';
+    renderGlobalSensitivity();
+    toast('Sensibilidad global completada', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('gsens-status').textContent = 'Error';
+    document.getElementById('gsens-progress-text').textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderGlobalSensitivity() {
+  const data = GSENS.result;
+  if (!data) return;
+  const metric = document.getElementById('gsens-metric')?.value || 'b_c_ratio';
+
+  // Badges de caso base para las 5 métricas
+  const badgesEl = document.getElementById('gsens-base-badges');
+  if (badgesEl) {
+    const fmt = (k, v) => {
+      if (v == null) return '—';
+      if (k === 'lcoe_usd_kwh') return v.toFixed(4) + ' USD/kWh';
+      if (k === 'payback_years') return v.toFixed(1) + ' años';
+      if (k === 'irr_pct') return v.toFixed(2) + '%';
+      return v.toFixed(3);
+    };
+    badgesEl.innerHTML = Object.entries(data.metric_labels).map(([k, label]) => `
+      <span class="badge ${k === metric ? 'badge--success' : 'badge--info'}" style="font-size:.7rem">
+        ${label}: <b>${fmt(k, data.base_case[k])}</b>
+      </span>`).join('');
+  }
+
+  const imp = data.importance?.[metric];
+  destroyChart('gsens-importance');
+  const ctx = document.getElementById('gsens-importance-chart')?.getContext('2d');
+  if (ctx) {
+    if (!imp) {
+      ctx.canvas.parentElement.innerHTML = '<p class="text-muted" style="font-size:.8rem">No hay suficientes muestras válidas para esta métrica.</p>';
+    } else {
+      WP.charts['gsens-importance'] = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: imp.map(row => row.label),
+          datasets: [{ label: 'Importancia (%)', data: imp.map(row => row.importance_pct),
+            backgroundColor: acc() + '99', borderColor: acc(), borderWidth: 1, borderRadius: 3 }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false },
+            tooltip: { callbacks: { label: ctx2 => ` ${ctx2.parsed.x.toFixed(1)}%` } } },
+          scales: {
+            x: { grid: { color: gridColor() }, title: { display: true, text: '% de importancia', font: { size: 10 } } },
+            y: { grid: { display: false }, ticks: { font: { size: 10 } } },
+          },
+        },
+      });
+    }
+  }
+
+  renderGlobalSensitivitySurface(data, metric);
+}
+
+function renderGlobalSensitivitySurface(data, metric) {
+  const el = document.getElementById('gsens-surface-3d');
+  if (!el || typeof Plotly === 'undefined') return;
+  const surf = data.surface?.[metric];
+  if (!surf) {
+    el.innerHTML = '<p class="text-muted" style="font-size:.8rem">Sin superficie disponible para esta métrica.</p>';
+    return;
+  }
+  const trace = {
+    type: 'surface', x: surf.x, y: surf.y, z: surf.z,
+    colorscale: [[0, acc3()], [0.5, acc()], [1, gold()]],
+    showscale: true,
+    contours: { z: { show: true, usecolormap: true, project: { z: true } } },
+  };
+  const axisStyle = { color: mut(), gridcolor: gridColor(), zerolinecolor: gridColor() };
+  const layout = {
+    autosize: true, height: 320,
+    margin: { l: 0, r: 0, t: 10, b: 0 },
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    font: { color: mut(), size: 10 },
+    scene: {
+      xaxis: { title: surf.x_label, ...axisStyle },
+      yaxis: { title: surf.y_label, ...axisStyle },
+      zaxis: { title: data.metric_labels[metric], ...axisStyle },
+    },
+  };
+  Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
 }
 
 function renderRiskSection(data) {

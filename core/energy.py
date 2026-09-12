@@ -729,6 +729,28 @@ class TurbineComparator:
         return results
 
 
+def irr_bisection(cashflows):
+    """TIR anual (fracción, no %) de un flujo [t=0, t=1, ...] por bisección.
+    None si el flujo no cambia de signo (no converge). Mismo método que el IRR
+    apalancado de /api/energy/leveraged en api.py — cambio de signo + bisección."""
+    def _npv_r(r):
+        return sum(cf / (1.0 + r) ** t for t, cf in enumerate(cashflows))
+    lo, hi = -0.9999, 9.99
+    f_lo, f_hi = _npv_r(lo), _npv_r(hi)
+    if f_lo * f_hi >= 0:
+        return None
+    mid = lo
+    for _ in range(256):
+        mid = (lo + hi) / 2.0
+        if abs(hi - lo) < 1e-9:
+            break
+        if _npv_r(mid) * f_lo > 0:
+            lo = mid
+        else:
+            hi = mid
+    return mid
+
+
 # ─── TECHNO-ECONOMIC ANALYZER ─────────────────────────────────────────────────
 
 class TechnoEconomicAnalyzer:
@@ -855,6 +877,7 @@ class TechnoEconomicAnalyzer:
         # rápido que el PV real de la energía, que descuenta años futuros).
         pv_costs_lcoe = investment_cost
         pv_energy_lcoe = 0.0
+        pv_revenue = 0.0
 
         for yr in range(1, project_years + 1):
             yr_energy_kwh = annual_energy_kwh
@@ -879,9 +902,11 @@ class TechnoEconomicAnalyzer:
             if discount_factor > 0:
                 pv_costs_lcoe += yr_opex / discount_factor
                 pv_energy_lcoe += yr_energy_kwh / discount_factor
+                pv_revenue += yr_revenue / discount_factor
             else:
                 pv_costs_lcoe += yr_opex
                 pv_energy_lcoe += yr_energy_kwh
+                pv_revenue += yr_revenue
             if payback_years == float('inf') and cumulative >= 0:
                 # interpolate within the year
                 prev_cum = cumulative - yr_cashflow
@@ -923,6 +948,11 @@ class TechnoEconomicAnalyzer:
                            (turbine.rated_power_kw * n_turbines * 8760)
                            if turbine.rated_power_kw * n_turbines > 0 else 0)
 
+        irr_fraction = irr_bisection([-investment_cost] + [row['cashflow'] for row in cashflow_table])
+        irr_pct = round(irr_fraction * 100, 2) if irr_fraction is not None else None
+        b_c_ratio = round(pv_revenue / pv_costs_lcoe, 4) if pv_costs_lcoe > 0 else None
+        van_capex_ratio = round(npv / total_capex, 4) if total_capex > 0 else None
+
         # Indicates whether series-based variable params were used
         used_variable_params = bool(
             (energy_price_series_usd_kwh and len(energy_price_series_usd_kwh) > 0) or
@@ -951,6 +981,9 @@ class TechnoEconomicAnalyzer:
             'cashflow_table':       cashflow_table,
             'is_viable':            npv > 0,
             'variable_params_used': used_variable_params,
+            'b_c_ratio':            b_c_ratio,
+            'van_capex_ratio':      van_capex_ratio,
+            'irr_pct':              irr_pct,
         }
 
     # ── Cp analysis ───────────────────────────────────────────────────────────

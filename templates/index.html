@@ -17,6 +17,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson@3.0.2/dist/topojson.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
 </head>
 <body>
 
@@ -2841,6 +2842,54 @@
           <div style="display:flex;gap:.6rem;margin-bottom:.6rem;flex-wrap:wrap" id="risk-regime-stats"></div>
           <div style="position:relative;height:120px">
             <canvas id="risk-regime-chart"></canvas>
+          </div>
+        </div>
+
+        <!-- ═══ SENSIBILIDAD GLOBAL — MONTE CARLO + RANDOM FOREST (ML) ═══ -->
+        <div style="margin-top:1.3rem;border-top:1px solid var(--border);padding-top:1rem">
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem">
+            <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">
+              Sensibilidad global — Random Forest (ML)
+            </div>
+            <span class="badge badge--info" id="gsens-status">Sin análisis</span>
+          </div>
+          <p class="text-muted" style="font-size:.8rem;margin-bottom:.7rem">
+            A diferencia del tornado (una variable a la vez), acá se muestrean miles de combinaciones
+            simultáneas de precio, tasa de descuento, OPEX (% del CAPEX, que se mantiene fijo), recurso
+            eólico e inflación — y un Random Forest entrenado sobre esas corridas te dice qué variable
+            pesa más en cada métrica y cómo interactúan dos de ellas.
+          </p>
+          <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
+            <div>
+              <label class="form-label" style="font-size:.78rem">N° de muestras (Monte Carlo)</label>
+              <input type="number" class="form-input" id="gsens-n-samples" value="800" min="100" max="3000" step="100" style="width:110px">
+            </div>
+            <div>
+              <label class="form-label" style="font-size:.78rem">Métrica</label>
+              <select class="form-select" id="gsens-metric" style="min-width:200px">
+                <option value="b_c_ratio" selected>B/C (beneficio/costo)</option>
+                <option value="van_capex_ratio">VAN / CAPEX</option>
+                <option value="payback_years">PRI — periodo de retorno</option>
+                <option value="lcoe_usd_kwh">LCOE</option>
+                <option value="irr_pct">TIR</option>
+              </select>
+            </div>
+            <button class="btn-primary" id="btn-gsens-run" type="button">▶ Correr análisis global</button>
+          </div>
+          <p class="text-muted mt-1" id="gsens-progress-text" style="font-size:.75rem"></p>
+
+          <div id="gsens-results" style="display:none">
+            <div id="gsens-base-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
+            <div class="grid-2" style="gap:1rem">
+              <div style="min-width:0">
+                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables</p>
+                <div style="position:relative;height:220px"><canvas id="gsens-importance-chart"></canvas></div>
+              </div>
+              <div style="min-width:0">
+                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Superficie de interacción (top 2 variables)</p>
+                <div id="gsens-surface-3d" style="height:320px;min-width:0"></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -70,7 +70,7 @@ from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           extrapolate_wind_log,
                           load_turbines_from_folder, list_turbine_info)
 from core.cost_model import (CostModel, get_default_model_dict,
-                             get_design_cost_benchmark)
+                             get_design_cost_benchmark, DEFAULT_COST_MODEL)
 from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
                               compute_monthly_climatology, compute_extreme_events,
                               compute_histogram, compute_site_overview,
@@ -3503,6 +3503,202 @@ def create_app():
             },
             'regimes': regimes,
         })
+
+    @app.route('/api/energy/global_sensitivity', methods=['POST'])
+    def energy_global_sensitivity():
+        """
+        Sensibilidad global (Monte Carlo + Random Forest) sobre B/C, VAN/CAPEX,
+        PRI, LCOE y TIR — a diferencia del tornado (una variable a la vez), aquí
+        se muestrean 5 variables simultáneamente (precio de energía, tasa de
+        descuento, % OPEX/CAPEX, AEP/recurso eólico e inflación anual), se corre
+        TechnoEconomicAnalyzer.analyze() por cada combinación, y se entrena un
+        RandomForestRegressor por métrica de salida para sacar importancia de
+        variables (permutation_importance) y una superficie de interacción entre
+        las dos variables más importantes.
+
+        El CAPEX se mantiene fijo en el valor base del proyecto — la variable de
+        costo que se explora es el % de OPEX sobre CAPEX (rango propio del
+        modelo de costos, core/cost_model.py DEFAULT_COST_MODEL), no el CAPEX.
+        """
+        body        = request.get_json(silent=True) or {}
+        sid         = _require_sid(body)
+        turbine_cfg = body.get('turbine', {})
+        fin_cfg     = body.get('financial', {})
+
+        if fin_cfg.get('energy_price_usd_kwh') in (None, ''):
+            return _err('energy_price_usd_kwh debe venir de la configuración del proyecto')
+        if fin_cfg.get('project_years') in (None, ''):
+            return _err('project_years debe venir de la configuración del proyecto')
+        try:
+            base_price = float(fin_cfg['energy_price_usd_kwh'])
+            base_years = int(fin_cfg['project_years'])
+        except (TypeError, ValueError):
+            return _err('Precio de energía o vida del proyecto inválidos')
+        if not np.isfinite(base_price) or base_price < 0 or not 5 <= base_years <= 40:
+            return _err('Precio de energía o vida del proyecto fuera de rango')
+
+        base_kwh = float(body.get('base_annual_kwh', 0))
+        if base_kwh <= 0:
+            return _err('base_annual_kwh must be > 0')
+        n_turb    = int(body.get('n_turbines', 1))
+        base_rate = float(fin_cfg.get('discount_rate_pct', 8.0))
+        base_infl = float(fin_cfg.get('annual_inflation_pct', 0.0))
+        n_samples = int(body.get('n_samples', 800))
+        n_samples = max(50, min(n_samples, 3000))
+
+        builtin = turbine_cfg.get('builtin_model')
+        if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+            turbine = PowerCurve.from_builtin(builtin)
+        elif builtin and builtin.endswith('.csv'):
+            fpath   = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+            turbine = _cached_power_curve(fpath)
+        else:
+            turbine = PowerCurve(
+                name='Custom',
+                rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
+                cut_in=3.0, rated_speed=12.0, cut_out=25.0,
+                hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
+                rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
+            )
+
+        base_cm_dict = CostModel.from_dict(fin_cfg.get('cost_model')).to_dict()
+        opex_lo = float(DEFAULT_COST_MODEL['opex_pct_capex']['min'])
+        opex_hi = float(DEFAULT_COST_MODEL['opex_pct_capex']['max'])
+
+        # AEP: usa P10-P90 si vienen (ordenados sin asumir cuál es el mayor —
+        # la convención P10/P90 de este proyecto es la inversa de la industria,
+        # ver AEPCalculator.compute_from_timeseries), si no cae a ±10% del base.
+        aep_p10 = body.get('aep_p10_mwh')
+        aep_p90 = body.get('aep_p90_mwh')
+        if aep_p10 is not None and aep_p90 is not None:
+            lo_kwh, hi_kwh = sorted([float(aep_p10) * 1000.0, float(aep_p90) * 1000.0])
+        else:
+            lo_kwh, hi_kwh = base_kwh * 0.9, base_kwh * 1.1
+
+        feature_names = ['price_usd_kwh', 'discount_rate_pct', 'opex_pct_capex',
+                          'annual_energy_kwh', 'annual_inflation_pct']
+        feature_labels = {
+            'price_usd_kwh':       'Precio de energía (USD/kWh)',
+            'discount_rate_pct':   'Tasa de descuento (%)',
+            'opex_pct_capex':      'OPEX (% del CAPEX)',
+            'annual_energy_kwh':   'AEP (recurso eólico)',
+            'annual_inflation_pct':'Inflación anual (%)',
+        }
+        ranges_used = {
+            'price_usd_kwh':        [base_price * 0.8, base_price * 1.2],
+            'discount_rate_pct':    [base_rate - 2.0, base_rate + 2.0],
+            'opex_pct_capex':       [opex_lo, opex_hi],
+            'annual_energy_kwh':    [lo_kwh, hi_kwh],
+            'annual_inflation_pct': [0.0, 5.0],
+        }
+        metric_names = ['b_c_ratio', 'van_capex_ratio', 'payback_years', 'lcoe_usd_kwh', 'irr_pct']
+        metric_labels = {
+            'b_c_ratio':       'B/C (beneficio/costo)',
+            'van_capex_ratio': 'VAN / CAPEX',
+            'payback_years':   'PRI — periodo de retorno (años)',
+            'lcoe_usd_kwh':    'LCOE (USD/kWh)',
+            'irr_pct':         'TIR (%)',
+        }
+
+        try:
+            rng = np.random.default_rng(42)
+            samples = {
+                name: rng.uniform(lo, hi, size=n_samples)
+                for name, (lo, hi) in ranges_used.items()
+            }
+            X = np.column_stack([samples[name] for name in feature_names])
+
+            outputs = {m: [] for m in metric_names}
+            tea_dummy = TechnoEconomicAnalyzer(cost_model=CostModel(**base_cm_dict))
+            for i in range(n_samples):
+                cm = CostModel(**{**base_cm_dict, 'opex_pct_capex': float(samples['opex_pct_capex'][i])})
+                tea = TechnoEconomicAnalyzer(cost_model=cm)
+                res = tea.analyze(
+                    turbine, n_turb,
+                    annual_energy_kwh=float(samples['annual_energy_kwh'][i]),
+                    energy_price_usd_kwh=float(samples['price_usd_kwh'][i]),
+                    discount_rate_pct=float(samples['discount_rate_pct'][i]),
+                    project_years=base_years,
+                    usd_to_mxn=1.0,
+                    annual_inflation_pct=float(samples['annual_inflation_pct'][i]),
+                )
+                for m in metric_names:
+                    outputs[m].append(res.get(m))
+
+            base_res = tea_dummy.analyze(
+                turbine, n_turb, base_kwh,
+                energy_price_usd_kwh=base_price,
+                discount_rate_pct=base_rate,
+                project_years=base_years,
+                usd_to_mxn=1.0,
+                annual_inflation_pct=base_infl,
+            )
+            base_case = {m: base_res.get(m) for m in metric_names}
+            base_point = {name: float(np.mean(ranges_used[name])) for name in feature_names}
+            base_point['price_usd_kwh'] = base_price
+            base_point['discount_rate_pct'] = base_rate
+            base_point['opex_pct_capex'] = float(base_cm_dict['opex_pct_capex'])
+            base_point['annual_energy_kwh'] = base_kwh
+            base_point['annual_inflation_pct'] = base_infl
+
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.inspection import permutation_importance
+
+            importance = {}
+            surface = {}
+            for m in metric_names:
+                y_raw = outputs[m]
+                valid = [j for j, v in enumerate(y_raw) if v is not None and np.isfinite(v)]
+                if len(valid) < 30:
+                    importance[m] = None
+                    surface[m] = None
+                    continue
+                Xv = X[valid]
+                yv = np.array([y_raw[j] for j in valid], dtype=float)
+                model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
+                model.fit(Xv, yv)
+                perm = permutation_importance(model, Xv, yv, n_repeats=10, random_state=42)
+                raw_imp = np.clip(perm.importances_mean, 0, None)
+                total = raw_imp.sum()
+                pct_imp = (raw_imp / total * 100.0) if total > 0 else raw_imp
+                importance[m] = [
+                    {'feature': feature_names[k], 'label': feature_labels[feature_names[k]],
+                     'importance_pct': round(float(pct_imp[k]), 2)}
+                    for k in range(len(feature_names))
+                ]
+                importance[m].sort(key=lambda r: -r['importance_pct'])
+
+                top2 = [row['feature'] for row in importance[m][:2]]
+                gx = np.linspace(*ranges_used[top2[0]], 20)
+                gy = np.linspace(*ranges_used[top2[1]], 20)
+                grid_rows = []
+                for yv2 in gy:
+                    row_pts = []
+                    for xv2 in gx:
+                        pt = dict(base_point)
+                        pt[top2[0]] = xv2
+                        pt[top2[1]] = yv2
+                        row_pts.append([pt[name] for name in feature_names])
+                    grid_rows.append(model.predict(np.array(row_pts)).tolist())
+                surface[m] = {
+                    'x_var': top2[0], 'y_var': top2[1],
+                    'x_label': feature_labels[top2[0]], 'y_label': feature_labels[top2[1]],
+                    'x': gx.tolist(), 'y': gy.tolist(), 'z': grid_rows,
+                }
+
+            return jsonify(numpy_to_python({
+                'n_samples': n_samples,
+                'features': feature_names,
+                'feature_labels': feature_labels,
+                'metric_labels': metric_labels,
+                'ranges_used': ranges_used,
+                'importance': importance,
+                'surface': surface,
+                'base_case': base_case,
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
 
     # ─── WIND FARM (Parque Eólico — Jensen NOJ wake) ─────────────────────────
     @app.route('/api/farm/simulate', methods=['POST'])
