@@ -1087,29 +1087,59 @@ async function runEnergy() {
   }
 }
 
-function renderPowerCurveChart(turbine, timeseries) {
+/** Da estilo de "nube por frecuencia" a un scatter (ws, kW): agrupa los puntos
+ * en celdas ws×potencia y pondera opacidad/radio por cuántas observaciones
+ * cayeron en cada celda. La potencia sigue siendo f(ws) casi determinística
+ * (no hay medición de potencia real, solo velocidad observada + curva del
+ * fabricante), así que esto no inventa dispersión: solo hace visible dónde
+ * se concentra realmente el régimen de viento del sitio a lo largo de la curva. */
+function densityStyledScatter(pts, color) {
+  if (!pts.length) return { backgroundColor: [], borderColor: [], radius: [] };
+  const wsBin = 0.3;
+  const pMax = Math.max(...pts.map(p => p.y), 1);
+  const pBin = Math.max(pMax / 40, 1e-6);
+  const counts = new Map();
+  const keyOf = p => `${Math.round(p.x / wsBin)}|${Math.round(p.y / pBin)}`;
+  pts.forEach(p => { const k = keyOf(p); counts.set(k, (counts.get(k) || 0) + 1); });
+  const maxCount = Math.max(...counts.values());
+  const alphaHex = a => Math.round(Math.min(1, Math.max(0, a)) * 255).toString(16).padStart(2, '0');
+  const backgroundColor = [], borderColor = [], radius = [];
+  pts.forEach(p => {
+    const freq = counts.get(keyOf(p)) / maxCount;
+    backgroundColor.push(color + alphaHex(0.08 + 0.72 * freq));
+    borderColor.push(color + alphaHex(0.15 + 0.6 * freq));
+    radius.push(1.3 + 2.6 * freq);
+  });
+  return { backgroundColor, borderColor, radius };
+}
+
+function renderPowerCurveChart(turbine, timeseries, nTurbines) {
   destroyChart('power-curve');
   if (!turbine) return;
   const ctx = document.getElementById('power-curve-chart').getContext('2d');
   const nominal = turbine.rated_power_kw;
   const curvePts = turbine.curve_ws.map((ws, i) => ({ x: ws, y: turbine.curve_pw[i] }));
   const maxCurveWs = turbine.curve_ws[turbine.curve_ws.length - 1] || 25;
+  // timeseries.power_kw es la potencia del PARQUE (turbina × n_turbinas); hay
+  // que llevarla a potencia por aerogenerador para compararla contra la curva.
+  const perTurbine = Number(nTurbines) > 0 ? Number(nTurbines) : 1;
   const obsPts = [];
   const wsArr = timeseries?.ws_hub || [];
   const pArr  = timeseries?.power_kw || [];
   for (let i = 0; i < Math.min(wsArr.length, pArr.length); i++) {
-    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] });
+    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] / perTurbine });
   }
   const maxWs = obsPts.length ? Math.max(maxCurveWs, ...obsPts.map(p => p.x)) : maxCurveWs;
+  const obsStyle = densityStyledScatter(obsPts, '#9F7AEA');
   WP.charts['power-curve'] = new Chart(ctx, {
     type: 'line',
     data: {
       datasets: [
         ...(obsPts.length ? [{
-          type: 'scatter', label: 'Observaciones del sitio',
+          type: 'scatter', label: 'Observaciones del sitio (densidad)',
           data: obsPts, order: 2,
-          backgroundColor: '#9F7AEA4D', borderColor: '#9F7AEA',
-          pointRadius: 2, pointHoverRadius: 4, showLine: false,
+          backgroundColor: obsStyle.backgroundColor, borderColor: obsStyle.borderColor,
+          pointRadius: obsStyle.radius, pointHoverRadius: 5, showLine: false,
         }] : []),
         { label: turbine.name, data: curvePts, order: 0,
           borderColor: acc(), backgroundColor: acc()+'20',
@@ -3613,13 +3643,13 @@ function renderTechnoEnergyLab(el) {
     </div>`).join('');
   }
 
-  renderTEPowerCurveChart(el.turbine, el.timeseries);
+  renderTEPowerCurveChart(el.turbine, el.timeseries, el.n_turbines);
   renderTEMonthlyChart(el.monthly);
   renderTETimeseries(el.timeseries);
   renderTESensitivityChart(el.sensitivity || []);
 }
 
-function renderTEPowerCurveChart(turbine, timeseries) {
+function renderTEPowerCurveChart(turbine, timeseries, nTurbines) {
   destroyChart('te-pcurve');
   if (!turbine) return;
   const ctx = document.getElementById('te-pcurve-chart')?.getContext('2d');
@@ -3627,22 +3657,26 @@ function renderTEPowerCurveChart(turbine, timeseries) {
   const nominal = turbine.rated_power_kw;
   const curvePts = turbine.curve_ws.map((ws, i) => ({ x: ws, y: turbine.curve_pw[i] }));
   const maxCurveWs = turbine.curve_ws[turbine.curve_ws.length - 1] || 25;
+  // timeseries.power_kw es la potencia del PARQUE (turbina × n_turbinas); hay
+  // que llevarla a potencia por aerogenerador para compararla contra la curva.
+  const perTurbine = Number(nTurbines) > 0 ? Number(nTurbines) : 1;
   const obsPts = [];
   const wsArr = timeseries?.ws_hub || [];
   const pArr  = timeseries?.power_kw || [];
   for (let i = 0; i < Math.min(wsArr.length, pArr.length); i++) {
-    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] });
+    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] / perTurbine });
   }
   const maxWs = obsPts.length ? Math.max(maxCurveWs, ...obsPts.map(p => p.x)) : maxCurveWs;
+  const obsStyle = densityStyledScatter(obsPts, '#9F7AEA');
   WP.charts['te-pcurve'] = new Chart(ctx, {
     type: 'line',
     data: {
       datasets: [
         ...(obsPts.length ? [{
-          type: 'scatter', label: 'Observaciones del sitio',
+          type: 'scatter', label: 'Observaciones del sitio (densidad)',
           data: obsPts, order: 2,
-          backgroundColor: '#9F7AEA4D', borderColor: '#9F7AEA',
-          pointRadius: 2, pointHoverRadius: 4, showLine: false,
+          backgroundColor: obsStyle.backgroundColor, borderColor: obsStyle.borderColor,
+          pointRadius: obsStyle.radius, pointHoverRadius: 5, showLine: false,
         }] : []),
         { label: turbine.name, data: curvePts, order: 0,
           borderColor: acc(), backgroundColor: acc() + '20',
@@ -12797,7 +12831,7 @@ function renderSavedEnergy(r, simCfg) {
         </div>`).join('');
     }
 
-    renderPowerCurveChart(r.turbine);
+    renderPowerCurveChart(r.turbine, r.timeseries, r.n_turbines);
     renderMonthlyEnergyChart(r.monthly);
     renderPowerTimeseries(r.timeseries);
     renderSensitivityChart(r.sensitivity || []);

@@ -2406,6 +2406,7 @@ def create_app():
                 'sensitivity': sensitivity,
                 'weibull_aep': weibull_aep,
                 'turbine': t_dict,
+                'n_turbines': n_turbines,
                 'timeseries': {
                     'labels': ts_labels,
                     'ws_hub': safe_float_list(df_sim['ws_hub'].values[::step].tolist()),
@@ -2978,6 +2979,7 @@ def create_app():
                     'monthly': monthly_el,
                     'sensitivity': sensitivity_el,
                     'turbine': turbine.to_dict(),
+                    'n_turbines': n_turbines,
                     'timeseries': {
                         'labels': ts_labels_el,
                         'power_kw': safe_float_list(df_el['power_net_kw'].values[::step_el].tolist()),
