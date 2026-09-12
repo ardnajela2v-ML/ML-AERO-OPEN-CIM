@@ -17,6 +17,7 @@ const WP = {
   },
   technoInputsInitialized: false,
   technoInputsDirty: false,
+  technoSelectedTopsisTurbine: null,  // turbina elegida manualmente entre las alternativas ya rankeadas por TOPSIS (null = usar la #1)
   levParams: { debt_ratio_pct: 70, interest_rate_pct: 8, loan_years: 15, equity_discount_rate_pct: 12 },
   technoFinalLoss: { enabled: false, pct: 3.0 },  // Pérdidas eléctricas aplicadas al AEP final (post-simulación)
   referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
@@ -375,6 +376,12 @@ async function applyProjectClientState(state) {
       setGlobeMode(GLOBE.mode || 'globe');
       if (GLOBE.poi) globeFilterByRadius();
     });
+  }
+  // Evita que krig3AutoFitFromGlobe() trate la primera entrada a Diseño tras
+  // importar como "POI nuevo": eso invalidaría (krig3PlacePoi) la calibración
+  // MCP y el resultado de Kriging que este mismo estado acaba de restaurar.
+  if (GLOBE.poi && KRIG.poi) {
+    KRIG._appliedGlobePoi = `${Number(GLOBE.poi.lat).toFixed(5)},${Number(GLOBE.poi.lon).toFixed(5)}|${GLOBE.master || ''}`;
   }
   if (WP.referenceHeight != null) applyReferenceHeightToUI(WP.referenceHeight);
   try { await loadParkConfiguration({ quiet: true }); } catch (_) {}
@@ -1080,28 +1087,42 @@ async function runEnergy() {
   }
 }
 
-function renderPowerCurveChart(turbine) {
+function renderPowerCurveChart(turbine, timeseries) {
   destroyChart('power-curve');
   if (!turbine) return;
   const ctx = document.getElementById('power-curve-chart').getContext('2d');
   const nominal = turbine.rated_power_kw;
+  const curvePts = turbine.curve_ws.map((ws, i) => ({ x: ws, y: turbine.curve_pw[i] }));
+  const maxCurveWs = turbine.curve_ws[turbine.curve_ws.length - 1] || 25;
+  const obsPts = [];
+  const wsArr = timeseries?.ws_hub || [];
+  const pArr  = timeseries?.power_kw || [];
+  for (let i = 0; i < Math.min(wsArr.length, pArr.length); i++) {
+    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] });
+  }
+  const maxWs = obsPts.length ? Math.max(maxCurveWs, ...obsPts.map(p => p.x)) : maxCurveWs;
   WP.charts['power-curve'] = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: turbine.curve_ws,
       datasets: [
-        { label: turbine.name, data: turbine.curve_pw,
+        ...(obsPts.length ? [{
+          type: 'scatter', label: 'Observaciones del sitio',
+          data: obsPts, order: 2,
+          backgroundColor: '#9F7AEA4D', borderColor: '#9F7AEA',
+          pointRadius: 2, pointHoverRadius: 4, showLine: false,
+        }] : []),
+        { label: turbine.name, data: curvePts, order: 0,
           borderColor: acc(), backgroundColor: acc()+'20',
           borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-        ...(nominal ? [{ label: `Nominal ${nominal} kW`,
-          data: turbine.curve_ws.map(() => nominal),
+        ...(nominal ? [{ label: `Nominal ${nominal} kW`, order: 1,
+          data: [{ x: 0, y: nominal }, { x: maxWs, y: nominal }],
           borderColor: gold()+'66', borderDash: [4,3], borderWidth: 1, pointRadius: 0, fill: false }] : [])
       ]
     },
     options: { responsive:true, maintainAspectRatio:false,
       plugins:{ legend:{labels:{font:{size:9},boxWidth:10}} },
       scales:{
-        x:{grid:{color:gridColor()}, title:{display:true,text:'Velocidad (m/s)',font:{size:9}}, ticks:{font:{size:9}}},
+        x:{type:'linear', grid:{color:gridColor()}, title:{display:true,text:'Velocidad (m/s)',font:{size:9}}, ticks:{font:{size:9}}},
         y:{grid:{color:gridColor()}, title:{display:true,text:'Potencia (kW)',font:{size:9}}, ticks:{font:{size:9}}}
       }
     }
@@ -2227,8 +2248,6 @@ function bindTechno() {
     }
   });
   technoRefreshScenarioView();
-  const cmpTurb = document.getElementById('btn-te-compare-turbines');
-  if (cmpTurb) cmpTurb.addEventListener('click', compareTurbinesTE);
   const levBtn = document.getElementById('btn-lev-from-scenario');
   if (levBtn) levBtn.addEventListener('click', () => showFinancingModal(WP.technoActiveScenario));
   document.getElementById('btn-clear-financing')?.addEventListener('click', clearLeveraged);
@@ -2642,6 +2661,24 @@ function technoUpdateModeHints() {
  * AEP recalculado sin estela. Si no hay layout aplicado, devuelve null y
  * el cálculo tecnoeconómico se bloquea en vez de inventar un número. */
 function technoParkLayout() {
+  // Alternativa elegida a mano entre las ya evaluadas por TOPSIS (todas con
+  // estela real, calculadas en la misma corrida de "Diseño y optimización").
+  // Se prioriza sobre el ganador #1 aplicado en Parque sin volver a simular nada.
+  const overrideKey = WP.technoSelectedTopsisTurbine;
+  if (overrideKey) {
+    const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
+    const row = ranking.find(r => (r.turbina || r.label) === overrideKey && Number(r.n_aerogeneradores) > 0);
+    const rowAep = Number(row?.aep_mwh ?? row?.aep_p50_mwh);
+    if (row && Number.isFinite(rowAep) && rowAep > 0) {
+      const meta = (MCDA.turbines || []).find(t => t.filename === overrideKey);
+      return {
+        turbine_key: overrideKey,
+        turbine_name: meta?.name || overrideKey.replace('.csv', ''),
+        n_placed: Math.round(Number(row.n_aerogeneradores)),
+        aep_mwh: rowAep,
+      };
+    }
+  }
   const opt = PARQUE.optResult;
   const sim = PARQUE.result;
   const nPlaced = Number(opt?.n_placed ?? sim?.n_turbines);
@@ -2794,10 +2831,11 @@ function renderTechnoScenarioResult() {
     }
   }
 
-  const kTable = scenario.leveraged?.cashflow_table?.length
-    ? scenario.leveraged.cashflow_table
-    : adjR.analysis?.cashflow_table;
-  renderKmeansLifecycle(kTable);
+  // OJO: scenario.leveraged.cashflow_table (endpoint /api/energy/leveraged) trae
+  // columnas de deuda/equity (balance_start, dscr, equity_cf, cum_equity_cf...),
+  // no {year, pv_cashflow, cumulative} que espera el K-Means de ciclo de vida.
+  // Usar siempre la tabla del proyecto (adjR.analysis), con o sin financiamiento.
+  renderKmeansLifecycle(adjR.analysis?.cashflow_table);
 }
 
 function renderTechnoLayoutPreview() {
@@ -2957,7 +2995,12 @@ function renderRiskSection(data) {
 
   renderTornadoChart(data.tornado || [], metric);
   renderHeatmapCanvas(data.heatmap);
-  if (data.regimes) renderRegimeChart(data.regimes);
+  if (data.regimes) {
+    renderRegimeChart(data.regimes);
+  } else {
+    const wrap = document.getElementById('risk-regimes-wrap');
+    if (wrap) wrap.style.display = 'none';
+  }
 
   // Re-render when metric toggle changes
   document.querySelectorAll('input[name="risk-metric"]').forEach(el => {
@@ -3524,7 +3567,7 @@ function renderTechnoDispatch(d, windSource = null) {
 
 // ─── TECHNO ENERGY LAB INTEGRATION ───────────────────────────────────────────
 function renderTechnoEnergyLab(el) {
-  const sectionIds = ['te-energy-section', 'te-el-charts-1', 'te-el-charts-2', 'te-el-compare-card'];
+  const sectionIds = ['te-energy-section', 'te-el-charts-1', 'te-el-charts-2'];
   if (!el) {
     sectionIds.forEach(id => { const e = document.getElementById(id); if (e) e.style.display = 'none'; });
     ['te-pcurve', 'te-monthly', 'te-pts', 'te-sens'].forEach(destroyChart);
@@ -3570,28 +3613,42 @@ function renderTechnoEnergyLab(el) {
     </div>`).join('');
   }
 
-  renderTEPowerCurveChart(el.turbine);
+  renderTEPowerCurveChart(el.turbine, el.timeseries);
   renderTEMonthlyChart(el.monthly);
   renderTETimeseries(el.timeseries);
   renderTESensitivityChart(el.sensitivity || []);
 }
 
-function renderTEPowerCurveChart(turbine) {
+function renderTEPowerCurveChart(turbine, timeseries) {
   destroyChart('te-pcurve');
   if (!turbine) return;
   const ctx = document.getElementById('te-pcurve-chart')?.getContext('2d');
   if (!ctx) return;
   const nominal = turbine.rated_power_kw;
+  const curvePts = turbine.curve_ws.map((ws, i) => ({ x: ws, y: turbine.curve_pw[i] }));
+  const maxCurveWs = turbine.curve_ws[turbine.curve_ws.length - 1] || 25;
+  const obsPts = [];
+  const wsArr = timeseries?.ws_hub || [];
+  const pArr  = timeseries?.power_kw || [];
+  for (let i = 0; i < Math.min(wsArr.length, pArr.length); i++) {
+    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] });
+  }
+  const maxWs = obsPts.length ? Math.max(maxCurveWs, ...obsPts.map(p => p.x)) : maxCurveWs;
   WP.charts['te-pcurve'] = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: turbine.curve_ws,
       datasets: [
-        { label: turbine.name, data: turbine.curve_pw,
+        ...(obsPts.length ? [{
+          type: 'scatter', label: 'Observaciones del sitio',
+          data: obsPts, order: 2,
+          backgroundColor: '#9F7AEA4D', borderColor: '#9F7AEA',
+          pointRadius: 2, pointHoverRadius: 4, showLine: false,
+        }] : []),
+        { label: turbine.name, data: curvePts, order: 0,
           borderColor: acc(), backgroundColor: acc() + '20',
           borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-        ...(nominal ? [{ label: `Nominal ${nominal} kW`,
-          data: turbine.curve_ws.map(() => nominal),
+        ...(nominal ? [{ label: `Nominal ${nominal} kW`, order: 1,
+          data: [{ x: 0, y: nominal }, { x: maxWs, y: nominal }],
           borderColor: gold() + '66', borderDash: [4, 3], borderWidth: 1, pointRadius: 0, fill: false }] : []),
       ],
     },
@@ -3599,7 +3656,7 @@ function renderTEPowerCurveChart(turbine) {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { labels: { font: { size: 9 }, boxWidth: 10 } } },
       scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Velocidad (m/s)', font: { size: 9 } }, ticks: { font: { size: 9 } } },
+        x: { type: 'linear', grid: { color: gridColor() }, title: { display: true, text: 'Velocidad (m/s)', font: { size: 9 } }, ticks: { font: { size: 9 } } },
         y: { grid: { color: gridColor() }, title: { display: true, text: 'Potencia (kW)', font: { size: 9 } }, ticks: { font: { size: 9 } } },
       },
     },
@@ -3687,33 +3744,6 @@ function renderTESensitivityChart(sensitivity) {
       },
     },
   });
-}
-
-async function compareTurbinesTE() {
-  if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
-  setStatus('Comparando turbinas…');
-  try {
-    const r = await api('/api/energy/compare_turbines', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      ws_height_m: wsH(),
-    });
-    const tbody = document.getElementById('te-comp-tbody');
-    tbody.innerHTML = (r.comparison || []).map((t, i) => `
-      <tr ${i === 0 ? 'class="best-row"' : ''}>
-        <td class="model-name">${i === 0 ? '★ ' : ''}${t.name}</td>
-        <td>${t.rated_power_kw?.toLocaleString()}</td>
-        <td>${t.rotor_diameter_m}</td>
-        <td>${t.hub_height_m}</td>
-        <td style="color:${i === 0 ? 'var(--green)' : ''}">${t.capacity_factor_pct}%</td>
-        <td>${t.full_load_hours?.toLocaleString()}</td>
-        <td>${t.mean_power_kw?.toLocaleString()}</td>
-        <td><span class="badge badge--${i === 0 ? 'success' : 'info'}">#${t.rank}</span></td>
-      </tr>`).join('');
-    toast('Comparación completada', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  }
 }
 
 // ─── LEVERAGED FINANCIAL ANALYSIS ────────────────────────────────────────────
@@ -6641,6 +6671,8 @@ async function krig3Run() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
     document.getElementById('krig3-status').textContent = 'Error';
+    document.getElementById('krig3-progress-wrap').style.display = 'none';
+    document.getElementById('krig3-progress-text').textContent = '';
     if (runBtn) runBtn.disabled = false;
   }
 }
@@ -7445,6 +7477,7 @@ async function mcdaRunAnalysis() {
     toast(`Error: ${e.message}`, 'error');
     document.getElementById('mcda-status').textContent = 'Error';
     document.getElementById('mcda-progress-wrap').style.display = 'none';
+    document.getElementById('mcda-progress-text').textContent = '';
   }
 }
 
@@ -7790,43 +7823,74 @@ function syncTopsisWinnerToModules() {
     parquePopulateTopsisRanking();
   }
 
-  // ── 2. Tecnoeconómico: set #te-turbine to winner ─────────────────────
+  // ── 2. Tecnoeconómico: selector con TODAS las alternativas ya rankeadas
+  // por TOPSIS (todas con estela real, sin necesidad de recalcular nada) ──
   const teSelect = document.getElementById('te-turbine');
   if (!teSelect) return;
 
-  // Try to find option (CSV turbines are appended by bindTechno → loadTurbineList)
-  let matchOpt = Array.from(teSelect.options).find(o => o.value === winnerKey);
+  const turbineLabel = (key) => {
+    const meta = (MCDA.turbines || []).find(t => t.filename === key);
+    return meta
+      ? `${meta.name || key} — ${meta.rated_power_kw ? (meta.rated_power_kw/1000).toFixed(1)+' MW' : ''} ⌀${meta.rotor_diameter_m||'?'} m`
+      : key.replace('.csv', '');
+  };
+  teSelect.replaceChildren(...items.map(row => {
+    const key = row.turbina || row.label;
+    return new Option(turbineLabel(key), key, false, false);
+  }));
 
-  // If CSV turbine not yet loaded as option, add it now
-  if (!matchOpt) {
-    const meta = (MCDA.turbines || []).find(t => t.filename === winnerKey);
-    const label = meta
-      ? `${meta.name || winnerKey} — ${meta.rated_power_kw ? (meta.rated_power_kw/1000).toFixed(1)+' MW' : ''} ⌀${meta.rotor_diameter_m||'?'} m`
-      : winnerKey.replace('.csv', '');
-    matchOpt = new Option(label, winnerKey, false, false);
-    teSelect.appendChild(matchOpt);
-  }
+  // Conserva la elección manual del usuario si esa turbina sigue en el ranking;
+  // si no, vuelve a la ganadora #1.
+  const priorOverride = WP.technoSelectedTopsisTurbine;
+  const overrideStillValid = !!priorOverride && items.some(row => (row.turbina || row.label) === priorOverride);
+  WP.technoSelectedTopsisTurbine = overrideStillValid ? priorOverride : null;
+  const activeRow = overrideStillValid
+    ? items.find(row => (row.turbina || row.label) === priorOverride)
+    : winner;
+  const activeKey = activeRow.turbina || activeRow.label;
+  teSelect.value = activeKey;
 
   if (!WP.technoInputsDirty && !technoCurrentScenario()?.result) {
-    teSelect.value = winnerKey;
-    const winnerCount = Number(winner.n_aerogeneradores);
+    const activeCount = Number(activeRow.n_aerogeneradores);
     const teCount = document.getElementById('te-nturbines');
-    if (teCount && Number.isFinite(winnerCount) && winnerCount > 0) {
-      teCount.value = String(Math.round(winnerCount));
+    if (teCount && Number.isFinite(activeCount) && activeCount > 0) {
+      teCount.value = String(Math.round(activeCount));
     }
   }
 
-  // Badge below the select
-  const badge = document.getElementById('te-turbine-topsis-badge');
-  if (badge) {
-    const meta  = (MCDA.turbines || []).find(t => t.filename === winnerKey);
-    const name  = meta?.name || winnerKey.replace('.csv', '');
-    const score = Number(winner.topsis_score || 0).toFixed(4);
-    const cf    = winner.factor_capacidad != null
-      ? ` · CF ${(Number(winner.factor_capacidad)*100).toFixed(1)}%` : '';
-    badge.textContent = `🥇 TOPSIS #1: ${name} · Score ${score}${cf}`;
+  const renderTopsisBadge = (row) => {
+    const badge = document.getElementById('te-turbine-topsis-badge');
+    if (!badge) return;
+    const key   = row.turbina || row.label;
+    const meta  = (MCDA.turbines || []).find(t => t.filename === key);
+    const name  = meta?.name || (key || '').replace('.csv', '');
+    const score = Number(row.topsis_score || 0).toFixed(4);
+    const cf    = row.factor_capacidad != null
+      ? ` · CF ${(Number(row.factor_capacidad)*100).toFixed(1)}%` : '';
+    const rank  = items.indexOf(row) + 1;
+    const medal = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`;
+    badge.textContent = `${medal} TOPSIS #${rank}: ${name} · Score ${score}${cf}`;
     badge.style.display = '';
-  }
+  };
+  renderTopsisBadge(activeRow);
+
+  // Cambiar de turbina aquí sólo reutiliza la alternativa ya evaluada por
+  // TOPSIS (con su propio n_placed y AEP-con-estela) — no dispara Kriging
+  // ni una nueva optimización; ver technoParkLayout().
+  teSelect.onchange = () => {
+    WP.technoSelectedTopsisTurbine = teSelect.value;
+    const row = items.find(r => (r.turbina || r.label) === teSelect.value);
+    if (!row) return;
+    const n = Number(row.n_aerogeneradores);
+    const teCount = document.getElementById('te-nturbines');
+    if (teCount && Number.isFinite(n) && n > 0) teCount.value = String(Math.round(n));
+    renderTopsisBadge(row);
+    if (technoCurrentScenario()?.result) {
+      calcTechnoEconomic();
+    } else {
+      toast('Turbina actualizada desde el ranking TOPSIS. Pulsa «Calcular» para ver el análisis financiero.', 'info');
+    }
+  };
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -10228,6 +10292,10 @@ async function publishMCPRun() {
     WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
     WP.technoInputsInitialized = false;
     WP.technoInputsDirty = false;
+    _riskData = null;
+    ['te-risk-card', 'te-kmeans-card'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.style.display = 'none';
+    });
     KRIG.calibrationId = null;
     KRIG.calibrationSignature = null;
     KRIG.calibration = null;
@@ -11214,6 +11282,10 @@ async function continueGlobeToReanalysis() {
     WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
     WP.technoInputsInitialized = false;
     WP.technoInputsDirty = false;
+    _riskData = null;
+    ['te-risk-card', 'te-kmeans-card'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.style.display = 'none';
+    });
     MCDA.lastSpatial = null;
     MCDA.lastAnalysis = null;
     MCDA.lastRanking = null;

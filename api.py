@@ -2981,6 +2981,7 @@ def create_app():
                     'timeseries': {
                         'labels': ts_labels_el,
                         'power_kw': safe_float_list(df_el['power_net_kw'].values[::step_el].tolist()),
+                        'ws_hub': safe_float_list(df_el['ws_hub'].values[::step_el].tolist()),
                     },
                 }
             except Exception as _e_lab:
@@ -5057,27 +5058,60 @@ def create_app():
                     else:
                         field_bounds = bounds
 
-                    def calibration_progress(percent, message):
-                        tasks[task_id]['progress'] = min(70, 10 + int(float(percent) * 0.6))
-                        tasks[task_id]['message'] = message
-
-                    field_bundle = build_calibrated_maps(
-                        calibration_payload,
-                        turbines_folder=Config.TURBINES_FOLDER,
-                        n_grid=n_grid, model=model, bounds=field_bounds,
-                        target_height_m=float(
-                            body.get('target_height_m')
-                            or calibration_payload['anchor']['target_height_m']
-                        ),
-                        physical=bool(body.get('physical', True)),
-                        demand_mwh=demand_mwh, discount_rate=tasa,
-                        price_usd_kwh=price_usd_kwh,
-                        fx_mxn_per_usd=price_mxn_per_usd,
-                        project_years=project_years,
-                        cost_model=cost_model,
-                        orographic_speedup_grid=body.get('orographic_speedup_grid'),
-                        progress_callback=calibration_progress,
+                    target_height_m = float(
+                        body.get('target_height_m')
+                        or calibration_payload['anchor']['target_height_m']
                     )
+                    physical_flag = bool(body.get('physical', True))
+                    orographic_grid = body.get('orographic_speedup_grid')
+                    # El campo MCP (Kriging por proveedor + ensamble) sólo depende de estos
+                    # parámetros geométricos/económicos, no de los pesos TOPSIS ni de las
+                    # turbinas elegidas. Si nada de esto cambió desde la corrida anterior en
+                    # esta sesión (p. ej. el usuario sólo ajustó pesos o turbinas y volvió a
+                    # correr), se reutiliza el campo ya calculado en vez de rehacer el Kriging.
+                    field_signature = json.dumps({
+                        'calibration_id': body.get('calibration_id'),
+                        'bounds': {k: round(float(v), 5) for k, v in field_bounds.items()},
+                        'n_grid': n_grid, 'model': model,
+                        'target_height_m': round(target_height_m, 3),
+                        'physical': physical_flag,
+                        'demand_mwh': round(float(demand_mwh), 6),
+                        'discount_rate': round(float(tasa), 6),
+                        'price_usd_kwh': round(float(price_usd_kwh), 6),
+                        'fx_mxn_per_usd': round(float(price_mxn_per_usd), 6),
+                        'project_years': int(project_years),
+                        'cost_model': requested_cost_model,
+                        'orographic_speedup_grid': orographic_grid,
+                    }, sort_keys=True, default=str)
+                    cached_field = sess.get('_topsis_field_cache') if sess is not None else None
+                    if cached_field and cached_field.get('signature') == field_signature:
+                        field_bundle = cached_field['field_bundle']
+                        tasks[task_id]['progress'] = 70
+                        tasks[task_id]['message'] = 'Reutilizando el campo MCP ya calculado para estos parámetros…'
+                    else:
+                        def calibration_progress(percent, message):
+                            tasks[task_id]['progress'] = min(70, 10 + int(float(percent) * 0.6))
+                            tasks[task_id]['message'] = message
+
+                        field_bundle = build_calibrated_maps(
+                            calibration_payload,
+                            turbines_folder=Config.TURBINES_FOLDER,
+                            n_grid=n_grid, model=model, bounds=field_bounds,
+                            target_height_m=target_height_m,
+                            physical=physical_flag,
+                            demand_mwh=demand_mwh, discount_rate=tasa,
+                            price_usd_kwh=price_usd_kwh,
+                            fx_mxn_per_usd=price_mxn_per_usd,
+                            project_years=project_years,
+                            cost_model=cost_model,
+                            orographic_speedup_grid=orographic_grid,
+                            progress_callback=calibration_progress,
+                        )
+                        if sess is not None:
+                            sess['_topsis_field_cache'] = {
+                                'signature': field_signature,
+                                'field_bundle': field_bundle,
+                            }
                     tasks[task_id]['progress'] = 75
                     tasks[task_id]['message'] = 'Evaluando sitios virtuales sobre el campo MCP…'
                     spatial = analyze_spatial_topsis_maps(
