@@ -17,7 +17,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson@3.0.2/dist/topojson.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
 </head>
 <body>
 
@@ -2062,6 +2061,67 @@
       </div>
     </div>
   </div>
+
+  <!-- ═══ ROBUSTEZ TÉCNICO-ECONÓMICA COMPARADA — TODAS LAS TURBINAS DEL RANKING ═══ -->
+  <div class="card mt-3" id="gsens-batch-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Robustez técnico-económica comparada — todas las turbinas del ranking</span>
+      <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Corre el mismo Monte Carlo económico (precio, tasa, OPEX, recurso eólico, inflación y estela)
+        para cada turbina del ranking, sin entrenar Random Forest — solo mide qué tan seguido cada
+        una se mantiene viable ante la incertidumbre, y hasta qué % de estela adicional aguanta antes
+        de dejar de serlo. Complementa al ranking TOPSIS: éste te dice quién gana en el escenario base,
+        esto te dice quién es más confiable si el escenario cambia.
+      </p>
+      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar robustez de todas las turbinas</button>
+      <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
+      <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
+      <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
+    </div>
+  </div>
+
+  <!-- ═══ ROBUSTEZ DE PESOS — TOPSIS (SMAA) ═══ -->
+  <div class="card mt-3" id="topsis-robust-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Robustez de pesos — TOPSIS (SMAA)</span>
+      <span class="badge badge--info" id="topsis-robust-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Perturba los pesos de los criterios TOPSIS con una distribución de Dirichlet centrada en tus
+        pesos actuales (método SMAA — Stochastic Multicriteria Acceptability Analysis) y re-rankea las
+        alternativas ya calculadas miles de veces, sin volver a simular nada. Responde: ¿qué tan seguido
+        gana cada alternativa ante la incertidumbre real de cómo se ponderan los criterios? Además, un
+        Random Forest entrenado sobre esas mismas muestras dice qué criterio de decisión es el que más
+        determina quién gana.
+      </p>
+      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
+        <div>
+          <label class="form-label" style="font-size:.78rem">N° de muestras (Dirichlet)</label>
+          <input type="number" class="form-input" id="topsis-robust-n-samples" value="500" min="100" max="2000" step="100" style="width:110px">
+        </div>
+        <button class="btn-primary" id="btn-topsis-robust-run" type="button">▶ Analizar robustez de pesos</button>
+      </div>
+      <p class="text-muted mt-1" id="topsis-robust-progress-text" style="font-size:.75rem"></p>
+
+      <div id="topsis-robust-results" style="display:none">
+        <div class="grid-2" style="gap:1rem">
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Estabilidad del ranking por alternativa</p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-rank-chart"></canvas></div>
+          </div>
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
+          </div>
+        </div>
+        <div style="overflow:auto;max-height:260px;margin-top:.9rem" id="topsis-robust-table"></div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- ╔══════════════════ PARQUE EÓLICO ══════════════════╗ -->
@@ -2856,8 +2916,10 @@
           <p class="text-muted" style="font-size:.8rem;margin-bottom:.7rem">
             A diferencia del tornado (una variable a la vez), acá se muestrean miles de combinaciones
             simultáneas de precio, tasa de descuento, OPEX (% del CAPEX, que se mantiene fijo), recurso
-            eólico e inflación — y un Random Forest entrenado sobre esas corridas te dice qué variable
-            pesa más en cada métrica y cómo interactúan dos de ellas.
+            eólico, inflación y —cuando hay un layout de parque aplicado— pérdida por efecto estela
+            (±30% relativo a su valor de diseño) — y un Random Forest entrenado sobre esas corridas te
+            dice qué variable pesa más en cada métrica, con percentiles de robustez (P10-P90) y
+            probabilidad de que el proyecto siga siendo viable.
           </p>
           <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
             <div>
@@ -2880,14 +2942,15 @@
 
           <div id="gsens-results" style="display:none">
             <div id="gsens-base-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
+            <div id="gsens-robustness-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
             <div class="grid-2" style="gap:1rem">
               <div style="min-width:0">
-                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables</p>
+                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables (métrica activa)</p>
                 <div style="position:relative;height:220px"><canvas id="gsens-importance-chart"></canvas></div>
               </div>
               <div style="min-width:0">
-                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Superficie de interacción (top 2 variables)</p>
-                <div id="gsens-surface-3d" style="height:320px;min-width:0"></div>
+                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Matriz variable × métrica (% de importancia)</p>
+                <div id="gsens-matrix" style="overflow:auto;max-height:260px"></div>
               </div>
             </div>
           </div>

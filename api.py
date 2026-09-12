@@ -3504,17 +3504,189 @@ def create_app():
             'regimes': regimes,
         })
 
+    GSENS_METRIC_NAMES = ['b_c_ratio', 'van_capex_ratio', 'payback_years', 'lcoe_usd_kwh', 'irr_pct']
+    GSENS_METRIC_LABELS = {
+        'b_c_ratio':       'B/C (beneficio/costo)',
+        'van_capex_ratio': 'VAN / CAPEX',
+        'payback_years':   'PRI — periodo de retorno (años)',
+        'lcoe_usd_kwh':    'LCOE (USD/kWh)',
+        'irr_pct':         'TIR (%)',
+    }
+
+    def _gsens_resolve_turbine(turbine_cfg):
+        builtin = turbine_cfg.get('builtin_model')
+        if builtin and builtin in PowerCurve.BUILTIN_CURVES:
+            return PowerCurve.from_builtin(builtin)
+        if builtin and builtin.endswith('.csv'):
+            fpath = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
+            return _cached_power_curve(fpath)
+        return PowerCurve(
+            name='Custom',
+            rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
+            cut_in=3.0, rated_speed=12.0, cut_out=25.0,
+            hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
+            rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
+        )
+
+    def _gsens_monte_carlo(turbine, n_turb, base_kwh, base_price, base_rate, base_years,
+                            base_infl, base_cm_dict, aep_lo_kwh, aep_hi_kwh,
+                            base_wake_loss_pct, n_samples):
+        """
+        Núcleo compartido del Monte Carlo económico (usado por el endpoint single,
+        con Random Forest + importancia, y por el batch, solo con percentiles de
+        robustez). Muestrea 5 variables (precio, tasa, %OPEX/CAPEX, AEP, inflación)
+        y, si `base_wake_loss_pct` viene, una 6ª (pérdida por estela ±30% relativo),
+        "deshaciendo" la estela base del AEP ya muestreado y reaplicando la
+        muestreada — para no duplicar el efecto de la variabilidad de AEP con el de
+        estela (ambas son fuentes de incertidumbre independientes, combinadas
+        multiplicativamente, igual que el resto del proyecto: ver
+        core/farm_mcda.py 'loss_combination': 'multiplicativa, no suma aritmética').
+        Devuelve (X, feature_names, feature_labels, ranges_used, outputs, base_case).
+        """
+        opex_lo = float(DEFAULT_COST_MODEL['opex_pct_capex']['min'])
+        opex_hi = float(DEFAULT_COST_MODEL['opex_pct_capex']['max'])
+
+        feature_names = ['price_usd_kwh', 'discount_rate_pct', 'opex_pct_capex',
+                          'annual_energy_kwh', 'annual_inflation_pct']
+        feature_labels = {
+            'price_usd_kwh':       'Precio de energía (USD/kWh)',
+            'discount_rate_pct':   'Tasa de descuento (%)',
+            'opex_pct_capex':      'OPEX (% del CAPEX)',
+            'annual_energy_kwh':   'AEP (recurso eólico)',
+            'annual_inflation_pct':'Inflación anual (%)',
+        }
+        ranges_used = {
+            'price_usd_kwh':        [base_price * 0.8, base_price * 1.2],
+            'discount_rate_pct':    [base_rate - 2.0, base_rate + 2.0],
+            'opex_pct_capex':       [opex_lo, opex_hi],
+            'annual_energy_kwh':    [aep_lo_kwh, aep_hi_kwh],
+            'annual_inflation_pct': [0.0, 5.0],
+        }
+        wake_enabled = base_wake_loss_pct is not None and 0 <= base_wake_loss_pct < 100
+        if wake_enabled:
+            feature_names = feature_names + ['wake_loss_pct']
+            feature_labels['wake_loss_pct'] = 'Pérdida por efecto estela (%)'
+            ranges_used['wake_loss_pct'] = [
+                max(0.0, base_wake_loss_pct * 0.7),
+                min(95.0, base_wake_loss_pct * 1.3),
+            ]
+
+        rng = np.random.default_rng(42)
+        samples = {name: rng.uniform(lo, hi, size=n_samples) for name, (lo, hi) in ranges_used.items()}
+        X = np.column_stack([samples[name] for name in feature_names])
+
+        outputs = {m: [] for m in GSENS_METRIC_NAMES}
+        for i in range(n_samples):
+            cm = CostModel(**{**base_cm_dict, 'opex_pct_capex': float(samples['opex_pct_capex'][i])})
+            tea = TechnoEconomicAnalyzer(cost_model=cm)
+            aep_i = float(samples['annual_energy_kwh'][i])
+            if wake_enabled:
+                aep_pre_wake = aep_i / (1.0 - base_wake_loss_pct / 100.0)
+                aep_i = aep_pre_wake * (1.0 - float(samples['wake_loss_pct'][i]) / 100.0)
+            res = tea.analyze(
+                turbine, n_turb,
+                annual_energy_kwh=aep_i,
+                energy_price_usd_kwh=float(samples['price_usd_kwh'][i]),
+                discount_rate_pct=float(samples['discount_rate_pct'][i]),
+                project_years=base_years,
+                usd_to_mxn=1.0,
+                annual_inflation_pct=float(samples['annual_inflation_pct'][i]),
+            )
+            for m in GSENS_METRIC_NAMES:
+                outputs[m].append(res.get(m))
+
+        tea_base = TechnoEconomicAnalyzer(cost_model=CostModel(**base_cm_dict))
+        base_res = tea_base.analyze(
+            turbine, n_turb, base_kwh,
+            energy_price_usd_kwh=base_price,
+            discount_rate_pct=base_rate,
+            project_years=base_years,
+            usd_to_mxn=1.0,
+            annual_inflation_pct=base_infl,
+        )
+        base_case = {m: base_res.get(m) for m in GSENS_METRIC_NAMES}
+        return X, feature_names, feature_labels, ranges_used, outputs, base_case
+
+    def _gsens_robustness(outputs):
+        """Percentiles P10/P50/P90 y probabilidad de viabilidad por métrica,
+        directamente sobre las muestras del Monte Carlo — sin entrenar nada."""
+        robustness = {}
+        for m in GSENS_METRIC_NAMES:
+            vals = np.array([v for v in outputs[m] if v is not None and np.isfinite(v)], dtype=float)
+            if vals.size < 10:
+                robustness[m] = None
+                continue
+            entry = {
+                'p10': round(float(np.percentile(vals, 10)), 4),
+                'p50': round(float(np.percentile(vals, 50)), 4),
+                'p90': round(float(np.percentile(vals, 90)), 4),
+            }
+            if m == 'b_c_ratio':
+                entry['prob_gt_1'] = round(float((vals > 1.0).mean() * 100.0), 1)
+            elif m == 'van_capex_ratio':
+                entry['prob_gt_0'] = round(float((vals > 0.0).mean() * 100.0), 1)
+            robustness[m] = entry
+        return robustness
+
+    def _gsens_wake_breakeven(turbine, n_turb, base_kwh, base_wake_loss_pct, base_price,
+                              base_rate, base_years, base_infl, base_cm_dict):
+        """
+        Umbral de estela: en vez de solo muestrear ±30% (que no dice "hasta dónde
+        aguanta el diseño"), busca por bisección el % de pérdida por estela en el
+        que B/C cruza 1 — manteniendo todo lo demás en su valor base. Responde
+        directamente "¿cuánta estela de más puede tener este diseño antes de dejar
+        de ser económicamente viable?", con el resto de variables fijas (no es un
+        estadístico de Monte Carlo, es un límite determinístico de diseño).
+        """
+        if base_wake_loss_pct is None:
+            return None
+        aep_pre_wake = base_kwh / (1.0 - base_wake_loss_pct / 100.0)
+
+        def bc_at(wake_pct):
+            aep_i = aep_pre_wake * (1.0 - wake_pct / 100.0)
+            tea = TechnoEconomicAnalyzer(cost_model=CostModel(**base_cm_dict))
+            res = tea.analyze(
+                turbine, n_turb, aep_i,
+                energy_price_usd_kwh=base_price, discount_rate_pct=base_rate,
+                project_years=base_years, usd_to_mxn=1.0, annual_inflation_pct=base_infl,
+            )
+            bc = res.get('b_c_ratio')
+            return (bc - 1.0) if bc is not None else None
+
+        f_lo = bc_at(0.0)
+        f_hi = bc_at(99.0)
+        if f_lo is None or f_hi is None:
+            return None
+        if f_lo <= 0:
+            return {'status': 'already_unviable', 'wake_breakeven_pct': 0.0,
+                    'wake_margin_pct': round(0.0 - base_wake_loss_pct, 2)}
+        if f_hi > 0:
+            return {'status': 'robust_beyond_99pct', 'wake_breakeven_pct': None,
+                    'wake_margin_pct': None}
+        lo, hi = 0.0, 99.0
+        mid = lo
+        for _ in range(50):
+            mid = (lo + hi) / 2.0
+            if abs(hi - lo) < 1e-3:
+                break
+            if bc_at(mid) > 0:
+                lo = mid
+            else:
+                hi = mid
+        return {'status': 'ok', 'wake_breakeven_pct': round(mid, 2),
+                'wake_margin_pct': round(mid - base_wake_loss_pct, 2)}
+
     @app.route('/api/energy/global_sensitivity', methods=['POST'])
     def energy_global_sensitivity():
         """
         Sensibilidad global (Monte Carlo + Random Forest) sobre B/C, VAN/CAPEX,
         PRI, LCOE y TIR — a diferencia del tornado (una variable a la vez), aquí
-        se muestrean 5 variables simultáneamente (precio de energía, tasa de
-        descuento, % OPEX/CAPEX, AEP/recurso eólico e inflación anual), se corre
+        se muestrean 5-6 variables simultáneamente (precio de energía, tasa de
+        descuento, % OPEX/CAPEX, AEP/recurso eólico, inflación anual y —si el
+        cliente manda `base_wake_loss_pct`— pérdida por efecto estela), se corre
         TechnoEconomicAnalyzer.analyze() por cada combinación, y se entrena un
         RandomForestRegressor por métrica de salida para sacar importancia de
-        variables (permutation_importance) y una superficie de interacción entre
-        las dos variables más importantes.
+        variables (permutation_importance) y percentiles de robustez P10/P50/P90.
 
         El CAPEX se mantiene fijo en el valor base del proyecto — la variable de
         costo que se explora es el % de OPEX sobre CAPEX (rango propio del
@@ -3545,25 +3717,11 @@ def create_app():
         base_infl = float(fin_cfg.get('annual_inflation_pct', 0.0))
         n_samples = int(body.get('n_samples', 800))
         n_samples = max(50, min(n_samples, 3000))
+        base_wake_loss_pct = body.get('base_wake_loss_pct')
+        base_wake_loss_pct = float(base_wake_loss_pct) if base_wake_loss_pct is not None else None
 
-        builtin = turbine_cfg.get('builtin_model')
-        if builtin and builtin in PowerCurve.BUILTIN_CURVES:
-            turbine = PowerCurve.from_builtin(builtin)
-        elif builtin and builtin.endswith('.csv'):
-            fpath   = os.path.join(Config.TURBINES_FOLDER, os.path.basename(builtin))
-            turbine = _cached_power_curve(fpath)
-        else:
-            turbine = PowerCurve(
-                name='Custom',
-                rated_power_kw=float(turbine_cfg.get('rated_power_kw', 2000)),
-                cut_in=3.0, rated_speed=12.0, cut_out=25.0,
-                hub_height_m=float(turbine_cfg.get('hub_height_m', 80)),
-                rotor_diameter_m=float(turbine_cfg.get('rotor_diameter_m', 80)),
-            )
-
+        turbine = _gsens_resolve_turbine(turbine_cfg)
         base_cm_dict = CostModel.from_dict(fin_cfg.get('cost_model')).to_dict()
-        opex_lo = float(DEFAULT_COST_MODEL['opex_pct_capex']['min'])
-        opex_hi = float(DEFAULT_COST_MODEL['opex_pct_capex']['max'])
 
         # AEP: usa P10-P90 si vienen (ordenados sin asumir cuál es el mayor —
         # la convención P10/P90 de este proyecto es la inversa de la industria,
@@ -3575,83 +3733,21 @@ def create_app():
         else:
             lo_kwh, hi_kwh = base_kwh * 0.9, base_kwh * 1.1
 
-        feature_names = ['price_usd_kwh', 'discount_rate_pct', 'opex_pct_capex',
-                          'annual_energy_kwh', 'annual_inflation_pct']
-        feature_labels = {
-            'price_usd_kwh':       'Precio de energía (USD/kWh)',
-            'discount_rate_pct':   'Tasa de descuento (%)',
-            'opex_pct_capex':      'OPEX (% del CAPEX)',
-            'annual_energy_kwh':   'AEP (recurso eólico)',
-            'annual_inflation_pct':'Inflación anual (%)',
-        }
-        ranges_used = {
-            'price_usd_kwh':        [base_price * 0.8, base_price * 1.2],
-            'discount_rate_pct':    [base_rate - 2.0, base_rate + 2.0],
-            'opex_pct_capex':       [opex_lo, opex_hi],
-            'annual_energy_kwh':    [lo_kwh, hi_kwh],
-            'annual_inflation_pct': [0.0, 5.0],
-        }
-        metric_names = ['b_c_ratio', 'van_capex_ratio', 'payback_years', 'lcoe_usd_kwh', 'irr_pct']
-        metric_labels = {
-            'b_c_ratio':       'B/C (beneficio/costo)',
-            'van_capex_ratio': 'VAN / CAPEX',
-            'payback_years':   'PRI — periodo de retorno (años)',
-            'lcoe_usd_kwh':    'LCOE (USD/kWh)',
-            'irr_pct':         'TIR (%)',
-        }
-
         try:
-            rng = np.random.default_rng(42)
-            samples = {
-                name: rng.uniform(lo, hi, size=n_samples)
-                for name, (lo, hi) in ranges_used.items()
-            }
-            X = np.column_stack([samples[name] for name in feature_names])
-
-            outputs = {m: [] for m in metric_names}
-            tea_dummy = TechnoEconomicAnalyzer(cost_model=CostModel(**base_cm_dict))
-            for i in range(n_samples):
-                cm = CostModel(**{**base_cm_dict, 'opex_pct_capex': float(samples['opex_pct_capex'][i])})
-                tea = TechnoEconomicAnalyzer(cost_model=cm)
-                res = tea.analyze(
-                    turbine, n_turb,
-                    annual_energy_kwh=float(samples['annual_energy_kwh'][i]),
-                    energy_price_usd_kwh=float(samples['price_usd_kwh'][i]),
-                    discount_rate_pct=float(samples['discount_rate_pct'][i]),
-                    project_years=base_years,
-                    usd_to_mxn=1.0,
-                    annual_inflation_pct=float(samples['annual_inflation_pct'][i]),
-                )
-                for m in metric_names:
-                    outputs[m].append(res.get(m))
-
-            base_res = tea_dummy.analyze(
-                turbine, n_turb, base_kwh,
-                energy_price_usd_kwh=base_price,
-                discount_rate_pct=base_rate,
-                project_years=base_years,
-                usd_to_mxn=1.0,
-                annual_inflation_pct=base_infl,
+            X, feature_names, feature_labels, ranges_used, outputs, base_case = _gsens_monte_carlo(
+                turbine, n_turb, base_kwh, base_price, base_rate, base_years, base_infl,
+                base_cm_dict, lo_kwh, hi_kwh, base_wake_loss_pct, n_samples,
             )
-            base_case = {m: base_res.get(m) for m in metric_names}
-            base_point = {name: float(np.mean(ranges_used[name])) for name in feature_names}
-            base_point['price_usd_kwh'] = base_price
-            base_point['discount_rate_pct'] = base_rate
-            base_point['opex_pct_capex'] = float(base_cm_dict['opex_pct_capex'])
-            base_point['annual_energy_kwh'] = base_kwh
-            base_point['annual_inflation_pct'] = base_infl
 
             from sklearn.ensemble import RandomForestRegressor
             from sklearn.inspection import permutation_importance
 
             importance = {}
-            surface = {}
-            for m in metric_names:
+            for m in GSENS_METRIC_NAMES:
                 y_raw = outputs[m]
                 valid = [j for j, v in enumerate(y_raw) if v is not None and np.isfinite(v)]
                 if len(valid) < 30:
                     importance[m] = None
-                    surface[m] = None
                     continue
                 Xv = X[valid]
                 yv = np.array([y_raw[j] for j in valid], dtype=float)
@@ -3661,41 +3757,101 @@ def create_app():
                 raw_imp = np.clip(perm.importances_mean, 0, None)
                 total = raw_imp.sum()
                 pct_imp = (raw_imp / total * 100.0) if total > 0 else raw_imp
-                importance[m] = [
+                importance[m] = sorted([
                     {'feature': feature_names[k], 'label': feature_labels[feature_names[k]],
                      'importance_pct': round(float(pct_imp[k]), 2)}
                     for k in range(len(feature_names))
-                ]
-                importance[m].sort(key=lambda r: -r['importance_pct'])
+                ], key=lambda r: -r['importance_pct'])
 
-                top2 = [row['feature'] for row in importance[m][:2]]
-                gx = np.linspace(*ranges_used[top2[0]], 20)
-                gy = np.linspace(*ranges_used[top2[1]], 20)
-                grid_rows = []
-                for yv2 in gy:
-                    row_pts = []
-                    for xv2 in gx:
-                        pt = dict(base_point)
-                        pt[top2[0]] = xv2
-                        pt[top2[1]] = yv2
-                        row_pts.append([pt[name] for name in feature_names])
-                    grid_rows.append(model.predict(np.array(row_pts)).tolist())
-                surface[m] = {
-                    'x_var': top2[0], 'y_var': top2[1],
-                    'x_label': feature_labels[top2[0]], 'y_label': feature_labels[top2[1]],
-                    'x': gx.tolist(), 'y': gy.tolist(), 'z': grid_rows,
-                }
+            wake_breakeven = _gsens_wake_breakeven(
+                turbine, n_turb, base_kwh, base_wake_loss_pct, base_price, base_rate,
+                base_years, base_infl, base_cm_dict,
+            )
 
             return jsonify(numpy_to_python({
                 'n_samples': n_samples,
                 'features': feature_names,
                 'feature_labels': feature_labels,
-                'metric_labels': metric_labels,
+                'metric_labels': GSENS_METRIC_LABELS,
                 'ranges_used': ranges_used,
                 'importance': importance,
-                'surface': surface,
+                'robustness': _gsens_robustness(outputs),
                 'base_case': base_case,
+                'wake_breakeven': wake_breakeven,
             }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
+    @app.route('/api/energy/global_sensitivity_batch', methods=['POST'])
+    def energy_global_sensitivity_batch():
+        """
+        Compara robustez técnico-económica (percentiles P10/P50/P90 + probabilidad
+        de viabilidad, SIN entrenar Random Forest) entre TODAS las alternativas del
+        ranking TOPSIS actual — responde "qué turbina es más robusta ante
+        incertidumbre económica y de recurso/estela", no solo cuál tiene mejor
+        punto base. Mismo núcleo Monte Carlo que el endpoint single
+        (`_gsens_monte_carlo`), corrido una vez por turbina con menos muestras por
+        default para mantener el tiempo de respuesta bajo.
+        """
+        body    = request.get_json(silent=True) or {}
+        fin_cfg = body.get('financial', {})
+        turbines_in = body.get('turbines')
+        if not isinstance(turbines_in, list) or not turbines_in:
+            return _err('turbines debe ser una lista no vacía de alternativas.')
+
+        if fin_cfg.get('energy_price_usd_kwh') in (None, ''):
+            return _err('energy_price_usd_kwh debe venir de la configuración del proyecto')
+        if fin_cfg.get('project_years') in (None, ''):
+            return _err('project_years debe venir de la configuración del proyecto')
+        try:
+            base_price = float(fin_cfg['energy_price_usd_kwh'])
+            base_years = int(fin_cfg['project_years'])
+        except (TypeError, ValueError):
+            return _err('Precio de energía o vida del proyecto inválidos')
+        if not np.isfinite(base_price) or base_price < 0 or not 5 <= base_years <= 40:
+            return _err('Precio de energía o vida del proyecto fuera de rango')
+
+        base_rate = float(fin_cfg.get('discount_rate_pct', 8.0))
+        base_infl = float(fin_cfg.get('annual_inflation_pct', 0.0))
+        n_samples = int(body.get('n_samples', 300))
+        n_samples = max(50, min(n_samples, 1000))
+        base_cm_dict = CostModel.from_dict(fin_cfg.get('cost_model')).to_dict()
+
+        try:
+            results = []
+            for t in turbines_in:
+                label = t.get('label') or t.get('turbina') or t.get('builtin_model')
+                base_kwh = float(t.get('annual_energy_kwh') or 0)
+                n_turb = int(t.get('n_turbines') or 1)
+                if base_kwh <= 0:
+                    results.append({'label': label, 'error': 'annual_energy_kwh inválido'})
+                    continue
+                wake = t.get('wake_loss_pct')
+                wake = float(wake) if wake is not None else None
+                turbine = _gsens_resolve_turbine({'builtin_model': t.get('builtin_model')})
+                _, _, _, _, outputs, base_case = _gsens_monte_carlo(
+                    turbine, n_turb, base_kwh, base_price, base_rate, base_years, base_infl,
+                    base_cm_dict, base_kwh * 0.9, base_kwh * 1.1, wake, n_samples,
+                )
+                results.append({
+                    'label': label,
+                    'base_case': base_case,
+                    'robustness': _gsens_robustness(outputs),
+                    'wake_breakeven': _gsens_wake_breakeven(
+                        turbine, n_turb, base_kwh, wake, base_price, base_rate,
+                        base_years, base_infl, base_cm_dict,
+                    ),
+                })
+
+            def _sort_key(row):
+                rob = row.get('robustness') or {}
+                bc = rob.get('b_c_ratio') or {}
+                return (bc.get('prob_gt_1') if bc.get('prob_gt_1') is not None else -1,
+                        bc.get('p50') if bc.get('p50') is not None else -1e18)
+            results.sort(key=_sort_key, reverse=True)
+
+            return jsonify(numpy_to_python({'n_samples': n_samples, 'turbines': results}))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
@@ -5244,6 +5400,139 @@ def create_app():
             return jsonify({'error': 'Provide alternatives, sites_analysis, or task_id'}), 400
 
         return jsonify(numpy_to_python(result))
+
+    @app.route('/api/multicriteria/weight_robustness', methods=['POST'])
+    def mcda_weight_robustness():
+        """
+        Análisis de robustez de pesos de TOPSIS (SMAA — Stochastic Multicriteria
+        Acceptability Analysis): perturba el vector de pesos con una distribución
+        de Dirichlet centrada en los pesos actuales (perturbación honesta sobre el
+        símplex, no ±X% por criterio) y re-rankea las alternativas YA calculadas
+        (sin volver a simular nada) miles de veces, para medir qué tan estable es
+        el ranking ante la incertidumbre real de cómo se ponderan los criterios.
+
+        Capa ML: además del tally estadístico (SMAA puro), entrena un
+        RandomForestClassifier que predice el ganador a partir del vector de pesos
+        y saca importancia de criterios por permutación — responde qué criterio de
+        decisión es el que más determina quién gana, no solo cuánto gana cada uno.
+        """
+        body = request.get_json(silent=True) or {}
+        alternatives = body.get('alternatives')
+        if not isinstance(alternatives, list) or len(alternatives) < 2:
+            return _err('Se necesitan al menos 2 alternativas para analizar robustez.')
+        mode = body.get('mode', 'pairs')
+        is_layout = (mode == 'layout_alternatives')
+        default_weights = LAYOUT_WEIGHTS if is_layout else DEFAULT_WEIGHTS
+        rank_fn = rank_layout_alternatives if is_layout else topsis
+
+        base_weights_in = body.get('base_weights') or {}
+        keys = list(default_weights.keys())
+        base_w = np.array([max(float(base_weights_in.get(k, default_weights[k])), 1e-4)
+                            for k in keys], dtype=float)
+        base_w = base_w / base_w.sum()
+
+        n_samples = int(body.get('n_samples', 500))
+        n_samples = max(50, min(n_samples, 2000))
+        concentration = max(1.0, float(body.get('concentration', 30.0)))
+
+        try:
+            rng = np.random.default_rng(42)
+            alpha = base_w * concentration
+            weight_samples = rng.dirichlet(alpha, size=n_samples)
+
+            base_ranking = rank_fn(alternatives, weights=dict(zip(keys, base_w)))
+            base_by_label = {row.get('label'): row for row in base_ranking.get('ranking', [])}
+
+            labels = None
+            rank_counts = {}
+            score_sum = {}
+            score_sq_sum = {}
+            win_counts = {}
+            winner_per_sample = []
+            valid_weight_rows = []
+            for i in range(n_samples):
+                w_i = dict(zip(keys, weight_samples[i]))
+                result = rank_fn(alternatives, weights=w_i)
+                ranking = result.get('ranking', [])
+                if not ranking:
+                    continue
+                valid_weight_rows.append(weight_samples[i])
+                if labels is None:
+                    labels = [row.get('label') for row in ranking]
+                    for lb in labels:
+                        rank_counts[lb] = {}
+                        score_sum[lb] = 0.0
+                        score_sq_sum[lb] = 0.0
+                        win_counts[lb] = 0
+                for row in ranking:
+                    lb = row.get('label')
+                    if lb not in rank_counts:
+                        continue
+                    r = int(row['rank'])
+                    rank_counts[lb][r] = rank_counts[lb].get(r, 0) + 1
+                    s = float(row['topsis_score'])
+                    score_sum[lb] += s
+                    score_sq_sum[lb] += s * s
+                    if r == 1:
+                        win_counts[lb] += 1
+                winner_per_sample.append(ranking[0].get('label'))
+
+            if labels is None:
+                return _err('Ninguna muestra de pesos produjo un ranking válido.')
+
+            n_valid = len(winner_per_sample)
+            summary = []
+            for lb in labels:
+                mean_s = score_sum[lb] / n_valid if n_valid else 0.0
+                var_s = max(score_sq_sum[lb] / n_valid - mean_s ** 2, 0.0) if n_valid else 0.0
+                ranks_flat = [r for r, c in rank_counts[lb].items() for _ in range(c)]
+                summary.append({
+                    'label': lb,
+                    'win_rate_pct': round(100.0 * win_counts[lb] / n_valid, 2) if n_valid else 0.0,
+                    'rank_counts': rank_counts[lb],
+                    'rank_mean': round(float(np.mean(ranks_flat)), 2) if ranks_flat else None,
+                    'rank_std': round(float(np.std(ranks_flat)), 2) if ranks_flat else None,
+                    'score_mean': round(mean_s, 4),
+                    'score_std': round(float(np.sqrt(var_s)), 4),
+                    'base_rank': base_by_label.get(lb, {}).get('rank'),
+                    'base_score': base_by_label.get(lb, {}).get('topsis_score'),
+                })
+            summary.sort(key=lambda row: -row['win_rate_pct'])
+
+            criteria_importance = None
+            unique_winners = set(winner_per_sample)
+            if len(unique_winners) >= 2:
+                try:
+                    from sklearn.ensemble import RandomForestClassifier
+                    from sklearn.inspection import permutation_importance
+                    X_valid = np.array(valid_weight_rows)
+                    clf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
+                    clf.fit(X_valid, winner_per_sample)
+                    perm = permutation_importance(clf, X_valid, winner_per_sample,
+                                                  n_repeats=10, random_state=42)
+                    raw_imp = np.clip(perm.importances_mean, 0, None)
+                    total_imp = raw_imp.sum()
+                    pct_imp = (raw_imp / total_imp * 100.0) if total_imp > 0 else raw_imp
+                    criteria_labels = LAYOUT_LABELS if is_layout else CRITERION_LABELS
+                    criteria_importance = sorted([
+                        {'criterion': keys[k], 'label': criteria_labels.get(keys[k], keys[k]),
+                         'importance_pct': round(float(pct_imp[k]), 2)}
+                        for k in range(len(keys))
+                    ], key=lambda r: -r['importance_pct'])
+                except Exception:
+                    logger.exception('Error entrenando clasificador de robustez de pesos')
+                    criteria_importance = None
+
+            return jsonify(numpy_to_python({
+                'n_samples': n_valid,
+                'mode': mode,
+                'criteria': keys,
+                'alternatives': summary,
+                'criteria_importance': criteria_importance,
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
 
     @app.route('/api/multicriteria/spatial', methods=['POST'])
     @limiter.limit('5 per minute')

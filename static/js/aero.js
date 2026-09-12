@@ -2301,6 +2301,8 @@ function bindTechno() {
   document.getElementById('btn-calc-sensitivity')?.addEventListener('click', calcSensitivity);
   document.getElementById('btn-gsens-run')?.addEventListener('click', runGlobalSensitivity);
   document.getElementById('gsens-metric')?.addEventListener('change', renderGlobalSensitivity);
+  document.getElementById('btn-gsens-batch-run')?.addEventListener('click', runGlobalSensitivityBatch);
+  document.getElementById('btn-topsis-robust-run')?.addEventListener('click', runTopsisRobustness);
 
   // Toggle de % pérdidas eléctricas finales — re-escala AEP/VAN/LCOE/flujos en cliente
   const lossEn  = document.getElementById('te-final-loss-enable');
@@ -2718,11 +2720,13 @@ function technoParkLayout() {
     const rowAep = Number(row?.aep_mwh ?? row?.aep_p50_mwh);
     if (row && Number.isFinite(rowAep) && rowAep > 0) {
       const meta = (MCDA.turbines || []).find(t => t.filename === overrideKey);
+      const wake = Number(row.wake_loss_pct);
       return {
         turbine_key: overrideKey,
         turbine_name: meta?.name || overrideKey.replace('.csv', ''),
         n_placed: Math.round(Number(row.n_aerogeneradores)),
         aep_mwh: rowAep,
+        wake_loss_pct: Number.isFinite(wake) ? wake : null,
       };
     }
   }
@@ -2731,11 +2735,13 @@ function technoParkLayout() {
   const nPlaced = Number(opt?.n_placed ?? sim?.n_turbines);
   const aep = Number(sim?.aep_mwh);
   if (!opt || !sim || !(nPlaced > 0) || !Number.isFinite(aep) || aep <= 0) return null;
+  const wakeFallback = Number(sim?.wake_loss_pct ?? opt?.wake_loss_pct);
   return {
     turbine_key: opt.turbine_key || null,
     turbine_name: opt.turbine?.name || sim.turbine?.name || null,
     n_placed: nPlaced,
     aep_mwh: aep,
+    wake_loss_pct: Number.isFinite(wakeFallback) ? wakeFallback : null,
   };
 }
 
@@ -3061,6 +3067,9 @@ async function runGlobalSensitivity() {
     body.aep_p10_mwh = aep.aep_p10_mwh;
     body.aep_p90_mwh = aep.aep_p90_mwh;
   }
+  // Estela como 6ª variable de diseño (±30% relativo), si hay un layout aplicado.
+  const wakeBase = technoParkLayout()?.wake_loss_pct;
+  if (Number.isFinite(wakeBase)) body.base_wake_loss_pct = wakeBase;
   const btn = document.getElementById('btn-gsens-run');
   if (btn) btn.disabled = true;
   document.getElementById('gsens-status').textContent = 'Ejecutando…';
@@ -3104,6 +3113,39 @@ function renderGlobalSensitivity() {
       </span>`).join('');
   }
 
+  // Badges de robustez (P10-P90 + probabilidad de viabilidad) de la métrica activa
+  const robEl = document.getElementById('gsens-robustness-badges');
+  if (robEl) {
+    const rob = data.robustness?.[metric];
+    if (!rob) {
+      robEl.innerHTML = '';
+    } else {
+      const fmtR = (k, v) => {
+        if (v == null) return '—';
+        if (k === 'lcoe_usd_kwh') return v.toFixed(4);
+        if (k === 'payback_years') return v.toFixed(1);
+        if (k === 'irr_pct') return v.toFixed(2) + '%';
+        return v.toFixed(3);
+      };
+      const chips = [
+        `<span class="badge badge--info" style="font-size:.7rem">P10: <b>${fmtR(metric, rob.p10)}</b></span>`,
+        `<span class="badge badge--info" style="font-size:.7rem">P50: <b>${fmtR(metric, rob.p50)}</b></span>`,
+        `<span class="badge badge--info" style="font-size:.7rem">P90: <b>${fmtR(metric, rob.p90)}</b></span>`,
+      ];
+      if (rob.prob_gt_1 != null) chips.push(`<span class="badge badge--success" style="font-size:.7rem">P(B/C&gt;1): <b>${rob.prob_gt_1}%</b></span>`);
+      if (rob.prob_gt_0 != null) chips.push(`<span class="badge badge--success" style="font-size:.7rem">P(VAN/CAPEX&gt;0): <b>${rob.prob_gt_0}%</b></span>`);
+      const wake = data.wake_breakeven;
+      if (wake?.status === 'ok') {
+        chips.push(`<span class="badge badge--warn" style="font-size:.7rem">Estela límite: <b>${wake.wake_breakeven_pct}%</b> (margen ${wake.wake_margin_pct > 0 ? '+' : ''}${wake.wake_margin_pct} pp)</span>`);
+      } else if (wake?.status === 'already_unviable') {
+        chips.push(`<span class="badge badge--error" style="font-size:.7rem">⚠ Ya inviable con la estela de diseño actual</span>`);
+      } else if (wake?.status === 'robust_beyond_99pct') {
+        chips.push(`<span class="badge badge--success" style="font-size:.7rem">Tolera estela &gt;99% (muy robusto)</span>`);
+      }
+      robEl.innerHTML = chips.join('');
+    }
+  }
+
   const imp = data.importance?.[metric];
   destroyChart('gsens-importance');
   const ctx = document.getElementById('gsens-importance-chart')?.getContext('2d');
@@ -3131,36 +3173,172 @@ function renderGlobalSensitivity() {
     }
   }
 
-  renderGlobalSensitivitySurface(data, metric);
+  renderGlobalSensitivityMatrix(data);
 }
 
-function renderGlobalSensitivitySurface(data, metric) {
-  const el = document.getElementById('gsens-surface-3d');
-  if (!el || typeof Plotly === 'undefined') return;
-  const surf = data.surface?.[metric];
-  if (!surf) {
-    el.innerHTML = '<p class="text-muted" style="font-size:.8rem">Sin superficie disponible para esta métrica.</p>';
+/** Matriz variable×métrica: cada celda es el % de importancia de esa variable en
+ * esa métrica (mismo patrón visual que renderClusterDistanceTable) — reemplaza la
+ * superficie 3D de 2 variables por una vista completa de las 5-6 variables contra
+ * las 5 métricas de una sola vez. */
+function renderGlobalSensitivityMatrix(data) {
+  const el = document.getElementById('gsens-matrix');
+  if (!el) return;
+  const metricKeys = Object.keys(data.metric_labels);
+  const maxV = Math.max(1e-9, ...data.features.map(f =>
+    Math.max(...metricKeys.map(m => {
+      const row = data.importance?.[m];
+      const cell = row?.find(r => r.feature === f);
+      return cell ? cell.importance_pct : 0;
+    }))
+  ));
+  const cellColor = (v) => {
+    const t = Math.max(0, Math.min(1, v / maxV));
+    const alpha = Math.round(t * 200).toString(16).padStart(2, '0');
+    return `#4DA3FF${alpha}`;
+  };
+  const header = `<tr><th></th>${metricKeys.map(m => `<th style="font-size:.66rem;white-space:nowrap">${data.metric_labels[m]}</th>`).join('')}</tr>`;
+  const rows = data.features.map(f => {
+    const cells = metricKeys.map(m => {
+      const row = data.importance?.[m];
+      const cell = row?.find(r => r.feature === f);
+      const v = cell ? cell.importance_pct : null;
+      return `<td style="background:${v != null ? cellColor(v) : 'transparent'};text-align:center;font-size:.66rem;padding:.25rem .4rem">${v != null ? v.toFixed(1) + '%' : '—'}</td>`;
+    }).join('');
+    return `<tr><th style="font-size:.66rem;white-space:nowrap;text-align:left">${data.feature_labels[f]}</th>${cells}</tr>`;
+  }).join('');
+  el.innerHTML = `<table class="data-table" style="border-collapse:collapse">${header}${rows}</table>`;
+}
+
+// ─── ROBUSTEZ COMPARADA ENTRE TODAS LAS TURBINAS DEL RANKING TOPSIS ─────────
+const GSENS_BATCH = { result: null };
+
+async function runGlobalSensitivityBatch() {
+  const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
+  if (!ranking.length) { toast('Corre TOPSIS primero — no hay ranking disponible.', 'warn'); return; }
+  // Una fila por modelo de turbina único (evita evaluar la misma turbina 2 veces).
+  const seen = new Set();
+  const turbines = [];
+  ranking.forEach(row => {
+    const key = row.turbina || row.label;
+    const aep = Number(row.aep_mwh ?? row.aep_p50_mwh);
+    const n = Number(row.n_aerogeneradores);
+    if (!key || seen.has(key) || !Number.isFinite(aep) || aep <= 0 || !(n > 0)) return;
+    seen.add(key);
+    turbines.push({
+      label: key, builtin_model: key, n_turbines: Math.round(n),
+      annual_energy_kwh: aep * 1000,
+      wake_loss_pct: Number.isFinite(Number(row.wake_loss_pct)) ? Number(row.wake_loss_pct) : null,
+    });
+  });
+  if (!turbines.length) { toast('El ranking no trae AEP/n_aerogeneradores válidos.', 'warn'); return; }
+
+  // No depende de haber corrido Tecnoeconómico: toma precio/demanda de la config
+  // del parque, igual que ya hace mcdaRunAnalysis() para TOPSIS.
+  const marketInputs = parkEquivalentDesignInputs();
+  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
+  if (marketInputs.price_usd_kwh == null) {
+    toast('Carga el precio de energía en Configuración del parque antes de comparar robustez.', 'warn');
     return;
   }
-  const trace = {
-    type: 'surface', x: surf.x, y: surf.y, z: surf.z,
-    colorscale: [[0, acc3()], [0.5, acc()], [1, gold()]],
-    showscale: true,
-    contours: { z: { show: true, usecolormap: true, project: { z: true } } },
-  };
-  const axisStyle = { color: mut(), gridcolor: gridColor(), zerolinecolor: gridColor() };
-  const layout = {
-    autosize: true, height: 320,
-    margin: { l: 0, r: 0, t: 10, b: 0 },
-    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
-    font: { color: mut(), size: 10 },
-    scene: {
-      xaxis: { title: surf.x_label, ...axisStyle },
-      yaxis: { title: surf.y_label, ...axisStyle },
-      zaxis: { title: data.metric_labels[metric], ...axisStyle },
+  const body = {
+    turbines,
+    n_samples: 300,
+    financial: {
+      energy_price_usd_kwh: marketInputs.price_usd_kwh,
+      discount_rate_pct:    WP.parkConfiguration?.base_interest_rate_pct ?? 8,
+      project_years:        Number.isFinite(projectYears) ? projectYears : 20,
+      annual_inflation_pct: 0,
+      cost_model:           technoCollectCostModel(),
     },
   };
-  Plotly.newPlot(el, [trace], layout, { responsive: true, displayModeBar: false });
+  const btn = document.getElementById('btn-gsens-batch-run');
+  if (btn) btn.disabled = true;
+  document.getElementById('gsens-batch-card').style.display = '';
+  document.getElementById('gsens-batch-status').textContent = `Comparando ${turbines.length} turbinas…`;
+  document.getElementById('gsens-batch-progress-text').textContent =
+    `Corriendo Monte Carlo económico por turbina (sin Random Forest)…`;
+  try {
+    const data = await api('/api/energy/global_sensitivity_batch', 'POST', body);
+    GSENS_BATCH.result = data;
+    document.getElementById('gsens-batch-status').textContent = `${data.turbines.length} turbinas · ${data.n_samples} muestras c/u`;
+    document.getElementById('gsens-batch-progress-text').textContent = '';
+    renderGlobalSensitivityBatchTable(data);
+    renderGlobalSensitivityBatchInterpretation(data, ranking[0]?.turbina || ranking[0]?.label);
+    toast('Comparación de robustez completada', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('gsens-batch-status').textContent = 'Error';
+    document.getElementById('gsens-batch-progress-text').textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function renderGlobalSensitivityBatchTable(data) {
+  const el = document.getElementById('gsens-batch-table');
+  if (!el) return;
+  const names = data.turbines.map(t => _topsisRobustName(t.label));
+  const fmtPct = (v) => v != null ? v.toFixed(1) + '%' : '—';
+  const fmtNum = (v) => v != null ? v.toFixed(3) : '—';
+  const fmtWake = (w) => {
+    if (!w) return '—';
+    if (w.status === 'already_unviable') return 'inviable ya al 0% extra';
+    if (w.status === 'robust_beyond_99pct') return '>99% (muy robusto)';
+    return `${w.wake_breakeven_pct}% (margen ${w.wake_margin_pct > 0 ? '+' : ''}${w.wake_margin_pct} pp)`;
+  };
+  const rows = data.turbines.map((t, i) => {
+    if (t.error) return `<tr><td>${names[i]}</td><td colspan="8" class="text-muted">${t.error}</td></tr>`;
+    const bc = t.robustness?.b_c_ratio;
+    const van = t.robustness?.van_capex_ratio;
+    return `<tr>
+      <td>${names[i]}</td>
+      <td>${fmtPct(bc?.prob_gt_1)}</td>
+      <td>${fmtNum(bc?.p10)}</td><td>${fmtNum(bc?.p50)}</td><td>${fmtNum(bc?.p90)}</td>
+      <td>${fmtPct(van?.prob_gt_0)}</td>
+      <td>${fmtNum(van?.p10)}</td><td>${fmtNum(van?.p50)}</td><td>${fmtNum(van?.p90)}</td>
+      <td>${fmtWake(t.wake_breakeven)}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="data-table" style="font-size:.72rem">
+    <thead><tr>
+      <th>Turbina</th><th>P(B/C&gt;1)</th><th>B/C P10</th><th>B/C P50</th><th>B/C P90</th>
+      <th>P(VAN/CAPEX&gt;0)</th><th>VAN/CAPEX P10</th><th>VAN/CAPEX P50</th><th>VAN/CAPEX P90</th>
+      <th>Estela límite (viabilidad)</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+/** Interpretación en texto plano de la tabla comparativa — contrasta la ganadora
+ * de TOPSIS (score puntual, escenario base) contra la más robusta (consistencia
+ * ante incertidumbre), que no siempre son la misma alternativa. */
+function renderGlobalSensitivityBatchInterpretation(data, topsisWinnerLabel) {
+  const el = document.getElementById('gsens-batch-interpretation');
+  if (!el) return;
+  const valid = data.turbines.filter(t => !t.error && t.robustness?.b_c_ratio);
+  if (!valid.length) { el.innerHTML = ''; return; }
+  const mostRobust = valid[0]; // ya viene ordenado por prob_gt_1 desc del backend
+  const mostRobustName = _topsisRobustName(mostRobust.label);
+  const winnerName = _topsisRobustName(topsisWinnerLabel);
+  const bc = mostRobust.robustness.b_c_ratio;
+  const wake = mostRobust.wake_breakeven;
+  const parts = [];
+  parts.push(`<b>${mostRobustName}</b> es la alternativa más robusta: mantiene B/C&gt;1 en el <b>${bc.prob_gt_1}%</b> de los escenarios simulados (rango P10-P90: ${bc.p10}–${bc.p90}).`);
+  if (mostRobust.label === topsisWinnerLabel) {
+    parts.push(`Coincide con la ganadora actual del ranking TOPSIS (<b>${winnerName}</b>) — la elección está reforzada tanto en el escenario base como ante incertidumbre.`);
+  } else {
+    const winnerRow = valid.find(t => t.label === topsisWinnerLabel);
+    const winnerBc = winnerRow?.robustness?.b_c_ratio;
+    parts.push(`Difiere de la ganadora actual del ranking TOPSIS (<b>${winnerName}</b>), que en el escenario base tiene mejor score puntual` +
+      (winnerBc ? ` pero se mantiene viable solo en el ${winnerBc.prob_gt_1}% de los escenarios` : '') +
+      ` — vale la pena revisar si conviene priorizar robustez sobre desempeño puntual.`);
+  }
+  if (wake?.status === 'ok') {
+    parts.push(`Su diseño actual tolera hasta <b>${wake.wake_breakeven_pct}%</b> de pérdida por estela antes de dejar de ser viable (margen de ${wake.wake_margin_pct} puntos porcentuales sobre el valor de diseño).`);
+  } else if (wake?.status === 'already_unviable') {
+    parts.push(`⚠ Con la estela de diseño actual ya está al límite: cualquier estela adicional la vuelve inviable (B/C&lt;1).`);
+  }
+  el.innerHTML = `<p style="margin:0">${parts.join(' ')}</p>`;
 }
 
 function renderRiskSection(data) {
@@ -8047,6 +8225,128 @@ async function mcdaRankNow() {
     const status = document.getElementById('mcda-status');
     if (status) status.textContent = 'Error ranking';
     toast(`Error ranking: ${e.message}`, 'error');
+  }
+}
+
+// ─── ROBUSTEZ DE PESOS — TOPSIS (SMAA) ───────────────────────────────────────
+const TOPSIS_ROBUST = { result: null };
+
+async function runTopsisRobustness() {
+  const ranking = MCDA.lastRanking?.ranking;
+  if (!Array.isArray(ranking) || ranking.length < 2) {
+    toast('Corre TOPSIS primero — se necesitan al menos 2 alternativas.', 'warning');
+    return;
+  }
+  const isLayout = MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2';
+  const nSamples = Math.max(100, Math.min(2000, parseInt(document.getElementById('topsis-robust-n-samples')?.value) || 500));
+  const body = {
+    alternatives: ranking,
+    mode: isLayout ? 'layout_alternatives' : 'pairs',
+    base_weights: mcdaGetWeights(),
+    n_samples: nSamples,
+  };
+  const btn = document.getElementById('btn-topsis-robust-run');
+  if (btn) btn.disabled = true;
+  document.getElementById('topsis-robust-card').style.display = '';
+  document.getElementById('topsis-robust-status').textContent = 'Ejecutando…';
+  document.getElementById('topsis-robust-progress-text').textContent =
+    `Perturbando pesos con ${nSamples} muestras Dirichlet (SMAA)…`;
+  try {
+    const data = await api('/api/multicriteria/weight_robustness', 'POST', body);
+    TOPSIS_ROBUST.result = data;
+    document.getElementById('topsis-robust-status').textContent = `${data.n_samples} muestras`;
+    document.getElementById('topsis-robust-progress-text').textContent = '';
+    document.getElementById('topsis-robust-results').style.display = '';
+    renderTopsisRobustness(data);
+    toast('Robustez de pesos completada', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('topsis-robust-status').textContent = 'Error';
+    document.getElementById('topsis-robust-progress-text').textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _topsisRobustName(label) {
+  const meta = (MCDA.turbines || []).find(t => t.filename === label);
+  return meta?.name || (label || '').replace('.csv', '');
+}
+
+function renderTopsisRobustness(data) {
+  const alts = data.alternatives || [];
+  const names = alts.map(a => _topsisRobustName(a.label));
+
+  // Stacked bar: distribución de rank por alternativa
+  destroyChart('topsis-robust-rank');
+  const ctx = document.getElementById('topsis-robust-rank-chart')?.getContext('2d');
+  if (ctx && alts.length) {
+    const maxRank = Math.max(...alts.map(a => Math.max(...Object.keys(a.rank_counts || {}).map(Number), 1)));
+    const nSamples = data.n_samples || 1;
+    const datasets = [];
+    for (let rk = 1; rk <= maxRank; rk++) {
+      datasets.push({
+        label: `#${rk}`,
+        data: alts.map(a => 100 * (a.rank_counts?.[rk] || 0) / nSamples),
+        backgroundColor: CLUSTER_COLORS[(rk - 1) % CLUSTER_COLORS.length] + (rk === 1 ? 'cc' : '66'),
+      });
+    }
+    WP.charts['topsis-robust-rank'] = new Chart(ctx, {
+      type: 'bar',
+      data: { labels: names, datasets },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'bottom', labels: { font: { size: 9 }, boxWidth: 10 } },
+          tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.x.toFixed(1)}%` } } },
+        scales: {
+          x: { stacked: true, max: 100, grid: { color: gridColor() }, title: { display: true, text: '% de muestras', font: { size: 10 } } },
+          y: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 } } },
+        },
+      },
+    });
+  }
+
+  // Importancia de criterios (¿qué determina al ganador?)
+  destroyChart('topsis-robust-criteria');
+  const ctx2 = document.getElementById('topsis-robust-criteria-chart')?.getContext('2d');
+  if (ctx2) {
+    if (!data.criteria_importance) {
+      ctx2.canvas.parentElement.innerHTML = '<p class="text-muted" style="font-size:.8rem">Una sola alternativa domina el 100% de las muestras — no hay variación de ganador para explicar.</p>';
+    } else {
+      WP.charts['topsis-robust-criteria'] = new Chart(ctx2, {
+        type: 'bar',
+        data: {
+          labels: data.criteria_importance.map(r => r.label),
+          datasets: [{ label: 'Importancia (%)', data: data.criteria_importance.map(r => r.importance_pct),
+            backgroundColor: acc3() + '99', borderColor: acc3(), borderWidth: 1, borderRadius: 3 }],
+        },
+        options: {
+          indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false },
+            tooltip: { callbacks: { label: c => ` ${c.parsed.x.toFixed(1)}%` } } },
+          scales: {
+            x: { grid: { color: gridColor() }, title: { display: true, text: '% de importancia', font: { size: 10 } } },
+            y: { grid: { display: false }, ticks: { font: { size: 10 } } },
+          },
+        },
+      });
+    }
+  }
+
+  // Tabla resumen
+  const tableEl = document.getElementById('topsis-robust-table');
+  if (tableEl) {
+    const rows = alts.map((a, i) => `<tr>
+      <td>${names[i]}</td>
+      <td>${a.win_rate_pct.toFixed(1)}%</td>
+      <td>${a.rank_mean ?? '—'} ± ${a.rank_std ?? '—'}</td>
+      <td>${a.base_rank ?? '—'}</td>
+      <td>${a.score_mean?.toFixed(4) ?? '—'}</td>
+    </tr>`).join('');
+    tableEl.innerHTML = `<table class="data-table" style="font-size:.72rem">
+      <thead><tr><th>Alternativa</th><th>% veces #1</th><th>Rank medio ± σ</th><th>Rank con pesos actuales</th><th>Score medio</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
   }
 }
 
