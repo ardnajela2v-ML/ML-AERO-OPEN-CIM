@@ -282,6 +282,11 @@ function collectProjectClientState() {
       layoutWeights: MCDA.layoutWeights,
       weightSchema: MCDA.weightSchema,
     }),
+    cluster: projectJsonClone({
+      result: CLUSTER.result, k: CLUSTER.k,
+      linkageMethod: CLUSTER.linkageMethod,
+      appliedFilenames: CLUSTER.appliedFilenames,
+    }),
     parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult,
       wakeProfile: PARQUE.wakeProfile, layerKey: PARQUE.layerKey }),
     mapa: projectJsonClone({ result: MAPA.result, sites: MAPA.sites, grid: MAPA.grid,
@@ -362,6 +367,16 @@ async function applyProjectClientState(state) {
     delete MCDA.scenarioWeights;
     delete MCDA.scenarioWeightsEdited;
     try { await mcdaBuildWeightSliders(); } catch (_) {}
+  }
+  if (state.cluster?.result) {
+    Object.assign(CLUSTER, state.cluster);
+    try {
+      document.getElementById('cluster-status').textContent =
+        `${CLUSTER.result.turbines.length} turbinas · ${CLUSTER.linkageMethod || 'complete'}`;
+      const kInput = document.getElementById('cluster-k');
+      if (kInput) kInput.value = CLUSTER.k || 3;
+      renderClusterResult();
+    } catch (_) {}
   }
   if (state.parque) Object.assign(PARQUE, state.parque);
   if (state.mapa) Object.assign(MAPA, state.mapa);
@@ -6777,6 +6792,23 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', krig3Run);
   krig3SyncGenerationMode();
 
+  document.getElementById('btn-cluster-run')?.addEventListener('click', runTurbineClustering);
+  document.getElementById('btn-cluster-apply')?.addEventListener('click', () => {
+    if (!CLUSTER.result) return;
+    const k = CLUSTER.k;
+    const clusterOf = cutTreeByK(CLUSTER.result.linkage, k);
+    const byCluster = new Map();
+    CLUSTER.result.turbines.forEach((t, i) => {
+      const c = clusterOf[i];
+      if (!byCluster.has(c) || (t.capacity_factor_pct || 0) > (byCluster.get(c).capacity_factor_pct || 0)) {
+        byCluster.set(c, t);
+      }
+    });
+    const filenames = Array.from(byCluster.values()).map(t => t.filename);
+    CLUSTER.appliedFilenames = filenames;
+    applyClusterSelectionToTopsis(filenames);
+  });
+
   // Tabs de capa (Velocidad / Inversión / VAN)
   document.querySelectorAll('.krig3-tab').forEach(b => {
     b.addEventListener('click', () => krig3SetLayer(b.dataset.layer));
@@ -6993,6 +7025,236 @@ document.addEventListener('DOMContentLoaded', () => {
 
 
 // ═══════════════════════ MCDA (TOPSIS) ═══════════════════════════════════════
+// ─── CLUSTERING JERÁRQUICO DE AEROGENERADORES (ML, antes de TOPSIS) ─────────
+const CLUSTER = {
+  result: null,      // respuesta cruda de /api/mcda/turbine_clustering
+  k: 3,
+  linkageMethod: 'complete',
+  appliedFilenames: null,
+};
+
+async function runTurbineClustering() {
+  if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
+  const linkageMethod = document.getElementById('cluster-linkage')?.value || 'complete';
+  CLUSTER.linkageMethod = linkageMethod;
+  document.getElementById('cluster-status').textContent = 'Ejecutando…';
+  document.getElementById('cluster-progress-wrap').style.display = '';
+  document.getElementById('cluster-progress-text').textContent =
+    'Generando series de potencia por turbina e interpolando contra el viento del sitio…';
+  const btn = document.getElementById('btn-cluster-run');
+  if (btn) btn.disabled = true;
+  try {
+    const body = {
+      session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
+      linkage_method: linkageMethod,
+      ws_height_m: wsH(),
+    };
+    const r = await api('/api/mcda/turbine_clustering', 'POST', body);
+    CLUSTER.result = r;
+    document.getElementById('cluster-progress-wrap').style.display = 'none';
+    document.getElementById('cluster-progress-text').textContent = '';
+    document.getElementById('cluster-status').textContent =
+      `${r.turbines.length} turbinas · ${linkageMethod}`;
+    renderClusterResult();
+    toast('Clustering completado', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('cluster-status').textContent = 'Error';
+    document.getElementById('cluster-progress-wrap').style.display = 'none';
+    document.getElementById('cluster-progress-text').textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** Corta un árbol de linkage (formato scipy: [idxA, idxB, dist, count] por fila)
+ * en k clusters — equivalente a scipy.cluster.hierarchy.fcluster(criterion='maxclust').
+ * Devuelve un array de longitud n (n = número de hojas) con el id de cluster (0..k-1)
+ * de cada hoja, en el mismo orden que `labels`. */
+function cutTreeByK(linkage, k) {
+  const n = linkage.length + 1;
+  k = Math.max(1, Math.min(k, n));
+  // parent[i] = nodo (0..2n-2) al que pertenece la hoja/cluster i mientras se recorren
+  // las fusiones en orden ascendente de distancia; nos detenemos cuando quedan k grupos.
+  const parent = new Array(2 * n - 1).fill(-1);
+  const active = new Set(Array.from({ length: n }, (_, i) => i));
+  for (let row = 0; row < linkage.length && active.size > k; row++) {
+    const a = Math.round(linkage[row][0]);
+    const b = Math.round(linkage[row][1]);
+    const merged = n + row;
+    active.delete(a); active.delete(b); active.add(merged);
+    parent[a] = merged; parent[b] = merged;
+  }
+  // Para cada hoja, sube por parent[] hasta el nodo que quedó activo (raíz de su grupo).
+  const rootIds = new Map();
+  const labelsOut = new Array(n);
+  for (let leaf = 0; leaf < n; leaf++) {
+    let cur = leaf;
+    while (!active.has(cur)) cur = parent[cur];
+    if (!rootIds.has(cur)) rootIds.set(cur, rootIds.size);
+    labelsOut[leaf] = rootIds.get(cur);
+  }
+  return labelsOut;
+}
+
+const CLUSTER_COLORS = ['#4DA3FF', '#9F7AEA', '#22c55e', '#f59e0b', '#F4F7FB', '#ec4899', '#14b8a6', '#eab308'];
+
+function renderClusterResult() {
+  const r = CLUSTER.result;
+  const wrap = document.getElementById('cluster-results');
+  if (!r || !wrap) return;
+  wrap.style.display = '';
+  const kInput = document.getElementById('cluster-k');
+  const k = Math.max(2, Math.min(parseInt(kInput?.value) || CLUSTER.k, r.labels.length - 1 || 2));
+  CLUSTER.k = k;
+  const clusterOf = cutTreeByK(r.linkage, k);
+
+  renderDendrogramSvg(document.getElementById('cluster-dendrogram'), r.linkage, r.labels, clusterOf, r.turbines);
+  renderClusterDistanceTable(r.distance_matrix, r.labels);
+  renderClusterSummaryTable(r.turbines, clusterOf);
+  renderClusterRepresentatives(r.turbines, clusterOf);
+
+  if (!kInput._wired) {
+    kInput._wired = true;
+    kInput.addEventListener('change', renderClusterResult);
+  }
+  const applyBtn = document.getElementById('btn-cluster-apply');
+  if (applyBtn) applyBtn.style.display = '';
+}
+
+function renderClusterRepresentatives(turbines, clusterOf) {
+  const el = document.getElementById('cluster-reps');
+  if (!el) return;
+  const byCluster = new Map();
+  turbines.forEach((t, i) => {
+    const c = clusterOf[i];
+    if (!byCluster.has(c)) byCluster.set(c, []);
+    byCluster.get(c).push(t);
+  });
+  const reps = [];
+  const html = Array.from(byCluster.entries()).sort((a, b) => a[0] - b[0]).map(([c, members]) => {
+    const best = members.slice().sort((a, b) => (b.capacity_factor_pct || 0) - (a.capacity_factor_pct || 0))[0];
+    reps.push(best.filename);
+    const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
+    const names = members.map(m => m.filename === best.filename ? `<b>${m.name}</b>` : m.name).join(', ');
+    return `<div style="margin-bottom:.3rem"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>` +
+      `Clúster ${c + 1} (${members.length}) — representante sugerido <b>${best.name}</b> (mayor CF) · ${names}</div>`;
+  }).join('');
+  el.innerHTML = `<p style="margin-bottom:.5rem">Representante sugerido por clúster (mayor factor de capacidad). Se puede editar la selección con los checkboxes de TOPSIS antes de aplicar.</p>${html}`;
+  CLUSTER._suggestedReps = reps;
+}
+
+function renderClusterDistanceTable(distMatrix, labels) {
+  const el = document.getElementById('cluster-distance-table');
+  if (!el) return;
+  const names = labels.map(f => (MCDA.turbines || []).find(t => t.filename === f)?.name || f.replace('.csv', ''));
+  const maxD = Math.max(...distMatrix.flat().filter(v => Number.isFinite(v)), 1e-9);
+  const cellColor = (v) => {
+    const t = Math.max(0, Math.min(1, v / maxD));
+    const alpha = Math.round(t * 200).toString(16).padStart(2, '0');
+    return `#4DA3FF${alpha}`;
+  };
+  const header = `<tr><th></th>${names.map(n => `<th style="font-size:.68rem;white-space:nowrap">${n}</th>`).join('')}</tr>`;
+  const rows = distMatrix.map((row, i) => `<tr><th style="font-size:.68rem;white-space:nowrap;text-align:left">${names[i]}</th>${
+    row.map(v => `<td style="background:${cellColor(v)};text-align:center;font-size:.66rem;padding:.2rem .35rem">${v.toFixed(3)}</td>`).join('')
+  }</tr>`).join('');
+  el.innerHTML = `<table class="data-table" style="border-collapse:collapse">${header}${rows}</table>`;
+}
+
+function renderClusterSummaryTable(turbines, clusterOf) {
+  const tbody = document.getElementById('cluster-summary-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = turbines.map((t, i) => {
+    const color = CLUSTER_COLORS[clusterOf[i] % CLUSTER_COLORS.length];
+    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>`;
+    return `<tr>
+      <td>${dot}${t.name}</td>
+      <td>${t.rated_power_kw ?? '—'}</td>
+      <td>${t.rotor_diameter_m ?? '—'}</td>
+      <td>${t.hub_height_m ?? '—'}</td>
+      <td>${t.capacity_factor_pct != null ? t.capacity_factor_pct.toFixed(1) : '—'}</td>
+      <td>${t.aep_mwh != null ? Math.round(t.aep_mwh).toLocaleString() : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+/** Dibuja un dendrograma horizontal en SVG a partir de una matriz de linkage estilo
+ * scipy ([idxA, idxB, distancia, nHojas] por fila). No hay librería de dendrogramas
+ * en el proyecto — todo lo demás usa Chart.js/Leaflet — así que se dibuja a mano. */
+function renderDendrogramSvg(svg, linkageMatrix, labels, clusterOf, turbines) {
+  if (!svg) return;
+  const n = labels.length;
+  const names = labels.map(f => (turbines || []).find(t => t.filename === f)?.name || f.replace('.csv', ''));
+  const margin = { top: 10, right: 140, bottom: 30, left: 10 };
+  const width = Math.max(560, svg.parentElement?.clientWidth || 560) - margin.left - margin.right;
+  const rowH = 26;
+  const height = n * rowH;
+  svg.setAttribute('viewBox', `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`);
+  svg.setAttribute('height', height + margin.top + margin.bottom);
+
+  // Posición y de cada hoja = su índice en el orden dado (0..n-1), separadas rowH.
+  // Posición x de cada nodo = distancia de fusión (0 para hojas).
+  const maxDist = Math.max(...linkageMatrix.map(r => r[2]), 1e-9);
+  const xScale = (d) => (d / maxDist) * (width - 20);
+  const yOf = new Array(2 * n - 1);
+  for (let i = 0; i < n; i++) yOf[i] = margin.top + i * rowH + rowH / 2;
+  const xOf = new Array(2 * n - 1).fill(0);
+
+  const parts = [];
+  // Orden de hojas: se recalcula recorriendo el árbol para que las hojas de un mismo
+  // clúster queden contiguas (mejor lectura que el orden crudo de entrada).
+  const leafOrder = [];
+  const collectLeaves = (node) => {
+    if (node < n) { leafOrder.push(node); return; }
+    const row = linkageMatrix[node - n];
+    collectLeaves(Math.round(row[0]));
+    collectLeaves(Math.round(row[1]));
+  };
+  collectLeaves(2 * n - 2);
+  leafOrder.forEach((leaf, pos) => { yOf[leaf] = margin.top + pos * rowH + rowH / 2; });
+
+  // Color por nodo: las hojas heredan su clúster (clusterOf solo cubre hojas); un nodo
+  // interno conserva el color solo si AMBOS hijos son del mismo clúster — si no, es un
+  // tramo "troncal" entre clústeres distintos y se dibuja en gris neutro.
+  const nodeCluster = new Array(2 * n - 1);
+  for (let i = 0; i < n; i++) nodeCluster[i] = clusterOf[i];
+
+  linkageMatrix.forEach((row, i) => {
+    const a = Math.round(row[0]), b = Math.round(row[1]), dist = row[2];
+    const node = n + i;
+    xOf[node] = xScale(dist);
+    yOf[node] = (yOf[a] + yOf[b]) / 2;
+    nodeCluster[node] = nodeCluster[a] === nodeCluster[b] ? nodeCluster[a] : -1;
+    const color = nodeCluster[node] >= 0 ? CLUSTER_COLORS[nodeCluster[node] % CLUSTER_COLORS.length] : 'var(--text-muted)';
+    parts.push(
+      `<path d="M${margin.left + xOf[a]},${yOf[a]} H${margin.left + xOf[node]} V${yOf[b]} H${margin.left + xOf[b]}" fill="none" stroke="${color}" stroke-width="1.6"/>`
+    );
+  });
+
+  leafOrder.forEach((leaf) => {
+    const color = CLUSTER_COLORS[clusterOf[leaf] % CLUSTER_COLORS.length];
+    parts.push(`<circle cx="${margin.left + xOf[leaf]}" cy="${yOf[leaf]}" r="3" fill="${color}"/>`);
+    parts.push(`<text x="${margin.left + width + 8}" y="${yOf[leaf] + 4}" font-size="11" fill="var(--text-secondary)">${names[leaf]}</text>`);
+    parts.push(`<line x1="${margin.left + xOf[leaf]}" y1="${yOf[leaf]}" x2="${margin.left + width + 4}" y2="${yOf[leaf]}" stroke="var(--border)" stroke-width="1" stroke-dasharray="1,3"/>`);
+  });
+
+  svg.innerHTML = parts.join('');
+}
+
+/** Marca/desmarca los checkboxes de turbinas de TOPSIS (.mcda-turbine-check) según
+ * la lista de filenames dada — así el clustering "alimenta" a TOPSIS sin duplicar
+ * el estado de selección de turbinas. */
+function applyClusterSelectionToTopsis(filenames) {
+  const wanted = new Set(filenames);
+  document.querySelectorAll('.mcda-turbine-check').forEach(el => {
+    el.checked = wanted.has(el.value);
+  });
+  if (typeof mcdaUpdateTurbineCount === 'function') mcdaUpdateTurbineCount();
+  toast(`${wanted.size} turbina(s) seleccionadas para TOPSIS desde el clustering`, 'success');
+  document.getElementById('mcda-turbine-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 const MCDA = {
   taskId: null,
   lastAnalysis: null,   // raw analyze_sites output

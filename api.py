@@ -16,6 +16,8 @@ import zipfile
 import requests
 import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import linkage as scipy_linkage
+from scipy.spatial.distance import squareform
 from pathlib import Path
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -2467,6 +2469,99 @@ def create_app():
                 'data_source': _analysis_source_info(sess, body),
             })
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/mcda/turbine_clustering', methods=['POST'])
+    def turbine_clustering():
+        """
+        Agrupa jerárquicamente las turbinas del catálogo (aerogeneradores/) según
+        qué tan correlacionada está la serie de potencia que cada una generaría con
+        el viento real de la sesión — distancia = 1 - correlación de Pearson entre
+        series de potencia, cada una extrapolada a la altura de buje propia de su
+        turbina (igual que /api/energy/compute, no TurbineComparator, que compara
+        todas las turbinas a una misma altura de referencia).
+        Sirve para preseleccionar candidatos antes de correr TOPSIS.
+        """
+        body = request.get_json(silent=True) or {}
+        sid  = _require_sid(body)
+        sess = get_session(sid)
+        df = _analysis_df(sess, body)
+        if df is None:
+            return jsonify({'error': 'No data loaded.'}), 400
+
+        linkage_method = str(body.get('linkage_method') or 'complete')
+        if linkage_method not in ('single', 'complete', 'average', 'weighted'):
+            return _err('Método de agrupamiento no soportado')
+
+        ws_col = _energy_ws_col(sess, body)
+        ws_height_m = _sess_ws_h(body, sess)
+        altitude_m = body.get('altitude_m')
+        extr_method = body.get('extrapolation', 'hellmann')
+        hellmann_alpha = body.get('hellmann_alpha')
+
+        try:
+            catalog = list_turbine_info(Config.TURBINES_FOLDER)
+            requested = body.get('turbine_filenames')
+            if requested:
+                wanted = set(requested)
+                catalog = [t for t in catalog if t['filename'] in wanted]
+            if len(catalog) < 2:
+                return _err('Se necesitan al menos 2 turbinas del catálogo para agrupar.')
+
+            aep_calc = AEPCalculator()
+            power_series = []
+            turbine_rows = []
+            for meta in catalog:
+                fpath = os.path.join(Config.TURBINES_FOLDER, meta['filename'])
+                turbine = _cached_power_curve(fpath)
+                engine = WindToPowerEngine(
+                    turbine, n_turbines=1, availability=1.0,
+                    electrical_losses=0.0, wake_losses=0.0, curtailment_losses=0.0,
+                )
+                df_sim, summary = engine.run(
+                    df, ws_col=ws_col, ws_height_m=ws_height_m,
+                    altitude_m=altitude_m, extrapolation=extr_method,
+                    hellmann_alpha=hellmann_alpha,
+                )
+                power_series.append(df_sim['power_net_kw'].to_numpy(dtype=float))
+                try:
+                    aep = aep_calc.compute_from_timeseries(df_sim, 'energy_net_kwh')
+                except Exception:
+                    aep = {}
+                turbine_rows.append({
+                    'filename':         meta['filename'],
+                    'name':             meta['name'],
+                    'rated_power_kw':   meta['rated_power_kw'],
+                    'rotor_diameter_m': meta['rotor_diameter_m'],
+                    'hub_height_m':     meta['hub_height_m'],
+                    'mean_power_kw':    summary.get('mean_power_kw'),
+                    'aep_mwh':          aep.get('aep_p50_mwh', summary.get('energy_net_mwh')),
+                    'capacity_factor_pct': summary.get('capacity_factor_pct'),
+                })
+
+            X = np.vstack(power_series)
+            if np.allclose(X.std(axis=1), 0):
+                return _err('Las series de potencia son constantes; no se puede calcular correlación.')
+            corr = np.corrcoef(X)
+            corr = np.nan_to_num(corr, nan=0.0)
+            np.fill_diagonal(corr, 1.0)
+            dist = 1.0 - corr
+            np.fill_diagonal(dist, 0.0)
+            dist = (dist + dist.T) / 2.0  # forzar simetría exacta (evita ruido de FP)
+
+            Z = scipy_linkage(squareform(dist, checks=False), method=linkage_method)
+
+            return jsonify(numpy_to_python({
+                'labels': [t['filename'] for t in turbine_rows],
+                'linkage': Z.tolist(),
+                'distance_matrix': dist.tolist(),
+                'correlation_matrix': corr.tolist(),
+                'linkage_method': linkage_method,
+                'turbines': turbine_rows,
+                'data_source': _analysis_source_info(sess, body),
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
 
     # ─── WIND STATISTICS ──────────────────────────────────────────────────────────
