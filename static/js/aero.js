@@ -6792,19 +6792,22 @@ document.addEventListener('DOMContentLoaded', () => {
   if (bRun) bRun.addEventListener('click', krig3Run);
   krig3SyncGenerationMode();
 
+  clusterLoadTurbines();
   document.getElementById('btn-cluster-run')?.addEventListener('click', runTurbineClustering);
+  document.getElementById('btn-cluster-turbines-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.cluster-turbine-check').forEach(el => { el.checked = true; });
+    clusterUpdateTurbineCount();
+  });
+  document.getElementById('btn-cluster-turbines-none')?.addEventListener('click', () => {
+    document.querySelectorAll('.cluster-turbine-check').forEach(el => { el.checked = false; });
+    clusterUpdateTurbineCount();
+  });
   document.getElementById('btn-cluster-apply')?.addEventListener('click', () => {
     if (!CLUSTER.result) return;
-    const k = CLUSTER.k;
-    const clusterOf = cutTreeByK(CLUSTER.result.linkage, k);
-    const byCluster = new Map();
-    CLUSTER.result.turbines.forEach((t, i) => {
-      const c = clusterOf[i];
-      if (!byCluster.has(c) || (t.capacity_factor_pct || 0) > (byCluster.get(c).capacity_factor_pct || 0)) {
-        byCluster.set(c, t);
-      }
-    });
-    const filenames = Array.from(byCluster.values()).map(t => t.filename);
+    // Selección 100% manual: se lleva a TOPSIS exactamente lo que el usuario dejó
+    // marcado en la lista por clúster, sin priorizar por CF ni ningún otro criterio.
+    const filenames = Array.from(document.querySelectorAll('.cluster-apply-check:checked')).map(el => el.value);
+    if (!filenames.length) { toast('Marca al menos una turbina para llevar a TOPSIS.', 'warning'); return; }
     CLUSTER.appliedFilenames = filenames;
     applyClusterSelectionToTopsis(filenames);
   });
@@ -7033,10 +7036,55 @@ const CLUSTER = {
   appliedFilenames: null,
 };
 
+function clusterUpdateTurbineCount() {
+  const total = document.querySelectorAll('.cluster-turbine-check').length;
+  const selected = document.querySelectorAll('.cluster-turbine-check:checked').length;
+  const el = document.getElementById('cluster-turbine-count');
+  if (el) el.textContent = total ? `${selected}/${total} seleccionadas` : 'Sin catálogo';
+}
+
+/** Catálogo propio del panel de clustering — independiente de la lista de TOPSIS,
+ * para que el usuario defina explícitamente qué turbinas entran al estudio de
+ * similitud (dendrograma/matriz), sin tener que coincidir con lo que ya esté
+ * marcado más abajo para TOPSIS. */
+async function clusterLoadTurbines() {
+  const list = document.getElementById('cluster-turbine-list');
+  if (!list) return;
+  try {
+    const r = await api('/api/energy/turbines', 'GET');
+    const turbines = (r.turbines || []).filter(t => t.source === 'file');
+    if (!turbines.length) {
+      list.innerHTML = '<span class="text-muted">No hay turbinas CSV disponibles.</span>';
+      clusterUpdateTurbineCount();
+      return;
+    }
+    list.innerHTML = turbines.map(t => {
+      const mw = t.rated_power_kw ? `${(t.rated_power_kw / 1000).toFixed(1)} MW` : 'Potencia —';
+      const rotor = t.rotor_diameter_m ? `Ø ${t.rotor_diameter_m} m` : 'Rotor —';
+      return `
+        <label style="display:flex;align-items:flex-start;gap:.45rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
+          <input type="checkbox" class="cluster-turbine-check" value="${t.filename}" checked style="margin-top:.15rem">
+          <span>${t.name} <span class="text-muted">· ${mw} · ${rotor}</span></span>
+        </label>`;
+    }).join('');
+    document.querySelectorAll('.cluster-turbine-check').forEach(el => {
+      el.addEventListener('change', clusterUpdateTurbineCount);
+    });
+    clusterUpdateTurbineCount();
+  } catch (e) {
+    list.innerHTML = '<span class="text-muted">No se pudo cargar el catálogo.</span>';
+  }
+}
+
 async function runTurbineClustering() {
   if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
   const linkageMethod = document.getElementById('cluster-linkage')?.value || 'complete';
   CLUSTER.linkageMethod = linkageMethod;
+  const turbineFilenames = Array.from(document.querySelectorAll('.cluster-turbine-check:checked')).map(el => el.value);
+  if (turbineFilenames.length < 2) {
+    toast('Selecciona al menos 2 turbinas para poder agruparlas.', 'warning');
+    return;
+  }
   document.getElementById('cluster-status').textContent = 'Ejecutando…';
   document.getElementById('cluster-progress-wrap').style.display = '';
   document.getElementById('cluster-progress-text').textContent =
@@ -7049,6 +7097,7 @@ async function runTurbineClustering() {
       data_source: WP.activeDataSource,
       linkage_method: linkageMethod,
       ws_height_m: wsH(),
+      turbine_filenames: turbineFilenames,
     };
     const r = await api('/api/mcda/turbine_clustering', 'POST', body);
     CLUSTER.result = r;
@@ -7123,6 +7172,12 @@ function renderClusterResult() {
   if (applyBtn) applyBtn.style.display = '';
 }
 
+/** Lista de selección 100% manual por clúster — no sugiere ningún representante
+ * (ni por CF, ni por AEP, ni por ningún otro criterio): el clustering solo aporta
+ * la agrupación por similitud de comportamiento; decidir a quién de cada grupo
+ * llevar a TOPSIS es una decisión del investigador, no del algoritmo. Todas las
+ * turbinas quedan marcadas por defecto (no se descarta nada sin que el usuario
+ * lo decida explícitamente). */
 function renderClusterRepresentatives(turbines, clusterOf) {
   const el = document.getElementById('cluster-reps');
   if (!el) return;
@@ -7132,17 +7187,19 @@ function renderClusterRepresentatives(turbines, clusterOf) {
     if (!byCluster.has(c)) byCluster.set(c, []);
     byCluster.get(c).push(t);
   });
-  const reps = [];
-  const html = Array.from(byCluster.entries()).sort((a, b) => a[0] - b[0]).map(([c, members]) => {
-    const best = members.slice().sort((a, b) => (b.capacity_factor_pct || 0) - (a.capacity_factor_pct || 0))[0];
-    reps.push(best.filename);
+  el.innerHTML = Array.from(byCluster.entries()).sort((a, b) => a[0] - b[0]).map(([c, members]) => {
     const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
-    const names = members.map(m => m.filename === best.filename ? `<b>${m.name}</b>` : m.name).join(', ');
-    return `<div style="margin-bottom:.3rem"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>` +
-      `Clúster ${c + 1} (${members.length}) — representante sugerido <b>${best.name}</b> (mayor CF) · ${names}</div>`;
+    const rows = members.map(m => `
+      <label style="display:flex;align-items:center;gap:.4rem;padding:.15rem 0 .15rem 1.1rem;font-size:.78rem">
+        <input type="checkbox" class="cluster-apply-check" value="${m.filename}" checked>
+        <span>${m.name}</span>
+        <span class="text-muted" style="font-size:.72rem">CF ${m.capacity_factor_pct != null ? m.capacity_factor_pct.toFixed(1) + '%' : '—'} · AEP ${m.aep_mwh != null ? Math.round(m.aep_mwh).toLocaleString() + ' MWh' : '—'}</span>
+      </label>`).join('');
+    return `<div style="margin-bottom:.5rem">
+      <div style="font-weight:600"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>Clúster ${c + 1} (${members.length})</div>
+      ${rows}
+    </div>`;
   }).join('');
-  el.innerHTML = `<p style="margin-bottom:.5rem">Representante sugerido por clúster (mayor factor de capacidad). Se puede editar la selección con los checkboxes de TOPSIS antes de aplicar.</p>${html}`;
-  CLUSTER._suggestedReps = reps;
 }
 
 function renderClusterDistanceTable(distMatrix, labels) {

@@ -1849,6 +1849,20 @@
         similares entre sí antes de correr TOPSIS — no reemplaza el ranking, lo alimenta.
       </p>
 
+      <div style="margin-bottom:.9rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.35rem">
+          <label class="form-label" style="font-size:.78rem;margin:0">Turbinas a incluir en el estudio</label>
+          <span class="text-muted" style="font-size:.72rem" id="cluster-turbine-count">Sin catálogo</span>
+        </div>
+        <div id="cluster-turbine-list" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:.45rem;background:var(--bg-secondary);font-size:.74rem;line-height:1.45">
+          <span class="text-muted">Cargando catálogo…</span>
+        </div>
+        <div style="display:flex;gap:.5rem;margin-top:.35rem">
+          <button class="btn-secondary" id="btn-cluster-turbines-all" type="button" style="font-size:.72rem;padding:.2rem .6rem">Todas</button>
+          <button class="btn-secondary" id="btn-cluster-turbines-none" type="button" style="font-size:.72rem;padding:.2rem .6rem">Ninguna</button>
+        </div>
+      </div>
+
       <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.9rem">
         <div>
           <label class="form-label" style="font-size:.78rem">Método de enlace (linkage)</label>
@@ -1877,7 +1891,11 @@
           <svg id="cluster-dendrogram" width="100%" height="380" style="min-width:520px"></svg>
         </div>
 
-        <div id="cluster-reps" class="text-muted" style="font-size:.8rem;margin-bottom:.9rem"></div>
+        <p class="text-muted" style="font-size:.75rem;margin-bottom:.3rem">
+          Marca manualmente qué turbinas de cada clúster querés llevar a TOPSIS — por defecto quedan todas
+          marcadas (no se descarta nada automáticamente ni se prioriza por CF u otro criterio).
+        </p>
+        <div id="cluster-reps" style="font-size:.8rem;margin-bottom:.9rem"></div>
 
         <div class="grid-2" style="gap:1rem">
           <div>
