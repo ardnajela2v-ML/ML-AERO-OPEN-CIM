@@ -3535,7 +3535,7 @@ def create_app():
         Núcleo compartido del Monte Carlo económico (usado por el endpoint single,
         con Random Forest + importancia, y por el batch, solo con percentiles de
         robustez). Muestrea 5 variables (precio, tasa, %OPEX/CAPEX, AEP, inflación)
-        y, si `base_wake_loss_pct` viene, una 6ª (pérdida por estela ±30% relativo),
+        y, si `base_wake_loss_pct` viene, una 6ª (pérdida por estela ±200% relativo),
         "deshaciendo" la estela base del AEP ya muestreado y reaplicando la
         muestreada — para no duplicar el efecto de la variabilidad de AEP con el de
         estela (ambas son fuentes de incertidumbre independientes, combinadas
@@ -3567,8 +3567,8 @@ def create_app():
             feature_names = feature_names + ['wake_loss_pct']
             feature_labels['wake_loss_pct'] = 'Pérdida por efecto estela (%)'
             ranges_used['wake_loss_pct'] = [
-                max(0.0, base_wake_loss_pct * 0.7),
-                min(95.0, base_wake_loss_pct * 1.3),
+                max(0.0, base_wake_loss_pct * (1.0 - 2.0)),
+                min(95.0, base_wake_loss_pct * (1.0 + 2.0)),
             ]
 
         rng = np.random.default_rng(42)

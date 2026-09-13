@@ -8588,6 +8588,15 @@ function mcdaRenderRanking(r) {
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico
   syncTopsisWinnerToModules();
+  // Revela las tarjetas de robustez (batch técnico-económico y SMAA de pesos)
+  // apenas hay un ranking usable — cubre tanto correr TOPSIS en vivo como
+  // restaurar un ranking guardado al importar un proyecto.
+  if (top.length) {
+    const batchCard = document.getElementById('gsens-batch-card');
+    if (batchCard) batchCard.style.display = '';
+    const robustCard = document.getElementById('topsis-robust-card');
+    if (robustCard) robustCard.style.display = '';
+  }
 }
 
 function syncTopsisWinnerToModules() {
