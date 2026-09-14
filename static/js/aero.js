@@ -8667,13 +8667,13 @@ function mcdaLayoutAuditHtml(a) {
       ['Tasa / horizonte', `${mcdaAuditNumber(Number(econ.discount_rate) * 100, 2)}% / ${mcdaAuditNumber(econ.project_years, 0)} años`],
       ['VAN / VPN', `<b>${mcdaAuditMoney(a.van_usd)}</b>`],
       ['VAN por área efectiva', `${mcdaAuditMoney(a.van_usd_per_effective_km2)} /km²`],
-      ['VAN normalizado', `<b>${mcdaAuditMoney(a.van_usd_per_installed_mw)} /MW instalado</b>`],
-      ['Relación beneficio/costo', `<b>${mcdaAuditNumber(a.benefit_cost_ratio, 3)}</b>`],
+      ['VAN normalizado', `${mcdaAuditMoney(a.van_usd_per_installed_mw)} /MW instalado`],
+      ['Relación beneficio/costo', `${mcdaAuditNumber(a.benefit_cost_ratio, 3)}`],
       ['ROI (VAN/CAPEX)', mcdaAuditNumber(a.roi, 3)],
       ['TIR', a.irr == null ? '—' : `${mcdaAuditNumber(Number(a.irr) * 100, 2)}%`],
       ['PRI / periodo de recuperación', a.payback_years == null ? '> horizonte del proyecto' : `${mcdaAuditNumber(a.payback_years, 2)} años`],
-      ['Periodo de recuperación descontado', a.discounted_payback_years == null ? '> horizonte del proyecto' : `${mcdaAuditNumber(a.discounted_payback_years, 2)} años`],
-      ['LCOE', `${mcdaAuditNumber(a.lcoe_usd_kwh, 5)} USD/kWh`],
+      ['Periodo de recuperación descontado', a.discounted_payback_years == null ? '> horizonte del proyecto' : `<b>${mcdaAuditNumber(a.discounted_payback_years, 2)} años</b>`],
+      ['LCOE', `<b>${mcdaAuditNumber(a.lcoe_usd_kwh, 5)} USD/kWh</b>`],
       ['Origen modelo', mcdaAuditEscape(econ.cost_model_origin)],
     ]),
   ].join('');
@@ -8726,16 +8726,16 @@ function mcdaRenderRanking(r) {
     ['hours_near_cpmax', 'Horas ≥95% Cp máx.', 'h/año', 1, 1],
     ['factor_capacidad', 'FC neto', '%', 2, 100],
     ['aep_p90_mwh', 'AEP P90', 'MWh', 1, 1],
-    ['discounted_payback_years', 'Recuperación descontada', 'años', 2, 1],
-    ['van_usd_per_installed_mw', 'VAN / MW instalado', 'USD/MW', 0, 1],
-    ['benefit_cost_ratio', 'B/C', '—', 3, 1],
+    ['van_usd', 'VAN', 'USD', 0, 1],
     ['lcoe_usd_kwh', 'LCOE', 'USD/kWh', 5, 1],
+    ['capex_usd_per_installed_kw', 'CAPEX / kW instalado', 'USD/kW', 0, 1],
+    ['discounted_payback_years', 'Recuperación descontada', 'años', 2, 1],
   ];
   const head = document.querySelector('#mcda-rank-tbl thead');
   const applied = r?.weights || {};
   if (head) head.innerHTML = parkMode
     ? '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th>' + columns.map(([key, label, unit]) => {
-      const direction = ['discounted_payback_years', 'lcoe_usd_kwh'].includes(key) ? '↓' : '↑';
+      const direction = ['lcoe_usd_kwh', 'capex_usd_per_installed_kw', 'discounted_payback_years'].includes(key) ? '↓' : '↑';
       const weight = applied[key] == null ? 'Sin peso efectivo' : `${(100 * applied[key]).toFixed(1)}% efectivo`;
       return `<th style="min-width:115px">${label} ${direction}<br><small>${unit}</small><br><small>${weight}</small></th>`;
     }).join('') + '</tr>'

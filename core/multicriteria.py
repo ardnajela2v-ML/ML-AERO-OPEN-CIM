@@ -91,34 +91,88 @@ CRITERION_LABELS = {
 
 LAYOUT_WEIGHTS = {
     # Agreed reference: technical 60%, economic 40%.
-    # aep_p90_mwh (bruto) y van_usd_per_installed_mw en vez de sus versiones
-    # /área: el área efectiva es la misma constante para todas las
+    # aep_p90_mwh (bruto) y van_usd (bruto) en vez de sus versiones /área o
+    # /MW: el área efectiva es la misma constante para todas las
     # alternativas de un mismo ranking (ver effective_park_area), así que
-    # dividir entre ella no cambia la normalización vectorial de TOPSIS — no
-    # aporta poder de decisión. MW instalado sí varía por alternativa.
-    'cp_effective_full_series': 0.20,
-    'hours_near_cpmax': 0.20,
-    'factor_capacidad': 0.10,
-    'aep_p90_mwh': 0.10,
-    'discounted_payback_years': 0.20,
-    'van_usd_per_installed_mw': 0.10,
-    'benefit_cost_ratio': 0.075,
-    'lcoe_usd_kwh': 0.025,
+    # dividir entre ella no cambiaba la normalización vectorial de TOPSIS.
+    # Se probó (2026-09-13) que, a diferencia del área, el MW instalado SÍ
+    # varía por alternativa — pero normalizar por él tiene el efecto no
+    # deseado de aplanar VAN a una constante cuando solo cambia la escala
+    # (misma turbina, más unidades): con área de sitio fija, lo que importa
+    # es cuánto valor total se extrae de ESE terreno, igual que con AEP. Por
+    # eso VAN pasa a bruto, igual que AEP.
+    #
+    # 2026-09-13: se retiraron benefit_cost_ratio y discounted_payback_years
+    # de los pesos (bajan a LAYOUT_AUDIT_ONLY, se siguen mostrando). Verificado
+    # en código (rank_layout_alternatives, precio/tasa/OPEX% constantes entre
+    # alternativas de una corrida): LCOE, B/C, TIR y recuperación descontada
+    # están perfectamente rank-correlacionados (ρ=±1.0000) — son la misma
+    # información bajo transformaciones distintas (ver docs/ahp-topsis.md).
+    # LCOE queda como único representante (estándar de industria, con
+    # respaldo de importancia creciente frente a payback/TIR — Delapedra-Silva
+    # et al. 2022). El peso liberado se reparte con el criterio nuevo
+    # capex_usd_per_installed_kw (antes constante por precio único de
+    # turbina; ahora varía por geometría vía costo de cimentación — ver
+    # core/cost_model.py). CAPEX se queda normalizado por kW (a diferencia de
+    # VAN/AEP): es un criterio de costo, y dejarlo bruto premiaría trivialmente
+    # instalar menos capacidad, en contradicción directa con AEP/VAN.
+    #
+    # 2026-09-13 (segunda decisión, en la misma fecha): el investigador
+    # decidió reincorporar discounted_payback_years JUNTO a LCOE, aceptando
+    # a propósito la redundancia parcial documentada arriba — no por
+    # descuido. Queda anotado explícitamente: LCOE y recuperación descontada
+    # SIGUEN siendo ρ=±1.0000 en este modelo (misma información bajo dos
+    # transformaciones), así que sus pesos AHP individuales no se traducen en
+    # dos aportes independientes de información al ranking — ver CRITIC
+    # (Diakoulaki et al. 1995) y MAUT (Keeney & Raiffa 1976) ya citados en
+    # docs/ahp-topsis.md §1 y §6. Se documenta como decisión informada del
+    # investigador (p. ej. por expectativa del comité de tesis de ver PRI
+    # explícito), no como hallazgo científico de independencia.
+    #
+    # 2026-09-14: se reemplaza el placeholder anterior (60/40 fijo, 0.10/0.20
+    # parejo dentro de cada bloque) por un expediente AHP real de 28
+    # comparaciones para estos 8 criterios, calculado con `core.ahp.
+    # calculate_ahp` (no reconstruido desde los pesos previos — cada
+    # comparación se decidió por separado, ver docs/ahp-topsis.md §6 "Tercera
+    # actividad"). CR=0.0065 (‹0.10, matriz consistente), RI=1.41 para n=8
+    # (Saaty 1987). Autoría: investigador de esta tesis, con asistencia de
+    # Claude Sonnet 5 para sistematizar los 28 juicios a partir de la
+    # revisión bibliográfica ya citada en §1/§5/§6 — es una construcción de
+    # UN solo juicio informado (el método adoptado excluye Delphi, ver
+    # encabezado del documento), no un panel de expertos ni un resultado
+    # estadístico. Cada criterio recibió antes un "nivel de prioridad"
+    # razonado (ver tabla en docs/ahp-topsis.md) y las 28 comparaciones por
+    # pares se derivaron de esos niveles, redondeando cada razón al valor más
+    # cercano de la escala verbal 1-9 de Saaty (no valores intermedios como
+    # 1.5): esto es visible y auditable en la matriz publicada en el
+    # documento, no un ajuste oculto para llegar a un número concreto.
+    # Sigue pendiente de validación por el investigador antes de citarse en
+    # la tesis como AHP definitivo — puede y debe recalcularse desde la
+    # calculadora de la plataforma con autor/objetivo/justificación propios
+    # si el investigador no está de acuerdo con algún juicio individual.
+    'cp_effective_full_series': 0.1041868085680245,
+    'hours_near_cpmax': 0.10960883502133105,
+    'factor_capacidad': 0.2137956435893556,
+    'aep_p90_mwh': 0.19329532545925715,
+    'van_usd': 0.10960883502133101,
+    'lcoe_usd_kwh': 0.12159368182163764,
+    'capex_usd_per_installed_kw': 0.10418680856802454,
+    'discounted_payback_years': 0.04372406195103838,
 }
 
 # These values remain available in the alternative audit, but are no longer
 # eligible for park ranking, including when loading weights from older projects.
 LAYOUT_AUDIT_ONLY = (
     'aep_p90_mwh_per_effective_km2', 'van_usd_per_effective_km2',
-    'aep_p90_mwh_per_installed_mw',
+    'aep_p90_mwh_per_installed_mw', 'van_usd_per_installed_mw',
     'cp_at_site_mean', 'hours_at_or_above_90pct_rated', 'capex_usd',
     'wake_loss_pct', 'energy_density_mwh_km2',
     'collection_length_m', 'cpmax_speed_mismatch_ms',
     'resource_operational_availability_pct',
-    'capex_usd_per_installed_kw', 'opex_usd_per_installed_kw_year',
+    'opex_usd_per_installed_kw_year',
     'opex_lifetime_usd', 'iec_suitability_score', 'aep_uncertainty_pct',
-    'curtailment_loss_pct', 'civil_complexity_index', 'van_usd',
-    'roi', 'irr', 'payback_years',
+    'curtailment_loss_pct', 'civil_complexity_index',
+    'roi', 'irr', 'payback_years', 'benefit_cost_ratio',
 )
 
 LAYOUT_DIRECTION = {

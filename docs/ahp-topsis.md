@@ -2,13 +2,19 @@
 
 Se excluye Delphi por decisión del investigador. No se afirma consenso de un
 panel. El método adoptado es: evidencia científica → juicios AHP individuales
-→ TOPSIS → robustez. No se han introducido juicios reales en esta implementación.
+→ TOPSIS → robustez. Desde 2026-09-14, `LAYOUT_WEIGHTS` contiene un primer
+juicio AHP real (28 comparaciones, un solo investigador, ver §6 "Tercera
+actividad") en vez del placeholder 60/40 anterior; sigue siendo la
+construcción de un único evaluador, no un panel, y sigue pendiente de
+validación por el investigador antes de citarse en la tesis como definitivo.
 
 ## Objetivo y alcance
 
-La primera versión opera sobre los ocho criterios actuales del ranking de
-parques. El autor debe declarar el objetivo de la decisión y fundamentar sus
-comparaciones. Es posible identificar como autor al investigador; registrar
+La versión actual opera sobre **ocho** criterios del ranking de parques —
+el mismo número que antes del 2026-09-13, pero no el mismo conjunto: ese día
+se retiró `benefit_cost_ratio` y se cambió el rol de otros tres criterios
+(ver §5 y §6 para el detalle completo). El autor debe declarar
+el objetivo de la decisión y fundamentar sus comparaciones. Es posible identificar como autor al investigador; registrar
 un nombre no acredita experiencia ni valida científicamente los criterios.
 La revisión bibliográfica que sigue permanece abierta. AHP no resuelve por
 sí solo las preguntas de pertinencia y redundancia.
@@ -33,9 +39,13 @@ distintos entre sí para tipos de criterio comparables, eso es evidencia de que
 **no existe un peso "verdadero"** — es un argumento a favor de ejecutar
 robustez (SMAA), no en contra de haber usado AHP.
 
-Matriz inicial del ranking de parques: los ocho criterios se obtuvieron de
-`LAYOUT_WEIGHTS` en `core/multicriteria.py`. Los porcentajes de referencia
-sirven para auditar el estado del programa; no constituyen un resultado AHP.
+Matriz inicial del ranking de parques: los criterios se obtuvieron de
+`LAYOUT_WEIGHTS` en `core/multicriteria.py`. El conjunto cambió el
+2026-09-13 (ver §6); la tabla que sigue documenta los ocho originales de
+antes de ese cambio, por trazabilidad histórica — no son los mismos ocho
+criterios que hay hoy, aunque coincida el número.
+Los porcentajes de referencia sirven para auditar el estado del programa; no
+constituyen un resultado AHP.
 Esta revisión (2026-09) usó búsquedas en Google Scholar/motores generales vía
 herramientas de este entorno; no es una revisión sistemática con protocolo
 PRISMA. La columna "Verificación" indica si se leyó el texto completo del
@@ -111,16 +121,20 @@ contar referencias.
 
 ## 2. Obtención individual de pesos AHP
 
-Se usa una jerarquía plana de ocho criterios: 28 comparaciones independientes.
-Cada respuesta expresa importancia respecto al objetivo, no preferencia por
-una turbina. No se fija a priori una división 60/40 entre áreas. La escala de
-entrada es 1–9 y sus recíprocos; las comparaciones comienzan sin responder.
-El valor 1 debe elegirse explícitamente para expresar igualdad.
+Se usa una jerarquía plana de criterios: n(n−1)/2 comparaciones
+independientes (28 para los ocho criterios actuales — ver §6 para el
+historial de cambios de este set, que pasó de 8 a 7 y de vuelta a 8 el
+2026-09-13 por razones distintas cada vez). Cada respuesta expresa
+importancia respecto al objetivo, no preferencia por una turbina. No se fija
+a priori una división 60/40 entre áreas. La escala de entrada es 1–9 y sus
+recíprocos; las comparaciones comienzan sin responder. El valor 1 debe
+elegirse explícitamente para expresar igualdad.
 
 La matriz debe ser positiva, finita, completa, recíproca y tener diagonal 1.
 Los pesos son el vector propio principal normalizado. Se informa λmax,
-CI = (λmax − n)/(n − 1), RI y CR = CI/RI. La tabla adoptada usa RI=1.41 para
-n=8. Fuente: [R. W. Saaty, 1987](https://doi.org/10.1016/0270-0255(87)90473-8).
+CI = (λmax − n)/(n − 1), RI y CR = CI/RI. `core/ahp.py` calcula RI según el
+número de criterios de la matriz (RI=1.41 para n=8).
+Fuente: [R. W. Saaty, 1987](https://doi.org/10.1016/0270-0255(87)90473-8).
 Se adopta CR ≤0.10 como regla de aplicación de este estudio; no equivale a una
 prueba estadística, a consenso ni a validación científica.
 
@@ -253,9 +267,213 @@ criterio queda disponible en `LAYOUT_AUDIT_ONLY` para promoverse a
 LCOE/B-C/TIR/recuperación descontada de la sección anterior, ya que ambas
 decisiones compiten por el mismo espacio de peso económico.
 
-## 6. Verificación del software
+## 6. Restructuración de criterios económicos (2026-09-13)
+
+Resolviendo lo pendiente de las secciones 1 y 5, el set de `LAYOUT_WEIGHTS`
+pasó primero de 8 a 7 criterios, y luego (segunda decisión, mismo día — ver
+al final de esta sección) de vuelta a 8, por una razón distinta a la
+original.
+
+**Se retiran de los pesos** (bajan a `LAYOUT_AUDIT_ONLY`, se siguen
+calculando y mostrando en el detalle de cada alternativa):
+- `benefit_cost_ratio` — confirmado en código
+  (`rank_layout_alternatives`, precio/tasa/OPEX% constantes entre
+  alternativas de una corrida) que junto con LCOE y TIR están perfectamente
+  rank-correlacionados (ρ=±1.0000): son la misma información bajo
+  transformaciones no lineales distintas. LCOE queda como único
+  representante — estándar de industria con respaldo de importancia
+  creciente frente a payback/TIR (Delapedra-Silva et al. 2022, ya citado).
+  El mismo ρ=±1.0000 se confirmó también para ROI (VAN/CAPEX): es la misma
+  familia, no un criterio nuevo independiente.
+
+**Cambia la forma de un criterio ya ponderado**:
+- `van_usd_per_installed_mw` → `van_usd` (bruto). Verificado en código: con
+  factor de capacidad fijo y variando solo la escala (n turbinas de un mismo
+  modelo), VAN/MW instalado se queda prácticamente constante (29 191.76 USD/MW
+  en todo el rango, en una prueba con `_economics()`), mientras que VAN bruto
+  escala con la capacidad instalada. Dado que el área del sitio es fija entre
+  alternativas (mismo argumento ya aceptado para AEP P90 bruto), el bruto es
+  la métrica correcta: mide cuánto valor total se extrae de ese terreno fijo,
+  no una eficiencia por unidad abstracta de capacidad.
+- **Asimetría deliberada con CAPEX**: a diferencia de VAN/AEP (criterios de
+  beneficio, "más es mejor"), `capex_usd_per_installed_kw` se queda
+  normalizado por kW, NO se vuelve bruto. Con CAPEX bruto ("menos es mejor")
+  y área de sitio fija, TOPSIS premiaría trivialmente instalar menos
+  capacidad — la operación opuesta y sin sentido a lo que premian VAN/AEP.
+  Solo un criterio de costo normalizado por unidad de capacidad evita esa
+  distorsión.
+
+**Se agrega**:
+- `capex_usd_per_installed_kw` — ver §5: antes era una constante matemática
+  (mismo problema que el área efectiva), corregido con el costo de
+  cimentación dependiente de geometría. Verificado que no es redundante con
+  OPEX/kW (proporcional exacto por `opex_pct_capex` fijo), con CAPEX bruto
+  (correlacionado con escala, no con eficiencia de costo) ni con ROI (misma
+  familia que LCOE).
+
+**Otros candidatos evaluados y descartados para esta ronda**:
+- `wake_loss_pct`: descartado — no es objetivo respecto al diseñador. Es el
+  resultado de una búsqueda de layout acotada por `max_wake_loss_pct`, un
+  parámetro que fija el analista igual para todas las alternativas de una
+  corrida, no una propiedad intrínseca de la turbina (`core/farm_mcda.py`,
+  `optimize_layout_structured`).
+- `aep_uncertainty_pct`, `curtailment_loss_pct`, `iec_suitability_score`:
+  verificado en código que son constantes entre alternativas de una misma
+  corrida (parámetros de proyecto o, en el caso de IEC, un valor
+  hardcodeado `0.5` sin implementar — ver `bankable_missing` en
+  `core/farm_mcda.py`, que ya señala la aptitud de clase IEC como dato
+  faltante del fabricante: `ct_curve`, `iec_class`, `extreme_wind`,
+  `ambient_turbulence`). Aptitud de clase IEC 61400-1 (turbulencia y ráfaga
+  extrema de 50 años del sitio vs. clase declarada de la turbina) es un
+  criterio real y estandarizado (IEC 61400-1) que queda como extensión
+  futura una vez se disponga de esos datos del fabricante — no encontrado
+  combinado explícitamente con AHP/TOPSIS en la búsqueda hecha para este
+  expediente.
+- Endpoint `/api/energy/leveraged` (VAN apalancado con deuda): existe pero
+  está desconectado del loop de alternativas de `farm_mcda.py`; integrarlo
+  exigiría decidir de dónde sale `debt_ratio_pct` por alternativa — una
+  decisión de modelado nueva, no un ajuste de esta ronda.
+
+**Estructura intermedia (7 criterios)** que resultó de lo anterior: los
+cuatro técnicos sin cambio (0.60), más VAN bruto (0.10), LCOE (0.20) y
+CAPEX/kW (0.10) como único bloque económico (0.40).
+
+### Segunda decisión, mismo día: se reincorpora recuperación descontada
+
+El investigador decidió **reincorporar `discounted_payback_years` junto a
+LCOE, a propósito**, no por descuido — por ejemplo, por la expectativa de
+que un comité de tesis vea el PRI reportado explícitamente, una
+consideración de exposición/comunicación del trabajo, no un hallazgo nuevo
+de independencia estadística. **Queda anotado sin ambigüedad**: LCOE y
+recuperación descontada **siguen siendo ρ=±1.0000** en este modelo (misma
+información bajo dos transformaciones distintas del mismo cociente
+PV(costos)/PV(energía) dado precio y tasa constantes). Ponderar ambos no le
+da a TOPSIS dos juicios económicos independientes — es el mismo juicio
+contado dos veces, con una amplificación cuya magnitud exacta depende de la
+forma de cada transformación (ver CRITIC, Diakoulaki et al. 1995, y MAUT,
+Keeney & Raiffa 1976, ambos citados en §1). Esta es una decisión informada
+y documentada del investigador, aceptando esa redundancia parcial de forma
+consciente — no una corrección del análisis anterior.
+
+**Estructura final** (60% técnico / 40% económico, pesos provisionales — ver
+siguiente párrafo):
+
+| Criterio | Bloque | Peso |
+|---|---|---:|
+| Cp efectivo de la serie completa | Técnico | 0.20 |
+| Horas cerca de Cp máximo | Técnico | 0.20 |
+| Factor de capacidad neto | Técnico | 0.10 |
+| AEP P90 (bruto) | Técnico | 0.10 |
+| VAN (bruto) | Económico | 0.10 |
+| LCOE | Económico | 0.10 |
+| CAPEX por kW instalado | Económico | 0.10 |
+| Recuperación descontada | Económico | 0.10 |
+
+Los pesos de LCOE, CAPEX/kW y recuperación descontada (0.10 cada uno) fueron,
+hasta 2026-09-14, un placeholder razonado, no un resultado de comparaciones
+AHP reales. Esa fecha se reemplazaron por el expediente descrito a
+continuación.
+
+### Tercera actividad, 2026-09-14: expediente AHP real de los 8 criterios
+
+A petición explícita del investigador ("tu tarea, no la mía"), se construyó
+un primer expediente AHP real —28 comparaciones, matriz completa,
+verificación de consistencia con `core/ahp.calculate_ahp`— para reemplazar
+el placeholder anterior. **Naturaleza de este juicio**: es la construcción
+de un único evaluador (el método adoptado en este documento excluye Delphi;
+ver encabezado), realizada por el investigador con asistencia de Claude
+Sonnet 5 para sistematizar 28 juicios de forma consistente a partir de la
+evidencia ya reunida en §1, §5 y §6 — no es un panel de expertos, no es un
+resultado estadístico, y no sustituye la validación del investigador antes
+de citarse en la tesis como AHP definitivo. Si el investigador no está de
+acuerdo con algún juicio individual, debe recalcularse desde la calculadora
+de la plataforma con su propio autor/objetivo/justificación.
+
+**Método de construcción** (auditable, no ajustado a un resultado buscado):
+cada criterio recibió un nivel de prioridad relativo (tabla siguiente),
+fundamentado en la evidencia ya citada. Cada una de las 28 comparaciones por
+pares se obtuvo del cociente entre los dos niveles involucrados, redondeado
+al valor más cercano de la escala verbal estándar de Saaty (1, 2, 3, ..., 9
+y sus recíprocos — nunca valores intermedios como 1.5, que no forman parte
+de esa escala). Cuando el cociente cae a medio camino entre dos valores de
+la escala, el redondeo son juicios de "importancia igual", nunca hacia el
+valor que favorecería a un criterio en particular. Esto es intencional: el
+propósito no es maximizar la diferenciación entre criterios, sino declarar
+solo la diferencia que la evidencia sostiene y dejar el resto en empate
+explícito.
+
+| Criterio | Bloque | Nivel de prioridad | Razonamiento (evidencia ya citada en este documento) |
+|---|---|---:|---|
+| Factor de capacidad neto | Técnico | 10 (el más alto) | Único estudio revisado en texto completo que usa un criterio de este set como decisorio único (Paraschiv & Paraschiv 2024, §1) — la pertinencia individual más fuerte del set, aunque ese estudio no compara su peso relativo frente a los otros 7 (limitación ya anotada en §1). |
+| AEP P90 (bruto) | Técnico | 9 | Estándar de industria para evaluación bancable (P90/SAM-NREL, §1); tras el cambio de 2026-09-13 mide energía absoluta extraída del sitio, igual base de comparación que factor de capacidad — nivel casi igual por diseño, ver M[factor_cap, aep]=1 (empate) más abajo. |
+| LCOE | Económico | 6 | Único representante retenido de la familia LCOE/B-C/TIR/recuperación (§6); la revisión citada documenta explícitamente su "importancia creciente" relativa a NPV/IRR en la última década (Delapedra-Silva et al. 2022, §1) — el criterio económico "puro" mejor respaldado del set. |
+| Horas cerca de Cp máximo | Técnico | 6 | Literatura cuantifica impacto directo en AEP (hasta 43%, Sedaghat et al. 2017; Lanzafame & Messina 2010, §1), pero el umbral concreto (≥95%) es convención del programa, no de la literatura — mismo nivel que LCOE, no más alto, por esa reserva. |
+| VAN (bruto) | Económico | 5.5 | "Métrica financiera más usada individualmente" (Delapedra-Silva et al. 2022, §1); nivel comparable a horas-Cp-máximo y ligeramente por debajo de LCOE porque la misma fuente no ofrece un criterio para preferir VAN sobre LCOE — se usan como complementos, no hay jerarquía documentada entre ambos. |
+| Cp efectivo de la serie completa | Técnico | 5 | Definición estándar de eficiencia aerodinámica (Manwell et al., §1), pero §1 deja abierta su posible correlación con AEP/factor de capacidad — mismo nivel que CAPEX/kW, ambos con una reserva de redundancia/incertidumbre documentada sin resolver. |
+| CAPEX por kW instalado | Económico | 4 | Mecanismo físico y geometría de la turbina de referencia verificados en texto completo (Key, Roberts & Eberle 2022, §5); la magnitud en USD/kW es una estimación de orden de magnitud, no una cifra de tabla publicada (§5) — confianza intermedia, ligeramente por debajo de los criterios financieros ya consolidados. |
+| Recuperación descontada | Económico | 2 (el más bajo, con margen claro) | Documentado en este mismo archivo como ρ=±1.0000 con LCOE (misma información, §6) y la fuente que lo respalda lo critica explícitamente: *"PBP disregards existing cash flows after the investment is recovered, and is a very limited tool for decision making"* (Delapedra-Silva et al. 2022, §1). Se mantiene en el set por decisión consciente del investigador (§6, "Segunda decisión"), no por mérito informativo propio — de ahí el nivel más bajo del set, con una separación clara del resto en vez de un empate. |
+
+**Matriz completa** (fila vs. columna; valor = cuántas veces más importante
+es la fila que la columna; orden de filas/columnas igual al de la tabla
+`LAYOUT_WEIGHTS`: Cp efectivo, horas Cp máx., factor de capacidad, AEP P90,
+VAN, LCOE, CAPEX/kW, recuperación descontada):
+
+```
+[[1,   1,   1/2, 1/2, 1,   1,   1,   2  ],
+ [1,   1,   1/2, 1/2, 1,   1,   1,   3  ],
+ [2,   2,   1,   1,   2,   2,   2,   5  ],
+ [2,   2,   1,   1,   2,   1,   2,   4  ],
+ [1,   1,   1/2, 1/2, 1,   1,   1,   3  ],
+ [1,   1,   1/2, 1,   1,   1,   1,   3  ],
+ [1,   1,   1/2, 1/2, 1,   1,   1,   2  ],
+ [1/2, 1/3, 1/5, 1/4, 1/3, 1/3, 1/2, 1  ]]
+```
+
+**Resultado de `calculate_ahp`**: λmax=8.06416, CI=0.00917, RI=1.41 (n=8),
+**CR=0.0065** (muy por debajo del umbral 0.10 adoptado — matriz consistente,
+sin tríadas problemáticas que revisar). Pesos resultantes (vector propio
+principal normalizado, no manualmente redondeados para que sumen 1 con
+precisión de punto flotante, ver `core/multicriteria.py`):
+
+| Criterio | Bloque | Peso AHP |
+|---|---|---:|
+| Factor de capacidad neto | Técnico | 0.2138 |
+| AEP P90 (bruto) | Técnico | 0.1933 |
+| LCOE | Económico | 0.1216 |
+| Horas cerca de Cp máximo | Técnico | 0.1096 |
+| VAN (bruto) | Económico | 0.1096 |
+| Cp efectivo de la serie completa | Técnico | 0.1042 |
+| CAPEX por kW instalado | Económico | 0.1042 |
+| Recuperación descontada | Económico | 0.0437 |
+
+Bloque técnico: 62.1%; bloque económico: 37.9% — cercano al 60/40 de
+referencia previo, pero ahora **derivado** de 28 juicios individuales, no
+asumido a priori (§2: "no se fija a priori una división 60/40"). Esa
+cercanía es una coincidencia razonable dado que los niveles de prioridad se
+basaron en la misma revisión bibliográfica que ya sugería ese orden de
+magnitud — no es evidencia adicional de que 60/40 sea "correcto", ni excusa
+para dejar de someter este expediente a revisión por el investigador.
+
+Nota importante que se mantiene sin cambio: la redundancia ρ=±1.0000 entre
+LCOE y recuperación descontada (§6, CRITIC/Diakoulaki 1995, MAUT/Keeney &
+Raiffa 1976) **no se resuelve** por tener ahora un AHP real — un peso AHP
+bajo (0.0437) para recuperación descontada reduce la distorsión frente al
+placeholder anterior (0.10), pero sigue sumando una fracción de información
+ya contada en LCOE. Queda como limitación documentada, no corregida, tal
+como se advirtió en §6.
+
+## 7. Verificación del software
 
 `tests/test_ahp.py` verifica prioridades conocidas, reciprocidad, datos faltantes,
 inconsistencia, trazabilidad y uso de pesos recalculados en ranking y robustez.
 `tests/ahp.test.cjs` cubre precisión, cambio a escenario manual y persistencia.
 Los datos de prueba son sintéticos y no representan juicios del estudio.
+`tests/test_turbine_clustering.py` (2026-09-14) cubre el endpoint
+`/api/mcda/turbine_clustering` (agrupamiento jerárquico de turbinas del
+catálogo por correlación de sus series de potencia — preselección de
+candidatos antes de TOPSIS): agrupamiento por defecto sobre todo el catálogo,
+filtrado por `turbine_filenames` con orden preservado del catálogo, los
+cuatro métodos de enlace soportados, método no soportado, menos de dos
+turbinas tras filtrar, nombres de archivo desconocidos ignorados sin error,
+sesión sin datos, `session_id` faltante y series de potencia constantes
+(viento en calma, sin variación que correlacionar).

@@ -283,9 +283,11 @@ class LayoutTopsisTests(unittest.TestCase):
     @staticmethod
     def alternative(label, scale):
         directions = {
-            'lcoe_usd_kwh', 'capex_usd', 'opex_lifetime_usd', 'wake_loss_pct',
-            'aep_uncertainty_pct', 'curtailment_loss_pct', 'collection_length_m',
-            'civil_complexity_index', 'payback_years',
+            'lcoe_usd_kwh', 'capex_usd', 'capex_usd_per_installed_kw',
+            'opex_lifetime_usd', 'opex_usd_per_installed_kw_year',
+            'wake_loss_pct', 'aep_uncertainty_pct', 'curtailment_loss_pct',
+            'collection_length_m', 'civil_complexity_index', 'payback_years',
+            'discounted_payback_years',
         }
         row = {'label': label, 'feasible': True}
         for key in LAYOUT_WEIGHTS:
@@ -332,9 +334,7 @@ class LayoutTopsisTests(unittest.TestCase):
 
     def test_new_hourly_metrics_do_not_change_base_ranking_while_weight_is_zero(self):
         weights = dict(LAYOUT_WEIGHTS)
-        for key in ('cp_effective_full_series', 'hours_near_cpmax',
-                    'benefit_cost_ratio', 'van_usd_per_installed_mw',
-                    'discounted_payback_years'):
+        for key in ('cp_effective_full_series', 'hours_near_cpmax'):
             weights[key] = 0.0
         first = self.alternative('first', 1.0)
         second = self.alternative('second', 1.2)
@@ -359,11 +359,7 @@ class LayoutTopsisTests(unittest.TestCase):
             [row['topsis_score'] for row in changed['ranking']],
         )
         self.assertIn('cp_effective_full_series', changed['zero_weight_criteria'])
-        self.assertIn('benefit_cost_ratio', changed['zero_weight_criteria'])
-        self.assertIn('van_usd_per_installed_mw',
-                      changed['zero_weight_criteria'])
-        self.assertIn('discounted_payback_years',
-                      changed['zero_weight_criteria'])
+        self.assertIn('hours_near_cpmax', changed['zero_weight_criteria'])
 
     def test_one_nmax_alternative_and_ranking_row_per_valid_model(self):
         sites = [{

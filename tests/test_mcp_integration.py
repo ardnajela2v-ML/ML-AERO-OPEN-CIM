@@ -95,12 +95,12 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertIn('hours_near_cpmax', defaults.get_json()['layout_weights'])
         self.assertIn('cp_effective_full_series', defaults.get_json()['layout_weights'])
         self.assertEqual(len(defaults.get_json()['layout_weights']), 8)
-        self.assertEqual(defaults.get_json()['layout_weights'], {
-            'cp_effective_full_series': .20, 'hours_near_cpmax': .20,
-            'factor_capacidad': .10, 'aep_p90_mwh': .10,
-            'discounted_payback_years': .20, 'van_usd_per_installed_mw': .10,
-            'benefit_cost_ratio': .075, 'lcoe_usd_kwh': .025,
-        })
+        from core.multicriteria import LAYOUT_WEIGHTS
+        self.assertEqual(defaults.get_json()['layout_weights'], LAYOUT_WEIGHTS)
+        self.assertAlmostEqual(defaults.get_json()['layout_weights']['factor_capacidad'],
+                                0.2138, places=4)
+        self.assertAlmostEqual(defaults.get_json()['layout_weights']['discounted_payback_years'],
+                                0.0437, places=4)
         self.assertAlmostEqual(sum(defaults.get_json()['layout_weights'].values()), 1.0)
         from core.multicriteria import LAYOUT_AUDIT_ONLY
         for key in LAYOUT_AUDIT_ONLY:
