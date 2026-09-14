@@ -9,7 +9,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -304,6 +304,59 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(observation["timezone"], "Etc/GMT+6")
         reference_files = {name for row in catalog["references"] for name in row["file_ids"]}
         self.assertFalse(reference_files.intersection(observation["legacy_aliases"]))
+
+    def test_classify_file_retries_a_short_first_read_from_slow_storage(self):
+        """A read() returning fewer bytes than the file actually has, without
+        raising, is legitimate POSIX behaviour — observed in practice against
+        files on slow-to-mount storage. It must not be mistaken for empty/
+        unreadable content and silently misclassify a CERTE export via the
+        filename fallback (see core/mcp_catalog.py's module docstring and
+        _read_signature)."""
+        import core.mcp_catalog as mcp_catalog
+
+        path = Path(self.temporary.name) / "M04CERTE_2018_Windnavigator_MERRA2_slow.txt"
+        content = (
+            "Reanalysis-style data converted from CERTE measured data\n"
+            "Source: CERTE measured mast data\n"
+            "WS_80mA_mean\tWD_78m_mean\n" + "x" * 400
+        ).encode("utf-8")
+        path.write_bytes(content)
+
+        handle = MagicMock()
+        handle.read.side_effect = [b"", content]
+        opened = MagicMock()
+        opened.__enter__.return_value = handle
+        opened.__exit__.return_value = False
+
+        with patch.object(mcp_catalog.Path, "open", return_value=opened) as mock_open, \
+                patch.object(mcp_catalog.time, "sleep"):
+            result = mcp_catalog.classify_file(path)
+
+        self.assertEqual(mock_open.call_count, 2, "must retry instead of trusting a short read")
+        self.assertEqual(result, {"data_kind": "observed", "provider": "CERTE", "confidence": "content"})
+
+    def test_classify_file_gives_up_after_repeated_short_reads(self):
+        """If retries are exhausted, fall through to the (documented-unreliable)
+        filename heuristic rather than hang or raise — a permanently unreadable
+        cold file must not crash catalog building."""
+        import core.mcp_catalog as mcp_catalog
+
+        path = Path(self.temporary.name) / "M04CERTE_2018_Windnavigator_MERRA2_stuck.txt"
+        path.write_bytes(b"Source: CERTE measured mast data\n" + b"x" * 400)
+
+        handle = MagicMock()
+        handle.read.return_value = b""
+        opened = MagicMock()
+        opened.__enter__.return_value = handle
+        opened.__exit__.return_value = False
+
+        with patch.object(mcp_catalog.Path, "open", return_value=opened) as mock_open, \
+                patch.object(mcp_catalog.time, "sleep"):
+            result = mcp_catalog.classify_file(path)
+
+        self.assertEqual(mock_open.call_count, 3, "should stop after the documented attempt budget")
+        self.assertEqual(result["data_kind"], "reanalysis")
+        self.assertEqual(result["confidence"], "filename")
 
     def test_content_signature_wins_over_certe_filename(self):
         path = Path(self.temporary.name) / "CERTE_but_reanalysis.txt"

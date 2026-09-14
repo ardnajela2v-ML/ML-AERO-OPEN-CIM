@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,12 +31,34 @@ M04_LEGACY_ALIASES = (
 )
 
 
-def _read_signature(path: Path, limit: int = 96 * 1024) -> str:
+def _read_signature(path: Path, limit: int = 96 * 1024, attempts: int = 3) -> str:
+    """Read up to ``limit`` bytes for content-based classification.
+
+    A short read here (fewer bytes than the file actually has, with no
+    exception raised) is legitimate POSIX behaviour, not just a theoretical
+    edge case: it was observed in practice against files on slow-to-mount
+    storage, where the first read of a "cold" file can return 0 bytes even
+    though ``stat()`` already reports the real size. A silent short read
+    makes content-signature checks fail and misclassifies the file via the
+    filename fallback instead — exactly what content signatures exist to
+    avoid for the legacy CERTE/Windnavigator exports (see module docstring).
+    Retrying a couple of times with a short backoff is enough to observe the
+    file materialize; it costs nothing on the normal (already-local) path.
+    """
     try:
-        with path.open("rb") as handle:
-            return handle.read(limit).decode("utf-8", errors="ignore")
+        expected = path.stat().st_size
     except OSError:
         return ""
+    for attempt in range(attempts):
+        try:
+            with path.open("rb") as handle:
+                data = handle.read(limit)
+        except OSError:
+            return ""
+        if data or expected == 0 or attempt == attempts - 1:
+            return data.decode("utf-8", errors="ignore")
+        time.sleep(0.1 * (attempt + 1))
+    return ""
 
 
 def classify_file(path: str | Path) -> dict[str, str]:
