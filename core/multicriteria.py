@@ -156,13 +156,14 @@ LAYOUT_WEIGHTS = {
     # benefit_cost_ratio y sobre DSCR (ambos evaluados y descartados, DSCR
     # con ρ=-1.0000 verificado en código frente a LCOE); sin literatura que
     # respalde el 95% de near_cp_fraction en hours_near_cpmax (búsqueda con
-    # resultado negativo, documentada). Hallazgo SIN resolver: la redundancia
-    # se probó en código para el bloque económico pero no para el técnico
-    # (cp_effective_full_series/hours_near_cpmax vs. aep_p90_mwh/
-    # factor_capacidad, ver §1) — los niveles de prioridad de ambos bloques
-    # no se construyeron con la misma regla. Ver el documento para el método
-    # propuesto (todavía no ejecutado) antes de dar este expediente por
-    # cerrado.
+    # resultado negativo, documentada). Hallazgo verificado el mismo día con
+    # `scripts/verify_technical_criteria_correlation.py` (datos reales de
+    # Oaxaca/Chimalapas, ERA5, 13 turbinas del catálogo): la sospecha de
+    # redundancia técnica de §1 (cp_effective_full_series/hours_near_cpmax
+    # vs. aep_p90_mwh/factor_capacidad) NO se confirma — ρ moderados
+    # (0.22-0.63), lejos de los ±1.0000 probados en el bloque económico. No
+    # cambia esta matriz (no había penalización que retirar); sigue
+    # pendiente repetir la verificación en otros sitios del estudio.
     'cp_effective_full_series': 0.1041868085680245,
     'hours_near_cpmax': 0.10960883502133105,
     'factor_capacidad': 0.2137956435893556,

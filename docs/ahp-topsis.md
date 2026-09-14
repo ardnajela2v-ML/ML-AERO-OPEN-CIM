@@ -572,9 +572,68 @@ turbina/cantidad de turbinas, vía `rank_layout_alternatives` o el motor de
 un ρ alto, el bloque técnico tiene el mismo problema que el económico y se
 resuelve igual (un representante, los demás bajan de prioridad AHP); si sale
 bajo, queda justificado con evidencia —no con "no está resuelto"— que estos
-cuatro criterios técnicos conviven sin penalización de redundancia. **No
-ejecutado todavía**; queda como el siguiente paso lógico de este expediente
-antes de considerarlo cerrado.
+cuatro criterios técnicos conviven sin penalización de redundancia.
+
+**Resolución, mismo día**: ejecutado con `scripts/verify_technical_criteria_correlation.py`,
+usando datos reales del propio estudio (no sintéticos) — serie ERA5
+1979-2023 de Oaxaca, sitio Chimalapas
+(`OaxacaIII_ERA5_N16,750_W94,750chimalapas.txt`, 100 m), extrapolada a la
+altura de buje de cada turbina con Hellmann α=0.11 (zona istmo,
+Hernández-Escobedo et al. 2014, ya citado en `core/energy.py`), y las 13
+turbinas reales del catálogo (`aerogeneradores/`). `cp_effective_full_series`
+y `hours_near_cpmax` calculados con `core.energy.compute_site_cp_fit` (la
+misma función de producción, `near_cp_fraction=0.95`); `factor_capacidad`
+con la misma fórmula que `core/farm_mcda.py` (AEP/(MW instalado×8760));
+`aep_p90_mwh` (bruto) aproximado escalando por un conteo físico de turbinas
+por área fija (proxy de `physical_max_n`: área/(3D)², sin pérdidas de
+estela — simplificación, ver limitaciones abajo).
+
+Correlaciones de Spearman obtenidas (n=13 turbinas):
+
+| Par | ρ |
+|---|---:|
+| cp_effective_full_series vs. aep_p90_mwh (bruto) | 0.626 |
+| cp_effective_full_series vs. hours_near_cpmax | 0.560 |
+| cp_effective_full_series vs. factor_capacidad | 0.462 |
+| hours_near_cpmax vs. factor_capacidad | 0.352 |
+| hours_near_cpmax vs. aep_p90_mwh (bruto) | 0.275 |
+| factor_capacidad vs. aep_p90_mwh (bruto) | 0.220 |
+
+**Conclusión: ninguna correlación se acerca a ±1.0000.** Todas son
+moderadas (0.22-0.63) — consistente con que los cuatro criterios comparten
+la misma curva Cp(v) y el mismo recurso eólico como insumo físico común (por
+eso ninguna es cercana a cero), pero **no son transformaciones matemáticas
+exactas unas de otras**, a diferencia de LCOE/B-C/TIR/recuperación
+descontada (ρ=±1.0000 probado, §6). La sospecha de §1 queda **respondida,
+no confirmada**: el bloque técnico no tiene el mismo problema de redundancia
+que el económico. No se justifica aplicarle a `cp_effective_full_series` ni
+a `hours_near_cpmax` una penalización de "redundancia probada" equivalente a
+la de recuperación descontada (nivel 2); sus niveles de prioridad actuales
+(5 y 6) siguen justificados por sus razones originales —confianza de
+verificación, umbral sin anclaje bibliográfico (ver más arriba en esta
+misma sección)— no por una redundancia que ahora queda descartada como
+severa. **No se modifica la matriz ni los pesos de `LAYOUT_WEIGHTS`** a
+partir de este hallazgo: no había una penalización de redundancia que
+retirar, solo una sospecha sin verificar que ahora tiene evidencia en
+contra de ser grave.
+
+**Limitaciones de esta verificación, explícitas, y camino para extenderla**:
+(1) un solo sitio (Chimalapas, Istmo de Oaxaca) — no se ha repetido para
+otras zonas del estudio con climas de viento distintos (Tamaulipas,
+Yucatán, Baja California, Coahuila); el script acepta `--file` y `--zone`
+precisamente para poder rehacer esta corrida contra esos sitios sin
+reescribir el método. (2) El AEP bruto usa un conteo de turbinas por área
+aproximado (`área/(3D)²`), no el optimizador de layout real
+(`core/farm.py:_build_structured_grid`), y no modela pérdidas de estela,
+que sí varían por espaciamiento/tamaño de turbina en el pipeline real de
+`analyze_park_layouts`. (3) n=13 turbinas es una muestra pequeña para
+estimar correlaciones con precisión — los valores de ρ deben leerse como
+"claramente moderados, no extremos", no como cifras exactas reproducibles
+al segundo decimal con otra muestra de turbinas. Ninguna de estas
+limitaciones cambia la conclusión cualitativa (lejos de ±1.0000); sí
+limitan cuánto peso poner en el valor numérico exacto de cada ρ, y son la
+razón por la que este hallazgo se documenta como "respondido para este
+sitio", no como "cerrado para todo el estudio".
 
 ## 7. Verificación del software
 
@@ -591,3 +650,8 @@ cuatro métodos de enlace soportados, método no soportado, menos de dos
 turbinas tras filtrar, nombres de archivo desconocidos ignorados sin error,
 sesión sin datos, `session_id` faltante y series de potencia constantes
 (viento en calma, sin variación que correlacionar).
+`scripts/verify_technical_criteria_correlation.py` (2026-09-14) es el
+script reproducible detrás del hallazgo de §6 "Cuarta actividad" (bloque
+técnico sin redundancia probada) — no es una prueba automatizada de
+regresión, es una herramienta de verificación de investigación pensada
+para rehacerse contra otros sitios del estudio.
