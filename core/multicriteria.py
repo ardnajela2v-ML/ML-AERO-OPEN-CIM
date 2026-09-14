@@ -150,6 +150,19 @@ LAYOUT_WEIGHTS = {
     # la tesis como AHP definitivo — puede y debe recalcularse desde la
     # calculadora de la plataforma con autor/objetivo/justificación propios
     # si el investigador no está de acuerdo con algún juicio individual.
+    #
+    # 2026-09-14 (revisión con el investigador, ver docs/ahp-topsis.md §6
+    # "Cuarta actividad"): confirmado por qué se prefiere payback sobre
+    # benefit_cost_ratio y sobre DSCR (ambos evaluados y descartados, DSCR
+    # con ρ=-1.0000 verificado en código frente a LCOE); sin literatura que
+    # respalde el 95% de near_cp_fraction en hours_near_cpmax (búsqueda con
+    # resultado negativo, documentada). Hallazgo SIN resolver: la redundancia
+    # se probó en código para el bloque económico pero no para el técnico
+    # (cp_effective_full_series/hours_near_cpmax vs. aep_p90_mwh/
+    # factor_capacidad, ver §1) — los niveles de prioridad de ambos bloques
+    # no se construyeron con la misma regla. Ver el documento para el método
+    # propuesto (todavía no ejecutado) antes de dar este expediente por
+    # cerrado.
     'cp_effective_full_series': 0.1041868085680245,
     'hours_near_cpmax': 0.10960883502133105,
     'factor_capacidad': 0.2137956435893556,

@@ -462,6 +462,120 @@ placeholder anterior (0.10), pero sigue sumando una fracción de información
 ya contada en LCOE. Queda como limitación documentada, no corregida, tal
 como se advirtió en §6.
 
+### Cuarta actividad, 2026-09-14: revisión del expediente con el investigador
+
+Sesión de revisión, criterio por criterio, del expediente de la Tercera
+actividad. Deja tres decisiones adicionales verificadas y un hallazgo
+metodológico que queda **explícitamente sin resolver** (no se corrige aquí,
+se declara para que cualquier sesión o equipo futuro lo retome).
+
+**Payback descontado vs. benefit/cost, justificación reforzada.** La razón
+dada en "Segunda decisión" (expectativa del comité de tesis) es cierta pero
+incompleta: no explica por qué payback y no B/C, dado que ambos son
+miembros igual de redundantes de la misma familia. Argumento añadido:
+`van_usd` ya está en el set y responde "¿es rentable, y por cuánto, en
+términos absolutos?". `benefit_cost_ratio` respondería esencialmente la
+misma pregunta en formato de razón en vez de diferencia — agregarlo
+duplicaría el mensaje que VAN ya da. `discounted_payback_years` responde una
+pregunta que ningún otro criterio del set responde: no "¿es rentable?" sino
+"¿en cuánto tiempo deja de estar expuesto el capital invertido?" — la
+pregunta de exposición/liquidez, clásica en un comité de tesis de
+ingeniería, distinta de la de rentabilidad total aunque comparta la misma
+razón subyacente PV(costos)/PV(energía). Es un argumento de **cobertura
+narrativa frente al lector**, no de independencia estadística (que sigue
+sin existir entre estos cuatro criterios). Dato adicional, no la razón
+principal: la fuente de payback (Delapedra-Silva et al. 2022, texto
+completo) trae una crítica explícita ya citada en §1; la de B/C (Kamel et
+al. 2024) es solo metadatos y no trae una crítica equivalente encontrada.
+
+**DSCR (razón de cobertura de servicio de deuda) evaluado y descartado**
+como alternativa a payback. Verificado en código (mismo método que ya
+prueba ρ=±1.0000 en la familia LCOE/B-C/TIR/payback): con 12 alternativas
+sintéticas variando CAPEX y AEP de forma independiente, y razón de
+deuda/tasa de interés/plazo fijos entre alternativas (igual patrón que
+precio/tasa/OPEX% ya fijos en el resto del estudio), **ρ(LCOE, DSCR) =
+−1.0000 exacto**. Es estructural, no casualidad de la simulación: con
+`annual_revenue = precio×AEP` y `annual_opex = OPEX%×CAPEX` fijos entre
+alternativas, `DSCR = NOI/PMT` se reduce algebraicamente a una función
+lineal creciente de AEP/CAPEX, mientras que LCOE es —bajo los mismos
+supuestos— una función decreciente de esa misma razón: ambos miden la misma
+variable subyacente desde lados opuestos. Además, integrar DSCR reabriría
+la decisión de modelado ya pospuesta en §6 ("VAN apalancado... exigiría
+decidir de dónde sale `debt_ratio_pct` por alternativa"): hoy `debt_ratio_pct`,
+`interest_rate_pct` y `loan_years` son parámetros de `/api/energy/leveraged`
+(ver `api.py`), desconectado del loop de `rank_layout_alternatives` — no es
+un simple cambio de criterio. Razón adicional, de rol financiero: DSCR es
+convencionalmente un *covenant* bancario (umbral pasa/no pasa, p. ej.
+≥1.2-1.3x), no una variable "más es mejor" que se optimice — forzarlo dentro
+de TOPSIS como eje continuo no corresponde a su uso real. Extensión futura
+razonable, distinta de esta ronda: mostrarlo como bandera de bancabilidad
+junto al ranking (igual rol que ya cumple el AEP P90), no como criterio
+ponderado — depende de la misma decisión de modelado de VAN apalancado.
+
+**Umbral `near_cp_fraction=0.95` de `hours_near_cpmax`: búsqueda de
+literatura con resultado negativo.** Se buscó (motores de búsqueda
+generales, 2026-09, no revisión sistemática) un umbral porcentual publicado
+para "tiempo con Cp del sitio cerca del Cp máximo de la turbina". No se
+encontró ninguno — la métrica en sí (razón entre el Cp que el viento del
+sitio le permite alcanzar a la turbina y el Cp máximo de su propia curva,
+hora a hora) no aparece como indicador estandarizado en las fuentes
+revisadas. Lo más cercano encontrado, y por qué **no** es transferible:
+literatura de control activo (MPPT) reporta bandas de "ripple" de Cp de
+~1-2% (p. ej. Sciencedirect/Nature Scientific Reports sobre técnicas MPPT,
+2024-2025) — pero eso mide qué tan bien un *controlador* seguidor de punto
+óptimo se mantiene sobre el pico durante operación activa, instante a
+instante; `hours_near_cpmax` mide, en cambio, con qué frecuencia el *recurso
+eólico del sitio* cae en el rango donde la curva de potencia ya fija de la
+turbina rinde cerca de su propio pico — son cantidades físicas distintas,
+citar la primera para justificar la segunda sería una cita engañosa. Se
+buscó también el concepto análogo de "near-rated power" (el criterio
+`hours_at_or_above_90pct_rated`, ya en `LAYOUT_AUDIT_ONLY` sin peso, usa
+90%): fuentes de industria (Energy Numbers, Windpower Monthly) señalan que
+**ni siquiera existe una definición estándar de "potencia nominal"** en la
+industria eólica, así que un umbral porcentual alrededor de ella tampoco
+está estandarizado. Conclusión: el 95% sigue siendo, honestamente, una
+convención de WindPro sin anclaje bibliográfico — no se inventa una cita
+para dársela. Quedan dos caminos, ninguno ejecutado en esta sesión: (a)
+probar sensibilidad del ranking moviendo el umbral (90%, 98%) con datos
+reales del estudio — si el orden no cambia, la arbitrariedad importa menos
+en la práctica; (b) mantener el nivel de prioridad AHP de este criterio
+donde está (empatado con LCOE, no más alto) precisamente por esta
+incertidumbre sin resolver.
+
+**Hallazgo metodológico pendiente, sin resolver en esta sesión: asimetría
+en el tratamiento de la redundancia entre el bloque económico y el
+técnico.** Los ocho niveles de prioridad de la Tercera actividad mezclan,
+sin declararlo como ejes separados: (1) fuerza de la evidencia bibliográfica,
+(2) confianza en la verificación del número/umbral exacto, y (3) redundancia
+con otro criterio del mismo set. El eje (3) se aplicó de forma desigual
+entre bloques:
+- **Bloque económico**: la redundancia LCOE/B-C/TIR/payback está **probada
+  en código** (ρ=±1.0000, §6) — por eso payback recibe el nivel más bajo del
+  set (2), con margen claro, y LCOE se declara explícitamente "único
+  representante".
+- **Bloque técnico**: §1 ya señala que la independencia de `cp_effective_full_series`
+  frente a `aep_p90_mwh` y `factor_capacidad` "no está resuelta" — la misma
+  sospecha de redundancia, pero **nunca verificada con código**, a
+  diferencia del bloque económico. Aun así, `cp_effective_full_series` solo
+  recibió una rebaja suave (nivel 5, por "confianza", no por "redundancia
+  probada") en vez de una penalización equivalente a la de payback.
+
+Esto significa que los niveles de prioridad de ambos bloques **no se
+construyeron con la misma regla** — no porque uno esté mal, sino porque el
+bloque económico se auditó numéricamente y el técnico se dejó con una
+sospecha escrita nunca calculada. La corrección correcta, todavía
+pendiente: calcular la correlación de `cp_effective_full_series` y
+`hours_near_cpmax` contra `aep_p90_mwh` y `factor_capacidad`, con el mismo
+método ya usado para el bloque económico (alternativas sintéticas variando
+turbina/cantidad de turbinas, vía `rank_layout_alternatives` o el motor de
+`core/farm_mcda.py`/`core/energy.compute_site_cp_fit` directamente). Si sale
+un ρ alto, el bloque técnico tiene el mismo problema que el económico y se
+resuelve igual (un representante, los demás bajan de prioridad AHP); si sale
+bajo, queda justificado con evidencia —no con "no está resuelto"— que estos
+cuatro criterios técnicos conviven sin penalización de redundancia. **No
+ejecutado todavía**; queda como el siguiente paso lógico de este expediente
+antes de considerarlo cerrado.
+
 ## 7. Verificación del software
 
 `tests/test_ahp.py` verifica prioridades conocidas, reciprocidad, datos faltantes,
