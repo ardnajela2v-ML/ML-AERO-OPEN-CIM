@@ -2006,7 +2006,7 @@
           <h4 style="font-size:.85rem;margin-bottom:.5rem">Pesos de criterios (TOPSIS) — se renormalizan a 1</h4>
           <div class="form-row" id="mcda-scenario-row">
             <label class="form-label">Escenario de decisión</label>
-            <div class="form-input" aria-label="Escenario de decisión">Base científico</div>
+            <div class="form-input" id="mcda-weight-source" aria-label="Escenario de decisión">Escenario de referencia — sin elicitación AHP</div>
           </div>
           <p class="text-muted" id="mcda-scope-help" style="font-size:.78rem;margin-bottom:.6rem">
             Modo parque: cada aerogenerador se evalúa sobre puntos interpolados dentro del polígono con viento real corregido físicamente.
@@ -2018,6 +2018,24 @@
             <button class="btn-secondary" id="btn-mcda-reset-w">↺ Valores por defecto</button>
             <button class="btn-primary" id="btn-mcda-rerank">Re-ranquear con estos pesos</button>
           </div>
+          <details id="mcda-ahp-panel" class="mt-3">
+            <summary style="cursor:pointer">Obtener pesos con AHP — comparaciones por pares</summary>
+            <p class="text-muted" style="font-size:.78rem">AHP individual para los ocho criterios del parque. Compara su importancia respecto al objetivo del estudio, no qué turbina gana. La revisión bibliográfica de los criterios sigue pendiente.</p>
+            <label for="mcda-ahp-author">Autor de los juicios</label>
+            <input id="mcda-ahp-author" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()">
+            <label for="mcda-ahp-objective">Objetivo de la decisión</label>
+            <textarea id="mcda-ahp-objective" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()"></textarea>
+            <label for="mcda-ahp-rationale">Justificación y referencias de las comparaciones</label>
+            <textarea id="mcda-ahp-rationale" class="form-input" maxlength="4000" rows="4" oninput="mcdaAhpEdited()"></textarea>
+            <p class="text-muted" style="font-size:.78rem">Escala: 1 igual; 3 moderada; 5 fuerte; 7 muy fuerte; 9 extrema. 2, 4, 6 y 8 son intermedios. Cada comparación comienza sin responder.</p>
+            <div id="mcda-ahp-pairs" style="max-height:420px;overflow:auto;font-size:.78rem"></div>
+            <button type="button" class="btn-secondary mt-2" id="btn-mcda-ahp-calculate" onclick="mcdaCalculateAhp()">Calcular pesos y consistencia</button>
+            <div id="mcda-ahp-result" aria-live="polite" style="font-size:.78rem"></div>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+              <button type="button" class="btn-primary" id="btn-mcda-ahp-apply" onclick="mcdaApplyAhp()" disabled>Aplicar a TOPSIS</button>
+              <button type="button" class="btn-secondary" id="btn-mcda-ahp-export" onclick="mcdaExportAhp()" disabled>Exportar expediente AHP</button>
+            </div>
+          </details>
         </div>
       </div>
 
@@ -2050,8 +2068,8 @@
           <thead><tr>
             <th>#</th><th>Sitio</th><th>Turbina</th>
             <th>Score</th><th>Cp efectivo ↑</th><th>Horas ≥95% Cp máx. ↑ (h/año)</th>
-            <th>FC neto ↑ (%)</th><th>AEP P90 / área efectiva ↑ (MWh/km²·año)</th>
-            <th>Recuperación descontada ↓ (años)</th><th>VAN / área efectiva ↑ (USD/km²)</th>
+            <th>FC neto ↑ (%)</th><th>AEP P90 ↑ (MWh)</th>
+            <th>Recuperación descontada ↓ (años)</th><th>VAN / MW instalado ↑ (USD/MW)</th>
             <th>B/C ↑</th><th>LCOE ↓ (USD/kWh)</th>
           </tr></thead>
           <tbody id="mcda-rank-body">
@@ -2115,6 +2133,7 @@
           </div>
           <div style="min-width:0">
             <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
+            <p id="topsis-robust-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
             <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
           </div>
         </div>
@@ -2917,10 +2936,12 @@
             A diferencia del tornado (una variable a la vez), acá se muestrean miles de combinaciones
             simultáneas de precio, tasa de descuento, OPEX (% del CAPEX, que se mantiene fijo), recurso
             eólico, inflación y —cuando hay un layout de parque aplicado— pérdida por efecto estela
-            (±30% relativo a su valor de diseño) — y un Random Forest entrenado sobre esas corridas te
+            (uniforme ±30% relativo a su valor de diseño, con límite de 100% de pérdida;
+            supuesto de sensibilidad, no intervalo de confianza calibrado) — y un Random Forest entrenado sobre esas corridas te
             dice qué variable pesa más en cada métrica, con percentiles de robustez (P10-P90) y
             probabilidad de que el proyecto siga siendo viable.
           </p>
+          <p id="gsens-wake-range" class="text-muted" style="font-size:.8rem"></p>
           <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
             <div>
               <label class="form-label" style="font-size:.78rem">N° de muestras (Monte Carlo)</label>
@@ -2946,6 +2967,7 @@
             <div class="grid-2" style="gap:1rem">
               <div style="min-width:0">
                 <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables (métrica activa)</p>
+                <p id="gsens-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
                 <div style="position:relative;height:220px"><canvas id="gsens-importance-chart"></canvas></div>
               </div>
               <div style="min-width:0">
@@ -3115,6 +3137,7 @@
         <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
       </div>
       <div class="card-body" style="overflow-x:auto;max-height:320px">
+        <p id="te-lifecycle-assumptions" class="text-muted" style="font-size:.8rem"></p>
         <table class="data-table" id="te-cashflow-table">
           <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
           <tbody></tbody>

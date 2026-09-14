@@ -19,22 +19,55 @@ from typing import Dict, Optional, Any
 
 
 # ── Defaults centrales del estudio (valores y rangos para sensibilidad) ──────
+# Recalibrado 2026-09 con evidencia 2018-2024 (el valor previo, 1800+2727 USD/kW
+# total, correspondía a costos ~2008). Anclas usadas:
+#   - Key, Roberts & Eberle (2022) "Scaling trends for balance-of-system costs
+#     at land-based wind power plants", NREL/OSTI 1837954: planta de referencia
+#     2018 = TCC 881 USD/kW + BOS 386 USD/kW = 1267 USD/kW total (2.5 MW,
+#     Ø117 m, buje 90 m). TCC/total ≈ 69.5%.
+#   - DOE Wind Energy Technologies Office / LBNL, Land-Based Wind Market
+#     Report: rango reciente (~2022-2023) 1200-1800 USD/kW instalado; O&M
+#     > 40 USD/kW/año en 2023 (confianza media: síntesis de reportes de
+#     mercado, no cifra única verificada en tabla).
+#   - IRENA (2025) "Renewable Power Generation Costs in 2024": promedio
+#     global ponderado 1041 USD/kW (2024), turbina ≈75% del costo instalado
+#     (ver DESIGN_COST_BENCHMARK abajo, que ya usaba esta fuente).
+# Punto central elegido para México (entre el ancla 2018 y el rango 2022-23
+# de EE.UU., por encima del promedio global 2024 que incluye mercados con
+# mano de obra más barata): ~1350 USD/kW turbina+BOS-porcentual, turbina 70%.
+# Ver docs/ahp-topsis.md para el detalle y el nivel de confianza de cada cifra.
 DEFAULT_COST_MODEL: Dict[str, Any] = {
     # Precio del aerogenerador
-    'turbine_usd_per_kw':  {'value': 1800.0, 'min':  800.0, 'max': 2000.0},
+    'turbine_usd_per_kw':  {'value': 945.0,  'min':  700.0, 'max': 1100.0},
 
     # Aerogenerador como % del CAPEX total (turbines + BOS = 100%)
-    'turbines_pct':        {'value': 0.66,   'min': 0.60,   'max': 0.80},
+    'turbines_pct':        {'value': 0.70,   'min': 0.65,   'max': 0.78},
 
-    # Desglose del 34% BOS (sub-componentes como % del CAPEX total)
-    'civil_works_pct':     {'value': 0.12,   'min': 0.10,   'max': 0.15},
-    'electrical_pct':      {'value': 0.08,   'min': 0.05,   'max': 0.10},
-    'installation_pct':    {'value': 0.05,   'min': 0.01,   'max': 0.05},
-    'engineering_pct':     {'value': 0.06,   'min': 0.02,   'max': 0.10},
-    'miscellaneous_pct':   {'value': 0.03,   'min': 0.01,   'max': 0.05},
+    # Desglose del 30% BOS (sub-componentes como % del CAPEX total).
+    # civil_works_pct cubre SOLO obras civiles no relacionadas con cimentación
+    # (caminos, preparación de sitio) — el costo de cimentación ahora se
+    # calcula aparte, dependiente de geometría (ver foundation_usd_per_m3eq).
+    'civil_works_pct':     {'value': 0.04,   'min': 0.02,   'max': 0.06},
+    'electrical_pct':      {'value': 0.09,   'min': 0.06,   'max': 0.12},
+    'installation_pct':    {'value': 0.06,   'min': 0.03,   'max': 0.08},
+    'engineering_pct':     {'value': 0.07,   'min': 0.04,   'max': 0.10},
+    'miscellaneous_pct':   {'value': 0.04,   'min': 0.02,   'max': 0.06},
 
-    # OPEX anual como % del CAPEX total
+    # OPEX anual como % del CAPEX total (validado: da ~50 USD/kW/año sobre el
+    # CAPEX recalibrado, consistente con el supuesto de 52 USD/kW/año de Key
+    # et al. 2022 y con el >40 USD/kW/año de DOE/LBNL 2023).
     'opex_pct_capex':      {'value': 0.0372, 'min': 0.02,   'max': 0.04},
+
+    # Costo de cimentación: proxy físico del momento de volteo (empuje
+    # aerodinámico × brazo de palanca de la altura de buje), USD por
+    # (diámetro_rotor_m² · altura_buje_m). Mecanismo y geometría de
+    # referencia citados en Key, Roberts & Eberle (2022) — la magnitud en
+    # USD es una estimación de orden de magnitud (no hay tabla pública con
+    # el desglose de cimentación en USD; el detalle vive en el software
+    # LandBOSSE de NREL, no en el manuscrito). Calibrado para dar ≈130
+    # USD/kW de cimentación en la turbina de referencia del mismo estudio
+    # (2.5 MW, Ø117 m, buje 90 m): 0.264 = 130·2500 / (117² · 90).
+    'foundation_usd_per_m3eq': {'value': 0.264, 'min': 0.15, 'max': 0.40},
 }
 
 
@@ -64,13 +97,16 @@ DESIGN_COST_BENCHMARK: Dict[str, Any] = {
         'engineering_pct': 0.04411764705882353,
         'miscellaneous_pct': 0.022058823529411766,
         'opex_pct_capex': 0.0372,
+        # No se fija aquí a propósito: hereda el valor por defecto de
+        # DEFAULT_COST_MODEL vía CostModel.from_dict (mismo proxy físico,
+        # independiente del benchmark de precio usado).
     },
 }
 
 
 # Sub-componentes BOS en orden de presentación
 BOS_COMPONENTS = (
-    ('civil_works_pct',   'civil_works_usd',   'Obras civiles (caminos + cimentaciones)'),
+    ('civil_works_pct',   'civil_works_usd',   'Obras civiles (caminos, preparación de sitio)'),
     ('electrical_pct',    'electrical_usd',    'Sistema eléctrico y conexión a red'),
     ('installation_pct',  'installation_usd',  'Instalación y puesta en marcha'),
     ('engineering_pct',   'engineering_usd',   'Ingeniería, factibilidad y permisos'),
@@ -81,14 +117,15 @@ BOS_COMPONENTS = (
 @dataclass
 class CostModel:
     """Valores efectivos del modelo (sin rangos). Todas las pct en fracción [0,1]."""
-    turbine_usd_per_kw: float = 1800.0
-    turbines_pct:       float = 0.66
-    civil_works_pct:    float = 0.12
-    electrical_pct:     float = 0.08
-    installation_pct:   float = 0.05
-    engineering_pct:    float = 0.06
-    miscellaneous_pct:  float = 0.03
+    turbine_usd_per_kw: float = 945.0
+    turbines_pct:       float = 0.70
+    civil_works_pct:    float = 0.04
+    electrical_pct:     float = 0.09
+    installation_pct:   float = 0.06
+    engineering_pct:    float = 0.07
+    miscellaneous_pct:  float = 0.04
     opex_pct_capex:     float = 0.0372
+    foundation_usd_per_m3eq: float = 0.264
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> 'CostModel':
@@ -149,6 +186,20 @@ class CostModel:
 
     def opex_annual_usd(self, capex_total_usd: float) -> float:
         return float(capex_total_usd) * self.opex_pct_capex
+
+    def foundation_cost_usd(self, rotor_diameter_m: Optional[float],
+                             hub_height_m: Optional[float],
+                             n_turbines: int) -> float:
+        """Costo de cimentación, proxy del momento de volteo (empuje ∝ área de
+        rotor, brazo de palanca = altura de buje): diámetro² × altura_buje.
+        Mecanismo citado en Key, Roberts & Eberle (2022, NREL/OSTI 1837954);
+        magnitud calibrada a orden de magnitud (ver DEFAULT_COST_MODEL).
+        Devuelve 0 si falta geometría (compatibilidad con módulos que no la
+        rastrean, p.ej. Kriging clásico — ver docs/ahp-topsis.md)."""
+        if not rotor_diameter_m or not hub_height_m or n_turbines <= 0:
+            return 0.0
+        return (self.foundation_usd_per_m3eq * float(rotor_diameter_m) ** 2
+                * float(hub_height_m) * int(n_turbines))
 
 
 def get_default_model_dict() -> Dict[str, Any]:

@@ -97,8 +97,8 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(len(defaults.get_json()['layout_weights']), 8)
         self.assertEqual(defaults.get_json()['layout_weights'], {
             'cp_effective_full_series': .20, 'hours_near_cpmax': .20,
-            'factor_capacidad': .10, 'aep_p90_mwh_per_effective_km2': .10,
-            'discounted_payback_years': .20, 'van_usd_per_effective_km2': .10,
+            'factor_capacidad': .10, 'aep_p90_mwh': .10,
+            'discounted_payback_years': .20, 'van_usd_per_installed_mw': .10,
             'benefit_cost_ratio': .075, 'lcoe_usd_kwh': .025,
         })
         self.assertAlmostEqual(sum(defaults.get_json()['layout_weights'].values()), 1.0)
@@ -110,7 +110,7 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertNotIn('layout_scenarios', defaults.get_json())
 
         from core.cost_model import CostModel
-        self.assertEqual(CostModel.from_defaults().turbine_usd_per_kw, 1800.0)
+        self.assertEqual(CostModel.from_defaults().turbine_usd_per_kw, 945.0)
 
     def test_project_export_import_restores_data_configuration_and_client_state(self):
         csv = (

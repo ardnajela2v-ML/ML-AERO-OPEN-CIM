@@ -62,6 +62,9 @@ def _cached_list_files(folder):
     ))
 
 from config import Config
+from core.sensitivity import wake_loss_range
+from core.ahp import calculate_ahp
+from core.ml_validation import rf_cv_feature_importance
 from core.cache import bytes_hash, file_signature, get_or_compute, stable_hash, timed
 from core.data import DataLoader, DataQualityChecker, df_to_json_safe, series_to_chart
 from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
@@ -3109,7 +3112,8 @@ def create_app():
         """Pure financial calculation — no session required.
         Inputs: capex_usd, annual_revenue_usd, annual_opex_usd, project_years,
                 equity_discount_rate_pct, debt_ratio_pct, interest_rate_pct,
-                loan_years, usd_to_mxn (optional).
+                loan_years, usd_to_mxn (optional), project_cashflows_usd
+                (optional yearly net project flows, before debt service).
         """
         body = request.json or {}
         if body.get('project_years') in (None, ''):
@@ -3124,6 +3128,17 @@ def create_app():
             interest_rate  = float(body.get('interest_rate_pct', 8)) / 100.0
             loan_years     = int(body.get('loan_years', 15))
             fx             = float(body.get('usd_to_mxn', 1.0))
+
+            project_flows = body.get('project_cashflows_usd')
+            if project_flows is not None:
+                if not isinstance(project_flows, list) or len(project_flows) != project_years:
+                    return _err('project_cashflows_usd debe contener un flujo por año del proyecto')
+                try:
+                    project_flows = [float(value) for value in project_flows]
+                except (TypeError, ValueError):
+                    return _err('Los flujos del proyecto deben ser números finitos')
+                if not all(np.isfinite(value) for value in project_flows):
+                    return _err('Los flujos del proyecto deben ser números finitos')
 
             equity_usd = capex * (1.0 - debt_ratio)
             debt_usd   = capex * debt_ratio
@@ -3147,18 +3162,19 @@ def create_app():
             cum_ecf = -equity_usd  # year-0 equity outflow
 
             for yr in range(1, project_years + 1):
+                year_project_cf = project_flows[yr - 1] if project_flows is not None else noi
                 in_debt = yr <= loan_years and debt_usd > 0
                 if in_debt:
                     interest   = balance * interest_rate
                     principal  = pmt - interest
                     balance_end = max(balance - principal, 0.0)
-                    dscr       = round(noi / pmt, 3) if pmt > 0 else None
+                    dscr       = round(year_project_cf / pmt, 3) if pmt > 0 else None
                 else:
                     interest = principal = 0.0
                     balance_end = 0.0
                     dscr = None
 
-                equity_cf = noi - (pmt if in_debt else 0.0)
+                equity_cf = year_project_cf - (pmt if in_debt else 0.0)
                 cum_ecf  += equity_cf
 
                 rows.append({
@@ -3349,8 +3365,6 @@ def create_app():
             payback = float(payback) if payback is not None and np.isfinite(float(payback)) else base_years * 2
 
             capex_total = float((res.get('capex') or {}).get('total_capex_usd', 0) or 0)
-            annual_revenue = float(res.get('annual_revenue_usd', 0) or 0)
-            annual_opex    = float(res.get('annual_opex_usd', 0) or 0)
 
             # ── Modo apalancado: reemplazar npv por VAN equity ───────────
             if lev_cfg and capex_total > 0:
@@ -3365,9 +3379,7 @@ def create_app():
                     pmt = 0.0
                 ecfs = [-equity]
                 for yr in range(1, base_years + 1):
-                    yr_price = price_series[yr - 1] if price_series else p
-                    yr_revenue = (annual_revenue / p) * yr_price if p > 0 else annual_revenue
-                    yr_cf = yr_revenue - annual_opex - (pmt if (yr <= lev_loan_yrs and debt > 0) else 0.0)
+                    yr_cf = res['cashflow_table'][yr - 1]['cashflow'] - (pmt if (yr <= lev_loan_yrs and debt > 0) else 0.0)
                     ecfs.append(yr_cf)
                 lev_npv = sum(cf / (1.0 + eq_rate) ** t for t, cf in enumerate(ecfs))
                 npv = lev_npv
@@ -3535,7 +3547,8 @@ def create_app():
         Núcleo compartido del Monte Carlo económico (usado por el endpoint single,
         con Random Forest + importancia, y por el batch, solo con percentiles de
         robustez). Muestrea 5 variables (precio, tasa, %OPEX/CAPEX, AEP, inflación)
-        y, si `base_wake_loss_pct` viene, una 6ª (pérdida por estela ±200% relativo),
+        y, si `base_wake_loss_pct` viene, una 6ª (pérdida por estela ±30% relativo,
+        supuesto de sensibilidad no calibrado, limitado al 100% de pérdida),
         "deshaciendo" la estela base del AEP ya muestreado y reaplicando la
         muestreada — para no duplicar el efecto de la variabilidad de AEP con el de
         estela (ambas son fuentes de incertidumbre independientes, combinadas
@@ -3562,14 +3575,12 @@ def create_app():
             'annual_energy_kwh':    [aep_lo_kwh, aep_hi_kwh],
             'annual_inflation_pct': [0.0, 5.0],
         }
-        wake_enabled = base_wake_loss_pct is not None and 0 <= base_wake_loss_pct < 100
+        wake_range = wake_loss_range(base_wake_loss_pct)
+        wake_enabled = wake_range is not None
         if wake_enabled:
             feature_names = feature_names + ['wake_loss_pct']
             feature_labels['wake_loss_pct'] = 'Pérdida por efecto estela (%)'
-            ranges_used['wake_loss_pct'] = [
-                max(0.0, base_wake_loss_pct * (1.0 - 2.0)),
-                min(95.0, base_wake_loss_pct * (1.0 + 2.0)),
-            ]
+            ranges_used['wake_loss_pct'] = wake_range
 
         rng = np.random.default_rng(42)
         samples = {name: rng.uniform(lo, hi, size=n_samples) for name, (lo, hi) in ranges_used.items()}
@@ -3718,7 +3729,11 @@ def create_app():
         n_samples = int(body.get('n_samples', 800))
         n_samples = max(50, min(n_samples, 3000))
         base_wake_loss_pct = body.get('base_wake_loss_pct')
-        base_wake_loss_pct = float(base_wake_loss_pct) if base_wake_loss_pct is not None else None
+        try:
+            wake_loss_range(base_wake_loss_pct)
+            base_wake_loss_pct = float(base_wake_loss_pct) if base_wake_loss_pct is not None else None
+        except ValueError as e:
+            return _err(str(e))
 
         turbine = _gsens_resolve_turbine(turbine_cfg)
         base_cm_dict = CostModel.from_dict(fin_cfg.get('cost_model')).to_dict()
@@ -3739,29 +3754,25 @@ def create_app():
                 base_cm_dict, lo_kwh, hi_kwh, base_wake_loss_pct, n_samples,
             )
 
-            from sklearn.ensemble import RandomForestRegressor
-            from sklearn.inspection import permutation_importance
-
             importance = {}
+            validation = {}
             for m in GSENS_METRIC_NAMES:
                 y_raw = outputs[m]
                 valid = [j for j, v in enumerate(y_raw) if v is not None and np.isfinite(v)]
                 if len(valid) < 30:
                     importance[m] = None
+                    validation[m] = None
                     continue
-                Xv = X[valid]
-                yv = np.array([y_raw[j] for j in valid], dtype=float)
-                model = RandomForestRegressor(n_estimators=200, random_state=42, n_jobs=-1)
-                model.fit(Xv, yv)
-                perm = permutation_importance(model, Xv, yv, n_repeats=10, random_state=42)
-                raw_imp = np.clip(perm.importances_mean, 0, None)
-                total = raw_imp.sum()
-                pct_imp = (raw_imp / total * 100.0) if total > 0 else raw_imp
-                importance[m] = sorted([
-                    {'feature': feature_names[k], 'label': feature_labels[feature_names[k]],
-                     'importance_pct': round(float(pct_imp[k]), 2)}
-                    for k in range(len(feature_names))
-                ], key=lambda r: -r['importance_pct'])
+                cv = rf_cv_feature_importance(X[valid], [y_raw[j] for j in valid],
+                                              feature_names, task='regression')
+                if cv is None:
+                    importance[m] = None
+                    validation[m] = None
+                    continue
+                importance[m] = [
+                    {**row, 'label': feature_labels[row['feature']]} for row in cv['importance']
+                ]
+                validation[m] = {k: v for k, v in cv.items() if k != 'importance'}
 
             wake_breakeven = _gsens_wake_breakeven(
                 turbine, n_turb, base_kwh, base_wake_loss_pct, base_price, base_rate,
@@ -3775,6 +3786,7 @@ def create_app():
                 'metric_labels': GSENS_METRIC_LABELS,
                 'ranges_used': ranges_used,
                 'importance': importance,
+                'validation': validation,
                 'robustness': _gsens_robustness(outputs),
                 'base_case': base_case,
                 'wake_breakeven': wake_breakeven,
@@ -3828,14 +3840,20 @@ def create_app():
                     results.append({'label': label, 'error': 'annual_energy_kwh inválido'})
                     continue
                 wake = t.get('wake_loss_pct')
+                try:
+                    wake_loss_range(wake)
+                except ValueError as e:
+                    results.append({'label': label, 'error': str(e)})
+                    continue
                 wake = float(wake) if wake is not None else None
                 turbine = _gsens_resolve_turbine({'builtin_model': t.get('builtin_model')})
-                _, _, _, _, outputs, base_case = _gsens_monte_carlo(
+                _, _, _, ranges_used, outputs, base_case = _gsens_monte_carlo(
                     turbine, n_turb, base_kwh, base_price, base_rate, base_years, base_infl,
                     base_cm_dict, base_kwh * 0.9, base_kwh * 1.1, wake, n_samples,
                 )
                 results.append({
                     'label': label,
+                    'ranges_used': ranges_used,
                     'base_case': base_case,
                     'robustness': _gsens_robustness(outputs),
                     'wake_breakeven': _gsens_wake_breakeven(
@@ -5348,6 +5366,34 @@ def create_app():
         return jsonify({'task_id': task_id})
 
     # ─── MULTI-CRITERIA (TOPSIS) ──────────────────────────────────────────────
+    def _layout_ahp_assessment(payload, require_consistent=False):
+        if not isinstance(payload, dict):
+            raise ValueError('El expediente AHP debe ser un objeto.')
+        criteria = payload.get('criteria')
+        if (not isinstance(criteria, list) or len(criteria) != len(LAYOUT_WEIGHTS)
+                or any(not isinstance(key, str) for key in criteria)
+                or set(criteria) != set(LAYOUT_WEIGHTS)):
+            raise ValueError('AHP debe incluir los ocho criterios actuales del parque.')
+        context = {}
+        for key in ('author', 'objective', 'rationale'):
+            value = payload.get(key)
+            if not isinstance(value, str) or not value.strip() or len(value) > 4000:
+                raise ValueError(f'AHP requiere {key} (texto de 1 a 4000 caracteres).')
+            context[key] = value.strip()
+        result = calculate_ahp(criteria, payload.get('matrix'))
+        if require_consistent and not result['consistent']:
+            raise ValueError('La matriz AHP requiere revisión: CR debe ser ≤ 0.10.')
+        return {**result, **context, 'schema': 'layout-ahp-v1',
+                'assessed_at': datetime.now(timezone.utc).isoformat(),
+                'judgment_type': 'individual', 'criteria_basis_status': 'bibliographic_review_pending'}
+
+    @app.route('/api/multicriteria/ahp', methods=['POST'])
+    def mcda_ahp():
+        try:
+            return jsonify(_layout_ahp_assessment(request.get_json(silent=True)))
+        except (ValueError, TypeError) as exc:
+            return _err(str(exc))
+
     @app.route('/api/multicriteria/defaults', methods=['GET'])
     def mcda_defaults():
         return jsonify({
@@ -5370,6 +5416,15 @@ def create_app():
         body = request.get_json(silent=True) or {}
         weights = body.get('weights')
         mode = body.get('mode', 'pairs')
+        ahp_assessment = None
+        if body.get('ahp_assessment') is not None:
+            try:
+                if mode != 'layout_alternatives':
+                    raise ValueError('AHP está disponible para el ranking de parques.')
+                ahp_assessment = _layout_ahp_assessment(body['ahp_assessment'], True)
+                weights = ahp_assessment['weights']
+            except (ValueError, TypeError) as exc:
+                return _err(str(exc))
         if 'alternatives' in body:
             if not isinstance(body['alternatives'], list):
                 return jsonify({'error': 'alternatives must be a list'}), 400
@@ -5399,6 +5454,8 @@ def create_app():
         else:
             return jsonify({'error': 'Provide alternatives, sites_analysis, or task_id'}), 400
 
+        if ahp_assessment:
+            result['ahp_assessment'] = ahp_assessment
         return jsonify(numpy_to_python(result))
 
     @app.route('/api/multicriteria/weight_robustness', methods=['POST'])
@@ -5426,6 +5483,15 @@ def create_app():
         rank_fn = rank_layout_alternatives if is_layout else topsis
 
         base_weights_in = body.get('base_weights') or {}
+        ahp_assessment = None
+        if body.get('ahp_assessment') is not None:
+            try:
+                if not is_layout:
+                    raise ValueError('AHP está disponible para el ranking de parques.')
+                ahp_assessment = _layout_ahp_assessment(body['ahp_assessment'], True)
+                base_weights_in = ahp_assessment['weights']
+            except (ValueError, TypeError) as exc:
+                return _err(str(exc))
         keys = list(default_weights.keys())
         base_w = np.array([max(float(base_weights_in.get(k, default_weights[k])), 1e-4)
                             for k in keys], dtype=float)
@@ -5500,28 +5566,26 @@ def create_app():
             summary.sort(key=lambda row: -row['win_rate_pct'])
 
             criteria_importance = None
+            classifier_validation = None
             unique_winners = set(winner_per_sample)
             if len(unique_winners) >= 2:
                 try:
-                    from sklearn.ensemble import RandomForestClassifier
-                    from sklearn.inspection import permutation_importance
                     X_valid = np.array(valid_weight_rows)
-                    clf = RandomForestClassifier(n_estimators=200, random_state=42, n_jobs=-1)
-                    clf.fit(X_valid, winner_per_sample)
-                    perm = permutation_importance(clf, X_valid, winner_per_sample,
-                                                  n_repeats=10, random_state=42)
-                    raw_imp = np.clip(perm.importances_mean, 0, None)
-                    total_imp = raw_imp.sum()
-                    pct_imp = (raw_imp / total_imp * 100.0) if total_imp > 0 else raw_imp
-                    criteria_labels = LAYOUT_LABELS if is_layout else CRITERION_LABELS
-                    criteria_importance = sorted([
-                        {'criterion': keys[k], 'label': criteria_labels.get(keys[k], keys[k]),
-                         'importance_pct': round(float(pct_imp[k]), 2)}
-                        for k in range(len(keys))
-                    ], key=lambda r: -r['importance_pct'])
+                    cv = rf_cv_feature_importance(X_valid, winner_per_sample, keys,
+                                                  task='classification')
+                    if cv is not None:
+                        criteria_labels = LAYOUT_LABELS if is_layout else CRITERION_LABELS
+                        criteria_importance = [
+                            {'criterion': row['feature'],
+                             'label': criteria_labels.get(row['feature'], row['feature']),
+                             'importance_pct': row['importance_pct']}
+                            for row in cv['importance']
+                        ]
+                        classifier_validation = {k: v for k, v in cv.items() if k != 'importance'}
                 except Exception:
                     logger.exception('Error entrenando clasificador de robustez de pesos')
                     criteria_importance = None
+                    classifier_validation = None
 
             return jsonify(numpy_to_python({
                 'n_samples': n_valid,
@@ -5529,6 +5593,10 @@ def create_app():
                 'criteria': keys,
                 'alternatives': summary,
                 'criteria_importance': criteria_importance,
+                'classifier_validation': classifier_validation,
+                'base_weights': dict(zip(keys, base_w)),
+                'concentration': concentration,
+                'ahp_assessment': ahp_assessment,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -5545,6 +5613,15 @@ def create_app():
         exploratory rectangle (scope=exploratory).
         """
         body = request.get_json(silent=True) or {}
+        ahp_assessment = None
+        if body.get('ahp_assessment') is not None:
+            try:
+                if body.get('scope', 'park') != 'park':
+                    raise ValueError('AHP está disponible para el ranking de parques.')
+                ahp_assessment = _layout_ahp_assessment(body['ahp_assessment'], True)
+                body['layout_weights'] = ahp_assessment['weights']
+            except (ValueError, TypeError) as exc:
+                return _err(str(exc))
         try:
             price_usd_kwh, project_years = _required_design_economics(body)
         except (TypeError, ValueError) as exc:
@@ -5767,6 +5844,8 @@ def create_app():
                     )
                     ranking = layout_result['ranking']
                     ranking['mode'] = 'layout_alternatives'
+                    if ahp_assessment:
+                        ranking['ahp_assessment'] = ahp_assessment
                 else:
                     layout_result = None
                     ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)

@@ -12,6 +12,8 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from scipy import stats
 from config import Config
+from core.project_economics import (project_cashflows, irr_bisection, DEFAULT_DEGRADATION_PCT,
+                                    DEFAULT_DECOMMISSIONING_PCT)
 from core.cost_model import CostModel, BOS_COMPONENTS   
 warnings.filterwarnings('ignore')
 
@@ -729,28 +731,6 @@ class TurbineComparator:
         return results
 
 
-def irr_bisection(cashflows):
-    """TIR anual (fracción, no %) de un flujo [t=0, t=1, ...] por bisección.
-    None si el flujo no cambia de signo (no converge). Mismo método que el IRR
-    apalancado de /api/energy/leveraged en api.py — cambio de signo + bisección."""
-    def _npv_r(r):
-        return sum(cf / (1.0 + r) ** t for t, cf in enumerate(cashflows))
-    lo, hi = -0.9999, 9.99
-    f_lo, f_hi = _npv_r(lo), _npv_r(hi)
-    if f_lo * f_hi >= 0:
-        return None
-    mid = lo
-    for _ in range(256):
-        mid = (lo + hi) / 2.0
-        if abs(hi - lo) < 1e-9:
-            break
-        if _npv_r(mid) * f_lo > 0:
-            lo = mid
-        else:
-            hi = mid
-    return mid
-
-
 # ─── TECHNO-ECONOMIC ANALYZER ─────────────────────────────────────────────────
 
 class TechnoEconomicAnalyzer:
@@ -759,13 +739,16 @@ class TechnoEconomicAnalyzer:
     Methodology from PhD research (ajusteMultiplesArchivosConMediaMovil.m).
 
     Cost model (modelo central WindPro — core/cost_model.py):
-      - Turbine cost:       rated_kW × turbine_usd_per_kw   (default 1800 USD/kW)
-      - CAPEX total:        turbine_cost / turbines_pct     (default 66% → ×1.515)
-      - BOS (34%):          civil + electrical + installation + engineering + misc
+      - Turbine cost:       rated_kW × turbine_usd_per_kw   (default 945 USD/kW)
+      - CAPEX total:        turbine_cost / turbines_pct     (default 70% → ×1.429)
+      - BOS (30%):          civil + electrical + installation + engineering + misc
       - OPEX anual:         CAPEX_total × opex_pct_capex    (default 3.72%)
+      Nota: esta ruta (panel de una sola turbina) no incluye el costo de
+      cimentación dependiente de geometría que sí suma farm_mcda._economics()
+      — ver docs/ahp-topsis.md §5.
     Financial model:
       - NPV / VAN over project_years at discount_rate
-      - LCOE = (CAPEX + OPEX × N) / total_energy_kWh
+      - LCOE = PV(CAPEX + OPEX + decommissioning) / PV(degraded energy)
       - VAE  = NPV × r / (1 − (1+r)^-n)
     """
 
@@ -816,12 +799,14 @@ class TechnoEconomicAnalyzer:
                 usd_to_mxn: float = 1.0,
                 energy_price_series_usd_kwh: list = None,
                 year1_revenue_override_usd: float = None,
-                annual_inflation_pct: float = 0.0) -> dict:
+                annual_inflation_pct: float = 0.0,
+                degradation_pct: float = DEFAULT_DEGRADATION_PCT,
+                decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT) -> dict:
         """
         Full techno-economic analysis.
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
 
-        annual_energy_kwh: representative annual park energy (used for summary KPIs)
+        annual_energy_kwh: year-1 net park energy; degraded from year 2 onward
         energy_price_series_usd_kwh: optional per-year price array used by the
             fixed PML profile. Discount rate and FX remain scalar inputs.
         year1_revenue_override_usd: optional override for year-1 revenue (already
@@ -839,90 +824,46 @@ class TechnoEconomicAnalyzer:
         if not 5 <= project_years <= 40:
             raise ValueError('project_years debe estar entre 5 y 40')
 
-        def _at(seq, i, default):
-            try:
-                if seq and i < len(seq):
-                    v = float(seq[i])
-                    if v == v:  # not NaN
-                        return v
-            except (TypeError, ValueError):
-                pass
-            return default
-
         capex = self.capex_breakdown(turbine, n_turbines)
         total_capex = capex['total_capex_usd']
         investment_cost = total_capex * usd_to_mxn
         annual_inflation_pct = float(annual_inflation_pct or 0.0)
-        inflation = annual_inflation_pct / 100.0
 
         # OPEX anual = % del CAPEX total (modelo central WindPro)
         annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
         annual_opex        = annual_maintenance * usd_to_mxn
 
-        # Representative revenue/cashflow for summary KPIs (mean year)
-        annual_revenue  = annual_energy_kwh * energy_price_usd_kwh * usd_to_mxn
+        lifecycle = project_cashflows(
+            investment_cost, annual_opex, annual_energy_kwh,
+            energy_price_usd_kwh * usd_to_mxn, discount_rate_pct / 100.0,
+            project_years, degradation_pct=degradation_pct,
+            decommissioning_pct=decommissioning_pct,
+            annual_inflation_pct=annual_inflation_pct,
+            price_series=([float(p) * usd_to_mxn if p is not None else None
+                           for p in energy_price_series_usd_kwh]
+                          if energy_price_series_usd_kwh else None),
+            year1_revenue_override=(float(year1_revenue_override_usd) * usd_to_mxn
+                                   if year1_revenue_override_usd is not None else None))
+        npv = lifecycle['van_usd']
+        pv_costs_lcoe = lifecycle['pv_costs']
+        pv_energy_lcoe = lifecycle['pv_energy_kwh']
+        pv_revenue = lifecycle['pv_revenue']
+        payback_years = lifecycle['payback_years']
+        cashflow_table = [{
+            'year': row['year'],
+            'energy_mwh': row['energy_mwh'],
+            'price_usd_kwh': row['price_usd_kwh'] / usd_to_mxn if usd_to_mxn else 0.0,
+            'discount_rate_pct': discount_rate_pct,
+            'fx_mxn_per_usd': usd_to_mxn,
+            'revenue': row['revenue_usd'],
+            'opex': row['opex_usd'],
+            'decommissioning': row['decommissioning_usd'],
+            'cashflow': row['net_cashflow_usd'],
+            'pv_cashflow': row['pv_net_cashflow_usd'],
+            'cumulative': row['cumulative_undiscounted_usd'],
+        } for row in lifecycle['cashflow_table']]
+        annual_revenue = cashflow_table[0]['revenue']
         annual_cashflow = annual_revenue - annual_opex
-
-        # Build cashflow table with per-year energy when series is available
-        cashflow_table = []
-        cumulative = -investment_cost
-        npv = -investment_cost
-        total_energy_kwh = 0.0
-        payback_years = float('inf')
-        discount_factor = 1.0  # cumulative Π(1+r_i)
-        prices_used = []
-        opex_used = []
-        # LCOE = PV(costos) / PV(energía) — NUNCA (CAPEX + ΣOPEX) / Σenergía
-        # sin descontar: eso subestima el LCOE (el denominador crece más
-        # rápido que el PV real de la energía, que descuenta años futuros).
-        pv_costs_lcoe = investment_cost
-        pv_energy_lcoe = 0.0
-        pv_revenue = 0.0
-
-        for yr in range(1, project_years + 1):
-            yr_energy_kwh = annual_energy_kwh
-            yr_price = _at(energy_price_series_usd_kwh, yr - 1, energy_price_usd_kwh)
-            yr_rate = discount_rate_pct
-            yr_fx = usd_to_mxn
-            r_y = yr_rate / 100.0
-            prices_used.append(yr_price)
-            yr_opex = annual_opex * ((1.0 + inflation) ** (yr - 1))
-            opex_used.append(yr_opex)
-
-            if yr == 1 and year1_revenue_override_usd is not None:
-                yr_revenue = float(year1_revenue_override_usd) * yr_fx
-            else:
-                yr_revenue = yr_energy_kwh * yr_price * yr_fx
-            yr_cashflow = yr_revenue - yr_opex
-            discount_factor *= (1 + r_y)
-            pv = yr_cashflow / discount_factor if discount_factor > 0 else yr_cashflow
-            npv += pv
-            cumulative += yr_cashflow
-            total_energy_kwh += yr_energy_kwh
-            if discount_factor > 0:
-                pv_costs_lcoe += yr_opex / discount_factor
-                pv_energy_lcoe += yr_energy_kwh / discount_factor
-                pv_revenue += yr_revenue / discount_factor
-            else:
-                pv_costs_lcoe += yr_opex
-                pv_energy_lcoe += yr_energy_kwh
-                pv_revenue += yr_revenue
-            if payback_years == float('inf') and cumulative >= 0:
-                # interpolate within the year
-                prev_cum = cumulative - yr_cashflow
-                payback_years = (yr - 1 + (-prev_cum) / yr_cashflow
-                                 if yr_cashflow > 0 else float(yr))
-            cashflow_table.append({
-                'year':        yr,
-                'energy_mwh':  round(yr_energy_kwh / 1000, 1),
-                'price_usd_kwh': round(yr_price, 5),
-                'discount_rate_pct': round(yr_rate, 3),
-                'fx_mxn_per_usd': round(yr_fx, 4),
-                'opex':        round(yr_opex),
-                'cashflow':    round(yr_cashflow),
-                'pv_cashflow': round(pv),
-                'cumulative':  round(cumulative),
-            })
 
         # TODO (tesis §Metodología tecno-económica): este npv es el VAN del PROYECTO (sin deuda).
         # El VAN equity apalancado requiere: restar PMT anual (interés + principal al 7%) del
@@ -936,19 +877,15 @@ class TechnoEconomicAnalyzer:
         vae = (npv * r_mean / (1 - (1 + r_mean) ** -project_years)
                if r_mean > 0 else npv / project_years)
 
-        # total_opex_project_usd / total_energy_kwh: totales SIN descontar,
-        # informativos (vida útil del proyecto), no se usan para LCOE.
-        total_opex_project_usd = sum(opex_used) if opex_used else annual_maintenance * project_years
-        total_costs_usd = total_capex + total_opex_project_usd
-        # LCOE = PV(CAPEX + OPEX) / PV(energía), consistente con
-        # core/farm_mcda.py:lcoe_usd_kwh (IEA/NREL).
+        total_opex_project_usd = lifecycle['opex_lifetime_usd']
+        # LCOE includes discounted OPEX, terminal cost and degraded energy.
         lcoe_usd_kwh = pv_costs_lcoe / pv_energy_lcoe if pv_energy_lcoe > 0 else 0
 
         capacity_factor = (annual_energy_kwh /
                            (turbine.rated_power_kw * n_turbines * 8760)
                            if turbine.rated_power_kw * n_turbines > 0 else 0)
 
-        irr_fraction = irr_bisection([-investment_cost] + [row['cashflow'] for row in cashflow_table])
+        irr_fraction = irr_bisection(lifecycle['cashflows'])
         irr_pct = round(irr_fraction * 100, 2) if irr_fraction is not None else None
         b_c_ratio = round(pv_revenue / pv_costs_lcoe, 4) if pv_costs_lcoe > 0 else None
         van_capex_ratio = round(npv / total_capex, 4) if total_capex > 0 else None
@@ -971,7 +908,7 @@ class TechnoEconomicAnalyzer:
             'npv_usd':              round(npv),
             'vae_usd':              round(vae),
             'lcoe_usd_kwh':         round(lcoe_usd_kwh, 4),
-            'payback_years':        round(payback_years, 1) if payback_years != float('inf') else None,
+            'payback_years':        round(payback_years, 1) if payback_years is not None else None,
             'project_years':        project_years,
             'discount_rate_pct':    discount_rate_pct,
             'discount_rate_mean_pct': round(r_mean * 100, 3),
@@ -979,6 +916,10 @@ class TechnoEconomicAnalyzer:
             'energy_price_usd_kwh': energy_price_usd_kwh,
             'capacity_factor_pct':  round(capacity_factor * 100, 2),
             'cashflow_table':       cashflow_table,
+            'degradation_pct_per_year': degradation_pct,
+            'decommissioning_pct_capex': decommissioning_pct,
+            'decommissioning_usd': lifecycle['decommissioning_usd'],
+            'decommissioning_present_value_usd': lifecycle['decommissioning_present_value_usd'],
             'is_viable':            npv > 0,
             'variable_params_used': used_variable_params,
             'b_c_ratio':            b_c_ratio,

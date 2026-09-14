@@ -887,23 +887,12 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     vtas_mxn = ekwh * (price_usd_kwh * price_mxn_per_usd)  # MXN/año (solo para display)
     vtas = ekwh * price_usd_kwh                              # USD/año (para cálculos financieros)
     flux = vtas - cm                # flujo neto anual = ventas − O&M anual (USD)
-    # LCOE = PV(CAPEX + OPEX) / PV(energía), consistente con
-    # core/farm_mcda.py:lcoe_usd_kwh (IEA/NREL) — NUNCA (ctot + cm·años) /
-    # (ekwh·años) sin descontar, que subestima el LCOE porque el
-    # denominador no penaliza la energía de años lejanos igual que el
-    # numerador penaliza los costos futuros.
-    if tasa > 0:
-        annuity_factor = (1 - (1 + tasa) ** -anios) / tasa
-        VAN = (flux * annuity_factor) - inv
-        VAE = (VAN * tasa / (1 - (1 + tasa) ** -anios))
-        pv_costs = ctot + cm * annuity_factor
-        pv_energy = ekwh * annuity_factor
-    else:
-        VAN = 0.0
-        VAE = 0.0
-        pv_costs = ctot + cm * anios
-        pv_energy = ekwh * anios
-    lcoe = pv_costs / pv_energy if pv_energy > 0 else 0
+    from core.project_economics import project_cashflows
+    lifecycle = project_cashflows(ctot, cm, ekwh, price_usd_kwh, tasa, anios)
+    VAN = lifecycle['van_usd']
+    VAE = VAN * tasa / (1 - (1 + tasa) ** -anios) if tasa != 0 else VAN / anios
+    lcoe = (lifecycle['pv_costs'] / lifecycle['pv_energy_kwh']
+            if lifecycle['pv_energy_kwh'] > 0 else 0)
     # ROI simple
     roi = (VAN / inv) if inv > 0 else 0
 
@@ -923,6 +912,9 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
         'opex_usd_anual':       float(cm),
         'inversion_total_usd':  float(inv),
         'ventas_mxn_anuales':   float(vtas_mxn),
+        'degradation_pct_per_year': lifecycle['degradation_pct_per_year'],
+        'decommissioning_pct_capex': lifecycle['decommissioning_pct_capex'],
+        'decommissioning_usd': lifecycle['decommissioning_usd'],
         'flujo_neto_anual':     float(flux),
         'van_usd':              float(VAN),
         'vae_usd':              float(VAE),

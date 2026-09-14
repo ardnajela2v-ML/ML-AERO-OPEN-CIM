@@ -32,7 +32,7 @@ import numpy as np
 
 
 DEFAULT_WEIGHTS = {
-    # Pesos científicos originales. Las nuevas métricas se exponen para
+    # Pesos de referencia del estudio, sin elicitación AHP documentada. Las métricas se exponen para
     # auditoría y análisis de sensibilidad, pero no alteran el ranking base.
     'cp_max':                0.08,
     'horas_cerca_nominal':   0.07,
@@ -91,12 +91,17 @@ CRITERION_LABELS = {
 
 LAYOUT_WEIGHTS = {
     # Agreed reference: technical 60%, economic 40%.
+    # aep_p90_mwh (bruto) y van_usd_per_installed_mw en vez de sus versiones
+    # /área: el área efectiva es la misma constante para todas las
+    # alternativas de un mismo ranking (ver effective_park_area), así que
+    # dividir entre ella no cambia la normalización vectorial de TOPSIS — no
+    # aporta poder de decisión. MW instalado sí varía por alternativa.
     'cp_effective_full_series': 0.20,
     'hours_near_cpmax': 0.20,
     'factor_capacidad': 0.10,
-    'aep_p90_mwh_per_effective_km2': 0.10,
+    'aep_p90_mwh': 0.10,
     'discounted_payback_years': 0.20,
-    'van_usd_per_effective_km2': 0.10,
+    'van_usd_per_installed_mw': 0.10,
     'benefit_cost_ratio': 0.075,
     'lcoe_usd_kwh': 0.025,
 }
@@ -104,9 +109,10 @@ LAYOUT_WEIGHTS = {
 # These values remain available in the alternative audit, but are no longer
 # eligible for park ranking, including when loading weights from older projects.
 LAYOUT_AUDIT_ONLY = (
-    'aep_p90_mwh_per_installed_mw', 'van_usd_per_installed_mw',
+    'aep_p90_mwh_per_effective_km2', 'van_usd_per_effective_km2',
+    'aep_p90_mwh_per_installed_mw',
     'cp_at_site_mean', 'hours_at_or_above_90pct_rated', 'capex_usd',
-    'aep_p90_mwh', 'wake_loss_pct', 'energy_density_mwh_km2',
+    'wake_loss_pct', 'energy_density_mwh_km2',
     'collection_length_m', 'cpmax_speed_mismatch_ms',
     'resource_operational_availability_pct',
     'capex_usd_per_installed_kw', 'opex_usd_per_installed_kw_year',

@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
+from core.project_economics import (project_cashflows, irr_bisection as _irr, DEFAULT_DEGRADATION_PCT,
+                                    DEFAULT_DECOMMISSIONING_PCT)
 from core.cost_model import CostModel
 from core.layout_refinement import build_energy_context
 from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellmann
@@ -114,85 +116,31 @@ def _collection_length_m(layout_xy: List[List[float]]) -> float:
     return length
 
 
-def _irr(cashflows: Iterable[float]) -> Optional[float]:
-    cashflows = list(float(v) for v in cashflows)
-    if not cashflows or not (min(cashflows) < 0 < max(cashflows)):
-        return None
-    low, high = -0.99, 10.0
-    def npv(rate):
-        return sum(value / ((1.0 + rate) ** year) for year, value in enumerate(cashflows))
-    if npv(low) * npv(high) > 0:
-        return None
-    for _ in range(100):
-        mid = (low + high) / 2.0
-        if npv(low) * npv(mid) <= 0:
-            high = mid
-        else:
-            low = mid
-    return (low + high) / 2.0
-
-
 def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
                cost_model: CostModel, discount_rate: float, project_years: int,
                price_usd_kwh: float, collection_length_m: float,
-               cable_usd_per_m: float = 75.0, degradation_pct: float = 0.3,
-               decommissioning_pct: float = 3.0):
+               cable_usd_per_m: float = 75.0, degradation_pct: float = DEFAULT_DEGRADATION_PCT,
+               decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT):
     cap = cost_model.capex_breakdown(turbine.rated_power_kw, n_turbines)
     cable_cost = max(0.0, collection_length_m * cable_usd_per_m)
-    capex = float(cap['total_capex_usd']) + cable_cost
+    foundation_cost = cost_model.foundation_cost_usd(
+        turbine.rotor_diameter_m, turbine.hub_height_m, n_turbines)
+    capex = float(cap['total_capex_usd']) + cable_cost + foundation_cost
     annual_opex = cost_model.opex_annual_usd(capex)
-    decommissioning = capex * max(0.0, decommissioning_pct) / 100.0
-    cashflows = [-capex]
-    pv_costs, pv_energy, pv_revenue = capex, 0.0, 0.0
-    cumulative = -capex
-    discounted_cumulative = -capex
-    payback = None
-    discounted_payback = None
-    cashflow_table = []
-    pv_opex = 0.0
-    pv_decommissioning = 0.0
-    for year in range(1, project_years + 1):
-        energy = aep_p50_mwh * ((1.0 - degradation_pct / 100.0) ** (year - 1))
-        revenue = energy * 1000.0 * price_usd_kwh
-        terminal = decommissioning if year == project_years else 0.0
-        net = revenue - annual_opex - terminal
-        cashflows.append(net)
-        previous_cumulative = cumulative
-        cumulative += net
-        if payback is None and cumulative >= 0:
-            payback = (
-                year - 1 + (-previous_cumulative) / net
-                if net > 0 else float(year)
-            )
-        factor = (1.0 + discount_rate) ** year
-        discounted_net = net / factor
-        previous_discounted_cumulative = discounted_cumulative
-        discounted_cumulative += discounted_net
-        if discounted_payback is None and discounted_cumulative >= 0:
-            discounted_payback = (
-                year - 1 + (-previous_discounted_cumulative) / discounted_net
-                if discounted_net > 0 else float(year)
-            )
-        discounted_opex = annual_opex / factor
-        discounted_terminal = terminal / factor
-        pv_opex += discounted_opex
-        pv_decommissioning += discounted_terminal
-        pv_revenue += revenue / factor
-        pv_costs += discounted_opex + discounted_terminal
-        pv_energy += energy * 1000.0 / factor
-        cashflow_table.append({
-            'year': year,
-            'energy_mwh': energy,
-            'revenue_usd': revenue,
-            'opex_usd': annual_opex,
-            'decommissioning_usd': terminal,
-            'net_cashflow_usd': net,
-            'discount_factor': factor,
-            'pv_net_cashflow_usd': net / factor,
-            'cumulative_undiscounted_usd': cumulative,
-            'cumulative_discounted_usd': discounted_cumulative,
-        })
-    van = sum(value / ((1.0 + discount_rate) ** year) for year, value in enumerate(cashflows))
+    lifecycle = project_cashflows(
+        capex, annual_opex, aep_p50_mwh * 1000.0, price_usd_kwh,
+        discount_rate, project_years, degradation_pct=degradation_pct,
+        decommissioning_pct=decommissioning_pct)
+    decommissioning = lifecycle['decommissioning_usd']
+    cashflows = lifecycle['cashflows']
+    cashflow_table = lifecycle['cashflow_table']
+    van = lifecycle['van_usd']
+    pv_costs, pv_energy = lifecycle['pv_costs'], lifecycle['pv_energy_kwh']
+    pv_revenue = lifecycle['pv_revenue']
+    pv_opex = lifecycle['opex_present_value_usd']
+    pv_decommissioning = lifecycle['decommissioning_present_value_usd']
+    payback = lifecycle['payback_years']
+    discounted_payback = lifecycle['discounted_payback_years']
     installed_kw = float(turbine.rated_power_kw) * int(n_turbines)
     return {
         'capex_usd': capex,
@@ -213,6 +161,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'discounted_payback_years': discounted_payback,
         'lcoe_usd_kwh': pv_costs / pv_energy if pv_energy > 0 else None,
         'collection_cable_cost_usd': cable_cost,
+        'foundation_cost_usd': foundation_cost,
         'decommissioning_usd': decommissioning,
         'decommissioning_present_value_usd': pv_decommissioning,
         'annual_revenue_year1_usd': aep_p50_mwh * 1000.0 * price_usd_kwh,
@@ -221,7 +170,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'economic_formulas': {
             'turbines_total': 'rated_power_kw × n_turbines × turbine_usd_per_kw',
             'base_capex': 'turbines_total_usd ÷ turbines_pct',
-            'capex': 'base_capex_usd + collection_cable_cost_usd',
+            'capex': 'base_capex_usd + collection_cable_cost_usd + foundation_cost_usd',
             'annual_opex': 'capex_usd × opex_pct_capex',
             'annual_revenue': 'aep_p50_mwh × 1000 × price_usd_kwh',
             'npv': 'Σ net_cashflow_t ÷ (1 + discount_rate)^t, incluyendo CAPEX en t=0',
@@ -501,8 +450,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                     'discount_rate': float(discount_rate),
                     'project_years': int(project_years),
                     'price_usd_kwh': float(price_usd_kwh),
-                    'degradation_pct_per_year': 0.3,
-                    'decommissioning_pct_capex': 3.0,
+                    'degradation_pct_per_year': DEFAULT_DEGRADATION_PCT,
+                    'decommissioning_pct_capex': DEFAULT_DECOMMISSIONING_PCT,
                     'collection_cable_usd_per_m': 75.0,
                     'cost_model_origin': cost_model_origin,
                 },

@@ -39,8 +39,10 @@ class LcoeDiscountingTests(unittest.TestCase):
                                    project_years=years)
 
         annuity = _annuity(rate, years)
-        expected_lcoe = ((total_capex + annual_opex * annuity) /
-                          (annual_energy_kwh * annuity))
+        pv_energy = sum(annual_energy_kwh * 0.997 ** (year - 1) / (1 + rate) ** year
+                        for year in range(1, years + 1))
+        expected_lcoe = ((total_capex + annual_opex * annuity
+                          + total_capex * 0.03 / (1 + rate) ** years) / pv_energy)
         undiscounted_bug = ((total_capex + annual_opex * years) /
                              (annual_energy_kwh * years))
 
@@ -68,7 +70,9 @@ class LcoeDiscountingTests(unittest.TestCase):
         cm = res['opex_usd_anual']
         ekwh = res['aep_mwh'] * 1000.0
         annuity = _annuity(rate, years)
-        expected_lcoe = (ctot + cm * annuity) / (ekwh * annuity)
+        pv_energy = sum(ekwh * 0.997 ** (year - 1) / (1 + rate) ** year
+                        for year in range(1, years + 1))
+        expected_lcoe = (ctot + cm * annuity + ctot * 0.03 / (1 + rate) ** years) / pv_energy
         undiscounted_bug = (ctot + cm * years) / (ekwh * years)
 
         self.assertAlmostEqual(res['lcoe_usd_kwh'], expected_lcoe, places=4)

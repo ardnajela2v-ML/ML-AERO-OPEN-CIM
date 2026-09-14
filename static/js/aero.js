@@ -281,6 +281,8 @@ function collectProjectClientState() {
       defaults: MCDA.defaults, turbines: MCDA.turbines,
       layoutWeights: MCDA.layoutWeights,
       weightSchema: MCDA.weightSchema,
+      ahpDraft: MCDA.ahpDraft, ahpResult: MCDA.ahpResult,
+      ahpApplied: MCDA.ahpApplied, weightSource: MCDA.weightSource,
     }),
     cluster: projectJsonClone({
       result: CLUSTER.result, k: CLUSTER.k,
@@ -351,7 +353,7 @@ async function applyProjectClientState(state) {
   }
   if (state.mcda) {
     const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
-    Object.assign(MCDA, state.mcda);
+    Object.assign(MCDA, {ahpDraft:null, ahpResult:null, ahpApplied:null, weightSource:'reference'}, state.mcda);
     MCDA.weightSchema = state.mcda.weightSchema || null;
     const storedLayoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
     MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(storedLayoutWeights)
@@ -2500,8 +2502,8 @@ function technoAdjustedAnalysis(a) {
   const infl       = inflPct / 100;
   const N          = a.project_years || 25;
   const capexTotal = a.capex?.total_capex_usd || 0;
-  const opex       = a.annual_opex_usd || 0;
-  const baseRev    = (a.annual_revenue_usd || 0) * factor;   // revenue año 1 (post-pérdidas)
+  const opex       = a.cashflow_table?.[0]?.opex ?? a.annual_opex_usd ?? 0;
+  const baseRev    = (a.cashflow_table?.[0]?.revenue ?? a.annual_revenue_usd ?? 0) * factor;
 
   const adj = JSON.parse(JSON.stringify(a));
   adj.annual_energy_kwh   = Math.round((a.annual_energy_kwh || 0) * factor);
@@ -2510,27 +2512,31 @@ function technoAdjustedAnalysis(a) {
   adj.annual_cashflow_usd = Math.round(baseRev - opex);
   adj.capacity_factor_pct = Math.round((a.capacity_factor_pct || 0) * factor * 100) / 100;
 
-  // Si el backend usó precios variables por año, preservamos esa variación.
-  // Si no, reconstruimos
-  // desde year-1 baseRev (compatibilidad histórica).
-  const useExisting = !!a.variable_params_used && Array.isArray(a.cashflow_table) && a.cashflow_table.length;
+  // Preservar todos los flujos anuales, incluida la degradación y el costo final.
+  // La reconstrucción solo aplica a resultados históricos sin tabla completa.
+  const useExisting = Array.isArray(a.cashflow_table) && a.cashflow_table.length === N;
   let cum    = -capexTotal;
   let cumPv  = -capexTotal;
   let pbYears = null;
   adj.cashflow_table = [];
+  let pvCosts = capexTotal, pvEnergy = 0, pvRevenue = 0;
   for (let yr = 1; yr <= N; yr++) {
-    let cfT;
+    const baseRow = useExisting ? a.cashflow_table[yr - 1] : {};
+    const terminal = Number(baseRow.decommissioning) ||
+      (yr === N ? (Number(a.decommissioning_usd) || 0) : 0);
+    const degradation = (Number(a.degradation_pct_per_year) || 0) / 100;
+    const energyMwh = (baseRow.energy_mwh ??
+      (a.annual_energy_kwh || 0) / 1000 * Math.pow(1 - degradation, yr - 1)) * factor;
+    let cfT, revT;
     let opexT = opex * Math.pow(1 + infl, yr - 1);
     if (useExisting) {
-      const baseRow = a.cashflow_table[yr - 1] || {};
       const baseOpexYr = Number.isFinite(Number(baseRow.opex)) ? Number(baseRow.opex) : opexT;
-      opexT = opex * Math.pow(1 + infl, yr - 1);
-      const baseRevYr = (Number(baseRow.cashflow) || 0) + baseOpexYr;  // recover revenue from cashflow + opex
-      const revT = baseRevYr * factor * Math.pow(1 + esc, yr - 1);
-      cfT = revT - opexT;
+      const baseRevYr = Number(baseRow.revenue ?? ((Number(baseRow.cashflow) || 0) + baseOpexYr + terminal));
+      revT = baseRevYr * factor * Math.pow(1 + esc, yr - 1);
+      cfT = revT - opexT - terminal;
     } else {
-      const revT = baseRev * Math.pow(1 + esc, yr - 1);
-      cfT = revT - opexT;
+      revT = baseRev * Math.pow((1 + esc) * (1 - degradation), yr - 1);
+      cfT = revT - opexT - terminal;
     }
     const r = (a.discount_rate_pct || 0) / 100;
     const pvT = cfT / Math.pow(1 + r, yr);
@@ -2540,17 +2546,21 @@ function technoAdjustedAnalysis(a) {
     if (pbYears == null && cum >= 0 && prevCum < 0 && cfT > 0) {
       pbYears = Math.round((yr - 1 + (-prevCum) / cfT) * 10) / 10;
     }
-    const baseRow = useExisting ? (a.cashflow_table[yr - 1] || {}) : {};
+    pvCosts += (opexT + terminal) / Math.pow(1 + r, yr);
+    pvEnergy += energyMwh * 1000 / Math.pow(1 + r, yr);
+    pvRevenue += revT / Math.pow(1 + r, yr);
     adj.cashflow_table.push({
       year: yr,
-      energy_mwh:        baseRow.energy_mwh,
-      price_usd_kwh:     baseRow.price_usd_kwh,
+      energy_mwh:        energyMwh,
+      price_usd_kwh:     (baseRow.price_usd_kwh ?? a.energy_price_usd_kwh) * Math.pow(1 + esc, yr - 1),
       discount_rate_pct: baseRow.discount_rate_pct,
       fx_mxn_per_usd:    baseRow.fx_mxn_per_usd,
-      opex:              Math.round(opexT),
-      cashflow:          Math.round(cfT),
-      pv_cashflow:       Math.round(pvT),
-      cumulative:        Math.round(cum),
+      revenue:           revT,
+      opex:              opexT,
+      decommissioning:   terminal,
+      cashflow:          cfT,
+      pv_cashflow:       pvT,
+      cumulative:        cum,
     });
   }
   adj.npv_usd       = Math.round(cumPv);
@@ -2560,12 +2570,12 @@ function technoAdjustedAnalysis(a) {
     ? Math.round(adj.npv_usd * rMean / (1 - Math.pow(1 + rMean, -N)))
     : Math.round(adj.npv_usd / N);
 
-  // LCOE — métrica de costo, no se afecta por escalamiento; solo por pérdidas (vía energía)
-  const totalEnergyKwh = adj.annual_energy_kwh * N;
-  const totalOpexUsd   = adj.cashflow_table.reduce((s, row) => s + (Number(row.opex) || 0), 0);
-  const totalCostsUsd  = capexTotal + totalOpexUsd;
-  adj.lcoe_usd_kwh = totalEnergyKwh > 0
-    ? Math.round((totalCostsUsd / totalEnergyKwh) * 10000) / 10000 : 0;
+  // Preserve discounted, degraded energy and the terminal cost after UI adjustments.
+  const totalOpexUsd = adj.cashflow_table.reduce((sum, row) => sum + row.opex, 0);
+  adj.lcoe_usd_kwh = pvEnergy > 0 ? Math.round(pvCosts / pvEnergy * 10000) / 10000 : 0;
+  adj.b_c_ratio = pvCosts > 0 ? Math.round(pvRevenue / pvCosts * 10000) / 10000 : null;
+  adj.van_capex_ratio = capexTotal > 0 ? Math.round(cumPv / capexTotal * 10000) / 10000 : null;
+  adj.irr_pct = _projectIRR(adj.cashflow_table, capexTotal);
 
   adj.is_viable = adj.npv_usd > 0;
   adj._final_loss_applied_pct = lossPct;
@@ -3092,9 +3102,26 @@ async function runGlobalSensitivity() {
   }
 }
 
+/** Interpreta la comparación RF vs. modelo lineal, calculada sobre los mismos
+ * folds de validación cruzada — no asume que RF es mejor solo por ser ML.
+ * delta = desempeño(RF) - desempeño(lineal); isPct indica si delta ya está
+ * en puntos porcentuales (clasificación) en vez de unidades de R². */
+function mlVsLinearVerdict(delta, isPct) {
+  const d = isPct ? delta * 100 : delta;
+  const threshold = isPct ? 5 : 0.05;
+  if (d > threshold) return 'La relación no es suficientemente lineal para un modelo clásico — Random Forest aporta valor real aquí.';
+  if (d < -threshold) return 'El modelo lineal iguala o supera a Random Forest fuera de muestra — en este rango la relación es predominantemente lineal y el modelo clásico es preferible.';
+  return 'Random Forest y el modelo lineal rinden de forma similar fuera de muestra — no hay evidencia de no linealidad relevante en este rango.';
+}
+
 function renderGlobalSensitivity() {
   const data = GSENS.result;
   if (!data) return;
+  const wakeRangeEl = document.getElementById('gsens-wake-range');
+  const wakeRange = data.ranges_used?.wake_loss_pct;
+  if (wakeRangeEl) wakeRangeEl.textContent = wakeRange
+    ? `Estela muestreada: ${wakeRange[0].toFixed(2)}%–${wakeRange[1].toFixed(2)}% de pérdida.${wakeRange[1] === 0 ? ' Base cero: no se explora incertidumbre de estela.' : ''}`
+    : 'Sin variación de estela: no se proporcionó una pérdida base.';
   const metric = document.getElementById('gsens-metric')?.value || 'b_c_ratio';
 
   // Badges de caso base para las 5 métricas
@@ -3147,6 +3174,15 @@ function renderGlobalSensitivity() {
   }
 
   const imp = data.importance?.[metric];
+  const gsensVal = data.validation?.[metric];
+  const gsensValEl = document.getElementById('gsens-validation');
+  if (gsensValEl) gsensValEl.innerHTML = gsensVal
+    ? `<span class="text-muted">Validación fuera de muestra (${gsensVal.n_splits}-fold CV, n=${gsensVal.n_samples}): `
+      + `R² Random Forest = <b>${gsensVal.r2_mean.toFixed(3)}</b> ± ${gsensVal.r2_std.toFixed(3)} · `
+      + `R² regresión lineal = <b>${gsensVal.linear_model_r2_mean.toFixed(3)}</b> ± ${gsensVal.linear_model_r2_std.toFixed(3)}. `
+      + mlVsLinearVerdict(gsensVal.r2_mean - gsensVal.linear_model_r2_mean)
+      + '</span>'
+    : '';
   destroyChart('gsens-importance');
   const ctx = document.getElementById('gsens-importance-chart')?.getContext('2d');
   if (ctx) {
@@ -3544,6 +3580,11 @@ function renderRegimeChart(regimes) {
 function renderTechnoKPIs(r, leveraged = null) {
   const a = r.analysis;
   if (!a) return;
+
+  const assumptions = document.getElementById('te-lifecycle-assumptions');
+  if (assumptions) assumptions.textContent = a.degradation_pct_per_year != null
+    ? `Degradación: ${a.degradation_pct_per_year}% anual desde el año 2. Desmantelamiento: ${a.decommissioning_pct_capex}% del CAPEX inicial al final del proyecto. Supuestos del estudio; sin valor de rescate.`
+    : 'Resultado guardado sin supuestos de ciclo de vida: vuelve a calcular para aplicar degradación y desmantelamiento.';
 
   // Viability badge reflects leveraged NPV when financing is active
   const isViable = leveraged
@@ -4172,6 +4213,7 @@ async function calcLeveragedForScenario(scenarioKey, params) {
     capex_usd:                a.capex?.total_capex_usd,
     annual_revenue_usd:       a.annual_revenue_usd,
     annual_opex_usd:          a.annual_opex_usd,
+    project_cashflows_usd:    a.cashflow_table.map(row => row.cashflow),
     project_years:            a.project_years,
     debt_ratio_pct:           params.debt_ratio_pct,
     interest_rate_pct:        params.interest_rate_pct,
@@ -4847,6 +4889,7 @@ function renderCashflowTable(table, leveraged = null) {
   const showRate   = varies('discount_rate_pct', 1e-3);
   const showFx     = varies('fx_mxn_per_usd', 1e-3);
   const showOpex   = varies('opex', 1);
+  const showTerminal = table.some(row => Number(row.decommissioning) > 0);
 
   const headers = ['Año'];
   if (showEnergy) headers.push('Energía (MWh)');
@@ -4854,6 +4897,7 @@ function renderCashflowTable(table, leveraged = null) {
   if (showRate)   headers.push('Tasa (%)');
   if (showFx)     headers.push('FX (MXN/USD)');
   if (showOpex)   headers.push('OPEX (USD)');
+  if (showTerminal) headers.push('Desmantelamiento (USD)');
   headers.push('Flujo (USD)', 'VP Flujo', 'Acumulado');
   if (thead) thead.innerHTML = '<tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr>';
 
@@ -4866,6 +4910,7 @@ function renderCashflowTable(table, leveraged = null) {
     if (showRate)   cells.push(`<td>${fmtNum(r.discount_rate_pct, 3)}</td>`);
     if (showFx)     cells.push(`<td>${fmtNum(r.fx_mxn_per_usd, 3)}</td>`);
     if (showOpex)   cells.push(`<td>${usd(r.opex)}</td>`);
+    if (showTerminal) cells.push(`<td>${usd(r.decommissioning || 0)}</td>`);
     cells.push(`<td>${usd(r.cashflow)}</td>`);
     cells.push(`<td>${usd(r.pv_cashflow)}</td>`);
     cells.push(`<td>${usd(r.cumulative)}</td>`);
@@ -7634,12 +7679,140 @@ const MCDA = {
   lastSpatial:  null,
   defaults:     null,
   layoutWeights: null,
+  ahpDraft: null, ahpResult: null, ahpApplied: null, weightSource: 'reference',
   scope:        'area',
   miniMap:      null,
   miniBase:     null,
   miniLayers:   [],
   turbines:     [],
 };
+
+function mcdaActiveAhp() {
+  const a = MCDA.ahpApplied;
+  const keys = Object.keys(MCDA.defaults?.layout_weights || {});
+  return MCDA.scope === 'area' && MCDA.weightSource === 'ahp' && a?.consistent
+    && a.schema === 'layout-ahp-v1' && a.criteria?.length === keys.length
+    && keys.every(key => a.criteria.includes(key)
+      && Math.abs(a.weights[key] - MCDA.layoutWeights?.[key]) < 1e-12) ? a : null;
+}
+
+function mcdaAhpSourceLabel() {
+  const el = document.getElementById('mcda-weight-source');
+  if (el) el.textContent = mcdaActiveAhp() ? 'Pesos AHP individuales aplicados'
+    : MCDA.weightSource === 'manual' && MCDA.scope === 'area' ? 'Escenario manual'
+    : 'Escenario de referencia — sin elicitación AHP';
+}
+
+function mcdaAhpEscape(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[ch]));
+}
+
+function mcdaAhpCapture() {
+  const criteria = Object.keys(MCDA.defaults?.layout_weights || {});
+  const pairs = {};
+  document.querySelectorAll('.mcda-ahp-pair').forEach(el => { pairs[el.dataset.pair] = el.value; });
+  return {criteria, pairs, author: document.getElementById('mcda-ahp-author')?.value || '',
+    objective: document.getElementById('mcda-ahp-objective')?.value || '',
+    rationale: document.getElementById('mcda-ahp-rationale')?.value || ''};
+}
+
+function mcdaAhpEdited() {
+  MCDA.ahpDraft = mcdaAhpCapture();
+  MCDA.ahpResult = null;
+  mcdaRenderAhpResult();
+}
+
+function mcdaRenderAhp() {
+  const panel = document.getElementById('mcda-ahp-panel');
+  if (!panel) return;
+  panel.hidden = MCDA.scope !== 'area';
+  mcdaAhpSourceLabel();
+  if (panel.hidden) return;
+  const keys = Object.keys(MCDA.defaults?.layout_weights || {});
+  if (!keys.length) return;
+  if (JSON.stringify(MCDA.ahpDraft?.criteria) !== JSON.stringify(keys)) {
+    MCDA.ahpDraft = {criteria: keys, pairs: {}, author:'', objective:'', rationale:''};
+    MCDA.ahpResult = null;
+  }
+  const draft = MCDA.ahpDraft;
+  for (const key of ['author', 'objective', 'rationale'])
+    document.getElementById(`mcda-ahp-${key}`).value = draft[key] || '';
+  const labels = MCDA.defaults.layout_labels;
+  const rows = [];
+  for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+    const pair = `${i}-${j}`;
+    const options = ['<option value="">Sin responder</option>', '<option value="1">Igual importancia (1)</option>'];
+    for (let value = 2; value <= 9; value++) {
+      options.push(`<option value="${value}">A tiene mayor importancia: ${value}</option>`);
+      options.push(`<option value="${1/value}">B tiene mayor importancia: ${value}</option>`);
+    }
+    rows.push(`<div style="border-bottom:1px solid var(--border);padding:.5rem 0">
+      <label for="ahp-${pair}"><b>A:</b> ${mcdaAhpEscape(labels[keys[i]])}<br><b>B:</b> ${mcdaAhpEscape(labels[keys[j]])}</label>
+      <select id="ahp-${pair}" class="form-select mcda-ahp-pair" data-pair="${pair}" onchange="mcdaAhpEdited()">${options.join('')}</select></div>`);
+  }
+  document.getElementById('mcda-ahp-pairs').innerHTML = rows.join('');
+  document.querySelectorAll('.mcda-ahp-pair').forEach(el => { el.value = draft.pairs[el.dataset.pair] || ''; });
+  mcdaRenderAhpResult();
+}
+
+function mcdaRenderAhpResult() {
+  const out = document.getElementById('mcda-ahp-result');
+  if (!out) return;
+  const a = MCDA.ahpResult;
+  document.getElementById('btn-mcda-ahp-apply').disabled = !a?.consistent;
+  document.getElementById('btn-mcda-ahp-export').disabled = !a;
+  if (!a) { out.textContent = 'Completa las 28 comparaciones, autor, objetivo y justificación. El borrador no modifica los pesos aplicados.'; return; }
+  const labels = MCDA.defaults?.layout_labels || {};
+  out.innerHTML = `<p><b>${a.consistent ? 'Consistencia aceptable' : 'Revisar juicios antes de aplicar'}</b> · CR ${a.cr.toFixed(4)} (límite ${a.cr_threshold}) · CI ${a.ci.toFixed(4)} · RI ${a.ri} · λmax ${a.lambda_max.toFixed(4)}</p>`
+    + '<ul>' + Object.entries(a.weights).map(([key,w]) => `<li>${mcdaAhpEscape(labels[key] || key)}: ${(w*100).toFixed(3)}%</li>`).join('') + '</ul>'
+    + (!a.consistent ? '<p>Revisa las relaciones entre estos criterios; no se modificaron tus respuestas:</p><ul>'
+      + a.review_triads.map(t => `<li>${t.criteria.map(key => mcdaAhpEscape(labels[key] || key)).join(' / ')}</li>`).join('') + '</ul>' : '')
+    + '<p>El CR evalúa coherencia interna. La pertinencia científica de los criterios requiere su expediente bibliográfico.</p>';
+}
+
+async function mcdaCalculateAhp() {
+  const button = document.getElementById('btn-mcda-ahp-calculate');
+  button.disabled = true;
+  try {
+    const draft = mcdaAhpCapture();
+    MCDA.ahpDraft = draft;
+    MCDA.ahpResult = null;
+    mcdaRenderAhpResult();
+    const signature = JSON.stringify(draft);
+    const matrix = draft.criteria.map((_,i) => draft.criteria.map((_,j) => i === j ? 1 : null));
+    for (let i=0; i<matrix.length; i++) for (let j=i+1; j<matrix.length; j++) {
+      const value = Number(draft.pairs[`${i}-${j}`]);
+      if (!value) throw new Error('Faltan comparaciones: «sin responder» no equivale a igualdad.');
+      matrix[i][j] = value; matrix[j][i] = 1/value;
+    }
+    const a = await api('/api/multicriteria/ahp', 'POST', {...draft, matrix});
+    if (signature !== JSON.stringify(mcdaAhpCapture())) return;
+    MCDA.ahpResult = a;
+    mcdaRenderAhpResult();
+  } catch (e) { toast(`AHP: ${e.message}`, 'error'); }
+  finally { button.disabled = false; }
+}
+
+async function mcdaApplyAhp() {
+  if (!MCDA.ahpResult?.consistent || MCDA.scope !== 'area') return;
+  MCDA.ahpApplied = projectJsonClone(MCDA.ahpResult);
+  MCDA.layoutWeights = {...MCDA.ahpApplied.weights};
+  MCDA.weightSchema = 'effective-area-v1';
+  MCDA.weightSource = 'ahp';
+  await mcdaBuildWeightSliders();
+  TOPSIS_ROBUST.result = null;
+  const robustCard = document.getElementById('topsis-robust-card');
+  if (robustCard) robustCard.style.display = 'none';
+  if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') await mcdaRankNow();
+  else toast('Pesos AHP aplicados. Ejecuta el análisis de parques para obtener el ranking.', 'success');
+}
+
+function mcdaExportAhp() {
+  if (!MCDA.ahpResult) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(MCDA.ahpResult, null, 2)], {type:'application/json'}));
+  const a = document.createElement('a'); a.href = url; a.download = 'windpro-ahp.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 async function mcdaLoadDefaults() {
   if (MCDA.defaults) return MCDA.defaults;
@@ -7659,6 +7832,7 @@ async function mcdaBuildWeightSliders() {
       : mcdaMergeLayoutWeightSchema(MCDA.layoutWeights, d.layout_weights);
     MCDA.weightSchema = 'effective-area-v1';
   }
+  mcdaRenderAhp();
   const weights = isLayout ? MCDA.layoutWeights : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
@@ -7671,10 +7845,10 @@ async function mcdaBuildWeightSliders() {
         <label style="flex:1;color:var(--text-secondary)">${label}
           <span style="color:${dir>0?'var(--green)':'var(--orange)'};font-size:.7rem">${hint}</span>
         </label>
-        <input type="range" min="0" max="0.5" step="0.005" value="${v}"
+        <input type="range" min="0" max="1" step="any" value="${v}"
           data-crit="${k}" class="mcda-w"
           style="flex:1"
-          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberLayoutWeights()">
+          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberLayoutWeights(true)">
         <span style="font-family:var(--font-mono);width:42px;text-align:right">${Number(v).toFixed(3)}</span>
       </div>`;
   };
@@ -7702,6 +7876,8 @@ async function mcdaBuildWeightSliders() {
 }
 
 function mcdaGetWeights() {
+  const assessment = mcdaActiveAhp();
+  if (assessment) return { ...assessment.weights };
   const out = {};
   document.querySelectorAll('.mcda-w').forEach(el => {
     out[el.dataset.crit] = parseFloat(el.value);
@@ -7709,9 +7885,11 @@ function mcdaGetWeights() {
   return out;
 }
 
-function mcdaRememberLayoutWeights() {
+function mcdaRememberLayoutWeights(edited = false) {
   if (MCDA.scope !== 'area') return;
+  if (edited) MCDA.weightSource = 'manual';
   MCDA.layoutWeights = mcdaGetWeights();
+  mcdaAhpSourceLabel();
 }
 
 function mcdaUpdateTurbineCount() {
@@ -7837,7 +8015,7 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
   const status = document.getElementById('mcda-mini-status');
   const areaMode = MCDA.scope === 'area';
   if (title) title.textContent = areaMode
-    ? 'Mapa TOPSIS — base científico'
+    ? 'Mapa TOPSIS — escenario de decisión'
     : 'Mapa TOPSIS — exploración global';
 
   let focusLayer = null;
@@ -8026,6 +8204,8 @@ async function mcdaResetWeights() {
   });
   if (MCDA.scope === 'area') {
     MCDA.layoutWeights = { ...defaults };
+    MCDA.weightSource = 'reference';
+    mcdaAhpSourceLabel();
   }
 }
 
@@ -8115,6 +8295,7 @@ async function mcdaRunAnalysis() {
   if (areaMode) {
     mcdaRememberLayoutWeights();
     body.layout_weights = MCDA.layoutWeights || MCDA.defaults?.layout_weights;
+    body.ahp_assessment = mcdaActiveAhp();
     delete body.weights;
   }
   if (areaMode) body.polygon = parkPolygon;
@@ -8188,6 +8369,7 @@ async function mcdaRankNow() {
       const r = await api('/api/multicriteria/rank', 'POST', {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
+        ahp_assessment: mcdaActiveAhp(),
         weights: mcdaGetWeights(),
         polygon: MCDA.lastSpatial.comparison_polygon || mcdaParkPolygon(),
         exclusion_polygons: MCDA.lastSpatial.comparison_exclusions || mcdaExclusionPolygons(),
@@ -8243,6 +8425,7 @@ async function runTopsisRobustness() {
     alternatives: ranking,
     mode: isLayout ? 'layout_alternatives' : 'pairs',
     base_weights: mcdaGetWeights(),
+    ahp_assessment: isLayout ? mcdaActiveAhp() : null,
     n_samples: nSamples,
   };
   const btn = document.getElementById('btn-topsis-robust-run');
@@ -8307,6 +8490,16 @@ function renderTopsisRobustness(data) {
   }
 
   // Importancia de criterios (¿qué determina al ganador?)
+  const clfVal = data.classifier_validation;
+  const clfValEl = document.getElementById('topsis-robust-validation');
+  if (clfValEl) clfValEl.innerHTML = clfVal
+    ? `<span class="text-muted">Validación fuera de muestra (${clfVal.n_splits}-fold CV, n=${clfVal.n_samples}): `
+      + `exactitud balanceada Random Forest = <b>${(clfVal.balanced_accuracy_mean*100).toFixed(1)}%</b> ± ${(clfVal.balanced_accuracy_std*100).toFixed(1)}pp · `
+      + `regresión logística = <b>${(clfVal.linear_model_balanced_accuracy_mean*100).toFixed(1)}%</b> · `
+      + `línea base por mayoría = ${(clfVal.baseline_accuracy_mean*100).toFixed(1)}%. `
+      + mlVsLinearVerdict(clfVal.balanced_accuracy_mean - clfVal.linear_model_balanced_accuracy_mean, true)
+      + '</span>'
+    : '';
   destroyChart('topsis-robust-criteria');
   const ctx2 = document.getElementById('topsis-robust-criteria-chart')?.getContext('2d');
   if (ctx2) {
@@ -8407,7 +8600,7 @@ function mcdaLayoutAuditHtml(a) {
       ['AEP neto pre-estela', `${mcdaAuditNumber(energy.aep_net_pre_wake_mwh, 1)} MWh`],
       ['AEP después de estela', `${mcdaAuditNumber(energy.aep_after_wake_operational_mwh, 1)} MWh`],
       ['AEP P50 final', `${mcdaAuditNumber(energy.aep_p50_after_all_losses_mwh, 1)} MWh`],
-      ['AEP P90', `${mcdaAuditNumber(energy.aep_p90_mwh, 1)} MWh`],
+      ['AEP P90', `<b>${mcdaAuditNumber(energy.aep_p90_mwh, 1)} MWh</b>`],
       ['AEP P90 por área efectiva', `${mcdaAuditNumber(a.aep_p90_mwh_per_effective_km2, 1)} MWh/km²·año`],
       ['AEP P90 específico', `${mcdaAuditNumber(a.aep_p90_mwh_per_installed_mw, 1)} MWh/MW instalado·año`],
       ['Factor de capacidad', `${mcdaAuditNumber(Number(a.factor_capacidad) * 100, 2)}%`],
@@ -8532,9 +8725,9 @@ function mcdaRenderRanking(r) {
     ['cp_effective_full_series', 'Cp efectivo', '—', 4, 1],
     ['hours_near_cpmax', 'Horas ≥95% Cp máx.', 'h/año', 1, 1],
     ['factor_capacidad', 'FC neto', '%', 2, 100],
-    ['aep_p90_mwh_per_effective_km2', 'AEP P90 / área efectiva', 'MWh/km²·año', 1, 1],
+    ['aep_p90_mwh', 'AEP P90', 'MWh', 1, 1],
     ['discounted_payback_years', 'Recuperación descontada', 'años', 2, 1],
-    ['van_usd_per_effective_km2', 'VAN / área efectiva', 'USD/km²', 0, 1],
+    ['van_usd_per_installed_mw', 'VAN / MW instalado', 'USD/MW', 0, 1],
     ['benefit_cost_ratio', 'B/C', '—', 3, 1],
     ['lcoe_usd_kwh', 'LCOE', 'USD/kWh', 5, 1],
   ];

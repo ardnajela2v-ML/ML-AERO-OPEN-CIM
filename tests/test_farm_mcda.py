@@ -239,7 +239,7 @@ class FarmScientificModelTests(unittest.TestCase):
         design = CostModel.from_design_benchmark()
         benchmark = get_design_cost_benchmark()
 
-        self.assertEqual(techno.turbine_usd_per_kw, 1800.0)
+        self.assertEqual(techno.turbine_usd_per_kw, 945.0)
         self.assertEqual(design.turbine_usd_per_kw, 780.75)
         self.assertEqual(design.turbines_pct, 0.75)
         self.assertAlmostEqual(design.total_pct_check(), 1.0, places=12)
@@ -333,7 +333,7 @@ class LayoutTopsisTests(unittest.TestCase):
     def test_new_hourly_metrics_do_not_change_base_ranking_while_weight_is_zero(self):
         weights = dict(LAYOUT_WEIGHTS)
         for key in ('cp_effective_full_series', 'hours_near_cpmax',
-                    'benefit_cost_ratio', 'van_usd_per_effective_km2',
+                    'benefit_cost_ratio', 'van_usd_per_installed_mw',
                     'discounted_payback_years'):
             weights[key] = 0.0
         first = self.alternative('first', 1.0)
@@ -360,7 +360,7 @@ class LayoutTopsisTests(unittest.TestCase):
         )
         self.assertIn('cp_effective_full_series', changed['zero_weight_criteria'])
         self.assertIn('benefit_cost_ratio', changed['zero_weight_criteria'])
-        self.assertIn('van_usd_per_effective_km2',
+        self.assertIn('van_usd_per_installed_mw',
                       changed['zero_weight_criteria'])
         self.assertIn('discounted_payback_years',
                       changed['zero_weight_criteria'])
