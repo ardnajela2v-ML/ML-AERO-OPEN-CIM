@@ -8,11 +8,14 @@ function context() {
   const element = id => {
     if (!elements.has(id)) elements.set(id, { id, value: '', style: {}, textContent: '', innerHTML: '',
       classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+      setAttribute() {}, getAttribute() { return null; },
+      appendChild() {}, remove() {},
       querySelector() { return element(id + '-child'); }, querySelectorAll() { return []; } });
     return elements.get(id);
   };
   const sandbox = { console, setTimeout() {}, requestAnimationFrame() {},
-    document: { addEventListener() {}, querySelectorAll() { return []; }, querySelector() { return null; }, getElementById: element },
+    document: { addEventListener() {}, querySelectorAll() { return []; }, querySelector() { return null; },
+      getElementById: element, createElement: () => element(`__created_${elements.size}`) },
     window: { addEventListener() {} },
     Chart: { defaults: { font: {}, plugins: { legend: { labels: {} }, tooltip: {} } }, register() {} },
     fetch() { throw new Error('Restoration must not run network computations'); } };
@@ -62,4 +65,22 @@ test('park rendering restores numerical KPIs from the snapshot', () => {
   assert.equal(element('parque-kpi-aep').textContent, '12.000');
   assert.equal(element('parque-kpi-cf').textContent, '34.25');
   assert.equal(element('parque-info').textContent, 'Saved turbine · ⌀80m');
+});
+test('restoring a project never leaves a stale MCDA.defaults snapshot cached', async () => {
+  // MCDA.defaults is a cache of GET /api/multicriteria/defaults, not project
+  // data. A project saved before a layout criterion was added/removed used to
+  // carry an old `defaults` blob that, once restored, poisoned MCDA.defaults
+  // for the rest of the session — mcdaLoadDefaults() only fetches once
+  // (`if (MCDA.defaults) return MCDA.defaults;`), so TOPSIS, the weight
+  // sliders and the AHP calculator kept showing the outdated criteria set
+  // until the user started a brand new project. Regression for that bug.
+  const { run } = context();
+  const staleDefaults = { layout_weights: { old_criterion_removed_since: 1 } };
+  run(`state = {schema_version: 1, controls: {}, mcda: {
+    scope: 'area', layoutWeights: {old_criterion_removed_since: 1},
+    weightSchema: 'effective-area-v1', defaults: ${JSON.stringify(staleDefaults)},
+  }};`);
+  await run('applyProjectClientState(state)');
+  assert.equal(run('MCDA.defaults'), null,
+    'a stale saved `defaults` snapshot must not survive restore');
 });

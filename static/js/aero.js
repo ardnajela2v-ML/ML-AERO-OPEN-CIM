@@ -278,7 +278,10 @@ function collectProjectClientState() {
     mcda: projectJsonClone({
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
-      defaults: MCDA.defaults, turbines: MCDA.turbines,
+      // defaults NO se guarda: es un caché de /api/multicriteria/defaults
+      // (servidor), no un dato del proyecto — guardarlo congelaba el esquema
+      // de criterios vigente al momento de guardar dentro del archivo.
+      turbines: MCDA.turbines,
       layoutWeights: MCDA.layoutWeights,
       weightSchema: MCDA.weightSchema,
       ahpDraft: MCDA.ahpDraft, ahpResult: MCDA.ahpResult,
@@ -355,6 +358,16 @@ async function applyProjectClientState(state) {
     const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
     Object.assign(MCDA, {ahpDraft:null, ahpResult:null, ahpApplied:null, weightSource:'reference'}, state.mcda);
     MCDA.weightSchema = state.mcda.weightSchema || null;
+    // MCDA.defaults es un caché de /api/multicriteria/defaults, no un dato
+    // del proyecto: si el `state.mcda` restaurado trae un `defaults` viejo
+    // (proyecto guardado antes de agregar/quitar un criterio), quedaba fijo
+    // el resto de la sesión porque mcdaLoadDefaults() sólo lo pide una vez
+    // (`if (MCDA.defaults) return MCDA.defaults;`) — TOPSIS, los sliders de
+    // pesos y la calculadora AHP seguían mostrando el esquema viejo hasta
+    // iniciar un proyecto nuevo. Forzar un refetch real: mcdaBuildWeightSliders()
+    // más abajo ya llama a mcdaLoadDefaults() y, de paso, reconcilia
+    // MCDA.layoutWeights contra el esquema fresco (mcdaMergeLayoutWeightSchema).
+    MCDA.defaults = null;
     const storedLayoutWeights = state.mcda.layoutWeights || legacyBaseWeights;
     MCDA.layoutWeights = mcdaUsesObsoleteReweightedBase(storedLayoutWeights)
       ? null
