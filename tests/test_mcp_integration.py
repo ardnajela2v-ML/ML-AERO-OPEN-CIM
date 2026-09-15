@@ -448,6 +448,160 @@ class MCPIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(invalid_height.status_code, 400)
 
+    def _upload_single_observation(self, speed=6.0, latitude=16.5):
+        index = pd.date_range('2020-01-01', periods=72, freq='h')
+        frame = pd.DataFrame({'timestamp': index, 'wind_speed': speed + np.arange(72) / 100,
+                              'wind_direction': 240.0 + np.arange(72) % 20})
+        frame.loc[10, 'wind_speed'] = np.nan
+        response = self.client.post('/api/mcp/uploads', data={
+            'session_id': self.sid, 'data_kind': 'observed', 'provider': 'USER',
+            'latitude': str(latitude), 'longitude': '-95', 'measurement_height_m': '80',
+            'timezone': 'UTC', 'file': (io.BytesIO(frame.to_csv(index=False).encode()), 'real.csv'),
+        }, content_type='multipart/form-data')
+        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
+        return response.get_json()['station']
+
+    def _select_single_station(self, station, **overrides):
+        body = {'station_id': station['station_id'],
+                'poi': {'lat': station['latitude'], 'lon': station['longitude']},
+                'radius_km': 200, 'target_height_m': 80, **overrides}
+        return self.client.put(f'/api/sessions/{self.sid}/single-station-study', json=body)
+
+    def test_single_observed_without_mcp_keeps_gaps_provenance_and_restores(self):
+        station = self._upload_single_observation()
+        response = self._select_single_station(station)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        study = response.get_json()
+        self.assertEqual(study['active_data_source'], 'observed')
+        self.assertEqual(study['study_mode'], 'observed_only')
+        self.assertFalse(study['published_source']['is_mcp'])
+        self.assertFalse(study['published_source']['transformations'][0]['gap_filling'])
+        self.assertEqual(study['published_source']['rows'], 72)
+        stats = self.client.post('/api/wind/stats', json={'session_id': self.sid})
+        self.assertEqual(stats.status_code, 200, stats.get_data(as_text=True))
+        self.assertEqual(stats.get_json()['data_source']['station_id'], station['station_id'])
+        self.assertEqual(stats.get_json()['data_source']['source_id'], 'observed')
+        quality = self.client.post('/api/data/quality', json={'session_id': self.sid})
+        self.assertEqual(quality.status_code, 200, quality.get_data(as_text=True))
+        exported = self.client.post('/api/projects/export', json={
+            'session_id': self.sid, 'project_name': 'Observación única',
+            'client_state': {'schema_version': 1, 'wp': {'singleStationStudy': study,
+                'studyMode': 'observed_only', 'activeDataSource': 'observed'}}})
+        self.assertEqual(exported.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(exported.data)) as archive:
+            # The saved canonical frame still has the original missing speed.
+            frames = [json.loads(archive.read(name)) for name in archive.namelist()
+                      if name.startswith('frames/') and name.endswith('.json')]
+            speeds = [row['wind_speed'] for frame in frames for row in frame.get('data', [])
+                      if 'wind_speed' in row]
+            self.assertIn(None, speeds)
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'single.aeroproj')}, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201, imported.get_data(as_text=True))
+        restored = imported.get_json()
+        self.assertIn('single_station_study', restored['restored_keys'])
+        saved = self.client.get(f"/api/sessions/{restored['session_id']}/single-station-study").get_json()
+        self.assertEqual(saved['active_data_source'], 'observed')
+        self.assertEqual(saved['station_id'], station['station_id'])
+        blocked = self.client.post('/api/mcp/runs/old-run/publish', json={'session_id': self.sid})
+        self.assertEqual(blocked.status_code, 409)
+
+    def test_single_station_validates_area_height_and_failed_read_without_switching(self):
+        station = self._upload_single_observation()
+        self.assertEqual(self._select_single_station(station).status_code, 200)
+        for override in ({'radius_km': 0}, {'target_height_m': 0},
+                         {'target_height_m': float('nan')}, {'poi': {'lat': 91, 'lon': 0}},
+                         {'poi': {'lat': 0, 'lon': 0}, 'radius_km': 1},
+                         {'station_id': 'missing'}):
+            with self.subTest(override=override):
+                self.assertEqual(self._select_single_station(station, **override).status_code, 400)
+        with patch('api.read_certe_files', side_effect=ValueError('unreadable')):
+            self.assertEqual(self._select_single_station(station).status_code, 400)
+        saved = self.client.get(f'/api/sessions/{self.sid}/single-station-study').get_json()
+        self.assertEqual(saved['station_id'], station['station_id'])
+        self.assertEqual(saved['active_data_source'], 'observed')
+
+    def test_single_observation_switch_invalidates_cached_stats_for_same_shape(self):
+        first = self._upload_single_observation(4)
+        second = self._upload_single_observation(10)
+        means = []
+        for station in (first, second):
+            self.assertEqual(self._select_single_station(station).status_code, 200)
+            response = self.client.post('/api/wind/stats', json={'session_id': self.sid})
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json()
+            self.assertEqual(payload['data_source']['station_id'], station['station_id'])
+            means.append(payload)
+        self.assertNotEqual(means[0]['overview'], means[1]['overview'])
+
+    def test_single_virtual_uses_only_selected_station_and_kriging_keeps_catalog(self):
+        catalog = self.client.get(f'/api/mcp/catalog?session_id={self.sid}').get_json()
+        station = catalog['references'][0]
+        frame = pd.DataFrame({'wind_speed_ref': np.linspace(5, 8, 72),
+                              'wind_direction_ref': 220.0 + np.arange(72) % 20},
+                             index=pd.date_range('2020-01-01', periods=72, freq='h', tz='UTC'))
+        with patch('api.read_reference_files', return_value=[SimpleNamespace(
+                frame=frame, metadata={'wind_height_m': 50})]) as reader:
+            response = self._select_single_station(station, target_height_m=100)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(reader.call_count, 1)
+        study = response.get_json()
+        self.assertEqual(study['source_id'], 'reanalysis:' + station['station_id'])
+        self.assertEqual(study['study_mode'], 'single_reference')
+        self.assertEqual(study['published_source']['source_height_m'], 50)
+        self.assertEqual(study['published_source']['transformations'][-1]['method'], 'hellmann')
+        stats = self.client.post('/api/wind/stats', json={'session_id': self.sid})
+        self.assertEqual(stats.status_code, 200, stats.get_data(as_text=True))
+        self.assertEqual(stats.get_json()['data_source']['source_id'], study['source_id'])
+        # The spatial catalog is independent of the selected temporal station.
+        spatial = self.client.get('/api/kriging/sites/light').get_json()
+        self.assertGreater(spatial['count'], 1)
+        self.assertEqual(self.client.get(f'/api/sessions/{self.sid}/data-sources').get_json()['active'], study['source_id'])
+
+    def test_pending_statistics_cannot_overwrite_a_new_source(self):
+        from concurrent.futures import ThreadPoolExecutor
+        first = self._upload_single_observation(4)
+        second = self._upload_single_observation(10)
+        self.assertEqual(self._select_single_station(first).status_code, 200)
+        switched = False
+        from core.wind_stats import compute_site_overview as original_overview
+        def switch_while_computing(*args, **kwargs):
+            nonlocal switched
+            if not switched:
+                switched = True
+                def select_new():
+                    with self.app.test_client() as client:
+                        return client.put(f'/api/sessions/{self.sid}/single-station-study', json={
+                            'station_id': second['station_id'], 'poi': {'lat': 16.5, 'lon': -95},
+                            'radius_km': 200, 'target_height_m': 80}).status_code
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    self.assertEqual(executor.submit(select_new).result(), 200)
+            return original_overview(*args, **kwargs)
+        with patch('api.compute_site_overview', side_effect=switch_while_computing):
+            old = self.client.post('/api/wind/stats', json={'session_id': self.sid})
+        self.assertEqual(old.status_code, 409)
+        fresh = self.client.post('/api/wind/stats', json={'session_id': self.sid})
+        self.assertEqual(fresh.status_code, 200)
+        self.assertEqual(fresh.get_json()['data_source']['station_id'], second['station_id'])
+
+    def test_late_single_station_preparation_cannot_replace_newer_selection(self):
+        first = self._upload_single_observation(4)
+        second = self._upload_single_observation(10)
+        from api import read_certe_files as original_reader
+        started_newer = False
+        def read_with_newer_selection(*args, **kwargs):
+            nonlocal started_newer
+            if not started_newer:
+                started_newer = True
+                response = self._select_single_station(second)
+                self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            return original_reader(*args, **kwargs)
+        with patch('api.read_certe_files', side_effect=read_with_newer_selection):
+            response = self._select_single_station(first)
+        self.assertEqual(response.status_code, 409)
+        study = self.client.get(f'/api/sessions/{self.sid}/single-station-study').get_json()
+        self.assertEqual(study['station_id'], second['station_id'])
+
     def test_reanalysis_only_study_is_independent_from_mcp_and_restorable(self):
         catalog = self.client.get(f"/api/mcp/catalog?session_id={self.sid}").get_json()
         references = catalog["references"][:3]
@@ -1088,6 +1242,21 @@ class MCPIntegrationTests(unittest.TestCase):
             techno.get_json()["wind_source"]["data_source"]["source_id"],
             source_id,
         )
+
+
+        single = self._select_single_station(observation.get_json()['station'])
+        self.assertEqual(single.status_code, 200, single.get_data(as_text=True))
+        self.assertEqual(single.get_json()['active_data_source'], 'observed')
+        blocked = self.client.post(f"/api/mcp/runs/{ids['run_id']}/publish", json={'session_id': self.sid})
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(self.client.post('/api/mcp/runs', json={'session_id': self.sid}).status_code, 409)
+        selected_again = self.client.put(f'/api/sessions/{self.sid}/mcp-study', json={
+            'observed_station_id': observed_id, 'reference_station_ids': [reference_id],
+            'poi': {'lat': 16.55, 'lon': -94.955}, 'radius_km': 100, 'target_height_m': 80})
+        self.assertEqual(selected_again.status_code, 200)
+        republished = self.client.post(f"/api/mcp/runs/{ids['run_id']}/publish", json={'session_id': self.sid})
+        self.assertEqual(republished.status_code, 200, republished.get_data(as_text=True))
+        self.assertEqual(republished.get_json()['source_id'], source_id)
 
 
 if __name__ == "__main__":

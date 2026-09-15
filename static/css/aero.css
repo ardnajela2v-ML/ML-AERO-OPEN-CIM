@@ -2352,3 +2352,6 @@ body.light .resumen-verdict__cta {
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+/* Keep the area decision controls usable when the station list scrolls. */
+.globe-panel > .form-select, .globe-panel > button { flex-shrink: 0; }

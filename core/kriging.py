@@ -1386,6 +1386,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         'scope': scope,
         'physical': physical,
         'n_input_stations': len(rows),
+        'spatial_sources': [{'filename': row['_name'], 'lat': row['_lat'],
+                             'lon': row['_lon'], 'year': year} for row in rows],
         'n_virtual_sites': len(sites_out),
         'bounds': grid_bounds,
     }
@@ -1572,6 +1574,8 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
         'n_input_stations': int(field_bundle.get('n_sites') or 0),
         'n_virtual_sites': len(sites_out), 'bounds': grid_bounds,
         'field_source': 'mcp_calibrated_maps',
+        'spatial_sources': field_bundle.get('spatial_sources') or
+                           (field_bundle.get('wind') or {}).get('points', []),
         'data_source': field_bundle.get('data_source'),
         'calibration_id': field_bundle.get('calibration_id'),
         'study_revision': field_bundle.get('study_revision'),
@@ -1701,7 +1705,8 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
             log.warning('legacy_three_maps: error con la última turbina %s — %s', last_tf, e)
             last_tf = None
 
-    for r in stats_rows:
+    spatial_sources = []
+    for source_path, r in zip(paths, stats_rows):
         if r is None or r.get('_lat') is None or r.get('_lon') is None:
             continue
 
@@ -1726,6 +1731,9 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         invers.append(float(ctot_last))
         vans.append(float(VAN_last))
         names.append(r['_name'])
+        spatial_sources.append({'filename': os.path.basename(source_path),
+                                'name': r['_name'], 'lat': r['_lat'], 'lon': r['_lon'],
+                                'year': year, 'target_height_m': z_tgt})
         weibull_ks.append(float(r['weibull_K']))
         sector_freqs.append(r['sector_frequency_pct'])
         sector_speeds.append(r['sector_mean_speed'])
@@ -1763,6 +1771,7 @@ def legacy_three_maps(wind_folder: str, turbines_folder: str, year: int,
         'inversion':       _grid(invers,  'Inversión inicial (USD)'),
         'van':             _grid(vans,    'Valor Actual Neto (USD)'),
         'n_sites':         len(lats),
+        'spatial_sources': spatial_sources,
         'turbine_curves':  turbine_curves,
         'physical':        False,
     }

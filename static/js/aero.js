@@ -261,7 +261,7 @@ function collectProjectClientState() {
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
       referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
-      reanalysisStudy: WP.reanalysisStudy, studyMode: WP.studyMode,
+      reanalysisStudy: WP.reanalysisStudy, singleStationStudy: WP.singleStationStudy, studyMode: WP.studyMode,
       mcpRunId: WP.mcpRunId, activeDataSource: WP.activeDataSource,
       parkConfiguration: WP.parkConfiguration, meta: WP.meta,
     }),
@@ -302,7 +302,7 @@ function collectProjectClientState() {
       poi: GLOBE.poi, master: GLOBE.master, sites: GLOBE.sites,
       observedStation: GLOBE.observedStation,
       mcpReferences: Array.from(GLOBE.mcpReferences || []),
-      studyMode: GLOBE.studyMode,
+      studyMode: GLOBE.studyMode, sourceChoice: GLOBE.sourceChoice, singleReference: GLOBE.singleReference,
       rotate: GLOBE.rotate, zoomScale: GLOBE.zoomScale, mode: GLOBE.mode,
     }),
   };
@@ -399,6 +399,7 @@ async function applyProjectClientState(state) {
   Object.assign(QD, state.quickDesign || {}, { active: false });
   if (state.globe) {
     Object.assign(GLOBE, state.globe);
+    GLOBE.areaKey = null;
     GLOBE.mcpReferences = new Set(state.globe.mcpReferences || []);
     requestAnimationFrame(() => {
       // Sincroniza también el DOM: un proyecto podía restaurar mode="leaflet"
@@ -1579,6 +1580,9 @@ function renderLineChart(canvasId, chartData, opts = {}) {
 
 // ─── API HELPERS ──────────────────────────────────────────────────────────────
 async function api(url, method = 'GET', body = null) {
+  const windEpoch = WP.windSourceEpoch || 0;
+  const spatialEpoch = KRIG.spatialEpoch;
+  const spatialRequest = /^\/api\/(farm|multicriteria|kriging\/(status|legacy_maps|calibrations))/.test(url);
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
@@ -1587,6 +1591,8 @@ async function api(url, method = 'GET', body = null) {
   const res = await fetch(url, opts);
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (windEpoch !== (WP.windSourceEpoch || 0)) throw new Error('La fuente cambió; se descartó la respuesta anterior.');
+  if (spatialRequest && spatialEpoch !== KRIG.spatialEpoch) throw new Error('Las estaciones cambiaron; se descartó el cálculo espacial anterior.');
   return json;
 }
 
@@ -2100,6 +2106,7 @@ function renderWindRose(rose) {
       ? 'Dirección circular combinada de los nodos ERA5/MERRA-2 del área · sin MCP.'
       : kind === 'mcp'
         ? 'La dirección observada se conserva y sólo los huecos usan MCP corregido.'
+        : kind === 'reanalysis' ? 'Dirección de la referencia virtual seleccionada · sin MCP.'
         : 'Dirección registrada por la fuente observada activa.';
     legendEl.innerHTML = `<span style="opacity:.75">Frecuencia direccional de la fuente activa · ${note}</span>`;
   }
@@ -2804,7 +2811,9 @@ function technoRefreshScenarioView() {
   if (WP.parkConfiguration) sources.push(`Configuración comercial: revisión ${WP.parkConfiguration.configuration_revision || 0}`);
   if (WP.activeDataSource?.startsWith('mcp:')) sources.push(`Recurso: reconstrucción histórica MCP (${WP.activeDataSource})`);
   else if (WP.studyMode === 'reanalysis_only') sources.push(`Recurso: ERA5/MERRA-2 del área (${WP.activeDataSource}) · sin MCP`);
+  else if (singleStationMode()) sources.push(`Fuente temporal: ${WP.singleStationStudy?.published_source?.label || WP.activeDataSource} (${WP.activeDataSource}) · sin MCP`);
   else sources.push('Recurso: serie observada activa');
+  if (KRIG.result?.spatial_sources) sources.push(`Kriging: ${KRIG.result.spatial_sources.length} estaciones espaciales`);
   if (parkMarketTrajectory('pml')?.length) sources.push('Precio: PML fijo 2018 (8760)');
   if (badge) badge.textContent = 'Integral';
   if (status) status.innerHTML =
@@ -2899,7 +2908,9 @@ function renderTechnoScenarioResult() {
         ? `Reconstrucción MCP · ${ws.data_source.label || ws.data_source.source_id}`
         : ws.data_source?.kind === 'reanalysis_area'
           ? `Reanálisis del área · ${ws.data_source.label || ws.data_source.source_id} · sin MCP`
-          : 'Estación observada';
+          : ws.data_source?.kind === 'reanalysis'
+            ? `Referencia virtual · ${ws.data_source.label || ws.data_source.source_id} · sin MCP`
+            : `Estación observada · ${ws.data_source?.label || 'observed'}`;
       windBadge.textContent = `⬢ ${sourceLabel} · media fuente: ${rawM} · media hub: ${hubM}${nRec ? ' · ' + nRec : ''}`;
       windBadge.style.display = '';
     } else {
@@ -5446,8 +5457,12 @@ function krig3GenerationMode() {
   return document.getElementById('krig3-generation-mode')?.value || 'windpro_classic';
 }
 
+function singleStationMode() {
+  return ['observed_only', 'single_reference'].includes(WP.studyMode);
+}
+
 function krig3AdvancedMcpRequested() {
-  if (WP.studyMode === 'reanalysis_only') return false;
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only') return false;
   const manual = !!document.getElementById('krig3-manual-mode')?.checked;
   return !manual && (
     krig3GenerationMode() === 'mcp_advanced'
@@ -5456,7 +5471,7 @@ function krig3AdvancedMcpRequested() {
 }
 
 function krig3ActivatePublishedSource() {
-  if (WP.studyMode === 'reanalysis_only') {
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only') {
     const mode = document.getElementById('krig3-generation-mode');
     if (mode) mode.value = 'windpro_classic';
     requestAnimationFrame(() => krig3SyncGenerationMode());
@@ -5472,9 +5487,10 @@ function krig3ActivatePublishedSource() {
 function krig3SyncGenerationMode() {
   const modeSelect = document.getElementById('krig3-generation-mode');
   const advancedOption = modeSelect?.querySelector('option[value="mcp_advanced"]');
-  if (advancedOption) advancedOption.disabled = WP.studyMode === 'reanalysis_only';
-  if (WP.studyMode === 'reanalysis_only' && modeSelect) modeSelect.value = 'windpro_classic';
-  const advanced = WP.studyMode !== 'reanalysis_only' && krig3GenerationMode() === 'mcp_advanced';
+  const noMcp = singleStationMode() || WP.studyMode === 'reanalysis_only';
+  if (advancedOption) advancedOption.disabled = noMcp;
+  if (noMcp && modeSelect) modeSelect.value = 'windpro_classic';
+  const advanced = !noMcp && krig3GenerationMode() === 'mcp_advanced';
   const details = document.getElementById('krig3-downscaling-details');
   const layers = document.getElementById('krig3-advanced-layers');
   const note = document.getElementById('krig3-generation-note');
@@ -5488,7 +5504,9 @@ function krig3SyncGenerationMode() {
   // usuario todavía puede desactivar la corrección física explícitamente.
   if (physical && !physical.checked) physical.checked = true;
   if (note) {
-    note.textContent = WP.studyMode === 'reanalysis_only'
+    note.textContent = singleStationMode()
+      ? `Fuente temporal: ${WP.singleStationStudy?.published_source?.label || WP.activeDataSource}. Kriging usa los puntos espaciales seleccionados; no cambia la fuente temporal ni ejecuta MCP.`
+      : WP.studyMode === 'reanalysis_only'
       ? 'Estudio sin estación observada: interpolación espacial con las referencias ERA5/MERRA-2 del radio. No se ejecuta MCP ni se simula una observación.'
       : advanced
       ? 'Usa el hindcast MCP como ancla y aplica la cadena física clásica: neutralización, Kriging, rugosidad por píxel, respaldo de pendiente DEM y densidad por elevación.'
@@ -5503,6 +5521,9 @@ function krig3SyncGenerationMode() {
     } else if (WP.activeDataSource?.startsWith('mcp:')) {
       studyBadge.textContent = 'Estación real · reconstrucción MCP';
       studyBadge.className = 'badge badge--success';
+    } else if (singleStationMode()) {
+      studyBadge.textContent = `Temporal: ${WP.singleStationStudy?.published_source?.label || WP.activeDataSource} · Kriging multipunto`;
+      studyBadge.className = 'badge badge--info';
     } else {
       studyBadge.textContent = 'Fuente observada / clásica';
       studyBadge.className = 'badge badge--info';
@@ -6583,6 +6604,7 @@ function krig3ToggleSite(filename) {
 function krig3SetPrincipal(filename) {
   if (KRIG.guidedMcp) return;
   KRIG.principal = filename;
+  krig3InvalidateCalibration('cambió la estación espacial principal');
   // Si el principal no estaba seleccionado, inclúyelo.
   KRIG.selected.add(filename);
   krig3UpdateAllMarkers();
@@ -6603,7 +6625,30 @@ function krig3CalibrationKey() {
   });
 }
 
+function krig3InvalidateSpatialResults() {
+  KRIG.spatialEpoch = (KRIG.spatialEpoch || 0) + 1;
+  if (KRIG.map) {
+    (KRIG.overlays || []).forEach(layer => KRIG.map.removeLayer(layer));
+    if (KRIG.poiResultMarker) KRIG.map.removeLayer(KRIG.poiResultMarker);
+    Object.values(KRIG.siteMarkers || {}).forEach(marker => {
+      if (!KRIG.map.hasLayer(marker)) marker.addTo(KRIG.map);
+    });
+  }
+  KRIG.overlays = []; KRIG.poiResultMarker = null;
+  const status = document.getElementById('krig3-status');
+  if (status) status.textContent = 'Recalcula los mapas con la selección actual';
+  KRIG.result = null; KRIG.task_id = null;
+  MCDA.taskId = null;
+  MCDA.lastSpatial = null; MCDA.lastAnalysis = null; MCDA.lastRanking = null;
+  PARQUE.result = null; PARQUE.optResult = null; PARQUE.wakeProfile = null;
+  WP.farmResult = null; WP.farmLayout = null;
+  WP.technoResult = null; WP.technoInputsInitialized = false;
+  WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
+  _riskData = null;
+}
+
 function krig3InvalidateCalibration(reason='') {
+  krig3InvalidateSpatialResults();
   if (!KRIG.calibrationId && !KRIG.calibration) return;
   KRIG.calibrationId = null;
   KRIG.calibrationTaskId = null;
@@ -6680,6 +6725,8 @@ async function krig3WaitForTask(taskId, onProgress) {
 
 async function krig3EnsureCalibration() {
   const signature = krig3CalibrationKey();
+  const windEpoch = WP.windSourceEpoch || 0;
+  const spatialEpoch = KRIG.spatialEpoch;
   if (KRIG.calibrationId && KRIG.calibrationSignature === signature) return KRIG.calibrationId;
   if (!WP.activeDataSource?.startsWith('mcp:')) {
     throw new Error('Publica una corrida MCP antes de entrar al flujo guiado de Diseño.');
@@ -6704,9 +6751,14 @@ async function krig3EnsureCalibration() {
     document.getElementById('krig3-progress-text').textContent = task.message || '';
     document.getElementById('krig3-status').textContent = 'Calibrando nodos…';
   });
+  if (windEpoch !== (WP.windSourceEpoch || 0) || spatialEpoch !== KRIG.spatialEpoch) {
+    throw new Error('La fuente o las estaciones cambiaron durante la calibración.');
+  }
   KRIG.calibrationId = summary.calibration_id;
   KRIG.calibrationSignature = signature;
-  KRIG.calibration = await api(`/api/kriging/calibrations/${encodeURIComponent(KRIG.calibrationId)}?session_id=${encodeURIComponent(WP.sessionId)}`, 'GET');
+  const calibration = await api(`/api/kriging/calibrations/${encodeURIComponent(KRIG.calibrationId)}?session_id=${encodeURIComponent(WP.sessionId)}`, 'GET');
+  if (windEpoch !== (WP.windSourceEpoch || 0) || spatialEpoch !== KRIG.spatialEpoch) throw new Error('Cambió la selección espacial.');
+  KRIG.calibration = calibration;
   krig3RenderCalibration(KRIG.calibration);
   return KRIG.calibrationId;
 }
@@ -7051,7 +7103,7 @@ async function krig3Run() {
     map_method:       KRIG.guidedMcp ? 'mcp_advanced' : 'windpro_classic',
     target_height_m:  wsH(),
   };
-  if (WP.studyMode === 'reanalysis_only') {
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only') {
     body.session_id = WP.sessionId;
     body.data_source = WP.activeDataSource;
   }
@@ -7087,7 +7139,9 @@ async function krig3Run() {
       body.calibration_id = await krig3EnsureCalibration();
       document.getElementById('krig3-progress-text').textContent = 'Generando campos ERA5, MERRA-2 y ensamble…';
     }
+    const spatialEpoch = KRIG.spatialEpoch;
     const r = await api('/api/kriging/legacy_maps', 'POST', body);
+    if (spatialEpoch !== KRIG.spatialEpoch) return;
     KRIG.task_id = r.task_id;
     krig3Poll();
   } catch (e) {
@@ -7101,8 +7155,11 @@ async function krig3Run() {
 
 async function krig3Poll() {
   if (!KRIG.task_id) return;
+  const taskId = KRIG.task_id;
+  const spatialEpoch = KRIG.spatialEpoch;
   try {
-    const r = await api(`/api/kriging/status/${KRIG.task_id}`, 'GET');
+    const r = await api(`/api/kriging/status/${taskId}`, 'GET');
+    if (taskId !== KRIG.task_id || spatialEpoch !== KRIG.spatialEpoch) return;
     document.getElementById('krig3-progress-text').textContent = r.message || '';
     document.getElementById('krig3-progress-fill').style.width = `${r.progress || 0}%`;
     if (r.status === 'done') {
@@ -8345,8 +8402,10 @@ async function mcdaRunAnalysis() {
 
 async function mcdaPollStatus() {
   if (!MCDA.taskId) return;
+  const taskId = MCDA.taskId;
   try {
-    const r = await api(`/api/kriging/status/${MCDA.taskId}`, 'GET');
+    const r = await api(`/api/kriging/status/${taskId}`, 'GET');
+    if (taskId !== MCDA.taskId) return;
     document.getElementById('mcda-progress-text').textContent = r.message || '';
     document.getElementById('mcda-progress-fill').style.width = `${r.progress || 0}%`;
     if (r.status === 'done') {
@@ -9904,6 +9963,7 @@ async function parqueOptimize() {
     n_turbines:        nInput,
     demand_mwh:        parseFloat(document.getElementById('parque-demand')?.value) || 5000,
     wind_grid:         windGrid,
+    spatial_sources:   windGrid ? (KRIG.result?.spatial_sources || []) : [],
     v_mean:            vMean,
     weibull_k:         wK,
     min_spacing_d:     parseFloat(document.getElementById('parque-min-sep-d')?.value) || 5,
@@ -10875,16 +10935,16 @@ async function persistMCPTargetHeight() {
 
 async function loadMCPStudy(savedStudy = null) {
   if (!WP.sessionId) return;
-  if (WP.studyMode === 'reanalysis_only') {
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only') {
     WP.mcpStudy = null;
     document.getElementById('mcp-study-revision').textContent = 'MCP desactivado';
     document.getElementById('btn-mcp-run').disabled = true;
     document.getElementById('mcp-study-observation').innerHTML =
-      '<span class="text-muted">Este proyecto se inició sin estación observada.</span>';
+      '<span class="text-muted">Este proyecto usa una fuente temporal sin MCP.</span>';
     document.getElementById('mcp-study-references').innerHTML =
       '<span class="text-muted">Las referencias se usan directamente en el estudio espacial de Diseño.</span>';
     document.getElementById('mcp-progress-message').textContent =
-      'MCP requiere una estación real. Regresa a Globe y selecciona o carga una observación para activarlo.';
+      'Para realizar MCP, regresa a Globe y elige expresamente esa opción con una estación real y referencias virtuales.';
     return;
   }
   try {
@@ -10936,7 +10996,7 @@ async function removeMCPReference(referenceId) {
 }
 
 async function runMCPLab() {
-  if (!WP.mcpStudy) return;
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only' || !WP.mcpStudy) return;
   const btn = document.getElementById('btn-mcp-run');
   btn.disabled = true;
   document.getElementById('btn-mcp-publish').disabled = true;
@@ -10965,6 +11025,7 @@ async function runMCPLab() {
 }
 
 async function pollMCPTask(taskId) {
+  if (singleStationMode() || WP.studyMode === 'reanalysis_only') return;
   try {
     const task = await api(`/api/tasks/${encodeURIComponent(taskId)}`, 'GET');
     document.getElementById('mcp-progress-fill').style.width = `${Math.max(0, Math.min(100, task.progress || 0))}%`;
@@ -11284,11 +11345,12 @@ function renderMCPVisualizations(result) {
 }
 
 async function publishMCPRun() {
-  if (!WP.mcpRunId) return;
+  if (!WP.mcpRunId || singleStationMode() || WP.studyMode === 'reanalysis_only') return;
   const btn = document.getElementById('btn-mcp-publish');
   btn.disabled = true;
   try {
     const published = await api(`/api/mcp/runs/${encodeURIComponent(WP.mcpRunId)}/publish`, 'POST', { session_id: WP.sessionId });
+    invalidateProjectWindResults();
     WP.activeDataSource = published.source_id;
     krig3ActivatePublishedSource();
     WP.windStats = null;
@@ -11340,6 +11402,8 @@ const GLOBE = {
   loaderReady: false, mainReady: false,
   poi: null,
   poiHaloPhase: 0,
+  sourceChoice: '', singleReference: null, areaKey: null,
+  catalogStatus: 'idle', catalogPromise: null, preparing: false,
   sites: [],
   visibleSites: [],
   master: null,
@@ -11390,6 +11454,19 @@ async function bindGlobeStage() {
   bindGlobeUploadModalUI();
   bindGlobeBackButton();
   bindGlobeModeSwitch();
+  document.getElementById('globe-source-choice')?.addEventListener('change', e => {
+    GLOBE.sourceChoice = e.target.value;
+    globeRenderStationList();
+  });
+  document.getElementById('globe-single-reference')?.addEventListener('change', e => {
+    GLOBE.singleReference = e.target.value || null;
+    globeUpdateContinueState();
+  });
+  document.getElementById('btn-globe-continue-single')?.addEventListener('click', continueGlobeToSingleStation);
+  document.getElementById('btn-globe-retry-catalog')?.addEventListener('click', async () => {
+    GLOBE.catalogStatus = 'idle';
+    await globePreloadSites();
+  });
   document.getElementById('btn-globe-continue-mcp')?.addEventListener('click', continueGlobeToMCP);
   document.getElementById('btn-globe-continue-reanalysis')?.addEventListener('click', continueGlobeToReanalysis);
 
@@ -11421,6 +11498,15 @@ function fetchWorldAtlas() {
 }
 
 async function globePreloadSites() {
+  if (GLOBE.catalogPromise) return GLOBE.catalogPromise;
+  GLOBE.catalogStatus = 'loading';
+  globeUpdateContinueState();
+  GLOBE.catalogPromise = globeLoadCatalog();
+  try { await GLOBE.catalogPromise; }
+  finally { GLOBE.catalogPromise = null; }
+}
+
+async function globeLoadCatalog() {
   const yearSel = document.getElementById('krig3-year');
   const year = yearSel ? (parseInt(yearSel.value) || 2018) : 2018;
 
@@ -11436,9 +11522,13 @@ async function globePreloadSites() {
     });
     GLOBE.sites = [...(rl.observations || []).map(normalize), ...(rl.references || []).map(normalize)];
     GLOBE.sitesLight = true;
+    GLOBE.catalogStatus = 'ready';
+    if (GLOBE.poi) await globeFilterByRadius();
     updateGlobeStationsBadge();
     console.log(`[globe] ${GLOBE.sites.length} puntos físicos (light) listos`);
   } catch (e) {
+    GLOBE.catalogStatus = 'error';
+    globeRenderStationList();
     console.error('[globe] error light:', e);
     updateGlobeStationsBadge(true);
     if (typeof toast === 'function') toast('No se pudieron cargar las estaciones meteorológicas en el globo.', 'warn');
@@ -11972,6 +12062,7 @@ function drawRadiusCircle(ctx, lat, lon, km) {
 
 // ──────────────────────────── POI + estaciones ───────────────────────────────
 function setGlobePoi(lat, lon) {
+  if (GLOBE.preparing) return;
   GLOBE.poi = { lat, lon };
   document.getElementById('btn-globe-clear-poi')?.classList.add('is-visible');
   globeFilterByRadius();
@@ -11984,6 +12075,10 @@ function setGlobePoi(lat, lon) {
 }
 
 function clearGlobePoi() {
+  if (GLOBE.preparing) return;
+  GLOBE.areaKey = null;
+  GLOBE.sourceChoice = '';
+  GLOBE.singleReference = null;
   GLOBE.poi = null;
   GLOBE.visibleSites = [];
   GLOBE.master = null;
@@ -12010,7 +12105,8 @@ function globeHaversineKm(lat1, lon1, lat2, lon2) {
 
 async function globeFilterByRadius() {
   if (!GLOBE.poi) return;
-  if (!GLOBE.sites.length && !WP.importedProject) await globePreloadSites();
+  if (GLOBE.catalogStatus === 'idle' && !WP.importedProject) await globePreloadSites();
+  if (!GLOBE.poi) return;
   const km = Math.max(1, parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM);
   const inside = [];
   GLOBE.sites.forEach(s => {
@@ -12019,6 +12115,18 @@ async function globeFilterByRadius() {
   });
   inside.sort((a, b) => a._dist - b._dist);
   GLOBE.visibleSites = inside;
+  const areaKey = `${GLOBE.poi.lat},${GLOBE.poi.lon}|${km}|${inside.map(globeSiteKey).join(',')}`;
+  if (GLOBE.areaKey && GLOBE.areaKey !== areaKey) GLOBE.sourceChoice = '';
+  GLOBE.areaKey = areaKey;
+  const keys = new Set(inside.map(globeSiteKey));
+  GLOBE.mcpReferences = new Set([...GLOBE.mcpReferences].filter(key => keys.has(key)));
+  if (!keys.has(GLOBE.master)) { GLOBE.master = null; GLOBE.observedStation = null; }
+  if (!keys.has(GLOBE.singleReference)) GLOBE.singleReference = null;
+  const observed = inside.filter(site => site.data_kind === 'observed');
+  if (observed.length === 1) {
+    GLOBE.observedStation = observed[0];
+    GLOBE.master = globeSiteKey(observed[0]);
+  }
   globeRenderStationList();
   globeUpdateStatus();
   // Abrir el panel
@@ -12052,7 +12160,10 @@ function globeRenderStationList() {
   const title = document.getElementById('globe-panel-title');
   if (!list) return;
   if (!GLOBE.visibleSites.length) {
-    list.innerHTML = '<div class="globe-panel__empty">Sin estaciones a este radio. Aumenta el radio o usa "+ Cargar mi propio archivo".</div>';
+    const message = GLOBE.catalogStatus === 'loading' ? 'Cargando estaciones…'
+      : GLOBE.catalogStatus === 'error' ? 'No se pudo cargar el catálogo. Reintenta para comprobar las estaciones del área.'
+      : 'Agrega una estación real o virtual para continuar, o amplía el radio.';
+    list.innerHTML = `<div class="globe-panel__empty">${message}</div>`;
     if (title) title.textContent = '0 puntos';
     const sub = document.getElementById('globe-panel-sub');
     if (sub) sub.textContent = 'No hay estaciones observadas ni referencias de reanálisis dentro del radio actual.';
@@ -12063,15 +12174,10 @@ function globeRenderStationList() {
   const observed = GLOBE.visibleSites.filter(s => s.data_kind === 'observed');
   const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
   const sub = document.getElementById('globe-panel-sub');
-  if (sub) sub.textContent = GLOBE.observedStation
-    ? 'Estación real seleccionada: el estudio continuará por MCP con las referencias elegidas.'
-    : (references.length >= 3
-      ? 'Sin estación real puedes estudiar el área con ERA5/MERRA-2. Ese flujo no ejecuta MCP ni simula una observación.'
-      : 'Elige una estación observada o amplía el radio hasta reunir al menos tres referencias ERA5/MERRA-2.');
   const row = s => {
     const key = globeSiteKey(s);
     const isMaster = (GLOBE.master === key);
-    const isSelected = GLOBE.mcpReferences.has(key);
+    const isSelected = GLOBE.sourceChoice === 'single_reference' ? GLOBE.singleReference === key : GLOBE.mcpReferences.has(key);
     const src = (s.provider || s.source || '').toUpperCase();
     const aliasCount = Number(s.alias_count || s.file_ids?.length || 1);
     const coordNote = s.coordinate_status === 'corrected_filename_mismatch' ? ' · coordenada interna verificada' : '';
@@ -12179,14 +12285,16 @@ function closeHeightNormModal() {
 }
 
 async function handleGlobeStationPick(identifier) {
-  if (!identifier) return;
+  if (!identifier || GLOBE.preparing) return;
   const site = GLOBE.visibleSites.find(s => globeSiteKey(s) === identifier) ||
                GLOBE.sites.find(s => globeSiteKey(s) === identifier);
   if (!site) return;
   if (site.data_kind === 'observed') {
-    const deselect = GLOBE.master === identifier;
+    const deselect = GLOBE.master === identifier && globeAreaOptions(GLOBE.visibleSites).observed.length > 1;
     GLOBE.master = deselect ? null : identifier;
     GLOBE.observedStation = deselect ? null : site;
+  } else if (GLOBE.sourceChoice === 'single_reference') {
+    GLOBE.singleReference = identifier;
   } else if (GLOBE.mcpReferences.has(identifier)) {
     GLOBE.mcpReferences.delete(identifier);
   } else {
@@ -12195,27 +12303,141 @@ async function handleGlobeStationPick(identifier) {
   globeRenderStationList();
 }
 
+function globeAreaOptions(sites) {
+  const observed = sites.filter(s => s.data_kind === 'observed');
+  const references = sites.filter(s => s.data_kind === 'reanalysis');
+  return { observed, references, kind: observed.length
+    ? (references.length ? 'mixed' : 'observed') : (references.length ? 'virtual' : 'empty') };
+}
+
 function globeUpdateContinueState() {
-  const btn = document.getElementById('btn-globe-continue-mcp');
-  const rawBtn = document.getElementById('btn-globe-continue-reanalysis');
-  if (!btn) return;
-  const ready = !!GLOBE.observedStation && GLOBE.mcpReferences.size > 0;
-  btn.disabled = !ready;
-  btn.textContent = ready
-    ? `Continuar a MCP Lab (${GLOBE.mcpReferences.size} referencia${GLOBE.mcpReferences.size === 1 ? '' : 's'}) →`
-    : 'Selecciona observación y referencias';
-  if (rawBtn) {
-    const references = GLOBE.visibleSites.filter(s => s.data_kind === 'reanalysis');
-    rawBtn.style.display = GLOBE.poi && !GLOBE.observedStation ? '' : 'none';
-    rawBtn.disabled = references.length < 3;
-    rawBtn.textContent = references.length >= 3
-      ? `Preparar Recurso Eólico con ${references.length} reanálisis →`
-      : `Se requieren 3 reanálisis (${references.length} disponibles)`;
+  const { observed, references, kind } = globeAreaOptions(GLOBE.visibleSites);
+  const available = !!GLOBE.poi && (WP.importedProject || GLOBE.catalogStatus === 'ready');
+  const choice = document.getElementById('globe-source-choice');
+  const single = document.getElementById('globe-single-reference');
+  const sub = document.getElementById('globe-panel-sub');
+  const options = kind === 'mixed'
+    ? [['mcp', 'Realizar MCP'], ['observed_only', 'Usar solo la estación real']]
+    : kind === 'virtual'
+    ? [['reanalysis_only', `Procesar el conjunto (${references.length} virtuales; mínimo 3)`], ['single_reference', 'Elegir una sola referencia virtual']]
+    : kind === 'observed' ? [['observed_only', 'Usar estación real observada']] : [];
+  if (!options.some(([value]) => value === GLOBE.sourceChoice)) GLOBE.sourceChoice = '';
+  if (kind === 'observed') GLOBE.sourceChoice = 'observed_only';
+  if (choice) {
+    choice.innerHTML = '<option value="">Elige cómo usar los datos del área…</option>' + options.map(([value, label]) =>
+      `<option value="${value}" ${value === 'reanalysis_only' && references.length < 3 ? 'disabled' : ''}>${label}</option>`).join('');
+    choice.value = GLOBE.sourceChoice;
+    choice.style.display = available && options.length > 1 ? '' : 'none';
+    choice.disabled = GLOBE.preparing;
   }
+  if (references.length === 1) GLOBE.singleReference = globeSiteKey(references[0]);
+  if (single) {
+    single.innerHTML = '<option value="">Selecciona una referencia virtual…</option>' + references.map(site =>
+      `<option value="${mcpEsc(globeSiteKey(site))}">${mcpEsc(site.display_name || site.filename)}</option>`).join('');
+    single.value = GLOBE.singleReference || '';
+    single.style.display = available && GLOBE.sourceChoice === 'single_reference' ? '' : 'none';
+    single.disabled = GLOBE.preparing;
+  }
+  if (sub) sub.textContent = !available
+    ? (GLOBE.catalogStatus === 'error' ? 'El catálogo no está disponible. Reintenta la carga.' : 'Selecciona un área; espera a que termine la carga del catálogo.')
+    : kind === 'empty' ? 'Agrega una estación real o virtual para continuar.'
+    : kind === 'mixed' ? '¿Deseas realizar MCP o usar solo una estación real como fuente temporal?'
+    : kind === 'observed' ? (observed.length === 1 ? 'La estación real se usará automáticamente como fuente observada del proyecto.' : 'Elige una estación real de la lista como fuente observada del proyecto.')
+    : references.length < 3 ? 'Elige una referencia virtual, o agrega más estaciones para procesar un conjunto de al menos tres.'
+    : '¿Deseas procesar las virtuales del área o elegir una sola referencia?';
+  const configure = (id, show, ready, label) => {
+    const button = document.getElementById(id);
+    if (!button) return;
+    button.style.display = available && show ? '' : 'none';
+    button.disabled = !ready || GLOBE.preparing;
+    button.textContent = GLOBE.preparing ? 'Preparando fuente…' : label;
+  };
+  const hasObserved = observed.some(site => globeSiteKey(site) === GLOBE.master);
+  configure('btn-globe-continue-mcp', GLOBE.sourceChoice === 'mcp', hasObserved && GLOBE.mcpReferences.size > 0,
+    'Continuar a MCP Lab →');
+  configure('btn-globe-continue-reanalysis', GLOBE.sourceChoice === 'reanalysis_only', references.length >= 3,
+    `Preparar recurso con ${references.length} virtuales →`);
+  configure('btn-globe-continue-single', ['observed_only', 'single_reference'].includes(GLOBE.sourceChoice),
+    GLOBE.sourceChoice === 'observed_only' ? hasObserved : references.some(site => globeSiteKey(site) === GLOBE.singleReference),
+    GLOBE.sourceChoice === 'observed_only' ? 'Continuar con estación real (observed) →' : 'Continuar con referencia virtual →');
+  const retry = document.getElementById('btn-globe-retry-catalog');
+  if (retry) retry.style.display = GLOBE.catalogStatus === 'error' ? '' : 'none';
+}
+
+function globeSetPreparing(value) {
+  GLOBE.preparing = value;
+  ['globe-radius', 'btn-globe-open-upload', 'btn-globe-clear-poi'].forEach(id => {
+    const element = document.getElementById(id);
+    if (element) element.disabled = value;
+  });
+  globeUpdateContinueState();
+}
+
+function invalidateProjectWindResults() {
+  WP.windSourceEpoch = (WP.windSourceEpoch || 0) + 1;
+  for (const key of ['windStats', 'advancedResult', 'energyResult', 'technoResult', 'qcResult',
+    'hybridResult', 'energySimulation', 'farmResult', 'farmLayout', 'turbineComparison']) WP[key] = null;
+  WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
+  WP.technoInputsInitialized = false;
+  WP.technoInputsDirty = false;
+  _riskData = null;
+  MCDA.lastSpatial = null; MCDA.lastAnalysis = null; MCDA.lastRanking = null;
+  PARQUE.result = null; PARQUE.optResult = null; PARQUE.wakeProfile = null;
+  MAPA.result = null; CLUSTER.result = null;
+  KRIG.result = null; KRIG.task_id = null;
+  krig3InvalidateCalibration('cambió la fuente temporal del proyecto');
+  Object.keys(WP.charts || {}).forEach(id => { WP.charts[id]?.destroy?.(); delete WP.charts[id]; });
+  ['te-risk-card', 'te-kmeans-card', 'adv-kpi-row', 'adv-hub-row'].forEach(id => {
+    const element = document.getElementById(id); if (element) element.style.display = 'none';
+  });
+}
+
+async function continueGlobeToSingleStation() {
+  if (GLOBE.preparing || !GLOBE.poi) return;
+  const stationId = GLOBE.sourceChoice === 'observed_only' ? GLOBE.master
+    : GLOBE.sourceChoice === 'single_reference' ? GLOBE.singleReference : null;
+  const station = GLOBE.visibleSites.find(site => globeSiteKey(site) === stationId);
+  if (!station) return;
+  const targetHeight = Number(WP.referenceHeight) || Number(station.measurement_height_m) || 80;
+  const areaKey = GLOBE.areaKey;
+  globeSetPreparing(true);
+  try {
+    const study = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/single-station-study`, 'PUT', {
+      station_id: stationId, poi: GLOBE.poi,
+      radius_km: Number(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM,
+      target_height_m: targetHeight,
+    });
+    if (areaKey !== GLOBE.areaKey) return;
+    invalidateProjectWindResults();
+    WP.singleStationStudy = study;
+    WP.studyMode = study.study_mode; GLOBE.studyMode = study.study_mode;
+    WP.activeDataSource = study.source_id;
+    WP.mcpStudy = null; WP.mcpRunId = null; WP.mcpResult = null; WP.reanalysisStudy = null;
+    WP.referenceHeight = study.target_height_m;
+    WP.referenceMethod = 'hellmann';
+    WP.meta = { display_name: study.published_source.label, format: study.study_mode,
+      latitude: station.lat, longitude: station.lon, wind_height_m: study.target_height_m,
+      data_source: study.source_id, station_id: stationId,
+      date_range: [study.published_source.period_start, study.published_source.period_end],
+      n_rows: study.published_source.rows };
+    applyReferenceHeightToUI(WP.referenceHeight);
+    KRIG.guidedMcp = false;
+    KRIG.sites = []; KRIG.selected.clear(); KRIG.principal = null;
+    KRIG.poi = { ...study.poi }; KRIG._appliedGlobePoi = null;
+    const mode = document.getElementById('krig3-generation-mode');
+    if (mode) mode.value = 'windpro_classic';
+    krig3SyncGenerationMode();
+    collapseGlobeStage();
+    document.querySelector('.nav-btn[data-module="resumen"]')?.click();
+    toast(`Fuente temporal: ${study.published_source.label}. Kriging conserva sus estaciones espaciales.`, 'success');
+    if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
+  } catch (e) { toast(`No se pudo preparar la estación: ${e.message}`, 'error'); }
+  finally { globeSetPreparing(false); }
 }
 
 async function continueGlobeToMCP() {
-  if (!GLOBE.observedStation || !GLOBE.mcpReferences.size) return;
+  if (GLOBE.preparing || GLOBE.sourceChoice !== 'mcp' || !GLOBE.observedStation || !GLOBE.mcpReferences.size) return;
+  globeSetPreparing(true);
   const radius = parseFloat(document.getElementById('globe-radius')?.value) || GLOBE_RADIUS_DEFAULT_KM;
   const inheritedHeight = Number(WP.referenceHeight);
   const initialTargetHeight = Number.isFinite(inheritedHeight) && inheritedHeight >= 1 && inheritedHeight <= 300
@@ -12228,6 +12450,8 @@ async function continueGlobeToMCP() {
       radius_km: radius,
       target_height_m: initialTargetHeight,
     });
+    invalidateProjectWindResults();
+    WP.singleStationStudy = null;
     WP.mcpStudy = study;
     WP.studyMode = 'mcp_observed';
     GLOBE.studyMode = 'mcp_observed';
@@ -12237,11 +12461,11 @@ async function continueGlobeToMCP() {
     await loadMCPStudy();
   } catch (e) {
     toast(`No se pudo crear el estudio MCP: ${e.message}`, 'error');
-  }
+  } finally { globeSetPreparing(false); }
 }
 
 async function continueGlobeToReanalysis() {
-  if (!GLOBE.poi || GLOBE.observedStation) return;
+  if (GLOBE.preparing || GLOBE.sourceChoice !== 'reanalysis_only' || !GLOBE.poi || globeAreaOptions(GLOBE.visibleSites).observed.length) return;
   const references = GLOBE.visibleSites.filter(site => site.data_kind === 'reanalysis');
   if (references.length < 3) {
     toast('Amplía el radio: se requieren al menos tres referencias ERA5/MERRA-2.', 'warn');
@@ -12251,6 +12475,7 @@ async function continueGlobeToReanalysis() {
   const inheritedHeight = Number(WP.referenceHeight);
   const targetHeight = Number.isFinite(inheritedHeight) && inheritedHeight >= 1 && inheritedHeight <= 300
     ? inheritedHeight : 80;
+  globeSetPreparing(true);
   const actionButton = document.getElementById('btn-globe-continue-reanalysis');
   if (actionButton) {
     actionButton.disabled = true;
@@ -12263,6 +12488,8 @@ async function continueGlobeToReanalysis() {
       radius_km: radius,
       target_height_m: targetHeight,
     });
+    invalidateProjectWindResults();
+    WP.singleStationStudy = null;
     WP.reanalysisStudy = study;
     WP.studyMode = 'reanalysis_only';
     GLOBE.studyMode = 'reanalysis_only';
@@ -12317,8 +12544,7 @@ async function continueGlobeToReanalysis() {
     if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
   } catch (e) {
     toast(`No se pudo crear el estudio de reanálisis: ${e.message}`, 'error');
-    globeUpdateContinueState();
-  }
+  } finally { globeSetPreparing(false); }
 }
 
 // ═══════════════════════ DISEÑO RÁPIDO (QUICK DESIGN) ════════════════════════
@@ -13015,6 +13241,7 @@ function bindGlobeUploadModalUI() {
 }
 
 async function handleGlobeOwnFile(file, source) {
+  if (GLOBE.preparing) return;
   const lat = parseFloat(document.getElementById('globe-upload-lat')?.value);
   const lon = parseFloat(document.getElementById('globe-upload-lon')?.value);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
@@ -13046,7 +13273,7 @@ async function handleGlobeOwnFile(file, source) {
     }
     document.getElementById('globe-modal')?.classList.remove('is-open');
     await globeFilterByRadius();
-    toast(`${row.display_name} añadido como ${kind === 'observed' ? 'estación observada para MCP' : 'referencia de reanálisis del área'}`, response.warning ? 'warn' : 'success');
+    toast(`${row.display_name} añadido como ${kind === 'observed' ? 'estación observada' : 'referencia de reanálisis del área'}`, response.warning ? 'warn' : 'success');
   } catch (e) {
     toast(`No se pudo registrar el archivo: ${e.message}`, 'error');
   }
@@ -13625,7 +13852,13 @@ function updateResumenHeader() {
     const parts = [];
     const source = WP.windStats?.data_source;
     if (source?.kind === 'mcp') parts.push(`Reconstrucción histórica MCP · ${source.label || source.source_id}`);
-    else if (source?.label) parts.push(source.label);
+    else if (source?.label) parts.push(`${source.kind === 'reanalysis' ? 'Referencia virtual' : 'Fuente observada'} · ${source.label}`);
+    if (singleStationMode() && source) {
+      parts.push(`Fuente temporal: ${source.source_id} · sin MCP`);
+      if (source.period_start && source.period_end) parts.push(`${source.period_start.slice(0, 10)} a ${source.period_end.slice(0, 10)}`);
+      if (source.file_ids?.length) parts.push(`Archivos: ${source.file_ids.join(', ')}`);
+      if (source.transformations?.some(step => step.method === 'hellmann')) parts.push(`Hellmann: ${source.source_height_m} → ${source.target_height_m} m`);
+    }
     if (meta.reanalysis_type || meta.format) parts.push((meta.reanalysis_type || meta.format).toUpperCase());
     if (meta.latitude != null && meta.longitude != null)
       parts.push(`${(+meta.latitude).toFixed(3)}°, ${(+meta.longitude).toFixed(3)}°`);

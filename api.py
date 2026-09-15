@@ -22,7 +22,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
-from flask import Flask, request, jsonify, send_file, render_template
+from flask import Flask, request, jsonify, send_file, render_template, g
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -313,6 +313,8 @@ def create_app():
                 'index_start': str(df.index[0]) if len(df.index) else None,
                 'index_end': str(df.index[-1]) if len(df.index) else None,
                 'source_id': source_id,
+                'station_id': (source or {}).get('station_id'),
+                'source_version': (source or {}).get('_cache_revision'),
                 'run_id': (source or {}).get('run_id'),
                 'study_revision': (source or {}).get('study_revision'),
             })
@@ -354,7 +356,7 @@ def create_app():
     PROJECT_SESSION_KEYS = {
         'df', 'meta', 'wind_speed_col', 'wd_col', 'ws_height_m',
         'extrapolation_method', 'qc_report', 'park_configuration',
-        'mcp_study', 'reanalysis_study', 'active_study_mode',
+        'mcp_study', 'reanalysis_study', 'single_station_study', 'active_study_mode',
         'mcp_uploads', 'mcp_runs', 'data_sources',
         'active_data_source', 'wind_stats', 'wind_advanced',
         'hybrid_result', 'energy_summary', 'df_energy', 'market', 'demand', 'pml',
@@ -492,8 +494,27 @@ def create_app():
                 return col
         return 'wind_speed' if 'wind_speed' in df.columns else None
 
+    def _store_wind_results(sess, **updates):
+        with _sessions_lock:
+            if getattr(g, 'wind_selection_token', sess.get('_source_selection_token')) != sess.get('_source_selection_token'):
+                return False
+            sess.update(updates)
+            return True
+
+    @app.after_request
+    def reject_obsolete_wind_response(response):
+        session = getattr(g, 'wind_session', None)
+        if session is not None and getattr(g, 'wind_selection_token', None) != session.get('_source_selection_token'):
+            response = jsonify({'error': 'La fuente cambió durante el cálculo; vuelve a calcular.'})
+            response.status_code = 409
+            return response
+        return response
+
     def _analysis_df(sess, body=None):
         """Resolve the requested/published source without mutating observations."""
+        if not hasattr(g, 'wind_session'):
+            g.wind_session = sess
+            g.wind_selection_token = sess.get('_source_selection_token')
         body = body or {}
         source_id = body.get('data_source') or sess.get('active_data_source')
         if source_id and source_id != 'observed':
@@ -523,6 +544,10 @@ def create_app():
             'run_id': (source or {}).get('run_id'),
             'study_revision': (source or {}).get('study_revision'),
             'rows': int(len(frame)) if frame is not None else 0,
+            **{key: (source or {}).get(key) for key in (
+                'station_id', 'file_ids', 'period_start', 'period_end',
+                'source_height_m', 'target_height_m', 'transformations',
+            )},
         }
 
     def _long_term_wind_summary(df, speed_col='wind_speed'):
@@ -1411,6 +1436,149 @@ def create_app():
         sess.setdefault('mcp_uploads', {})[station_id] = record
         return jsonify({'station': _public_station(record), 'warning': warning}), 201
 
+    def _invalidate_wind_results(sess):
+        for key in ('qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
+                    'df_energy', 'energy_summary', 'hybrid_result',
+                    'active_kriging_calibration_id'):
+            sess.pop(key, None)
+
+    def _begin_source_selection(sess):
+        # A slower preparation must never replace a more recent selection.
+        token = uuid.uuid4().hex
+        with _sessions_lock:
+            sess['_source_selection_token'] = token
+        return token
+
+    def _single_station_payload(sess):
+        study = sess.get('single_station_study')
+        if not study:
+            return None
+        source = (sess.get('data_sources') or {}).get(study['source_id'], {})
+        return {**study, 'active_data_source': sess.get('active_data_source'),
+                'published_source': {k: numpy_to_python(v) for k, v in source.items()
+                                     if k != 'df' and not k.startswith('_')}}
+
+    @app.route('/api/sessions/<sid>/single-station-study', methods=['GET', 'PUT'])
+    def single_station_study(sid):
+        sess = get_session(sid)
+        if request.method == 'GET':
+            payload = _single_station_payload(sess)
+            return jsonify(payload) if payload else _err('No hay estudio de estación única', 404)
+        body = request.get_json(silent=True) or {}
+        station_id = str(body.get('station_id') or '')
+        station = _mcp_index(sess).get(station_id)
+        if not station or station.get('data_kind') not in {'observed', 'reanalysis'}:
+            return _err('Debe seleccionarse una estación real o virtual válida')
+        try:
+            poi = {k: float(body['poi'][k]) for k in ('lat', 'lon')}
+            radius = float(body['radius_km'])
+            height = float(body['target_height_m'])
+            if not all(np.isfinite(x) for x in (*poi.values(), radius, height)):
+                raise ValueError('valores no finitos')
+            if not (-90 <= poi['lat'] <= 90 and -180 <= poi['lon'] <= 180
+                    and radius > 0 and 1 <= height <= 300):
+                raise ValueError('valores fuera de rango')
+            if _haversine_km(poi['lat'], poi['lon'], float(station['latitude']),
+                             float(station['longitude'])) > radius + 1e-6:
+                raise ValueError('la estación está fuera del radio del estudio')
+        except (KeyError, TypeError, ValueError) as error:
+            return _err('Área o altura inválida: ' + str(error))
+        token = _begin_source_selection(sess)
+        observed = station['data_kind'] == 'observed'
+        try:
+            paths = list(station.get('_paths') or [])
+            if observed:
+                frame, metadata = read_certe_files(
+                    paths, target_column=station.get('target_column', 'WS_80mA_mean'),
+                    timezone=station.get('timezone', 'UTC'), target_height_m=height)
+                source_height = metadata.get('measurement_height_m') or station.get('measurement_height_m')
+                canonical = frame.rename(columns={
+                    'wind_speed_obs': 'wind_speed', 'wind_direction_obs': 'wind_direction',
+                    'temperature_obs': 'temperature', 'pressure_obs_hpa': 'pressure',
+                }).copy()
+                transformations = [{'method': 'native_observations', 'gap_filling': False,
+                                    'timezone': 'UTC', 'reader': metadata}]
+            else:
+                references = read_reference_files(paths)
+                frames = []
+                heights = []
+                for reference in references:
+                    h = reference.metadata.get('wind_height_m') or station.get('measurement_height_m')
+                    if h is None:
+                        raise ValueError('falta la altura de medición')
+                    part = reference.frame.rename(columns={
+                        'wind_speed_ref': 'wind_speed', 'wind_direction_ref': 'wind_direction',
+                        'temperature_ref': 'temperature', 'pressure_ref_kpa': 'pressure',
+                    }).copy()
+                    if 'pressure' in part:
+                        part['pressure'] *= 10.0
+                    if not np.isclose(float(h), height):
+                        part['wind_speed'] = extrapolate_wind_hellmann(
+                            part['wind_speed'].to_numpy(dtype=float), float(h), height)
+                    frames.append(part)
+                    heights.append(float(h))
+                canonical = pd.concat(frames).sort_index()
+                canonical = canonical.loc[~canonical.index.duplicated(keep='last')]
+                source_height = heights[0]
+                transformations = [{'method': 'single_reference', 'gap_filling': False,
+                                    'source_heights_m': heights, 'timezone': 'UTC'}]
+            source_height = float(source_height)
+            if not np.isfinite(source_height) or source_height <= 0:
+                raise ValueError('altura de medición inválida')
+            canonical.index = pd.to_datetime(canonical.index, utc=True)
+            canonical.index.name = 'timestamp'
+            canonical = canonical.loc[~canonical.index.isna()].sort_index()
+            speed = pd.to_numeric(canonical['wind_speed'], errors='coerce')
+            canonical['wind_speed'] = speed.where(np.isfinite(speed) & (speed >= 0))
+            if not canonical['wind_speed'].notna().any():
+                raise ValueError('no contiene velocidades válidas')
+            if observed and not np.isclose(source_height, height):
+                canonical['wind_speed'] = extrapolate_wind_hellmann(
+                    canonical['wind_speed'].to_numpy(dtype=float), source_height, height)
+            if (observed and not np.isclose(source_height, height)) or (
+                    not observed and any(not np.isclose(h, height) for h in heights)):
+                transformations.append({'method': 'hellmann', 'alpha': Config.HELLMANN_EXPONENT_OPEN,
+                                        'source_height_m': source_height, 'target_height_m': height})
+        except Exception as error:
+            return _err('No se pudo preparar la estación: ' + str(error))
+        source_id = 'observed' if observed else 'reanalysis:' + station_id
+        mode = 'observed_only' if observed else 'single_reference'
+        canonical['data_source'] = source_id
+        source = {
+            'source_id': source_id, 'kind': 'observed' if observed else 'reanalysis',
+            'label': station.get('display_name') or station_id, 'station_id': station_id,
+            'file_ids': [Path(path).name for path in paths],
+            'catalog_file_ids': station.get('file_ids') or [],
+            'source_height_m': source_height, 'target_height_m': height,
+            'period_start': canonical.index.min().isoformat(),
+            'period_end': canonical.index.max().isoformat(),
+            'rows': len(canonical), 'transformations': transformations, 'is_mcp': False,
+            '_cache_revision': token,
+            'df': canonical,
+        }
+        study = {'study_mode': mode, 'station_id': station_id,
+                 'station': _public_station(station), 'source_id': source_id,
+                 'poi': poi, 'radius_km': radius, 'target_height_m': height,
+                 'created_at': datetime.now(timezone.utc).isoformat()}
+        with _sessions_lock:
+            if sess.get('_source_selection_token') != token:
+                return _err('La selección cambió durante la preparación', 409)
+            sess.setdefault('data_sources', {})[source_id] = source
+            sess['single_station_study'] = study
+            sess['active_study_mode'] = mode
+            sess['active_data_source'] = source_id
+            sess['ws_height_m'] = height
+            sess['wind_speed_col'] = 'wind_speed'
+            sess['wd_col'] = 'wind_direction' if 'wind_direction' in canonical else None
+            sess['meta'] = {'display_name': source['label'], 'format': mode,
+                            'latitude': station['latitude'], 'longitude': station['longitude'],
+                            'wind_height_m': height, 'data_source': source_id,
+                            'station_id': station_id, 'n_rows': len(canonical),
+                            'columns': list(canonical.columns),
+                            'date_range': [source['period_start'], source['period_end']]}
+            _invalidate_wind_results(sess)
+        return jsonify(_single_station_payload(sess))
+
     @app.route('/api/sessions/<sid>/mcp-study', methods=['GET', 'PUT'])
     def mcp_study(sid):
         sess = get_session(sid)
@@ -1455,10 +1623,13 @@ def create_app():
             'target_height_m': target_height,
             'created_at': datetime.now(timezone.utc).isoformat(),
         }
-        sess['mcp_study'] = study
-        sess['active_study_mode'] = 'mcp_observed'
-        for run in (sess.get('mcp_runs') or {}).values():
-            run['is_current_revision'] = run.get('study_revision') == study['study_revision']
+        with _sessions_lock:
+            sess['_source_selection_token'] = uuid.uuid4().hex
+            sess.pop('single_station_study', None)
+            sess['mcp_study'] = study
+            sess['active_study_mode'] = 'mcp_observed'
+            for run in (sess.get('mcp_runs') or {}).values():
+                run['is_current_revision'] = run.get('study_revision') == study['study_revision']
         return jsonify(_mcp_study_payload(sess))
 
     @app.route('/api/sessions/<sid>/reanalysis-study', methods=['GET', 'PUT'])
@@ -1517,6 +1688,7 @@ def create_app():
         if outside:
             return _err('Hay referencias fuera del radio del estudio: ' + ', '.join(outside))
 
+        selection_token = _begin_source_selection(sess)
         prior = sess.get('reanalysis_study') or {}
         selection_key = (
             tuple(reference_ids), round(poi['lat'], 6), round(poi['lon'], 6),
@@ -1551,28 +1723,33 @@ def create_app():
             'source_id': source_id,
             'created_at': datetime.now(timezone.utc).isoformat(),
         }
-        sess.setdefault('data_sources', {})[source_id] = source_record
-        sess['reanalysis_study'] = study
-        sess['active_study_mode'] = 'reanalysis_only'
-        sess['active_data_source'] = source_id
-        sess['ws_height_m'] = target_height
-        sess['meta'] = {
-            **(sess.get('meta') or {}),
-            'display_name': 'Recurso de reanálisis del área',
-            'format': 'reanalysis_area',
-            'reanalysis_type': 'ERA5 + MERRA-2',
-            'latitude': poi['lat'],
-            'longitude': poi['lon'],
-            'wind_height_m': target_height,
-            'station_count': source_record['node_count'],
-            'aggregation_method': source_record['aggregation_method'],
-            'data_source': source_id,
-        }
-        for stale_key in (
-            'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
-            'df_energy', 'energy_summary', 'hybrid_result',
-        ):
-            sess.pop(stale_key, None)
+        with _sessions_lock:
+            if sess.get('_source_selection_token') != selection_token:
+                return _err('La selección cambió durante la preparación', 409)
+            _invalidate_wind_results(sess)
+            sess.setdefault('data_sources', {})[source_id] = source_record
+            sess.pop('single_station_study', None)
+            sess['reanalysis_study'] = study
+            sess['active_study_mode'] = 'reanalysis_only'
+            sess['active_data_source'] = source_id
+            sess['ws_height_m'] = target_height
+            sess['meta'] = {
+                **(sess.get('meta') or {}),
+                'display_name': 'Recurso de reanálisis del área',
+                'format': 'reanalysis_area',
+                'reanalysis_type': 'ERA5 + MERRA-2',
+                'latitude': poi['lat'],
+                'longitude': poi['lon'],
+                'wind_height_m': target_height,
+                'station_count': source_record['node_count'],
+                'aggregation_method': source_record['aggregation_method'],
+                'data_source': source_id,
+            }
+            for stale_key in (
+                'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
+                'df_energy', 'energy_summary', 'hybrid_result',
+            ):
+                sess.pop(stale_key, None)
         return jsonify(_reanalysis_study_payload(sess))
 
     def _default_park_configuration():
@@ -1771,6 +1948,8 @@ def create_app():
         body = request.get_json(silent=True) or {}
         sid = _require_sid(body)
         sess = get_session(sid)
+        if sess.get('active_study_mode') in {'observed_only', 'single_reference', 'reanalysis_only'}:
+            return _err('Selecciona el flujo MCP en Globe antes de ejecutarlo', 409)
         study = sess.get('mcp_study')
         if not study:
             return _err('Primero guarda la selección de Globe')
@@ -1951,6 +2130,9 @@ def create_app():
         body = request.get_json(silent=True) or {}
         sid = _require_sid(body)
         sess = get_session(sid)
+        if sess.get('active_study_mode') in {'observed_only', 'single_reference', 'reanalysis_only'}:
+            return _err('Selecciona el flujo MCP en Globe antes de publicar', 409)
+        selection_token = sess.get('_source_selection_token')
         record, result = _mcp_result_for_session(sess, run_id)
         if not record or not result:
             return jsonify({'error': 'Corrida no encontrada'}), 404
@@ -2016,7 +2198,7 @@ def create_app():
             '_turbulence': result.get('turbulence', {}),
             'df': canonical,
         }
-        sess.setdefault('data_sources', {})[source_id] = source_record
+        observed_record = None
         try:
             observed_frame, _ = read_certe_files(
                 result.get('config', {}).get('observation_files', []),
@@ -2029,7 +2211,7 @@ def create_app():
             observed_canonical['wind_speed'] = observed_hourly['wind_speed_obs']
             if 'wind_direction_obs' in observed_hourly:
                 observed_canonical['wind_direction'] = observed_hourly['wind_direction_obs']
-            sess['data_sources']['observed'] = {
+            observed_record = {
                 'source_id': 'observed',
                 'label': result.get('study', {}).get('observed_station', {}).get('display_name', 'Observación'),
                 'kind': 'observed',
@@ -2041,17 +2223,24 @@ def create_app():
             }
         except Exception:
             logger.exception('No se pudo registrar la fuente observada de la corrida %s', run_id)
-        sess['active_data_source'] = source_id
-        sess['ws_height_m'] = source_record['target_height_m'] or sess.get('ws_height_m', 80)
-        # Todo derivado eólico previo queda obsoleto al cambiar la fuente base.
-        # Se conserva la medición y la reconstrucción registradas, pero se exige
-        # recalcular QC, energía y resultados posteriores.
-        for stale_key in (
-            'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
-            'df_energy', 'energy_summary', 'hybrid_result',
-        ):
-            sess.pop(stale_key, None)
-        record['published_source_id'] = source_id
+        with _sessions_lock:
+            if sess.get('_source_selection_token') != selection_token:
+                return _err('La selección cambió durante la publicación', 409)
+            sess.setdefault('data_sources', {})[source_id] = source_record
+            if observed_record is not None:
+                sess['data_sources']['observed'] = observed_record
+            _invalidate_wind_results(sess)
+            sess['active_data_source'] = source_id
+            sess['ws_height_m'] = source_record['target_height_m'] or sess.get('ws_height_m', 80)
+            # Todo derivado eólico previo queda obsoleto al cambiar la fuente base.
+            # Se conserva la medición y la reconstrucción registradas, pero se exige
+            # recalcular QC, energía y resultados posteriores.
+            for stale_key in (
+                'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
+                'df_energy', 'energy_summary', 'hybrid_result',
+            ):
+                sess.pop(stale_key, None)
+            record['published_source_id'] = source_id
         return jsonify({
             k: numpy_to_python(v) for k, v in source_record.items()
             if k != 'df' and not str(k).startswith('_')
@@ -2259,8 +2448,8 @@ def create_app():
             (report, flags), cache_hit = get_or_compute('quality', cache_parts, compute_quality)
             report = dict(report)
             report['cache_hit'] = bool(cache_hit)
-            sess['qc_report'] = report
-            sess['qc_flags']  = flags
+            if not _store_wind_results(sess, qc_report=report, qc_flags=flags):
+                return _err('La fuente cambió durante el cálculo', 409)
 
             # time series with flags highlighted
             s  = df[target_col] if target_col in df.columns else None
@@ -2366,9 +2555,8 @@ def create_app():
                 extrapolation=extr_method,
                 hellmann_alpha=hellmann_alpha,
             )
-            sess['df_energy'] = df_sim
-            sess['turbine']   = turbine
-            sess['energy_summary'] = summary
+            if not _store_wind_results(sess, df_energy=df_sim, turbine=turbine, energy_summary=summary):
+                return _err('La fuente cambió durante el cálculo', 409)
 
             # ── AEP ──
             aep_calc = AEPCalculator()
@@ -2611,7 +2799,8 @@ def create_app():
             result = dict(result)
             result['cache_hit'] = bool(cache_hit)
             result['data_source'] = _analysis_source_info(sess, body)
-            sess['wind_stats'] = result
+            if not _store_wind_results(sess, wind_stats=result):
+                return _err('La fuente cambió durante el cálculo', 409)
             return jsonify(result)
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2688,7 +2877,8 @@ def create_app():
                 'sectors':                numpy_to_python(compute_sector_analysis(df, ws_col, wd_col)),
                 'return_periods':         numpy_to_python(compute_return_periods(df, ws_col)),
             }
-            sess['wind_advanced'] = result
+            if not _store_wind_results(sess, wind_advanced=result):
+                return _err('La fuente cambió durante el cálculo', 409)
             return jsonify(result)
         except Exception as e:
             logger.exception('Error en %s', request.path)
@@ -2789,7 +2979,8 @@ def create_app():
                 'load_annual_kwh': annual_kwh, 'profile': profile_t,
             }
             result['data_source'] = _analysis_source_info(sess, body)
-            sess['hybrid_result'] = result
+            if not _store_wind_results(sess, hybrid_result=result):
+                return _err('La fuente cambió durante el cálculo', 409)
             return jsonify(numpy_to_python(result))
 
         except Exception as e:
@@ -4469,11 +4660,13 @@ def create_app():
                 wind_info['data_source'] = sim_result['data_source']
                 sim_result['wind_source'] = wind_info.get('source')
                 sim_result['wind_diagnostics'] = wind_info
+                sim_result['spatial_sources'] = body.get('spatial_sources') or []
 
             result = {
                 **opt,
                 'turbine': turbine.to_dict(),
                 'data_source': _analysis_source_info(sess, body),
+                'spatial_sources': body.get('spatial_sources') or [],
             }
             if sim_result:
                 result['simulation'] = sim_result
@@ -5276,6 +5469,13 @@ def create_app():
                 )
                 if source_info is not None:
                     result['data_source'] = source_info
+                    result['temporal_source'] = source_info
+                # These are the actual accepted spatial inputs, after file/radius/QC filters.
+                result['spatial_sources'] = result.get('spatial_sources') or [
+                    {key: point.get(key) for key in ('name', 'lat', 'lon')}
+                    for point in (result.get('wind') or {}).get('points', [])
+                ]
+                result['spatial_source_policy'] = 'independent_of_temporal_source'
                 if body.get('market_trajectories'):
                     result['market_configuration'] = {
                         'trajectories': body.get('market_trajectories'),
@@ -5842,6 +6042,9 @@ def create_app():
                         weights=body.get('layout_weights'),
                         historical_wind=historical_wind,
                     )
+                    for alternative in layout_result.get('alternatives', []):
+                        alternative['spatial_sources'] = spatial.get('spatial_sources', [])
+                        alternative['temporal_source'] = source_info
                     ranking = layout_result['ranking']
                     ranking['mode'] = 'layout_alternatives'
                     if ahp_assessment:

@@ -178,7 +178,7 @@
         <div class="globe-panel__title" id="globe-panel-title">—</div>
       </div>
       <div class="globe-panel__sub" id="globe-panel-sub">
-        Elige una estación observada principal y una o más referencias ERA5/MERRA-2.
+        Selecciona un área para elegir la fuente de viento del proyecto.
       </div>
       <div class="globe-panel__list" id="globe-station-list">
         <div class="globe-panel__empty">Sin estaciones aún. Marca un sitio para listar las cercanas.</div>
@@ -186,6 +186,11 @@
       <button class="globe-panel__upload" id="btn-globe-open-upload" type="button">
         + Cargar mi propio archivo
       </button>
+      <button class="btn-secondary" id="btn-globe-retry-catalog" type="button" style="display:none">Reintentar catálogo</button>
+      <select class="form-select" id="globe-source-choice" aria-label="Cómo usar las estaciones del área" style="display:none;margin:10px 14px 0;width:calc(100% - 28px)"></select>
+      <select class="form-select" id="globe-single-reference" aria-label="Referencia virtual única" style="display:none;margin:10px 14px 0;width:calc(100% - 28px)"></select>
+      <button class="btn-primary" id="btn-globe-continue-single" type="button" disabled
+              style="display:none;margin:10px 14px 14px;width:calc(100% - 28px)">Continuar con estación única →</button>
       <button class="btn-secondary" id="btn-globe-continue-reanalysis" type="button" disabled
               style="display:none;margin:10px 14px 0;width:calc(100% - 28px)">
         Preparar Recurso Eólico con reanálisis →
