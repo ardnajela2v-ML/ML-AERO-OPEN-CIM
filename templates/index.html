@@ -2104,7 +2104,9 @@
         para cada turbina del ranking, sin entrenar Random Forest — solo mide qué tan seguido cada
         una se mantiene viable ante la incertidumbre, y hasta qué % de estela adicional aguanta antes
         de dejar de serlo. Complementa al ranking TOPSIS: éste te dice quién gana en el escenario base,
-        esto te dice quién es más confiable si el escenario cambia.
+        esto te dice quién es más confiable si el escenario cambia. Además agrupa esas mismas muestras
+        Monte Carlo de cada alternativa en clústeres de riesgo financiero reales (K-means, k elegido por
+        silhouette) — perfiles de incertidumbre económica, no solo percentiles agregados.
       </p>
       <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar robustez de todas las turbinas</button>
       <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>

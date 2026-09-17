@@ -3415,8 +3415,15 @@ function renderGlobalSensitivityBatchTable(data) {
     if (w.status === 'robust_beyond_99pct') return '>99% (muy robusto)';
     return `${w.wake_breakeven_pct}% (margen ${w.wake_margin_pct > 0 ? '+' : ''}${w.wake_margin_pct} pp)`;
   };
+  const fmtRiskClusters = (rc) => {
+    if (!rc) return '<span class="text-muted">Muestras insuficientes</span>';
+    const parts = rc.clusters.map(c =>
+      `${c.label} ${c.share_pct}%<br><span class="text-muted">VAN&lt;0 en ${c.prob_van_negative_pct}%</span>`
+    ).join(' · ');
+    return `<span title="k=${rc.k} elegido por silhouette (${rc.silhouette_score}) sobre ${rc.n_valid_samples} muestras válidas">${parts}</span>`;
+  };
   const rows = data.turbines.map((t, i) => {
-    if (t.error) return `<tr><td>${names[i]}</td><td colspan="8" class="text-muted">${t.error}</td></tr>`;
+    if (t.error) return `<tr><td>${names[i]}</td><td colspan="9" class="text-muted">${t.error}</td></tr>`;
     const bc = t.robustness?.b_c_ratio;
     const van = t.robustness?.van_capex_ratio;
     return `<tr>
@@ -3426,6 +3433,7 @@ function renderGlobalSensitivityBatchTable(data) {
       <td>${fmtPct(van?.prob_gt_0)}</td>
       <td>${fmtNum(van?.p10)}</td><td>${fmtNum(van?.p50)}</td><td>${fmtNum(van?.p90)}</td>
       <td>${fmtWake(t.wake_breakeven)}</td>
+      <td style="min-width:180px">${fmtRiskClusters(t.risk_clusters)}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `<table class="data-table" style="font-size:.72rem">
@@ -3433,6 +3441,7 @@ function renderGlobalSensitivityBatchTable(data) {
       <th>Turbina</th><th>P(B/C&gt;1)</th><th>B/C P10</th><th>B/C P50</th><th>B/C P90</th>
       <th>P(VAN/CAPEX&gt;0)</th><th>VAN/CAPEX P10</th><th>VAN/CAPEX P50</th><th>VAN/CAPEX P90</th>
       <th>Estela límite (viabilidad)</th>
+      <th>Clústeres de riesgo financiero (K-means real sobre Monte Carlo)</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -3466,6 +3475,11 @@ function renderGlobalSensitivityBatchInterpretation(data, topsisWinnerLabel) {
     parts.push(`Su diseño actual tolera hasta <b>${wake.wake_breakeven_pct}%</b> de pérdida por estela antes de dejar de ser viable (margen de ${wake.wake_margin_pct} puntos porcentuales sobre el valor de diseño).`);
   } else if (wake?.status === 'already_unviable') {
     parts.push(`⚠ Con la estela de diseño actual ya está al límite: cualquier estela adicional la vuelve inviable (B/C&lt;1).`);
+  }
+  const rc = mostRobust.risk_clusters;
+  if (rc) {
+    const worst = rc.clusters[0];
+    parts.push(`Sus escenarios Monte Carlo se agrupan en <b>${rc.k} perfiles de riesgo financiero</b> reales (k elegido por silhouette=${rc.silhouette_score}): el más riesgoso concentra ${worst.share_pct}% de los escenarios con VAN negativo en el ${worst.prob_van_negative_pct}% de ellos — probabilidad global de VAN negativo: <b>${rc.overall_prob_van_negative_pct}%</b>.`);
   }
   el.innerHTML = `<p style="margin:0">${parts.join(' ')}</p>`;
 }

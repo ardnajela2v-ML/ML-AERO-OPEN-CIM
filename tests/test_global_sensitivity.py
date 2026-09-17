@@ -79,6 +79,33 @@ def test_importance_is_out_of_sample_validated(client):
     assert data['validation']['b_c_ratio']['r2_mean'] > 0.5
 
 
+def test_risk_clusters_are_real_kmeans_ordered_by_van_not_decorative(client):
+    """Objetivo 3 de la tesis: a diferencia de los K-means decorativos de
+    régimen de precio (api.py) o fases de flujo de caja (aero.js), estos
+    clústeres deben venir de las propias muestras Monte Carlo de la
+    alternativa, con k elegido por silhouette y ordenados por riesgo real."""
+    body = payload()
+    body['n_samples'] = 200
+    body['turbines'] = [dict(label='reference', builtin_model='V150_4.5',
+                             annual_energy_kwh=15_000_000, wake_loss_pct=10)]
+    response = client.post('/api/energy/global_sensitivity_batch', json=body)
+    assert response.status_code == 200, response.get_json()
+    rc = response.get_json()['turbines'][0]['risk_clusters']
+    assert 2 <= rc['k'] <= 4
+    assert rc['k'] in rc['k_candidates_tested']
+    assert len(rc['clusters']) == rc['k']
+    assert rc['n_valid_samples'] <= 200
+    assert sum(c['share_pct'] for c in rc['clusters']) == pytest.approx(100.0, abs=0.5)
+    van_means = [c['metrics']['van_capex_ratio']['mean'] for c in rc['clusters']]
+    assert van_means == sorted(van_means)  # "Mayor riesgo" -> "Menor riesgo"
+    assert rc['clusters'][0]['label'] == 'Mayor riesgo'
+    assert rc['clusters'][-1]['label'] == 'Menor riesgo'
+    assert 0.0 <= rc['overall_prob_van_negative_pct'] <= 100.0
+    for c in rc['clusters']:
+        assert 0.0 <= c['prob_van_negative_pct'] <= 100.0
+        assert set(c['metrics']) == set(rc['features'])
+
+
 def test_invalid_wake_returns_client_error(client):
     body = payload()
     body['base_wake_loss_pct'] = 100

@@ -3893,6 +3893,89 @@ def create_app():
             robustness[m] = entry
         return robustness
 
+    def _gsens_risk_clusters(outputs, k_range=(2, 4), random_state=42):
+        """Clústeres de riesgo financiero reales sobre las mismas muestras
+        Monte Carlo de _gsens_monte_carlo (b_c_ratio, van_capex_ratio,
+        payback_years, lcoe_usd_kwh, irr_pct) — a diferencia de los K-means
+        puramente visuales de regímenes de precio (más abajo, sobre una sola
+        columna histórica) o de fases de flujo de caja (aero.js), agrupa
+        escenarios económicos completos de una misma alternativa y sí puede
+        alimentar un panel de riesgo por alternativa del ranking TOPSIS. k se
+        elige por silhouette (no fijo), y la variable de orden/etiqueta es
+        van_capex_ratio (mismo signo que el VAN, CAPEX > 0 siempre).
+        Devuelve None si hay menos de 30 muestras válidas tras filtrar
+        None/no-finitos (Monte Carlo insuficiente para clusterizar)."""
+        from sklearn.cluster import KMeans
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.metrics import silhouette_score
+
+        metric_keys = GSENS_METRIC_NAMES
+        n = len(outputs[metric_keys[0]])
+        rows = [
+            [outputs[m][i] for m in metric_keys] for i in range(n)
+            if all(outputs[m][i] is not None and np.isfinite(outputs[m][i]) for m in metric_keys)
+        ]
+        X = np.array(rows, dtype=float)
+        if X.shape[0] < 30:
+            return None
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        best = None
+        max_k = min(k_range[1], X.shape[0] - 1)
+        for k in range(k_range[0], max_k + 1):
+            km = KMeans(n_clusters=k, random_state=random_state, n_init=10)
+            labels = km.fit_predict(X_scaled)
+            if len(set(labels)) < 2:
+                continue
+            score = float(silhouette_score(X_scaled, labels))
+            if best is None or score > best[0]:
+                best = (score, k, labels)
+        if best is None:
+            return None
+        score, k, labels = best
+
+        van_idx = metric_keys.index('van_capex_ratio')
+        order = sorted(range(k), key=lambda c: float(np.mean(X[labels == c, van_idx])))
+        if k == 2:
+            names = ['Mayor riesgo', 'Menor riesgo']
+        elif k == 3:
+            names = ['Mayor riesgo', 'Riesgo intermedio', 'Menor riesgo']
+        else:
+            names = [f'Perfil {i + 1} de {k} (VAN/CAPEX creciente)' for i in range(k)]
+
+        clusters = []
+        for rank, c in enumerate(order):
+            mask = labels == c
+            cluster_rows = X[mask]
+            metrics = {}
+            for j, m in enumerate(metric_keys):
+                vals = cluster_rows[:, j]
+                metrics[m] = {'mean': round(float(np.mean(vals)), 4),
+                              'p50': round(float(np.median(vals)), 4)}
+            van_vals = cluster_rows[:, van_idx]
+            clusters.append({
+                'label': names[rank],
+                'n_samples': int(mask.sum()),
+                'share_pct': round(float(mask.sum()) / X.shape[0] * 100.0, 1),
+                'prob_van_negative_pct': round(float((van_vals < 0).mean() * 100.0), 1),
+                'metrics': metrics,
+            })
+
+        overall_van = X[:, van_idx]
+        return {
+            'k': k,
+            'silhouette_score': round(score, 4),
+            'k_candidates_tested': list(range(k_range[0], max_k + 1)),
+            'n_valid_samples': int(X.shape[0]),
+            'features': metric_keys,
+            'overall_prob_van_negative_pct': round(float((overall_van < 0).mean() * 100.0), 1),
+            'clusters': clusters,
+            'random_state': random_state,
+            'method': 'kmeans_standardized_monte_carlo_samples_k_by_silhouette',
+        }
+
     def _gsens_wake_breakeven(turbine, n_turb, base_kwh, base_wake_loss_pct, base_price,
                               base_rate, base_years, base_infl, base_cm_dict):
         """
@@ -4059,6 +4142,12 @@ def create_app():
         punto base. Mismo núcleo Monte Carlo que el endpoint single
         (`_gsens_monte_carlo`), corrido una vez por turbina con menos muestras por
         default para mantener el tiempo de respuesta bajo.
+
+        Cada alternativa incluye además `risk_clusters` (`_gsens_risk_clusters`):
+        clústeres K-means reales de riesgo financiero sobre las propias muestras
+        Monte Carlo (b_c_ratio, van_capex_ratio, payback_years, lcoe_usd_kwh,
+        irr_pct), con k elegido por silhouette — no un panel decorativo sobre una
+        sola serie histórica.
         """
         body    = request.get_json(silent=True) or {}
         fin_cfg = body.get('financial', {})
@@ -4110,6 +4199,7 @@ def create_app():
                     'ranges_used': ranges_used,
                     'base_case': base_case,
                     'robustness': _gsens_robustness(outputs),
+                    'risk_clusters': _gsens_risk_clusters(outputs),
                     'wake_breakeven': _gsens_wake_breakeven(
                         turbine, n_turb, base_kwh, wake, base_price, base_rate,
                         base_years, base_infl, base_cm_dict,
