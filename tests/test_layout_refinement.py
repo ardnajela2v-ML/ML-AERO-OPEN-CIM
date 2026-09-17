@@ -119,6 +119,42 @@ class LayoutRefinementTests(EnergyBasisTests):
         with self.assertRaisesRegex(ValueError, 'aumentar'):
             refine_topsis_layout(self.alternative(), self.turbine, n_turbines=3)
 
+    def test_family_unable_to_reach_topsis_count_is_rescued_not_dropped(self):
+        """Un patrón fijo (solo alineado) puede no alcanzar la cuenta que la
+        búsqueda combinada original de TOPSIS sí logró con otro arreglo. Antes
+        esto dejaba la familia sin candidatos y con un mensaje que sonaba a
+        límite absoluto del polígono; ahora se rescata el máximo propio del
+        patrón como candidato informativo, marcado no elegible."""
+        from core.layout_refinement import refine_topsis_layout
+        from core import farm as farm_module
+        real_optimize = farm_module.optimize_layout_structured
+
+        def flaky_optimize(*args, **kwargs):
+            if kwargs.get('stagger_options') == (0.0,) and args[2] > 0:
+                raise ValueError(
+                    'El polígono admite como máximo 1 aerogeneradores; se solicitaron 2.')
+            if kwargs.get('stagger_options') == (0.0,) and args[2] == 0:
+                return real_optimize(args[0], args[1], 1,
+                                     **{k: v for k, v in kwargs.items() if k != 'stagger_options'},
+                                     stagger_options=(0.0,))
+            return real_optimize(*args, **kwargs)
+
+        with patch('core.farm.optimize_layout_structured', side_effect=flaky_optimize):
+            result = refine_topsis_layout(self.alternative(), self.turbine)
+        comparison = result['comparison']
+        aligned_errors = [e for e in comparison['errors'] if e['family'] == 'Alineado']
+        self.assertEqual(len(aligned_errors), 1)
+        self.assertIn('máximo 1', aligned_errors[0]['reason'])
+        self.assertIn('Referencia TOPSIS llega a 2', aligned_errors[0]['reason'])
+        aligned_winner = next(w for w in comparison['winners'] if w['family'] == 'aligned')
+        self.assertFalse(aligned_winner['feasible'])
+        self.assertEqual(aligned_winner['n_placed'], 1)
+        self.assertIn('máximo 1', aligned_winner['label'])
+        # The staggered family and the original TOPSIS reference are unaffected.
+        self.assertTrue(any(w['family'] == 'topsis' for w in comparison['winners']))
+        staggered_winner = next(w for w in comparison['winners'] if w['family'] == 'staggered')
+        self.assertEqual(staggered_winner['n_placed'], 2)
+
     def test_endpoint_returns_comparison_and_rejects_stale_energy(self):
         from api import create_app
         client = create_app().test_client()

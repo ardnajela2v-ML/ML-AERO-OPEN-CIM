@@ -276,17 +276,38 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
         ), 'topsis_improved', 'TOPSIS mejorado (auto)', improved_sim, True)
 
     for family, (label, stagger) in selected_families.items():
+        family_kwargs = dict(
+            ws=ws, wd=wd, fallback_wind_ms=mean, rho=rho,
+            min_spacing_d=constraints['min_spacing_d'],
+            s_para_range=tuple(constraints['s_para_range']),
+            s_perp_range=tuple(constraints['s_perp_range']),
+            stagger_options=(stagger,), exclusion_polygons=constraints.get('exclusions', []),
+            boundary_setback_m=setback, wake_model=context['wake_model'],
+            k_wake=context['k_wake'], ct=context['ct'], candidate_limit=16)
         try:
-            result = optimize_layout_structured(
-                polygon, turbine, target_n, ws=ws, wd=wd, fallback_wind_ms=mean,
-                rho=rho, min_spacing_d=constraints['min_spacing_d'],
-                s_para_range=tuple(constraints['s_para_range']),
-                s_perp_range=tuple(constraints['s_perp_range']),
-                stagger_options=(stagger,), exclusion_polygons=constraints.get('exclusions', []),
-                boundary_setback_m=setback, wake_model=context['wake_model'],
-                k_wake=context['k_wake'], ct=context['ct'], candidate_limit=16)
+            result = optimize_layout_structured(polygon, turbine, target_n, **family_kwargs)
         except ValueError as exc:
-            errors.append({'family': label, 'reason': str(exc)})
+            # target_n viene de la búsqueda combinada original de TOPSIS
+            # (alineado + tresbolillo, todas las orientaciones/desplazamientos).
+            # Un patrón fijo por familia puede legítimamente no alcanzarlo aunque
+            # el polígono sí lo permita con otro arreglo (ya lo demuestra la fila
+            # "Referencia TOPSIS"). En vez de dejar la familia vacía y sonar como
+            # un límite absoluto del polígono, se rescata el máximo propio de ese
+            # patrón como candidato informativo, marcado no elegible.
+            try:
+                fallback = optimize_layout_structured(polygon, turbine, 0, **family_kwargs)
+            except ValueError:
+                errors.append({'family': label, 'reason': str(exc)})
+                continue
+            fallback_n = fallback['n_placed']
+            errors.append({'family': label,
+                'reason': (f'Con este patrón caben como máximo {fallback_n} — la '
+                          f'Referencia TOPSIS llega a {target_n} con un arreglo distinto.')})
+            for candidate in fallback['candidate_layouts']:
+                candidate['layout_config'].update(
+                    layout_type=family, dominant_dir_deg=fallback['layout_config']['dominant_dir_deg'])
+                add_candidate(candidate, family,
+                    f'{label} (máximo {fallback_n}, no llega a {target_n})', eligible=False)
             continue
         for candidate in result['candidate_layouts']:
             candidate['layout_config'].update(layout_type=family, dominant_dir_deg=result['layout_config']['dominant_dir_deg'])
