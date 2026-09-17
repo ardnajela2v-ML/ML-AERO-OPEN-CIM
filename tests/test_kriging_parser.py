@@ -14,6 +14,7 @@ from core.kriging import (
     analyze_sites, clear_site_stats_cache, fit_power_curve_gauss4,
     parallel_read_sites, parse_turbine_filename, read_wind_file,
     site_wind_stats, turbine_site_economics,
+    _files_near_grid_bounds,
 )
 
 _ERA5_HEADER = (
@@ -201,6 +202,42 @@ class KrigingParserTests(unittest.TestCase):
             for key in ('potencia_wh_sitio', 'factor_capacidad', 'aep_mwh',
                         'capex_usd', 'van_usd', 'lcoe_usd_kwh'):
                 self.assertAlmostEqual(optimized[key], serial[key], places=9)
+
+
+class LegacyPathGeographicFilterTests(unittest.TestCase):
+    """El camino de compatibilidad (sin calibración MCP publicada) listaba
+    TODO wind_folder sin filtro geográfico: un parque en Oaxaca leía también
+    archivos de Coahuila/Baja California (decenas de archivos de ~15-20 MB
+    cada uno). _files_near_grid_bounds() filtra por nombre de archivo (sin
+    abrirlo) antes de esa lectura costosa."""
+
+    _OAXACA_BOUNDS = {'lat_min': 16.50, 'lat_max': 16.55, 'lon_min': -95.10, 'lon_max': -95.05}
+
+    def test_keeps_only_files_within_padded_bounds(self):
+        files = [
+            'Union_MERRA2_N16,530_W95,080.txt',    # dentro del polígono
+            'Arriaga_ERA5_N16,600_W94,900.txt',    # cerca, dentro del pad de 2°
+            'Ventosa_MERRA2_N16,400_W95,200.txt',  # cerca, dentro del pad de 2°
+            'Coahuila_ERA5_N25,750_W101,500.txt',  # muy lejos, fuera del pad
+            'BajaCalifornia_MERRA2_N32,000_W116,500.txt',  # muy lejos
+        ]
+        kept = _files_near_grid_bounds(files, self._OAXACA_BOUNDS)
+        self.assertIn('Union_MERRA2_N16,530_W95,080.txt', kept)
+        self.assertIn('Arriaga_ERA5_N16,600_W94,900.txt', kept)
+        self.assertIn('Ventosa_MERRA2_N16,400_W95,200.txt', kept)
+        self.assertNotIn('Coahuila_ERA5_N25,750_W101,500.txt', kept)
+        self.assertNotIn('BajaCalifornia_MERRA2_N32,000_W116,500.txt', kept)
+
+    def test_unparsable_filenames_are_dropped_not_kept_blindly(self):
+        files = ['Union_MERRA2_N16,530_W95,080.txt', 'sin_coordenadas.txt']
+        kept = _files_near_grid_bounds(files, self._OAXACA_BOUNDS, min_files=1)
+        self.assertEqual(kept, ['Union_MERRA2_N16,530_W95,080.txt'])
+
+    def test_falls_back_to_full_list_when_too_few_nearby(self):
+        files = ['Coahuila_ERA5_N25,750_W101,500.txt',
+                 'BajaCalifornia_MERRA2_N32,000_W116,500.txt']
+        kept = _files_near_grid_bounds(files, self._OAXACA_BOUNDS, min_files=3)
+        self.assertEqual(kept, files)
 
 
 if __name__ == '__main__':

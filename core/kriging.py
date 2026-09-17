@@ -1144,6 +1144,36 @@ def _legacy_prefit_economics(mean_speed, k, rho_mean, power_interp, p_max_curve,
     return float(ctot), float(van)
 
 
+_LEGACY_PATH_NEIGHBORHOOD_PAD_DEG = 2.0  # ~220 km — vecindario para Kriging alrededor del área pedida
+
+
+def _files_near_grid_bounds(wind_files: List[str], grid_bounds: dict,
+                            pad_deg: float = _LEGACY_PATH_NEIGHBORHOOD_PAD_DEG,
+                            min_files: int = 3) -> List[str]:
+    """Reduce la lista de archivos crudos a los que caen cerca del área pedida,
+    usando solo el nombre del archivo (sin abrirlo) — el camino de
+    compatibilidad (sin calibración MCP publicada) listaba TODO
+    wind_folder sin filtro geográfico: un parque dibujado en Oaxaca terminaba
+    leyendo también los archivos de Coahuila/Baja California/Yucatán
+    (decenas de archivos de ~15-20 MB cada uno), con el consiguiente costo
+    de I/O y tiempo. Si muy pocos nombres son parseables/cercanos, regresa
+    la lista completa sin filtrar — nunca debe entregar menos estaciones
+    utilizables que el camino sin filtro."""
+    lat_min = float(grid_bounds['lat_min']) - pad_deg
+    lat_max = float(grid_bounds['lat_max']) + pad_deg
+    lon_min = float(grid_bounds['lon_min']) - pad_deg
+    lon_max = float(grid_bounds['lon_max']) + pad_deg
+    nearby = []
+    for fname in wind_files:
+        coords = parse_coords_from_filename(fname)
+        if coords is None:
+            continue
+        lat, lon = coords
+        if lat_min <= lat <= lat_max and lon_min <= lon <= lon_max:
+            nearby.append(fname)
+    return nearby if len(nearby) >= min_files else wind_files
+
+
 def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: int,
                                  scope: str,
                                  polygon: Optional[List[dict]] = None,
@@ -1183,6 +1213,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     if filter_filenames:
         keep = set(filter_filenames)
         wind_files = [f for f in wind_files if f in keep]
+    else:
+        wind_files = _files_near_grid_bounds(wind_files, grid_bounds)
     paths = [os.path.join(wind_folder, f) for f in wind_files]
     stats_rows = parallel_read_sites(paths, year=year, hub_height_m=target_height_m, max_workers=6)
     rows = [r for r in stats_rows if r and r.get('_lat') is not None and r.get('_lon') is not None]
