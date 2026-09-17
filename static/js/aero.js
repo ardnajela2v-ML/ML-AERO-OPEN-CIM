@@ -580,10 +580,10 @@ function bindThemeToggle() {
     if (typeof KRIG !== 'undefined' && KRIG.map) {
       KRIG.map.eachLayer(l => { if (l instanceof L.TileLayer) KRIG.map.removeLayer(l); });
       const url = t === 'light'
-        ? 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png'
-        : 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-      L.tileLayer(url, { maxZoom: 18, subdomains: 'abcd',
-        attribution: '© OpenStreetMap · © CARTO' }).addTo(KRIG.map);
+        ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
+        : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+      L.tileLayer(url, { maxZoom: 16,
+        attribution: '© Esri · © OpenStreetMap contributors' }).addTo(KRIG.map);
     }
   };
   applyTheme(pickAutoTheme());
@@ -5650,11 +5650,12 @@ function krig3SetBase(key) {
   if (!KRIG.map) return;
   if (KRIG.baseLayer) KRIG.map.removeLayer(KRIG.baseLayer);
   const url = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES[key])
-    || 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+    || 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
   KRIG.baseLayer = L.tileLayer(url, {
-    maxZoom: 18, subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
+    maxZoom: (key === 'osm' || key === 'topo') ? 18 : 16,
+    subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
     crossOrigin: 'anonymous',  // habilita exportación a PNG (html2canvas)
-    attribution: '© OpenStreetMap · © CARTO · ESRI',
+    attribution: '© OpenStreetMap · © Esri',
   }).addTo(KRIG.map);
   // La capa base debe quedar al fondo para no tapar overlays/markers.
   if (KRIG.baseLayer.bringToBack) KRIG.baseLayer.bringToBack();
@@ -9270,8 +9271,8 @@ function parqueInitMap() {
     zoomControl: true, attributionControl: false,
   });
   const tileUrl = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES.dark) ||
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
-  PARQUE.baseLayer = L.tileLayer(tileUrl, { maxZoom: 18, subdomains: 'abc', crossOrigin: 'anonymous' })
+    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+  PARQUE.baseLayer = L.tileLayer(tileUrl, { maxZoom: 16, crossOrigin: 'anonymous' })
     .addTo(PARQUE.map);
   setTimeout(() => PARQUE.map.invalidateSize(), 80);
   return PARQUE.map;
@@ -10282,8 +10283,8 @@ const MAPA = {
 const MAPA_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const MAPA_TILES = {
-  dark:    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  voyager: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  dark:    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+  voyager: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
   osm:     'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   topo:    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
   sat:     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -10309,8 +10310,9 @@ function mapaSetBase(key) {
   if (MAPA.baseLayer) MAPA.map.removeLayer(MAPA.baseLayer);
   const url = MAPA_TILES[key] || MAPA_TILES.dark;
   MAPA.baseLayer = window.L.tileLayer(url, {
-    maxZoom: 18, subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
-    attribution: '© OpenStreetMap · © CARTO · ESRI',
+    maxZoom: (key === 'osm' || key === 'topo') ? 18 : 16,
+    subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
+    attribution: '© OpenStreetMap · © Esri',
   }).addTo(MAPA.map);
 }
 
@@ -11498,10 +11500,10 @@ const GLOBE = {
 };
 
 const GLOBE_TILE_URLS = {
-  dark:    { url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-             attr: '© OpenStreetMap · © CARTO', subdomains: 'abcd' },
-  voyager: { url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-             attr: '© OpenStreetMap · © CARTO', subdomains: 'abcd' },
+  dark:    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+             attr: '© Esri · © OpenStreetMap contributors', subdomains: '' },
+  voyager: { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+             attr: '© Esri · © OpenStreetMap contributors', subdomains: '' },
   osm:     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
              attr: '© OpenStreetMap', subdomains: 'abc' },
   topo:    { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
