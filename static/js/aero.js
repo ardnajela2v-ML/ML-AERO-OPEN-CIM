@@ -6159,7 +6159,7 @@ function krig3FilterByRadius() {
     info.innerHTML = `${KRIG.poi.lat.toFixed(3)}°, ${KRIG.poi.lon.toFixed(3)}° · ` +
       `<b>${inside}</b> estaciones dentro de ${km} km` +
       (anchor
-        ? ` · ancla <b>OBS · MCP M04</b>`
+        ? ` · ancla <b>${krig3AnchorLabel(anchor)}</b>`
         : (nearest ? ` · ★ ${nearest.display_name || nearest.filename} (${nearestD.toFixed(1)} km)` : ''));
   }
   if (inside < 3) {
@@ -6679,11 +6679,24 @@ function krig3UpdateSelectionInfo() {
   const principalLabel = principalSite
     ? `principal: <b>${principalSite.display_name || principalSite.filename}</b>`
     : '<span style="color:#f59e0b">sin parque principal</span>';
+  const anchor = KRIG.sites.find(s => s.allowed_role === 'anchor');
+  const anchorLabel = anchor ? krig3AnchorLabel(anchor) : 'sin ancla';
   el.innerHTML = WP.studyMode === 'reanalysis_only'
     ? `${sel}/${total} nodos ERA5/MERRA-2 del área · <b>sin ancla observada y sin MCP</b>`
     : KRIG.guidedMcp
-    ? `${sel}/${total} nodos virtuales seleccionados · ancla: <b>OBS · MCP M04</b>`
+    ? `${sel}/${total} nodos virtuales seleccionados · ancla: <b>${anchorLabel}</b>`
     : `${sel}/${total} sitios seleccionados · ${principalLabel}`;
+}
+
+/** Etiqueta dinámica de la fuente ancla (antes texto fijo "OBS · MCP M04"
+ * sin importar la fuente activa — no distinguía CERTE observado de un
+ * hindcast MCP). `anchor.source` viene del `kind` real de la fuente
+ * (observed/mcp/reanalysis, ver api.py `_analysis_source_info`). */
+function krig3AnchorLabel(anchor) {
+  const prefix = anchor.source === 'mcp' ? 'MCP' : anchor.source === 'observed' ? 'OBS'
+    : anchor.source === 'reanalysis' ? 'Reanálisis' : (anchor.source || '');
+  const name = anchor.display_name || anchor.filename || '';
+  return prefix ? `${prefix} · ${name}` : name;
 }
 
 function krig3SitePopupHtml(s) {
