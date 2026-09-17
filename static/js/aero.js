@@ -5823,6 +5823,78 @@ function krig3ClearPark() {
   if (typeof mcdaClearSpatialMarkers === 'function') mcdaClearSpatialMarkers();
 }
 
+/** Exporta KRIG.parkPoints como KML (Polygon), compatible con Google Earth /
+ * Google My Maps / QGIS. Orden de coordenadas KML: lon,lat,alt. */
+function krig3ExportParkKml() {
+  if (!Array.isArray(KRIG.parkPoints) || KRIG.parkPoints.length < 3) {
+    toast('Dibuja y cierra el polígono del parque antes de exportar.', 'warning');
+    return;
+  }
+  const ring = KRIG.parkPoints.map(([lat, lon]) => `${lon},${lat},0`);
+  ring.push(ring[0]); // KML exige cerrar el LinearRing repitiendo el primer punto
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Parque eólico — WindPro Platform</name>
+    <Placemark>
+      <name>Área del parque</name>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <coordinates>${ring.join(' ')}</coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>`;
+  const url = URL.createObjectURL(new Blob([kml], {type: 'application/vnd.google-earth.kml+xml'}));
+  const a = document.createElement('a'); a.href = url; a.download = 'parque-windpro.kml'; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Importa un polígono desde un .kml (Google Earth/My Maps/QGIS) — toma el
+ * primer <coordinates> del documento (Polygon o LineString), reemplaza
+ * KRIG.parkPoints y redibuja la figura ya cerrada. */
+async function krig3ImportParkKmlFile(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const xml = new DOMParser().parseFromString(text, 'application/xml');
+    if (xml.querySelector('parsererror')) throw new Error('KML inválido o mal formado.');
+    const coordsNode = xml.getElementsByTagNameNS('*', 'coordinates')[0];
+    if (!coordsNode) throw new Error('No se encontró un elemento <coordinates> en el archivo.');
+    const points = coordsNode.textContent.trim().split(/\s+/).map(token => {
+      const [lon, lat] = token.split(',').map(Number);
+      return [lat, lon];
+    }).filter(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon)
+      && Math.abs(lat) <= 90 && Math.abs(lon) <= 180);
+    // KML cierra el anillo repitiendo el primer punto — se quita para no duplicar vértice.
+    if (points.length > 1) {
+      const [firstLat, firstLon] = points[0];
+      const [lastLat, lastLon] = points[points.length - 1];
+      if (Math.abs(firstLat - lastLat) < 1e-9 && Math.abs(firstLon - lastLon) < 1e-9) points.pop();
+    }
+    if (points.length < 3) throw new Error('El KML necesita al menos 3 vértices válidos.');
+    krig3ClearPark();
+    krig3InitMap();
+    KRIG.parkPoints = points;
+    KRIG.parkMarkers = points.map(([lat, lon]) => L.circleMarker([lat, lon], {
+      radius: 4, color: '#fff', weight: 1, fillColor: '#f59e0b', fillOpacity: 1,
+    }).addTo(KRIG.map));
+    krig3RenderParkLayer(true);
+    krig3RenderOptimalList();
+    if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
+    const bounds = L.latLngBounds(points);
+    KRIG.map.fitBounds(bounds, {padding: [24, 24]});
+    toast(`Polígono importado: ${points.length} vértices.`, 'success');
+  } catch (e) {
+    toast(`No se pudo importar el KML: ${e.message}`, 'error');
+  }
+}
+
 function krig3PolygonAreaKm2(points) {
   if (points.length < 3) return 0;
   const lat0 = points.reduce((s, p) => s + p[0], 0) / points.length;
@@ -7963,6 +8035,58 @@ function mcdaExportAhp() {
   const url = URL.createObjectURL(new Blob([JSON.stringify(MCDA.ahpResult, null, 2)], {type:'application/json'}));
   const a = document.createElement('a'); a.href = url; a.download = 'windpro-ahp.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Importa un expediente AHP exportado con mcdaExportAhp() (o un borrador
+ * {criteria, pairs, ...} equivalente) y recalcula pesos/CR contra el backend
+ * — nunca confía en los números ya calculados del archivo como definitivos.
+ * Los criterios deben coincidir EXACTAMENTE (mismo orden) con el esquema
+ * actual de 8 criterios de parque: las claves de `pairs` son posiciones
+ * (`"i-j"`), no nombres, así que un orden distinto asignaría mal las
+ * respuestas sin que se note. */
+async function mcdaImportAhpFile(event) {
+  const file = event.target.files?.[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    if (MCDA.scope !== 'area') {
+      throw new Error('Cambia a modo "Parque" (área) antes de importar — el AHP solo aplica al ranking de parques.');
+    }
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.criteria) || !data.criteria.length) {
+      throw new Error('El archivo no tiene una lista de criterios (criteria).');
+    }
+    const defaults = await mcdaLoadDefaults();
+    const currentCriteria = Object.keys(defaults.layout_weights || {});
+    if (JSON.stringify(data.criteria) !== JSON.stringify(currentCriteria)) {
+      throw new Error('Los criterios del archivo no coinciden (mismo orden) con los 8 criterios actuales de parque — probablemente es de otra versión de la plataforma.');
+    }
+    let pairs = {};
+    if (data.pairs && typeof data.pairs === 'object') {
+      pairs = {...data.pairs};
+    } else if (Array.isArray(data.matrix)) {
+      for (let i = 0; i < data.criteria.length; i++) {
+        for (let j = i + 1; j < data.criteria.length; j++) {
+          const value = data.matrix[i]?.[j];
+          if (value != null) pairs[`${i}-${j}`] = String(value);
+        }
+      }
+    } else {
+      throw new Error('El archivo no tiene matrix ni pairs para reconstruir las comparaciones.');
+    }
+    MCDA.ahpDraft = {
+      criteria: data.criteria, pairs,
+      author: typeof data.author === 'string' ? data.author : '',
+      objective: typeof data.objective === 'string' ? data.objective : '',
+      rationale: typeof data.rationale === 'string' ? data.rationale : '',
+    };
+    MCDA.ahpResult = null;
+    mcdaRenderAhp();
+    await mcdaCalculateAhp();
+    toast('Expediente AHP importado y recalculado contra el esquema actual.', 'success');
+  } catch (e) {
+    toast(`No se pudo importar el AHP: ${e.message}`, 'error');
+  }
 }
 
 async function mcdaLoadDefaults() {
