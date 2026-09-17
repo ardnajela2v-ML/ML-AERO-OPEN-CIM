@@ -200,10 +200,13 @@ def compute_site_cp_fit(ws_series, curve_ws, curve_power_kw,
     }
 
 
-def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.001):
+def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.03):
     """
     Logarithmic wind profile.
-    z0: roughness length in metres (0.001 = open sea/coastal).
+    z0: roughness length in metres. Default 0.03 (campo abierto) para
+    consistencia con core.kriging.Z0 y core.wind_stats — pasar z0 explícito
+    para otros supuestos (p. ej. 0.001 mar abierto/costa, 0.1-0.5 Sierra
+    Norte Oaxaca).
     """
     if z0 <= 0:
         z0 = 1e-4
@@ -452,7 +455,7 @@ class WindToPowerEngine:
 
     def run(self, df, ws_col='wind_speed', ws_height_m=50.0,
             temp_col=None, pressure_col=None, altitude_m=None,
-            extrapolation='hellmann', roughness_z0=0.001, hellmann_alpha=None):
+            extrapolation='hellmann', roughness_z0=0.03, hellmann_alpha=None):
         """
         Main simulation method.  Returns enriched DataFrame + summary dict.
         """
