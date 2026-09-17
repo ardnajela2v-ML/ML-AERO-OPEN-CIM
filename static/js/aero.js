@@ -8136,8 +8136,12 @@ async function mcdaBuildWeightSliders() {
         <input type="range" min="0" max="1" step="any" value="${v}"
           data-crit="${k}" class="mcda-w"
           style="flex:1"
-          oninput="this.nextElementSibling.textContent=(+this.value).toFixed(3);mcdaRememberLayoutWeights(true)">
-        <span style="font-family:var(--font-mono);width:42px;text-align:right">${Number(v).toFixed(3)}</span>
+          oninput="mcdaSyncWeightInput(this)">
+        <input type="number" min="0" max="1" step="0.001" value="${Number(v).toFixed(3)}"
+          data-crit="${k}" class="mcda-w-num form-input"
+          style="width:64px;flex:none;font-family:var(--font-mono);text-align:right;padding:.15rem .3rem"
+          oninput="mcdaSyncWeightNumber(this)"
+          onblur="mcdaFinalizeWeightNumber(this)">
       </div>`;
   };
   if (!isLayout) {
@@ -8167,10 +8171,33 @@ function mcdaGetWeights() {
   const assessment = mcdaActiveAhp();
   if (assessment) return { ...assessment.weights };
   const out = {};
-  document.querySelectorAll('.mcda-w').forEach(el => {
-    out[el.dataset.crit] = parseFloat(el.value);
+  document.querySelectorAll('.mcda-w-num').forEach(el => {
+    out[el.dataset.crit] = parseFloat(el.value) || 0;
   });
   return out;
+}
+
+/** Slider movido a mano: sincroniza el input numérico hermano. */
+function mcdaSyncWeightInput(rangeEl) {
+  const num = rangeEl.nextElementSibling;
+  if (num) num.value = (+rangeEl.value).toFixed(3);
+  mcdaRememberLayoutWeights(true);
+}
+
+/** Valor tecleado en el input numérico: mueve el slider en vivo, sin forzar
+ * el rango [0,1] todavía (para no pelear con el usuario a medio escribir). */
+function mcdaSyncWeightNumber(numEl) {
+  const value = parseFloat(numEl.value);
+  const range = numEl.previousElementSibling;
+  if (range && Number.isFinite(value)) range.value = value;
+  mcdaRememberLayoutWeights(true);
+}
+
+/** Al salir del campo: normaliza a [0,1] con 3 decimales. */
+function mcdaFinalizeWeightNumber(numEl) {
+  const value = Math.max(0, Math.min(1, parseFloat(numEl.value) || 0));
+  numEl.value = value.toFixed(3);
+  mcdaSyncWeightNumber(numEl);
 }
 
 function mcdaRememberLayoutWeights(edited = false) {
@@ -8488,7 +8515,7 @@ async function mcdaResetWeights() {
     : d.weights;
   document.querySelectorAll('.mcda-w').forEach(el => {
     el.value = defaults[el.dataset.crit];
-    el.nextElementSibling.textContent = (+el.value).toFixed(3);
+    if (el.nextElementSibling) el.nextElementSibling.value = (+el.value).toFixed(3);
   });
   if (MCDA.scope === 'area') {
     MCDA.layoutWeights = { ...defaults };
