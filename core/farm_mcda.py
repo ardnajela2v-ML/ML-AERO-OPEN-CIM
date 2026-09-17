@@ -19,6 +19,8 @@ from core.farm import (
     simulate_wind_farm,
 )
 from core.multicriteria import rank_layout_alternatives
+from core.historical_resource import prepare_historical_wind, historical_layout_simulation
+from core.energy import air_density
 
 
 def effective_park_area(polygon, exclusions=None):
@@ -227,7 +229,9 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
     }.items():
         if not 0.0 <= float(value) < 1.0:
             raise ValueError(f'{name} debe estar en el intervalo [0, 1).')
-    ws, wd, mean_speed, weibull_k, rho = _joint_synthetic_wind(sites)
+    ws, wd, mean_speed, weibull_k, rho = _joint_synthetic_wind(sites) if historical_wind is None else (None, None, None, None, None)
+    lat0 = float(np.mean([point['lat'] for point in polygon]))
+    lon0 = float(np.mean([point['lon'] for point in polygon]))
     if cost_model_origin is None:
         cost_model_origin = ('request' if cost_model is not None
                              else 'irena_onshore_2024_global_weighted_average')
@@ -247,6 +251,17 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             turbine = PowerCurve.from_file(os.path.join(turbines_folder, os.path.basename(filename)))
             if target_height_m:
                 turbine.hub_height_m = float(target_height_m)
+            resource = None
+            if historical_wind is not None:
+                resource = prepare_historical_wind(historical_wind, turbine.hub_height_m)
+                ws, wd, mean_speed = resource['ws'], resource['wd'], resource['mean']
+                rho = float(np.mean([s.get('rho_mean') or 1.225 for s in sites]))
+                if resource.get('temperature_c') is not None and resource.get('pressure_pa') is not None:
+                    densities = air_density(resource['temperature_c'], resource['pressure_pa'])
+                    good_density = np.isfinite(densities) & (densities > 0)
+                    if good_density.any():
+                        rho = float(np.mean(densities[good_density]))
+                resource['provenance']['rho_used_kg_m3'] = rho
             setback = max(float(boundary_setback_m), turbine.rotor_diameter_m / 2.0)
             capacity = optimize_layout_structured(
                 polygon, turbine, 0, ws=ws, wd=wd, wind_grid=wind_grid,
@@ -271,12 +286,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             selected_n = 0
             wake_trials = []
             def evaluate_layout(points):
-                return simulate_wind_farm(
-                    points, turbine, ws, wd, k_wake=k_wake, ct=ct,
-                    n_sectors=36, availability=availability,
-                    electrical_losses=electrical_losses,
-                    wake_model=wake_model, rho_override=rho,
-                )
+                options = dict(k_wake=k_wake, ct=ct, n_sectors=36,
+                    availability=availability, electrical_losses=electrical_losses,
+                    wake_model=wake_model, rho_override=rho)
+                if resource is not None:
+                    return historical_layout_simulation(points, turbine, resource,
+                        wind_grid, (lat0, lon0), **options)
+                result = simulate_wind_farm(points, turbine, ws, wd, **options)
+                result['production_source'] = {'method': 'synthetic_weibull', 'source_id': None}
+                return result
             for candidate_n in range(max_n, 0, -1):
                 candidate_layout = optimize_layout_structured(
                     polygon, turbine, candidate_n, ws=ws, wd=wd, wind_grid=wind_grid,
@@ -314,7 +332,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
             aep_p50 = float(sim['aep_mwh']) * other_survival
             uncertainty_components = dict(uncertainty_components_pct or {
-                'resource': 6.0, 'mcp': 4.0, 'wake': 3.0,
+                'resource': 6.0, **({'mcp': 4.0} if historical_wind is None or historical_wind.get('source_kind') == 'mcp' else {}), 'wake': 3.0,
                 'power_curve': 2.0, 'losses': 2.0,
             })
             if any(float(value) < 0 for value in uncertainty_components.values()):
@@ -390,6 +408,9 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'installed_mw': installed_mw,
                 'aep_gross_mwh': sim['aep_gross_mwh'],
                 'aep_mwh': aep_p50,
+                'production_source': sim.get('production_source'),
+                'turbine_production': sim.get('turbines', []),
+                'record_energy_mwh_before_additional_losses': sim.get('record_energy_mwh'),
                 'aep_p50_mwh': aep_p50,
                 'aep_p90_mwh': aep_p90,
                 'aep_p90_mwh_per_installed_mw': (
@@ -421,7 +442,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'energy_context': build_energy_context(
                     sites, turbine, wake_model=wake_model, k_wake=k_wake, ct=ct,
                     availability=availability, electrical_losses=electrical_losses,
-                    curtailment_loss=curtailment_loss, environmental_loss=environmental_loss),
+                    curtailment_loss=curtailment_loss, environmental_loss=environmental_loss,
+                    historical_resource=resource, wind_grid=wind_grid, origin=(lat0, lon0), rho=rho),
                 'layout_constraints': {
                     'polygon': polygon, 'exclusions': exclusions or [],
                     'boundary_setback_m': setback, 'min_spacing_d': min_spacing_d,

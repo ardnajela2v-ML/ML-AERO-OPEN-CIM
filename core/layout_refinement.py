@@ -8,10 +8,11 @@ from core.farm import simulate_wind_farm
 
 def build_energy_context(sites, turbine, *, wake_model, k_wake, ct,
                          availability, electrical_losses, curtailment_loss=0.0,
-                         environmental_loss=0.0):
+                         environmental_loss=0.0, historical_resource=None,
+                         wind_grid=None, origin=None, rho=None):
     # Keep the inputs to the deterministic joint distribution, not a second
     # independently fitted Weibull or an extrapolation of hub-height wind.
-    return {
+    context = {
         'version': 2,
         'direction_convention': 'meteorological_from_north_clockwise_centered_sectors',
         'wind_method': 'topsis_joint_weibull_8760',
@@ -27,6 +28,14 @@ def build_energy_context(sites, turbine, *, wake_model, k_wake, ct,
         'local_wind_policy': 'uniform_park_resource_as_in_topsis',
     }
 
+    if historical_resource is not None:
+        resource = {key: (value.tolist() if isinstance(value, np.ndarray) else deepcopy(value))
+                    for key, value in historical_resource.items()}
+        context.update(wind_method='historical_series_spatial_scaling',
+            historical_resource=resource, wind_grid=deepcopy(wind_grid),
+            origin=list(origin), rho=rho, local_wind_policy='per_turbine_map_mean_scaling')
+    return context
+
 
 def energy_evaluator(context, turbine):
     from core.farm_mcda import _joint_synthetic_wind
@@ -35,15 +44,26 @@ def energy_evaluator(context, turbine):
         raise ValueError('Ejecuta TOPSIS nuevamente para guardar su base energética.')
     if not np.isclose(float(context['wind_height_m']), turbine.hub_height_m):
         raise ValueError('La altura cambió; ejecuta TOPSIS nuevamente para comparar layouts.')
-    ws, wd, mean_speed, _, rho = _joint_synthetic_wind(context['sites'])
+    historical = context.get('historical_resource')
+    if context.get('wind_method') == 'historical_series_spatial_scaling' and historical is None:
+        raise ValueError('Falta la base histórica; ejecuta TOPSIS nuevamente.')
+    if historical is not None:
+        ws, wd, mean_speed, rho = (np.asarray(historical['ws']), np.asarray(historical['wd']),
+                                   historical['mean'], context['rho'])
+    else:
+        ws, wd, mean_speed, _, rho = _joint_synthetic_wind(context['sites'])
     survival = ((1.0 - float(context.get('curtailment_loss', 0.0))) *
                 (1.0 - float(context.get('environmental_loss', 0.0))))
 
     def evaluate(points):
-        sim = simulate_wind_farm(
-            points, turbine, ws, wd, rho_override=rho,
-            **{key: context[key] for key in ('wake_model', 'k_wake', 'ct',
-               'n_sectors', 'availability', 'electrical_losses')})
+        options = {key: context[key] for key in ('wake_model', 'k_wake', 'ct',
+                   'n_sectors', 'availability', 'electrical_losses')}
+        if historical is not None:
+            from core.historical_resource import historical_layout_simulation
+            sim = historical_layout_simulation(points, turbine, historical,
+                context.get('wind_grid'), context['origin'], rho_override=rho, **options)
+        else:
+            sim = simulate_wind_farm(points, turbine, ws, wd, rho_override=rho, **options)
         if sim.get('error'):
             return sim
         sim['aep_after_wake_operational_mwh'] = sim['aep_mwh']

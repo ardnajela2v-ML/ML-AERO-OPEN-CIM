@@ -62,11 +62,12 @@ def _cached_list_files(folder):
     ))
 
 from config import Config
+from core.resource_period import period_options, select_period
 from core.sensitivity import wake_loss_range
 from core.ahp import calculate_ahp
 from core.ml_validation import rf_cv_feature_importance
 from core.cache import bytes_hash, file_signature, get_or_compute, stable_hash, timed
-from core.data import DataLoader, DataQualityChecker, df_to_json_safe, series_to_chart
+from core.data import DataLoader, DataQualityChecker, df_to_json_safe, series_to_chart, _normalise_pressure_to_pa
 from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           TurbineComparator, TechnoEconomicAnalyzer,
                           air_density, extrapolate_wind_hellmann,
@@ -107,7 +108,7 @@ from core.multicriteria import (topsis, rank_sites_turbines,
                                  LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION)
 from core.forecasting import (read_one_column, read_pml, base_year_stats,
                               normalize_fixed_hourly_profile)
-from windmcp.data import read_certe_files, read_reference_files, resample_hourly
+from windmcp.data import read_certe_files, read_reference_files, resample_hourly, observation_height_summary
 from windmcp.service import run_mcp_validation
 
 
@@ -546,7 +547,7 @@ def create_app():
             'rows': int(len(frame)) if frame is not None else 0,
             **{key: (source or {}).get(key) for key in (
                 'station_id', 'file_ids', 'period_start', 'period_end',
-                'source_height_m', 'target_height_m', 'transformations',
+                'source_height_m', 'target_height_m', 'transformations', 'period_selection', 'years', 'pressure_unit', 'selected_year', 'selection_revision', 'selection_timezone',
             )},
         }
 
@@ -1249,7 +1250,7 @@ def create_app():
                         frame.get('temperature_ref'), errors='coerce')
                         if 'temperature_ref' in frame else None,
                     'pressure': pd.to_numeric(
-                        frame.get('pressure_ref_kpa'), errors='coerce') * 10.0
+                        frame.get('pressure_ref_kpa'), errors='coerce') * 1000.0
                         if 'pressure_ref_kpa' in frame else None,
                 })
             except Exception as error:
@@ -1458,6 +1459,58 @@ def create_app():
                 'published_source': {k: numpy_to_python(v) for k, v in source.items()
                                      if k != 'df' and not k.startswith('_')}}
 
+    def _spatial_source_context(sess, source):
+        is_mcp = source.get('kind') == 'mcp'
+        study = (sess.get('mcp_study') if is_mcp else
+                 sess.get('single_station_study') or sess.get('reanalysis_study')) or {}
+        station_id = source.get('station_id') or study.get('observed_station_id')
+        station = _mcp_index(sess).get(station_id) or {}
+        poi = study.get('poi') or {}
+        lat = station.get('latitude', poi.get('lat'))
+        lon = station.get('longitude', poi.get('lon'))
+        if lat is None or lon is None:
+            raise ValueError('La fuente activa necesita coordenadas para el cálculo espacial')
+        anchor = {'station_id': station_id or source['source_id'],
+                  'display_name': source.get('label') or station.get('display_name') or source['source_id'],
+                  'provider': 'MCP' if is_mcp else station.get('provider', 'REANALYSIS'),
+                  'latitude': float(lat), 'longitude': float(lon)}
+        return study, anchor, station.get('timezone', source.get('selection_timezone', 'UTC'))
+
+    @app.route('/api/sessions/<sid>/resource-period', methods=['GET', 'PUT'])
+    def resource_period(sid):
+        sess = get_session(sid)
+        source_id = sess.get('active_data_source')
+        source = (sess.get('data_sources') or {}).get(source_id)
+        if not source:
+            return _err('Selecciona primero una fuente de viento', 409)
+        try:
+            _, _, clock = _spatial_source_context(sess, source)
+            if request.method == 'GET':
+                return jsonify(period_options(source, clock))
+            body = request.get_json(silent=True) or {}
+            if body.get('source_id') != source_id:
+                return _err('La fuente cambió; vuelve a cargar los años disponibles', 409)
+            if 'year' not in body:
+                return _err('year requerido (null para todo el registro)')
+            token = _begin_source_selection(sess)
+            selected = select_period(source, body['year'], clock)
+            selected['_cache_revision'] = token
+            selected['selection_revision'] = token
+            # Statistics cached on a published hindcast must match its selected view.
+            selected.pop('long_term_statistics', None)
+            with _sessions_lock:
+                if sess.get('_source_selection_token') != token:
+                    return _err('La fuente cambió durante la selección', 409)
+                sess['data_sources'][source_id] = selected
+                sess['meta'] = {**(sess.get('meta') or {}),
+                                'date_range': [selected['period_start'], selected['period_end']],
+                                'n_rows': selected['rows']}
+                _invalidate_wind_results(sess)
+                sess.pop('_topsis_field_cache', None)
+            return jsonify(period_options(selected, clock))
+        except (ValueError, TypeError, KeyError) as error:
+            return _err(str(error))
+
     @app.route('/api/sessions/<sid>/single-station-study', methods=['GET', 'PUT'])
     def single_station_study(sid):
         sess = get_session(sid)
@@ -1496,6 +1549,8 @@ def create_app():
                     'wind_speed_obs': 'wind_speed', 'wind_direction_obs': 'wind_direction',
                     'temperature_obs': 'temperature', 'pressure_obs_hpa': 'pressure',
                 }).copy()
+                if 'pressure' in canonical:
+                    canonical['pressure'] = _normalise_pressure_to_pa(canonical['pressure'])
                 transformations = [{'method': 'native_observations', 'gap_filling': False,
                                     'timezone': 'UTC', 'reader': metadata}]
             else:
@@ -1511,7 +1566,7 @@ def create_app():
                         'temperature_ref': 'temperature', 'pressure_ref_kpa': 'pressure',
                     }).copy()
                     if 'pressure' in part:
-                        part['pressure'] *= 10.0
+                        part['pressure'] *= 1000.0
                     if not np.isclose(float(h), height):
                         part['wind_speed'] = extrapolate_wind_hellmann(
                             part['wind_speed'].to_numpy(dtype=float), float(h), height)
@@ -1541,6 +1596,8 @@ def create_app():
                                         'source_height_m': source_height, 'target_height_m': height})
         except Exception as error:
             return _err('No se pudo preparar la estación: ' + str(error))
+        if 'pressure' in canonical:
+            transformations.append({'method': 'pressure_units', 'output_unit': 'Pa'})
         source_id = 'observed' if observed else 'reanalysis:' + station_id
         mode = 'observed_only' if observed else 'single_reference'
         canonical['data_source'] = source_id
@@ -1549,10 +1606,14 @@ def create_app():
             'label': station.get('display_name') or station_id, 'station_id': station_id,
             'file_ids': [Path(path).name for path in paths],
             'catalog_file_ids': station.get('file_ids') or [],
+            'selection_timezone': station.get('timezone', 'UTC'),
             'source_height_m': source_height, 'target_height_m': height,
             'period_start': canonical.index.min().isoformat(),
             'period_end': canonical.index.max().isoformat(),
             'rows': len(canonical), 'transformations': transformations, 'is_mcp': False,
+            'period_selection': 'full_available_record',
+            'years': sorted(set(int(year) for year in canonical.index.tz_convert(station.get('timezone', 'UTC')).year)),
+            'pressure_unit': 'Pa',
             '_cache_revision': token,
             'df': canonical,
         }
@@ -2779,7 +2840,7 @@ def create_app():
                 'temp_col': temp_col, 'pres_col': pres_col,
                 'data_source': body.get('data_source') or sess.get('active_data_source'),
             }
-            cache_parts = ('wind-stats-v1', _df_cache_signature(sess, params))
+            cache_parts = ('wind-stats-v4-height-profile', _df_cache_signature(sess, params))
 
             def compute_stats():
                 with timed('wind stats', logger):
@@ -2787,6 +2848,8 @@ def create_app():
                         'overview':     numpy_to_python(compute_site_overview(
                                             df, ws_col, wd_col, temp_col, pres_col)),
                         'rose':         numpy_to_python(compute_wind_rose(df, ws_col, wd_col)),
+                        'height_profile': observation_height_summary(df),
+                        'rose_36':      numpy_to_python(compute_wind_rose(df, ws_col, wd_col, n_sectors=36)),
                         'diurnal':      numpy_to_python(compute_diurnal_profile(df, ws_col)),
                         'climatology':  numpy_to_python(compute_monthly_climatology(df, ws_col)),
                         'extremes':     numpy_to_python(compute_extreme_events(df, ws_col)),
@@ -5044,12 +5107,15 @@ def create_app():
         folder = Config.DATA_FOLDER
         sid = request.args.get('session_id')
         data_source = request.args.get('data_source')
-        if sid and data_source and data_source.startswith('mcp:'):
+        if sid and data_source and (request.args.get('anchored') == '1' or data_source.startswith('mcp:')):
             sess = get_session(sid)
             source = (sess.get('data_sources') or {}).get(data_source)
-            if not source or source.get('kind') != 'mcp':
-                return jsonify({'error': 'Diseño requiere un hindcast MCP publicado en esta sesión'}), 409
-            study = sess.get('mcp_study') or {}
+            if not source or source.get('df') is None:
+                return _err('Diseño requiere una fuente activa en esta sesión', 409)
+            try:
+                study, source_anchor, _ = _spatial_source_context(sess, source)
+            except ValueError as error:
+                return _err(str(error))
             try:
                 poi_lat = float(request.args.get('poi_lat', (study.get('poi') or {}).get('lat', M04_LATITUDE)))
                 poi_lon = float(request.args.get('poi_lon', (study.get('poi') or {}).get('lon', M04_LONGITUDE)))
@@ -5084,11 +5150,11 @@ def create_app():
                     'qc_status': 'pending_calibration', 'calibration_method': SPATIAL_CALIBRATION_METHOD,
                 })
             anchor = {
-                'station_id': M04_STATION_ID, 'filename': M04_STATION_ID,
-                'display_name': 'M04 CERTE · hindcast MCP',
-                'lat': M04_LATITUDE, 'lon': M04_LONGITUDE,
-                'distance_km': round(_haversine_km(poi_lat, poi_lon, M04_LATITUDE, M04_LONGITUDE), 3),
-                'source': 'mcp', 'provider': 'MCP', 'data_kind': 'spatial_anchor',
+                'station_id': source_anchor['station_id'], 'filename': source_anchor['station_id'],
+                'display_name': source_anchor['display_name'],
+                'lat': source_anchor['latitude'], 'lon': source_anchor['longitude'],
+                'distance_km': round(_haversine_km(poi_lat, poi_lon, source_anchor['latitude'], source_anchor['longitude']), 3),
+                'source': source['kind'], 'provider': source_anchor['provider'], 'data_kind': 'spatial_anchor',
                 'allowed_role': 'anchor', 'target_height_m': source.get('target_height_m'),
                 'n_hours': int(source.get('rows') or len(source.get('df', []))),
                 'v_mean': float(pd.to_numeric(source['df']['wind_speed'], errors='coerce').mean()),
@@ -5177,13 +5243,18 @@ def create_app():
         sess = get_session(sid)
         data_source = str(body.get('data_source') or sess.get('active_data_source') or '')
         source = (sess.get('data_sources') or {}).get(data_source)
-        if not data_source.startswith('mcp:') or not source or source.get('kind') != 'mcp':
-            return _err('El flujo guiado de Diseño requiere publicar primero una corrida MCP', 409)
+        if not source or source.get('df') is None:
+            return _err('El flujo guiado de Diseño requiere una fuente activa', 409)
+        try:
+            study, source_anchor, _ = _spatial_source_context(sess, source)
+        except ValueError as error:
+            return _err(str(error))
+        source_version = source.get('selection_revision') or source.get('_cache_revision')
+        selection_token = sess.get('_source_selection_token')
         method = str(body.get('method') or SPATIAL_CALIBRATION_METHOD)
         if method != SPATIAL_CALIBRATION_METHOD:
             return _err('Método de calibración espacial no soportado')
-        study = sess.get('mcp_study') or {}
-        if source.get('study_revision') != study.get('study_revision'):
+        if source.get('kind') == 'mcp' and source.get('study_revision') != study.get('study_revision'):
             return _err('La fuente MCP pertenece a una revisión anterior del estudio; publícala de nuevo', 409)
         poi = body.get('poi') or study.get('poi') or {'lat': M04_LATITUDE, 'lon': M04_LONGITUDE}
         try:
@@ -5219,32 +5290,42 @@ def create_app():
         }
         tasks[task_id] = task
         anchor_frame = source['df'].copy()
+        source_height = float(source.get('target_height_m') or sess.get('ws_height_m') or target_height_m)
+        if not np.isclose(source_height, target_height_m):
+            anchor_frame['wind_speed'] = extrapolate_wind_hellmann(anchor_frame['wind_speed'], source_height, target_height_m)
         observed_record = (sess.get('data_sources') or {}).get('observed')
         observed_frame = observed_record.get('df').copy() if observed_record and observed_record.get('df') is not None else None
         study_revision = source.get('study_revision')
+        source_provenance = _analysis_source_info(sess, {'data_source': data_source})
         resolve_roughness = bool(body.get('resolve_roughness', True))
 
         def _run_spatial_calibration():
             try:
                 run_dir.mkdir(parents=True, exist_ok=True)
-                task.update(status='running', progress=4, message='Preparando hindcast MCP y nodos espaciales')
+                task.update(status='running', progress=4, message='Preparando fuente elegida y nodos espaciales')
 
                 def cb(progress, message):
                     task.update(progress=int(progress), message=str(message), _last_access=time.time())
 
                 calibration = calibrate_spatial_nodes(
                     # Spatial anomalies are always evaluated at the physical
-                    # M04 anchor, even when the design POI/radius is elsewhere.
-                    anchor_frame, observed_frame, references,
-                    poi={'lat': M04_LATITUDE, 'lon': M04_LONGITUDE},
+                    # selected station, even when the design POI/radius is elsewhere.
+                    anchor_frame, (observed_frame if source.get('kind') == 'mcp' else None), references,
+                    poi={'lat': source_anchor['latitude'], 'lon': source_anchor['longitude']},
                     target_height_m=target_height_m, train_year=2018, validation_year=2019,
+                    period_policy=('selected_record' if source.get('kind') != 'mcp' or source.get('selected_year') is not None else 'climatology'),
+                    anchor_metadata=source_anchor,
                     roughness_resolver=resolve_sector_roughness if resolve_roughness else None,
                     progress_callback=cb,
                 )
                 calibration.update({
                     'calibration_id': calibration_id, 'session_id': sid,
                     'data_source': data_source, 'run_id': source.get('run_id'),
-                    'study_revision': study_revision, 'poi': poi, 'radius_km': radius_km,
+                    'study_revision': study_revision, 'source_version': source_version, 'poi': poi, 'radius_km': radius_km,
+                    'source_kind': source.get('kind'), 'selected_year': source.get('selected_year'),
+                    'temporal_source': source_provenance,
+                    'spatial_height_adjustment': {'method': 'hellmann', 'source_height_m': source_height,
+                        'target_height_m': target_height_m, 'applied': not np.isclose(source_height, target_height_m)},
                     'excluded_station_ids': sorted(excluded_ids),
                     'created_at': datetime.now(timezone.utc).isoformat(),
                 })
@@ -5258,13 +5339,16 @@ def create_app():
                 result_path.write_text(json.dumps(numpy_to_python(calibration), ensure_ascii=False, indent=2), encoding='utf-8')
                 record = {
                     'calibration_id': calibration_id, 'data_source': data_source,
-                    'study_revision': study_revision, 'method': SPATIAL_CALIBRATION_METHOD,
+                    'study_revision': study_revision, 'source_version': source_version, 'method': SPATIAL_CALIBRATION_METHOD,
                     'result_path': str(result_path.resolve()), 'created_at': calibration['created_at'],
                     'status': 'done', 'provider_weights': calibration.get('provider_weights'),
                     'common_period': calibration.get('common_period'),
                 }
-                sess.setdefault('kriging_calibrations', {})[calibration_id] = record
-                sess['active_kriging_calibration_id'] = calibration_id
+                with _sessions_lock:
+                    if selection_token != sess.get('_source_selection_token'):
+                        raise ValueError('La fuente o el año cambió durante la calibración')
+                    sess.setdefault('kriging_calibrations', {})[calibration_id] = record
+                    sess['active_kriging_calibration_id'] = calibration_id
                 task.update(
                     status='done', progress=100, message='Calibración espacial lista',
                     result={
@@ -5385,6 +5469,10 @@ def create_app():
             if record is None or calibration_payload is None:
                 return _err('Calibración espacial no encontrada', 404)
             requested_source = body.get('data_source') or sess.get('active_data_source')
+            current_source = (sess.get('data_sources') or {}).get(requested_source) or {}
+            current_version = current_source.get('selection_revision') or current_source.get('_cache_revision')
+            if current_version != record.get('source_version'):
+                return _err('Cambió la fuente o el año; recalcula la calibración espacial', 409)
             if requested_source != record.get('data_source'):
                 return _err('La calibración no pertenece a la fuente MCP solicitada', 409)
         task_id = str(uuid.uuid4())
@@ -5851,7 +5939,15 @@ def create_app():
                         'source_id': source_id,
                         'source_kind': source_record.get('kind') or source_info.get('kind'),
                         'source_label': source_record.get('label') or source_info.get('label'),
+                        'provenance': source_info,
                     }
+                    direction_column = _auto_detect_wd_col(source_frame)
+                    if direction_column:
+                        historical_wind['wd'] = pd.to_numeric(source_frame[direction_column], errors='coerce').to_numpy(dtype=float)
+                    for column, output in [('temperature', 'temperature_c'), ('pressure', 'pressure_pa')]:
+                        if column in source_frame:
+                            historical_wind[output] = pd.to_numeric(source_frame[column], errors='coerce').to_numpy(dtype=float)
+        source_selection_token = source_session.get('_source_selection_token') if source_info else None
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None
         bounds = body.get('area_bounds') or body.get('bounds') or None
@@ -5890,6 +5986,10 @@ def create_app():
             if calibration_record is None or calibration_payload is None:
                 return _err('Calibración espacial no encontrada', 404)
             requested_source = body.get('data_source') or sess.get('active_data_source')
+            current_source = (sess.get('data_sources') or {}).get(requested_source) or {}
+            current_version = current_source.get('selection_revision') or current_source.get('_cache_revision')
+            if current_version != calibration_record.get('source_version'):
+                return _err('Cambió la fuente o el año; recalcula la calibración espacial', 409)
             if requested_source != calibration_record.get('data_source'):
                 return _err('La calibración no pertenece a la fuente MCP solicitada', 409)
 
@@ -5906,7 +6006,7 @@ def create_app():
                               else CostModel.from_design_benchmark())
                 if calibration_payload is not None:
                     tasks[task_id]['progress'] = 10
-                    tasks[task_id]['message'] = 'Construyendo campos MCP calibrados para TOPSIS…'
+                    tasks[task_id]['message'] = 'Construyendo campos calibrados para TOPSIS…'
                     if scope == 'park':
                         field_bounds = {
                             'lat_min': min(float(point['lat']) for point in polygon),
@@ -5923,7 +6023,7 @@ def create_app():
                     )
                     physical_flag = bool(body.get('physical', True))
                     orographic_grid = body.get('orographic_speedup_grid')
-                    # El campo MCP (Kriging por proveedor + ensamble) sólo depende de estos
+                    # El campo espacial (Kriging por proveedor + ensamble) sólo depende de estos
                     # parámetros geométricos/económicos, no de los pesos TOPSIS ni de las
                     # turbinas elegidas. Si nada de esto cambió desde la corrida anterior en
                     # esta sesión (p. ej. el usuario sólo ajustó pesos o turbinas y volvió a
@@ -5946,7 +6046,7 @@ def create_app():
                     if cached_field and cached_field.get('signature') == field_signature:
                         field_bundle = cached_field['field_bundle']
                         tasks[task_id]['progress'] = 70
-                        tasks[task_id]['message'] = 'Reutilizando el campo MCP ya calculado para estos parámetros…'
+                        tasks[task_id]['message'] = 'Reutilizando el campo espacial ya calculado para estos parámetros…'
                     else:
                         def calibration_progress(percent, message):
                             tasks[task_id]['progress'] = min(70, 10 + int(float(percent) * 0.6))
@@ -5972,7 +6072,7 @@ def create_app():
                                 'field_bundle': field_bundle,
                             }
                     tasks[task_id]['progress'] = 75
-                    tasks[task_id]['message'] = 'Evaluando sitios virtuales sobre el campo MCP…'
+                    tasks[task_id]['message'] = 'Evaluando sitios virtuales sobre el campo espacial…'
                     spatial = analyze_spatial_topsis_maps(
                         field_bundle=field_bundle,
                         turbines_folder=Config.TURBINES_FOLDER,
@@ -5984,6 +6084,7 @@ def create_app():
                         max_points=max_points,
                         turbine_filenames=turbine_files,
                         cost_model=cost_model,
+                        historical_wind=historical_wind, target_height_m=target_height_m,
                     )
                 else:
                     # Compatibility path for manual/legacy clients.
@@ -6004,7 +6105,8 @@ def create_app():
                         max_points=max_points,
                         filter_filenames=filter_files,
                         turbine_filenames=turbine_files,
-                        cost_model=cost_model,
+                        cost_model=cost_model, historical_wind=historical_wind,
+                        target_height_m=body.get('target_height_m') or (historical_wind or {}).get('measurement_height_m'),
                     )
                 if scope == 'park':
                     tasks[task_id]['progress'] = 82
@@ -6013,7 +6115,7 @@ def create_app():
                         sites=spatial['sites'], polygon=polygon,
                         turbines_folder=Config.TURBINES_FOLDER,
                         turbine_filenames=turbine_files or [],
-                        wind_grid=(field_bundle.get('wind') if calibration_payload is not None else None),
+                        wind_grid=(field_bundle.get('wind') if calibration_payload is not None else spatial.get('wind_grid')),
                         exclusions=body.get('exclusion_polygons') or [],
                         boundary_setback_m=float(body.get('boundary_setback_m') or 0.0),
                         min_spacing_d=float(body.get('min_spacing_d') or 3.0),
@@ -6033,7 +6135,7 @@ def create_app():
                         demand_mwh=demand_mwh,
                         commercialization_mode=body.get('commercialization_mode') or 'total_sale',
                         grid_limit_mw=(float(body['grid_limit_mw']) if body.get('grid_limit_mw') else None),
-                        target_height_m=(float(body['target_height_m']) if body.get('target_height_m') else None),
+                        target_height_m=(float(body['target_height_m']) if body.get('target_height_m') else (historical_wind or {}).get('measurement_height_m')),
                         cost_model=cost_model,
                         cost_model_origin=(
                             'request' if requested_cost_model
@@ -6053,6 +6155,8 @@ def create_app():
                     layout_result = None
                     ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
                     ranking['mode'] = mode
+                if source_info and source_session.get('_source_selection_token') != source_selection_token:
+                    raise ValueError('La fuente o el periodo cambió durante TOPSIS; vuelve a calcular.')
                 tasks[task_id]['result'] = numpy_to_python({
                     **spatial,
                     **({'data_source': source_info} if source_info is not None else {}),

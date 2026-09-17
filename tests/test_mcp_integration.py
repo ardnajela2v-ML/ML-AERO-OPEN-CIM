@@ -448,10 +448,11 @@ class MCPIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(invalid_height.status_code, 400)
 
-    def _upload_single_observation(self, speed=6.0, latitude=16.5):
-        index = pd.date_range('2020-01-01', periods=72, freq='h')
+    def _upload_single_observation(self, speed=6.0, latitude=16.5, start='2020-01-01'):
+        index = pd.date_range(start, periods=72, freq='h')
         frame = pd.DataFrame({'timestamp': index, 'wind_speed': speed + np.arange(72) / 100,
-                              'wind_direction': 240.0 + np.arange(72) % 20})
+                              'wind_direction': 240.0 + np.arange(72) % 20,
+                              'pressure': 995.52, 'temperature': 25.68})
         frame.loc[10, 'wind_speed'] = np.nan
         response = self.client.post('/api/mcp/uploads', data={
             'session_id': self.sid, 'data_kind': 'observed', 'provider': 'USER',
@@ -481,6 +482,10 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(stats.status_code, 200, stats.get_data(as_text=True))
         self.assertEqual(stats.get_json()['data_source']['station_id'], station['station_id'])
         self.assertEqual(stats.get_json()['data_source']['source_id'], 'observed')
+        self.assertGreater(stats.get_json()['overview']['rho_used'], 1.0)
+        self.assertEqual(stats.get_json()['overview']['pressure_mean'], 995.52)
+        self.assertEqual(study['published_source']['years'], [2020])
+        self.assertEqual(study['published_source']['period_selection'], 'full_available_record')
         quality = self.client.post('/api/data/quality', json={'session_id': self.sid})
         self.assertEqual(quality.status_code, 200, quality.get_data(as_text=True))
         exported = self.client.post('/api/projects/export', json={
@@ -505,6 +510,82 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(saved['station_id'], station['station_id'])
         blocked = self.client.post('/api/mcp/runs/old-run/publish', json={'session_id': self.sid})
         self.assertEqual(blocked.status_code, 409)
+
+    def test_topsis_receives_selected_historical_pairs_and_rejects_late_period(self):
+        station = self._upload_single_observation(start='2019-12-31')
+        self.assertEqual(self._select_single_station(station).status_code, 200)
+        period_route = f'/api/sessions/{self.sid}/resource-period'
+        self.client.put(period_route, json={'source_id': 'observed', 'year': 2020})
+        spatial = {'sites': [{'v_mean': 6, 'rho_mean': 1.2}], 'n_virtual_sites': 1,
+                   'spatial_sources': [{'station_id': 'era5-test'}]}
+        captured = []
+        change_period = [False]
+        def evaluate(**kwargs):
+            history = kwargs['historical_wind']
+            captured.append(history)
+            if change_period[0]:
+                with self.app.test_client() as client:
+                    result = client.put(period_route, json={'source_id': 'observed', 'year': 2019})
+                    self.assertEqual(result.status_code, 200)
+            return {'alternatives': [], 'ranking': {'ranking': []}}
+        with patch('api.analyze_spatial_topsis_sites', return_value=spatial), patch(
+                'api.analyze_park_layouts', side_effect=evaluate):
+            for obsolete in [False, True]:
+                change_period[0] = obsolete
+                response = self.client.post('/api/multicriteria/spatial', json={
+                    'session_id': self.sid, 'scope': 'park', 'price_usd_kwh': .08, 'project_years': 25,
+                    'polygon': [{'lat': 16.5, 'lon': -95}, {'lat': 16.5, 'lon': -94.99},
+                                {'lat': 16.51, 'lon': -95}]})
+                self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+                task_id = response.get_json()['task_id']
+                for _ in range(200):
+                    task = self.client.get(f'/api/kriging/status/{task_id}').get_json()
+                    if task['status'] in ['done', 'error']:
+                        break
+                    time.sleep(.01)
+                self.assertEqual(task['status'], 'error' if obsolete else 'done', task)
+                if obsolete:
+                    self.assertIn('periodo', task['message'])
+        self.assertEqual(len(captured[0]['ws']), 48)
+        self.assertEqual(len(captured[0]['wd']), 48)
+        self.assertEqual(captured[0]['provenance']['selected_year'], 2020)
+        self.assertGreater(float(np.mean(captured[0]['pressure_pa'])), 90000)
+
+    def test_resource_period_preserves_observed_source_and_project_roundtrip(self):
+        station = self._upload_single_observation(start='2019-12-31')
+        self.assertEqual(self._select_single_station(station).status_code, 200)
+        route = f'/api/sessions/{self.sid}/resource-period'
+        initial = self.client.get(route).get_json()
+        self.assertIsNone(initial['year'])
+        self.assertEqual([row['year'] for row in initial['available_years']], [2019, 2020])
+        self.assertEqual(self.client.put(route, json={'source_id': 'old', 'year': 2020}).status_code, 409)
+        self.assertEqual(self.client.put(route, json={'source_id': 'observed', 'year': 1990}).status_code, 400)
+        response = self.client.put(route, json={'source_id': 'observed', 'year': 2020})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertEqual(response.get_json()['year'], 2020)
+        stats = self.client.post('/api/wind/stats', json={'session_id': self.sid}).get_json()
+        self.assertEqual(stats['data_source']['source_id'], 'observed')
+        self.assertEqual(stats['data_source']['selected_year'], 2020)
+        self.assertEqual(stats['data_source']['rows'], 48)
+        self.assertEqual(len(stats['rose_36']['frequency_pct']), 36)
+        sites = self.client.get('/api/kriging/sites', query_string={
+            'session_id': self.sid, 'data_source': 'observed', 'anchored': '1',
+            'poi_lat': station['latitude'], 'poi_lon': station['longitude'], 'radius_km': 200})
+        self.assertEqual(sites.status_code, 200, sites.get_data(as_text=True))
+        self.assertEqual(sites.get_json()['sites'][0]['station_id'], station['station_id'])
+        exported = self.client.post('/api/projects/export', json={'session_id': self.sid})
+        self.assertEqual(exported.status_code, 200)
+        imported = self.client.post('/api/projects/import', data={
+            'file': (io.BytesIO(exported.data), 'period.aeroproj')}, content_type='multipart/form-data')
+        self.assertEqual(imported.status_code, 201)
+        restored_route = f"/api/sessions/{imported.get_json()['session_id']}/resource-period"
+        self.assertEqual(self.client.get(restored_route).get_json()['year'], 2020)
+        restored = self.client.put(restored_route, json={'source_id': 'observed', 'year': None})
+        self.assertEqual(restored.status_code, 200)
+        self.assertIsNone(restored.get_json()['year'])
+        restored_stats = self.client.post('/api/wind/stats', json={
+            'session_id': imported.get_json()['session_id']}).get_json()
+        self.assertEqual(restored_stats['data_source']['rows'], 72)
 
     def test_single_station_validates_area_height_and_failed_read_without_switching(self):
         station = self._upload_single_observation()
@@ -1168,7 +1249,7 @@ class MCPIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(spatial_sites.status_code, 200, spatial_sites.get_data(as_text=True))
         spatial_payload = spatial_sites.get_json()
-        self.assertEqual(spatial_payload["sites"][0]["station_id"], M04_STATION_ID)
+        self.assertEqual(spatial_payload["sites"][0]["station_id"], observed_id)
         self.assertEqual(spatial_payload["sites"][0]["allowed_role"], "anchor")
         self.assertTrue(all(
             row["provider"] in {"ERA5", "MERRA2"}

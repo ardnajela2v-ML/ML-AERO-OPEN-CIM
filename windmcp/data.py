@@ -152,6 +152,34 @@ def _read_generic_observation(
     return frame, metadata
 
 
+def _combine_height_sensors(frame: pd.DataFrame, preferred: str):
+    """Average paired A/B mean speeds at each height; retain raw channels for QC.
+
+    Missing/invalid members leave a gap: never silently substitute one sensor
+    for the requested pair, and never average measurements across heights.
+    """
+    policies = []
+    for column in list(frame.columns):
+        match = re.fullmatch(r"WS_(\d+(?:\.\d+)?)mA_mean", str(column), re.I)
+        if not match:
+            continue
+        height = match.group(1)
+        other = f"WS_{height}mB_mean"
+        if other not in frame:
+            continue
+        combined = f"WS_{height}m_mean"
+        pair = frame[[column, other]].apply(pd.to_numeric, errors='coerce')
+        pair = pair.where(np.isfinite(pair) & (pair >= 0))
+        frame[combined] = pair.mean(axis=1, skipna=False)
+        policies.append({'height_m': float(height), 'input_columns': [column, other],
+                         'output_column': combined, 'method': 'arithmetic_mean_AB',
+                         'requires_both_valid': True, 'valid_pairs': int(frame[combined].notna().sum()),
+                         'gap_rows': int(frame[combined].isna().sum())})
+        if preferred in (column, other):
+            preferred = combined
+    return preferred, policies
+
+
 def read_certe_file(
     path: str,
     target_column: str = "WS_80mA_mean",
@@ -193,6 +221,7 @@ def read_certe_file(
     frame = _numericize(frame)
     frame.insert(0, "timestamp", timestamps)
     frame = frame.dropna(subset=["timestamp"]).set_index("timestamp").sort_index()
+    target_column, sensor_policy = _combine_height_sensors(frame, target_column)
     target_column, target_selection = _select_observation_target_column(
         frame.columns, target_column, target_height_m
     )
@@ -202,6 +231,7 @@ def read_certe_file(
     measurement_height = float(height_match.group(1)) if height_match else None
     metadata = {
         "format": "certe",
+        "sensor_combination": sensor_policy,
         "filename": source.name,
         "target_column": target_column,
         "target_column_selection": target_selection,
@@ -249,7 +279,9 @@ def read_certe_files(
         "target_column": target_column,
         "target_column_selection": files[0].get("target_column_selection"),
         "measurement_height_m": files[0].get("measurement_height_m"),
-        "profile_heights_m": [20.0, 40.0, 60.0, 80.0],
+        "profile_heights_m": sorted({height for col in combined.columns
+                                     if (height := _wind_speed_column_height(col)) is not None}),
+        "sensor_combination": [policy for item in files for policy in item.get('sensor_combination', [])],
         # Campaign years follow the station logger clock.  After conversion to
         # UTC the final six local hours of 31 December belong to 1 January UTC
         # and must not create a spurious extra campaign year.
@@ -297,7 +329,11 @@ def normalize_observations(frame: pd.DataFrame, target_column: str = "WS_80mA_me
     result.index.name = "timestamp"
     if target_column not in result.columns:
         raise ValueError("Target column %r was not found" % target_column)
-    result = result.rename(columns={target_column: "wind_speed_obs"})
+    # Keep measured channels and per-height composites available for profile/QC.
+    if str(target_column).startswith('WS_'):
+        result["wind_speed_obs"] = result[target_column]
+    else:
+        result = result.rename(columns={target_column: "wind_speed_obs"})
     rename = {
         "WS_80mB_mean": "wind_speed_obs_b",
         "WD_78m_mean": "wind_direction_obs",
@@ -306,7 +342,7 @@ def normalize_observations(frame: pd.DataFrame, target_column: str = "WS_80mA_me
     }
     for old, new in rename.items():
         if old in result.columns:
-            result = result.rename(columns={old: new})
+            result[new] = result[old]
     if "wind_direction_obs" not in result.columns:
         generic_direction = next(
             (column for column in result.columns
@@ -466,3 +502,30 @@ def align_observations_and_reference(
     if "wind_speed_obs" not in joined.columns or "wind_speed_ref" not in joined.columns:
         raise ValueError("Aligned data requires wind_speed_obs and wind_speed_ref")
     return joined.sort_index()
+
+
+def observation_height_summary(frame):
+    """Measured speeds by height, independent of the study's adjusted series."""
+    rows = []
+    heights = sorted({height for col in frame.columns
+                      if (height := _wind_speed_column_height(col)) is not None})
+    for height in heights:
+        stem = f'WS_{height:g}m'
+        candidates = [f'{stem}_mean', f'{stem}A_mean', f'{stem}B_mean']
+        chosen = next((col for col in candidates if col in frame), None)
+        if chosen is None:
+            continue
+        values = pd.to_numeric(frame[chosen], errors='coerce')
+        values = values.where(np.isfinite(values) & (values >= 0)).dropna()
+        pair = all(f'{stem}{sensor}_mean' in frame for sensor in ('A', 'B'))
+        means = {}
+        for sensor in ('A', 'B'):
+            col = f'{stem}{sensor}_mean'
+            if col in frame:
+                v = pd.to_numeric(frame[col], errors='coerce')
+                v = v.where(np.isfinite(v) & (v >= 0)).dropna()
+                means[sensor] = float(v.mean()) if len(v) else None
+        rows.append({'height_m': height, 'column': chosen, 'method': 'mean_AB' if pair else 'single_sensor',
+                     'valid_rows': len(values), 'mean_ms': float(values.mean()) if len(values) else None,
+                     'sensor_means_ms': means})
+    return rows

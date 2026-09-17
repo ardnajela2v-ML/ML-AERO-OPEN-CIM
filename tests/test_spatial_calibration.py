@@ -132,6 +132,32 @@ class SpatialCalibrationTests(unittest.TestCase):
                 })
         return tempdir, anchor, observed, stations, frames
 
+    def test_selected_record_uses_all_nodes_without_changing_temporal_series(self):
+        temporary, full, _, stations, frames = self._synthetic_case()
+        self.addCleanup(temporary.cleanup)
+        anchor = full.loc['2020-02-01':'2020-02-07', ['wind_speed', 'wind_direction']].copy()
+        anchor.iloc[10, 0] = np.nan
+        original = anchor.copy()
+        with patch('core.spatial_calibration._load_station',
+                   side_effect=lambda row: (dict(row), frames[row['station_id']].copy())):
+            outputs = [calibrate_spatial_nodes(
+                anchor, None, stations, poi={'lat': 16.5, 'lon': -95.0},
+                target_height_m=80, period_policy='selected_record',
+                anchor_metadata={'station_id': label, 'display_name': label})
+                for label in ['observed', 'mcp:same-series']]
+        pd.testing.assert_frame_equal(anchor, original)
+        self.assertEqual(len(outputs[0]['nodes']), 6)
+        self.assertEqual(outputs[0]['common_period']['anchor_valid_hours'], len(anchor) - 1)
+        self.assertEqual(outputs[0]['common_period']['years'], [2020])
+        self.assertIsNone(outputs[0]['validation_year'])
+        self.assertIsNone(outputs[0]['training_year'])
+        self.assertEqual(outputs[0]['anchor']['station_id'], 'observed')
+        for key in ['calibrated_mean_speed', 'generalized_mean_speed', 'power_density_wm2']:
+            left = {row['station_id']: row[key] for row in outputs[0]['nodes']}
+            right = {row['station_id']: row[key] for row in outputs[1]['nodes']}
+            for station_id in left:
+                self.assertAlmostEqual(left[station_id], right[station_id], places=10)
+
     def test_anchored_calibration_preserves_gradients_weights_and_anchor(self):
         temporary, anchor_frame, observed_frame, stations, frames = self._synthetic_case()
         self.addCleanup(temporary.cleanup)

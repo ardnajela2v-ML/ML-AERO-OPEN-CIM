@@ -339,7 +339,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        humidity_pct=0.0,
                        local_wind_multipliers: Optional[np.ndarray] = None,
                        wake_model: str = 'jensen',
-                       rho_override: Optional[float] = None) -> dict:
+                       rho_override: Optional[float] = None,
+                       sample_duration_hours: Optional[float] = None) -> dict:
     """
     Compute farm AEP per turbine with wake effects.
 
@@ -416,6 +417,10 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         dt_h = ws.index.to_series().diff().mode()[0].total_seconds() / 3600
     else:
         dt_h = 1.0
+    if sample_duration_hours is not None:
+        dt_h = float(sample_duration_hours)
+        if not math.isfinite(dt_h) or dt_h <= 0:
+            raise ValueError('sample_duration_hours debe ser positivo.')
     total_hours = n_samples * dt_h
     annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
 

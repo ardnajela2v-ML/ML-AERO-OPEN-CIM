@@ -293,7 +293,7 @@ def fit_variogram_loo(lons, lats, values, requested='auto', structure=None):
 
 
 def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0,
-                   variogram=None):
+                   variogram=None, return_weights=False):
     """Ordinary Kriging interpolation. Returns (z_interp, variance).
 
     Coordenadas (x=lon, y=lat) en grados; las distancias internas se calculan
@@ -347,6 +347,8 @@ def kriging_interp(x, y, z, xq, yq, model='exponential', rng=50.0,
     lagrange = sol[n, :]
     z_hat = (w.T @ z).reshape(xq.shape)
     var = np.maximum(0.0, total_sill - np.sum(w * k, axis=0) - lagrange).reshape(xq.shape)
+    if return_weights:
+        return z_hat, var, {'weights': w.T.reshape((*xq.shape, n)), 'input_indices': np.flatnonzero(valid)}
     return z_hat, var
 
 
@@ -812,7 +814,7 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
                            demand_mwh=1000, tasa=0.08, price_usd_kwh=None,
                            price_mxn_per_usd=20.0, anios=None, max_w=MAX_W,
                            cost_model: Optional[CostModel] = None,
-                           fitted_power_w=None):
+                           fitted_power_w=None, annualize=False):
     """
     Compute per-site × per-turbine technical + economic metrics.
     All inputs are arrays/scalars already read from files.
@@ -843,6 +845,8 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     n_hours_actual = len(ws_hub) * dt_h
 
     pt = float(np.sum(psit)) * dt_h                 # Wh per turbine (energy)
+    if annualize:
+        pt *= 8760.0 / n_hours_actual if n_hours_actual > 0 else 0.0
     # Potencia cinética: P = ½ ρ A v³, con A = π·(D/2)². rotor_m es DIÁMETRO
     # (consistente con core/energy.py).
     pteo = 0.5 * rho * np.pi * (rotor_m / 2.0) ** 2 * ws_hub ** 3
@@ -866,7 +870,8 @@ def turbine_site_economics(ws_hub, rho, curve_x, curve_y, rotor_m, p_nom_kw,
     p_max_curve = float(np.max(ps))
     # FC con horas reales del registro (no 8760 fijo); si el archivo cubre <1 año
     # el FC queda correcto en lugar de subestimado.
-    fc = pt / (p_max_curve * n_hours_actual) if p_max_curve > 0 and n_hours_actual > 0 else 0
+    fc_hours = 8760.0 if annualize else n_hours_actual
+    fc = pt / (p_max_curve * fc_hours) if p_max_curve > 0 and fc_hours > 0 else 0
 
     demand_wh = demand_mwh * 1e6
     n = math.ceil(demand_wh / pt) if pt > 0 else 0
@@ -1152,7 +1157,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                                  max_points: int = 72,
                                  filter_filenames: Optional[List[str]] = None,
                                  turbine_filenames: Optional[List[str]] = None,
-                                 cost_model: Optional[CostModel] = None):
+                                 cost_model: Optional[CostModel] = None,
+                                 historical_wind=None, target_height_m=None):
     """
     Build virtual analysis sites from the kriged geospatial field.
 
@@ -1178,7 +1184,7 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         keep = set(filter_filenames)
         wind_files = [f for f in wind_files if f in keep]
     paths = [os.path.join(wind_folder, f) for f in wind_files]
-    stats_rows = parallel_read_sites(paths, year=year, max_workers=6)
+    stats_rows = parallel_read_sites(paths, year=year, hub_height_m=target_height_m, max_workers=6)
     rows = [r for r in stats_rows if r and r.get('_lat') is not None and r.get('_lon') is not None]
     if len(rows) < 3:
         raise ValueError(f'Kriging necesita >= 3 estaciones válidas como entrada (hay {len(rows)}).')
@@ -1320,6 +1326,11 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         except Exception as exc:
             log.warning('analyze_spatial_topsis_sites: skip turbine %s — %s', tf, exc)
 
+    historical = None
+    if historical_wind is not None:
+        from core.historical_resource import prepare_historical_wind
+        historical = prepare_historical_wind(historical_wind,
+            target_height_m or historical_wind['measurement_height_m'], require_direction=False)
     sites_out = []
     for idx, p in enumerate(candidates, start=1):
         lat, lon = p['lat'], p['lon']
@@ -1337,7 +1348,8 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
             sector_energy = [v / total_energy * 100.0 for v in sector_energy]
         dom_idx = int(np.argmax(sector_energy if total_energy > 0 else sector_frequency))
         directional_concentration = float((sector_energy[dom_idx] if total_energy > 0 else sector_frequency[dom_idx]) / 100.0)
-        ws_hub = _virtual_weibull_series(wind, k)
+        ws_hub = (historical['ws'] * wind / historical['mean'] if historical is not None
+                  else _virtual_weibull_series(wind, k))
         rho = np.full_like(ws_hub, rho_mean, dtype=float)
         turbines_out = []
         for tf, x_c, y_c, name, rotor, p_nom_kw in turbines:
@@ -1346,7 +1358,12 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                 demand_mwh=demand_mwh, tasa=tasa,
                 price_usd_kwh=price_usd_kwh,
                 price_mxn_per_usd=price_mxn_per_usd, anios=anios,
-                cost_model=cost_model)
+                cost_model=cost_model, annualize=historical is not None)
+            econ['production_source'] = ({**historical['provenance'],
+                'local_speed_multiplier': wind / historical['mean'],
+                'wake_integration': 'none_individual_turbine',
+                'energy_integration': 'power_curve_at_each_valid_historical_sample'} if historical is not None
+                else {'method': 'synthetic_weibull'})
             econ['turbina'] = name
             econ['rotor_m'] = rotor
             turbines_out.append(econ)
@@ -1356,7 +1373,7 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
             'lon': float(lon),
             'source': 'kriging_virtual',
             'scope': scope,
-            'n_hours': int(len(ws_hub)),
+            'n_hours': float(len(ws_hub) * historical['dt_hours']) if historical else int(len(ws_hub)),
             'v_mean': wind,
             'v_mean_raw': wind,
             'v_max': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
@@ -1386,6 +1403,7 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
         'scope': scope,
         'physical': physical,
         'n_input_stations': len(rows),
+        'wind_grid': wind_grid,
         'spatial_sources': [{'filename': row['_name'], 'lat': row['_lat'],
                              'lon': row['_lon'], 'year': year} for row in rows],
         'n_virtual_sites': len(sites_out),
@@ -1403,7 +1421,8 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
                                 anios=None,
                                 max_points: int = 72,
                                 turbine_filenames: Optional[List[str]] = None,
-                                cost_model: Optional[CostModel] = None):
+                                cost_model: Optional[CostModel] = None,
+                                historical_wind=None, target_height_m=None):
     """Evaluate TOPSIS candidates from the published MCP spatial fields.
 
     This is the guided Design path.  It deliberately does not reopen raw
@@ -1502,6 +1521,11 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
     if not turbines:
         raise ValueError('Ninguna curva de potencia seleccionada pudo leerse.')
 
+    historical = None
+    if historical_wind is not None:
+        from core.historical_resource import prepare_historical_wind
+        historical = prepare_historical_wind(historical_wind,
+            target_height_m or historical_wind['measurement_height_m'], require_direction=False)
     sites_out = []
     for idx, point in enumerate(candidates, start=1):
         lat, lon = point['lat'], point['lon']
@@ -1530,7 +1554,8 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
         directional_concentration = float(
             (sector_energy[dominant_idx] if total_energy > 0 else sector_frequency[dominant_idx]) / 100.0
         )
-        ws_hub = _virtual_weibull_series(wind, k_value)
+        ws_hub = (historical['ws'] * wind / historical['mean'] if historical is not None
+                  else _virtual_weibull_series(wind, k_value))
         rho = np.full_like(ws_hub, rho_mean, dtype=float)
         turbines_out = []
         for filename, x_curve, y_curve, name, rotor, nominal_kw in turbines:
@@ -1539,8 +1564,13 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
                 demand_mwh=demand_mwh, tasa=tasa,
                 price_usd_kwh=price_usd_kwh,
                 price_mxn_per_usd=price_mxn_per_usd, anios=anios,
-                cost_model=cost_model,
+                cost_model=cost_model, annualize=historical is not None,
             )
+            economics['production_source'] = ({**historical['provenance'],
+                'local_speed_multiplier': wind / historical['mean'],
+                'wake_integration': 'none_individual_turbine',
+                'energy_integration': 'power_curve_at_each_valid_historical_sample'} if historical is not None
+                else {'method': 'synthetic_weibull'})
             economics['turbina'] = name
             economics['rotor_m'] = rotor
             turbines_out.append(economics)
@@ -1548,7 +1578,7 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
             'name': f'Sitio MCP virtual {idx:02d}',
             'lat': float(lat), 'lon': float(lon),
             'source': 'mcp_calibrated_kriging', 'scope': scope,
-            'n_hours': int(len(ws_hub)),
+            'n_hours': float(len(ws_hub) * historical['dt_hours']) if historical else int(len(ws_hub)),
             'v_mean': wind, 'v_mean_raw': wind,
             'v_max': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),
             'gust_ms': float(_grid_sample_value(gust_grid, lat, lon) or wind * 1.6),

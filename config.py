@@ -45,7 +45,7 @@ class Config:
     # dedicadas por categoría definidas más abajo.
     MARKET_DATA_FOLDER = os.environ.get(
         'AERO_MARKET_FOLDER',
-        '/Users/ale/Documents/suso/datos carga y precios pml compra y venta ')
+        '/Users/ale/Desktop/suso/datos carga y precios pml compra y venta ')
 
     # Carpetas dedicadas por categoría (dentro del proyecto). Cualquier archivo
     # .txt/.csv/.tsv/.dat que se deposite en estas carpetas se descubre

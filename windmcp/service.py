@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .data import (ReferenceData, align_observations_and_reference, read_certe_files,
+from .data import (observation_height_summary, ReferenceData, align_observations_and_reference, read_certe_files,
                    read_reference_files, resample_hourly)
 from .energy import PowerCurve, compare_period_energy
 from .config import MCPConfig, VERSION, validate_input_files
@@ -313,6 +313,7 @@ def _training_observation_baseline(
     return {
         "year": int(training_year),
         "selection_clock": observation_timezone,
+        "height_profile": observation_height_summary(period),
         "source_height_speed_m": 80.0,
         "source_height_direction_m": 78.0,
         "raw_resolution_minutes": raw_resolution,

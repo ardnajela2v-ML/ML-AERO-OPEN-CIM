@@ -60,10 +60,29 @@ class WindMCPTests(unittest.TestCase):
             frame, metadata = read_certe_file(str(path))
             self.assertEqual(metadata["format"], "certe")
             self.assertEqual(frame.index[0].tz, pd.Timestamp("2018-01-01", tz="UTC").tz)
-            normalized = frame.rename(columns={"WS_80mA_mean": "wind_speed_obs", "WD_78m_mean": "wind_direction_obs"})
+            from windmcp.data import read_certe_files
+            normalized, combined_meta = read_certe_files([str(path)])
+            self.assertEqual(combined_meta['target_column'], 'WS_80m_mean')
+            self.assertEqual(combined_meta['sensor_combination'][0]['valid_pairs'], 3)
+            self.assertAlmostEqual(normalized.iloc[0]['WS_80mA_mean'], 4.0)
+            self.assertAlmostEqual(normalized.iloc[0]['wind_speed_obs_b'], 4.2)
             hourly = resample_hourly(normalized)
-            self.assertAlmostEqual(hourly.iloc[0]["wind_speed_obs"], 6.0)
+            self.assertAlmostEqual(hourly.iloc[0]["wind_speed_obs"], 6.1)
             self.assertTrue(hourly.iloc[0]["wind_direction_obs"] < 1.0 or hourly.iloc[0]["wind_direction_obs"] > 359.0)
+
+    def test_sensor_pairs_are_averaged_separately_at_every_available_height(self):
+        from windmcp.data import _combine_height_sensors
+        from windmcp.profile import _profile_columns
+        frame = pd.DataFrame({'WS_80mA_mean': [4., 5., -1.], 'WS_80mB_mean': [6., np.nan, 9.],
+                              'WS_40mA_mean': [2., 3., 4.], 'WS_40mB_mean': [4., 5., 6.],
+                              'WS_20m_mean': [1., 2., 3.]})
+        selected, policies = _combine_height_sensors(frame, 'WS_80mA_mean')
+        self.assertEqual(selected, 'WS_80m_mean')
+        np.testing.assert_allclose(frame['WS_80m_mean'], [5., np.nan, np.nan], equal_nan=True)
+        np.testing.assert_allclose(frame['WS_40m_mean'], [3., 4., 5.])
+        np.testing.assert_allclose(frame['WS_20m_mean'], [1., 2., 3.])
+        self.assertEqual(_profile_columns(frame, 80)[40.0], 'WS_40m_mean')
+        self.assertTrue(all(policy['requires_both_valid'] for policy in policies))
 
     def test_certe_naive_logger_time_is_localized_before_utc_conversion(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -67,7 +67,7 @@ def _first_column(frame: pd.DataFrame, candidates: Iterable[str]) -> str | None:
 
 def _turbulence_columns(frame: pd.DataFrame) -> Tuple[str | None, str | None, str | None]:
     speed = _first_column(frame, (
-        "wind_speed_obs", "wind_speed", "WS_80mA_mean", "ws_mean",
+        "WS_80mA_mean", "wind_speed_obs", "wind_speed", "ws_mean",
     ))
     sigma = _first_column(frame, (
         "WS_80mA_stdev", "wind_speed_obs_stdev", "wind_speed_stdev",
@@ -191,7 +191,7 @@ def _sensor_comparison(observations: pd.DataFrame, min_speed_ms: float) -> Dict[
     required = {"wind_speed_obs", "WS_80mA_stdev", "wind_speed_obs_b", "WS_80mB_stdev"}
     if not required.issubset(observations.columns):
         return {"available": False, "reason": "No están disponibles ambos sensores A/B con desviación estándar."}
-    a_speed = pd.to_numeric(observations["wind_speed_obs"], errors="coerce")
+    a_speed = pd.to_numeric(observations.get("WS_80mA_mean", observations["wind_speed_obs"]), errors="coerce")
     b_speed = pd.to_numeric(observations["wind_speed_obs_b"], errors="coerce")
     a_sigma = pd.to_numeric(observations["WS_80mA_stdev"], errors="coerce")
     b_sigma = pd.to_numeric(observations["WS_80mB_stdev"], errors="coerce")

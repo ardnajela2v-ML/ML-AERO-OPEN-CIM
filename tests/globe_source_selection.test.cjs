@@ -83,7 +83,7 @@ test('spatial invalidation keeps temporal source and multiple available stations
   assert.equal(ctx.run('KRIG.result'),null);
   assert.equal(ctx.run('PARQUE.result'),null);
   assert.equal(ctx.run('KRIG.task_id'),null);
-  assert.equal(ctx.run('krig3AdvancedMcpRequested()'),false);
+  assert.equal(ctx.run('krig3AdvancedMcpRequested()'),true);
 });
 test('an old spatial response is discarded after changing stations', async () => {
   const ctx=context();
@@ -121,4 +121,28 @@ test('Globe activates a single source without MCP in both 3D and 2D', async () =
     assert.match(ctx.sandbox.requests[0].url,/single-station-study$/);
     assert.equal(ctx.sandbox.requests[0].body.station_id,'o0');
   }
+});
+test('meteorological rose centres north without rotating the measurements', () => {
+  const ctx=context();
+  ctx.run(`Chart = function(canvas, config) { this.config=config; this.destroy=()=>{}; }; gridColor=()=> '#ddd';`);
+  for (const sectors of [16,36]) {
+    ctx.run(`renderDirectionalRoseChart('rose-test', {frequency_pct:[100,...Array(${sectors}-1).fill(0)], labels:Array.from({length:${sectors}},(_,i)=>String(i*360/${sectors}))}, 'test');`);
+    assert.equal(ctx.run("WP.charts['rose-test'].config.options.scales.r.startAngle"), -180/sectors);
+    assert.equal(ctx.run("WP.charts['rose-test'].config.options.scales.r.pointLabels.centerPointLabels"), true);
+    assert.equal(ctx.run("WP.charts['rose-test'].config.data.datasets[0].data[0]"),100);
+  }
+});
+test('year selector defaults to full record and preserves available years', async () => {
+  const ctx=context();
+  ctx.run(`WP.sessionId='test';WP.activeDataSource='observed';api=async()=>({source_id:'observed',year:null,available_years:[{year:2018,valid_rows:52461},{year:2019,valid_rows:41534}]});`);
+  await ctx.run('refreshResourcePeriod()');
+  assert.equal(ctx.element('resource-year').value,'all');
+  assert.match(ctx.element('resource-year').innerHTML,/2018/);
+  assert.equal(ctx.run('WP.resourcePeriod.year'),null);
+});
+test('calendar-year labels use the station clock at the UTC year boundary', () => {
+  const ctx=context();
+  const text=ctx.run(`windSourcePeriodText({source_id:'observed',selection_timezone:'Etc/GMT+6',period_start:'2018-01-01T06:00:00Z',period_end:'2019-01-01T05:50:00Z'})`);
+  assert.match(text,/2018-01-01 → 2018-12-31/);
+  assert.match(text,/Etc\/GMT\+6/);
 });

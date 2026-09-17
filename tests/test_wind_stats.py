@@ -46,3 +46,29 @@ class HubPowerDensityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class NativeObservationOverviewTests(unittest.TestCase):
+    def test_pressure_is_pa_internally_and_hpa_for_display(self):
+        from core.wind_stats import compute_site_overview
+        frame = pd.DataFrame({'wind_speed': [10.0] * 12, 'temperature': [25.68] * 12,
+                              'pressure': [99552.0] * 12},
+                             index=pd.date_range('2018-01-01', periods=12, freq='10min'))
+        overview = compute_site_overview(frame)
+        self.assertAlmostEqual(overview['rho_used'], 1.16, delta=0.02)
+        self.assertGreater(overview['power_density_w_m2'], 570)
+        self.assertEqual(overview['pressure_mean'], 995.52)
+        self.assertEqual(overview['pressure_mean_unit'], 'hPa')
+
+    def test_ten_minute_records_are_not_counted_as_hours(self):
+        from core.wind_stats import compute_site_overview, compute_extreme_events
+        frame = pd.DataFrame({'wind_speed': [16.0] * 12},
+                             index=pd.date_range('2018-01-01', periods=12, freq='10min'))
+        # Drop one timestamp: a missing observation must not count as exposure.
+        frame = frame.drop(frame.index[5])
+        overview = compute_site_overview(frame, rho=1.2)
+        self.assertEqual(overview['time_resolution_min'], 10)
+        self.assertEqual(overview['h_above_15ms'], 1.83)
+        self.assertEqual(overview['pct_above_15ms'], 100)
+        monthly = compute_extreme_events(frame, thresholds=[15])['series'][0]
+        self.assertEqual(monthly['total'], 1.83)
+        self.assertEqual(monthly['counts'][0], 1.83)

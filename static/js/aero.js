@@ -261,7 +261,7 @@ function collectProjectClientState() {
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
       referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
-      reanalysisStudy: WP.reanalysisStudy, singleStationStudy: WP.singleStationStudy, studyMode: WP.studyMode,
+      resourcePeriod: WP.resourcePeriod, reanalysisStudy: WP.reanalysisStudy, singleStationStudy: WP.singleStationStudy, studyMode: WP.studyMode,
       mcpRunId: WP.mcpRunId, activeDataSource: WP.activeDataSource,
       parkConfiguration: WP.parkConfiguration, meta: WP.meta,
     }),
@@ -1624,7 +1624,56 @@ function toast(msg, type = 'info') {
 }
 
 // ─── OVERVIEW MODULE ──────────────────────────────────────────────────────────
+async function refreshResourcePeriod() {
+  if (!WP.sessionId || !WP.activeDataSource) return;
+  const element = document.getElementById('resource-year');
+  if (!element || WP.applyingResourcePeriod) return;
+  try {
+    const selection = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/resource-period`);
+    WP.resourcePeriod = selection;
+    element.innerHTML = '<option value="all">Todo el registro</option>' + selection.available_years.map(row =>
+      `<option value="${row.year}">${row.year} · ${row.valid_rows.toLocaleString()} registros válidos</option>`).join('');
+    element.value = selection.year == null ? 'all' : String(selection.year);
+    element.disabled = false;
+  } catch (_) { element.disabled = true; }
+}
+
+async function applyResourcePeriod() {
+  const element = document.getElementById('resource-year');
+  if (!element || WP.applyingResourcePeriod) return;
+  WP.applyingResourcePeriod = true;
+  element.disabled = true;
+  try {
+    const selection = await api(`/api/sessions/${encodeURIComponent(WP.sessionId)}/resource-period`, 'PUT', {
+      source_id: WP.activeDataSource, year: element.value === 'all' ? null : Number(element.value),
+    });
+    invalidateProjectWindResults();
+    WP.resourcePeriod = selection;
+    WP.meta = {...(WP.meta || {}), date_range: [selection.period_start, selection.period_end]};
+    KRIG.sites = []; KRIG.selected.clear(); KRIG.principal = null;
+    KRIG._appliedGlobePoi = null;
+    if (selection.year != null) {
+      ['krig3-year', 'mcda-year', 'mapa-year'].forEach(id => {
+        const input = document.getElementById(id);
+        if (input) {
+          if (![...input.options].some(option => option.value === String(selection.year))) {
+            input.add(new Option(String(selection.year), String(selection.year)));
+          }
+          input.value = String(selection.year);
+        }
+      });
+    }
+    krig3ActivatePublishedSource();
+    toast('Periodo actualizado. Recalcula Diseño y los resultados del parque con esta selección.', 'success');
+    await runResumenPipeline();
+  } catch (error) {
+    toast(`No se pudo aplicar el periodo: ${error.message}`, 'error');
+  } finally { WP.applyingResourcePeriod = false; await refreshResourcePeriod(); }
+}
+
 function bindOverview() {
+  document.getElementById('resource-year')?.addEventListener('change', applyResourcePeriod);
+  document.getElementById('resource-rose-sectors')?.addEventListener('change', () => renderWindRose(WP.windStats?.rose));
   document.getElementById('btn-calc-stats').addEventListener('click', calcOverviewStats);
 }
 
@@ -1647,7 +1696,27 @@ async function calcOverviewStats() {
   }
 }
 
+function windSourcePeriodText(source) {
+  if (!source?.period_start || !source?.period_end) return '';
+  const clock = source.selection_timezone || (WP.resourcePeriod?.source_id === source.source_id ? WP.resourcePeriod.timezone : null) || 'UTC';
+  const date = value => new Date(value).toLocaleDateString('sv-SE', {timeZone: clock});
+  return `${date(source.period_start)} → ${date(source.period_end)} (${clock})`;
+}
+
+function measuredHeightTable(rows) {
+  if (!rows?.length) return '';
+  return `<details><summary>Mediciones por altura · consulta de sensores</summary>
+    <p>Los cálculos usan la altura del estudio. Estas son las mediciones originales del periodo indicado.</p>
+    <table class="table"><thead><tr><th>Altura</th><th>Serie</th><th>Media</th><th>A</th><th>B</th><th>Registros válidos</th></tr></thead>
+    <tbody>${rows.map(row => `<tr><td>${Number(row.height_m)} m</td><td>${row.method === 'mean_AB' ? 'Promedio A/B' : 'Sensor único'}</td>
+    <td>${row.mean_ms == null ? '—' : Number(row.mean_ms).toFixed(3)} m/s</td>
+    <td>${row.sensor_means_ms?.A == null ? '—' : Number(row.sensor_means_ms.A).toFixed(3)}</td>
+    <td>${row.sensor_means_ms?.B == null ? '—' : Number(row.sensor_means_ms.B).toFixed(3)}</td><td>${Number(row.valid_rows)}</td></tr>`).join('')}</tbody></table></details>`;
+}
+
 function renderOverviewKPIs(ov) {
+  const heightBox = document.getElementById('resource-height-profile');
+  if (heightBox) heightBox.innerHTML = measuredHeightTable(WP.windStats?.height_profile);
   if (!ov) return;
   const wb = ov.weibull;
   document.getElementById('kv-mean').textContent    = (ov.mean ?? '—') + ' m/s';
@@ -1671,12 +1740,12 @@ function renderOverviewKPIs(ov) {
   document.getElementById('kv-pres').textContent    = ov.pressure_mean != null ? ov.pressure_mean + ' hPa' : '—';
   document.getElementById('kv-nobs').textContent    = (ov.n_obs ?? '—').toLocaleString?.() ?? ov.n_obs;
   // resolución temporal desde WP.meta (guardado al cargar el archivo)
-  const resMin = WP.meta?.time_resolution_min;
+  const resMin = ov.time_resolution_min ?? WP.meta?.time_resolution_min;
   const resLabel = resMin != null
     ? (resMin < 60 ? `${resMin} min` : `${Math.round(resMin/60)}h`)
     : null;
   document.getElementById('ks-nobs').textContent =
-    (ov.date_start ? `${ov.date_start} → ${ov.date_end}` : '') +
+    (windSourcePeriodText(WP.windStats?.data_source) || (ov.date_start ? `${ov.date_start} → ${ov.date_end} (UTC)` : '')) +
     (resLabel ? `  ·  Δt = ${resLabel}` : '');
 }
 
@@ -2093,12 +2162,13 @@ function _drawWindRose(rose, canvasId = 'chart-rose', legendId = 'rose-legend') 
 }
 
 function renderWindRose(rose) {
+  if (document.getElementById('resource-rose-sectors')?.value === '36' && WP.windStats?.rose_36) rose = WP.windStats.rose_36;
   if (!rose) return;
   if (!document.getElementById('chart-rose')) return;
   const dominantIndex = (rose.frequency_pct || []).indexOf(Math.max(...(rose.frequency_pct || [0])));
   const dominantLabel = ROSE_DIR_LABELS[dominantIndex] || rose.dominant_direction;
   document.getElementById('rose-dom').textContent =
-    `${dominantLabel} · ${rose.dominant_pct}%`;
+    `${rose.frequency_pct?.length === 16 ? dominantLabel : rose.dominant_direction} · ${rose.dominant_pct}%`;
   const legendEl = document.getElementById('rose-legend');
   if (legendEl) {
     const kind = WP.windStats?.data_source?.kind;
@@ -2121,10 +2191,9 @@ function renderDirectionalRoseChart(id, rose, title, showLegend = true) {
   if (!canvas) return;
   const labels = rose.frequency_pct.length === 16 ? ROSE_DIR_LABELS : (rose.labels || []);
   const colors = labels.map((_, index) => palette[index % palette.length]);
-  // El backend ya entrega sectores centrados en sus etiquetas meteorológicas.
-  // Chart.js define 0° en la parte superior de la escala radial: no se debe
-  // aplicar el antiguo desfase de medio sector, pues desplaza N hacia NNO.
-  const startAngleDeg = 0;
+  // PolarArea angles start at sector boundaries, while meteorological labels
+  // name their centres. Centre both the arc and label on N (0°), clockwise.
+  const startAngleDeg = -180 / rose.frequency_pct.length;
   WP.charts[id] = new Chart(canvas, {
     type: 'polarArea',
     data: { labels, datasets: [{ label: title, data: rose.frequency_pct, backgroundColor: colors.map(color => color + 'b8'), borderColor: colors, borderWidth: 1 }] },
@@ -2141,7 +2210,7 @@ function renderDirectionalRoseChart(id, rose, title, showLegend = true) {
         beginAtZero: true,
         startAngle: startAngleDeg,
         grid: { color: gridColor() },
-        pointLabels: { display: true, font: { size: labels.length > 16 ? 7 : 9 } },
+        pointLabels: { display: true, centerPointLabels: true, font: { size: labels.length > 16 ? 7 : 9 } },
         ticks: { backdropColor: 'transparent', font: { size: 8 } },
       } },
     },
@@ -5432,8 +5501,8 @@ const KRIG_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
 
 const KRIG_LAYERS = {
   wind:         { unit: 'm/s',   title: 'Velocidad promedio del viento (m/s)' },
-  wind_era5:    { unit: 'm/s',   title: 'Campo ERA5 calibrado y anclado a M04 MCP' },
-  wind_merra2:  { unit: 'm/s',   title: 'Campo MERRA-2 calibrado y anclado a M04 MCP' },
+  wind_era5:    { unit: 'm/s',   title: 'Campo ERA5 calibrado y anclado a la fuente elegida' },
+  wind_merra2:  { unit: 'm/s',   title: 'Campo MERRA-2 calibrado y anclado a la fuente elegida' },
   wind_raw_reference:{ unit: 'm/s', title: 'ERA5 + MERRA-2 raw · extrapolación vertical directa a 100 m' },
   wind_calibration_delta:{ unit: 'm/s', title: 'Diferencia calibrado − raw a 100 m' },
   wind_direction:{ unit: '°',    title: 'Dirección meteorológica · norte verdadero' },
@@ -5461,24 +5530,21 @@ function singleStationMode() {
   return ['observed_only', 'single_reference'].includes(WP.studyMode);
 }
 
+function projectHasSpatialSource() {
+  return !!WP.activeDataSource && (singleStationMode() || WP.studyMode === 'reanalysis_only' || WP.activeDataSource.startsWith('mcp:'));
+}
+
 function krig3AdvancedMcpRequested() {
-  if (singleStationMode() || WP.studyMode === 'reanalysis_only') return false;
+  if (!projectHasSpatialSource()) return false;
   const manual = !!document.getElementById('krig3-manual-mode')?.checked;
   return !manual && (
     krig3GenerationMode() === 'mcp_advanced'
-    || WP.activeDataSource?.startsWith('mcp:')
+    || projectHasSpatialSource()
   );
 }
 
 function krig3ActivatePublishedSource() {
-  if (singleStationMode() || WP.studyMode === 'reanalysis_only') {
-    const mode = document.getElementById('krig3-generation-mode');
-    if (mode) mode.value = 'windpro_classic';
-    requestAnimationFrame(() => krig3SyncGenerationMode());
-    return;
-  }
-  if (!WP.activeDataSource?.startsWith('mcp:')) return;
-  if (document.getElementById('krig3-manual-mode')?.checked) return;
+  if (!projectHasSpatialSource() || document.getElementById('krig3-manual-mode')?.checked) return;
   const mode = document.getElementById('krig3-generation-mode');
   if (mode) mode.value = 'mcp_advanced';
   requestAnimationFrame(() => krig3SyncGenerationMode());
@@ -5487,7 +5553,7 @@ function krig3ActivatePublishedSource() {
 function krig3SyncGenerationMode() {
   const modeSelect = document.getElementById('krig3-generation-mode');
   const advancedOption = modeSelect?.querySelector('option[value="mcp_advanced"]');
-  const noMcp = singleStationMode() || WP.studyMode === 'reanalysis_only';
+  const noMcp = !projectHasSpatialSource();
   if (advancedOption) advancedOption.disabled = noMcp;
   if (noMcp && modeSelect) modeSelect.value = 'windpro_classic';
   const advanced = !noMcp && krig3GenerationMode() === 'mcp_advanced';
@@ -5505,9 +5571,9 @@ function krig3SyncGenerationMode() {
   if (physical && !physical.checked) physical.checked = true;
   if (note) {
     note.textContent = singleStationMode()
-      ? `Fuente temporal: ${WP.singleStationStudy?.published_source?.label || WP.activeDataSource}. Kriging usa los puntos espaciales seleccionados; no cambia la fuente temporal ni ejecuta MCP.`
+      ? `Referencia espacial: ${WP.singleStationStudy?.published_source?.label || WP.activeDataSource}. Se aplica la misma cadena de anomalías, Kriging y terreno sobre el periodo elegido, sin reconstruir la serie con MCP.`
       : WP.studyMode === 'reanalysis_only'
-      ? 'Estudio sin estación observada: interpolación espacial con las referencias ERA5/MERRA-2 del radio. No se ejecuta MCP ni se simula una observación.'
+      ? 'La serie del área alimenta la cadena espacial de anomalías, Kriging y terreno; no se ejecuta MCP.'
       : advanced
       ? 'Usa el hindcast MCP como ancla y aplica la cadena física clásica: neutralización, Kriging, rugosidad por píxel, respaldo de pendiente DEM y densidad por elevación.'
       : 'Kriging original con neutralización y reaplicación de rugosidad por píxel, topografía DEM y densidad del aire.';
@@ -5950,7 +6016,7 @@ async function krig3PlacePoi(latlng) {
   }).addTo(KRIG.map);
   KRIG.poiMarker.bindTooltip('Emplazamiento del parque', { direction: 'top', offset: [0, -42] });
   krig3InvalidateCalibration('cambió el emplazamiento');
-  if (krig3AdvancedMcpRequested() && WP.activeDataSource?.startsWith('mcp:')) {
+  if (krig3AdvancedMcpRequested() && projectHasSpatialSource()) {
     await krig3LoadSites(true);
   }
   krig3FilterByRadius();
@@ -6617,7 +6683,7 @@ function krig3SetPrincipal(filename) {
 
 function krig3CalibrationKey() {
   return JSON.stringify({
-    source: WP.activeDataSource,
+    source: WP.activeDataSource, sourceVersion: WP.resourcePeriod?.selection_revision,
     selected: Array.from(KRIG.selected).sort(),
     poi: KRIG.poi ? [Number(KRIG.poi.lat).toFixed(5), Number(KRIG.poi.lon).toFixed(5)] : null,
     radius: Number(document.getElementById('krig3-poi-radius')?.value || 200),
@@ -6703,7 +6769,7 @@ function krig3RenderCalibration(calibration) {
       <span class="badge badge--success">${period.start_year || '—'}–${period.end_year || '—'} · ${period.n_years || 0} años</span>
       <span class="badge badge--info">ERA5 ${(100 * Number(weights.ERA5 || 0)).toFixed(1)}%</span>
       <span class="badge badge--info">MERRA-2 ${(100 * Number(weights.MERRA2 || 0)).toFixed(1)}%</span>
-      <span class="text-muted" style="font-size:.72rem">M04 MCP permanece como ancla; los nodos conservan sus gradientes.</span>
+      <span class="text-muted" style="font-size:.72rem">${mcpEsc(calibration.anchor?.display_name || WP.activeDataSource)} permanece como referencia; los nodos conservan sus gradientes.</span>
     </div>
     <div class="text-muted" style="font-size:.72rem;margin-bottom:.45rem">${validationText}</div>
     <div style="overflow:auto;max-height:220px"><table class="data-table" style="font-size:.7rem">
@@ -6728,8 +6794,8 @@ async function krig3EnsureCalibration() {
   const windEpoch = WP.windSourceEpoch || 0;
   const spatialEpoch = KRIG.spatialEpoch;
   if (KRIG.calibrationId && KRIG.calibrationSignature === signature) return KRIG.calibrationId;
-  if (!WP.activeDataSource?.startsWith('mcp:')) {
-    throw new Error('Publica una corrida MCP antes de entrar al flujo guiado de Diseño.');
+  if (!projectHasSpatialSource()) {
+    throw new Error('Selecciona una fuente de viento antes de entrar al flujo guiado de Diseño.');
   }
   const references = KRIG.sites.filter(s => s.allowed_role === 'spatial_reference');
   const excluded = references.filter(s => !KRIG.selected.has(s.filename)).map(s => s.station_id || s.filename);
@@ -6770,16 +6836,16 @@ async function krig3LoadSites(force=false) {
   try {
     const manual = !!document.getElementById('krig3-manual-mode')?.checked;
     const advancedRequested = krig3AdvancedMcpRequested();
-    KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && advancedRequested;
+    KRIG.guidedMcp = projectHasSpatialSource() && advancedRequested;
     const sourceBadge = document.getElementById('krig3-source-badge');
     if (advancedRequested && !KRIG.guidedMcp) {
       KRIG.sites = [];
       KRIG.selected.clear();
       if (sourceBadge) {
-        sourceBadge.textContent = 'Falta publicar MCP';
+        sourceBadge.textContent = 'Falta seleccionar fuente';
         sourceBadge.className = 'badge badge--warning';
       }
-      throw new Error('Publica el hindcast en MCP Lab para usar Downscaling MCP avanzado, o selecciona WindProPlatform clásico.');
+      throw new Error('Selecciona una fuente de viento para usar el cálculo espacial anclado.');
     }
     const year = parseInt(document.getElementById('krig3-year').value) || 2018;
     const htParam = WP.referenceHeight ? `&target_height_m=${WP.referenceHeight}` : '';
@@ -6787,7 +6853,7 @@ async function krig3LoadSites(force=false) {
     if (KRIG.guidedMcp) {
       const query = new URLSearchParams({
         session_id: WP.sessionId,
-        data_source: WP.activeDataSource,
+        data_source: WP.activeDataSource, anchored: '1',
         radius_km: String(Number(document.getElementById('krig3-poi-radius')?.value || 200)),
       });
       if (KRIG.poi) {
@@ -6800,7 +6866,7 @@ async function krig3LoadSites(force=false) {
     }
     const r = await api(url, 'GET');
     KRIG.sites = r.sites || [];
-    if (WP.studyMode === 'reanalysis_only') {
+    if (WP.studyMode === 'reanalysis_only' && !KRIG.guidedMcp) {
       const allowedFiles = new Set();
       (WP.reanalysisStudy?.reference_stations || []).forEach(station => {
         if (station.primary_file_id) allowedFiles.add(station.primary_file_id);
@@ -7072,9 +7138,9 @@ async function krig3Run() {
     return;
   }
   const advancedRequested = krig3AdvancedMcpRequested();
-  KRIG.guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && advancedRequested;
+  KRIG.guidedMcp = projectHasSpatialSource() && advancedRequested;
   if (advancedRequested && !KRIG.guidedMcp) {
-    toast('Publica una corrida MCP antes de usar el downscaling avanzado, o selecciona WindProPlatform clásico.', 'error');
+    toast('Selecciona una fuente de viento para usar el cálculo espacial anclado.', 'error');
     return;
   }
   const principal = KRIG.sites.find(x => x.filename === KRIG.principal);
@@ -7188,7 +7254,7 @@ async function krig3Poll() {
       krig3ZoomToPrincipal();
       const nCurves = (d.turbine_curves || []).length;
       const tag = mcpOn
-        ? ` · MCP espacial · ${Object.entries(d.provider_weights || {}).map(([p,w]) => `${p} ${(100*w).toFixed(0)}%`).join(' / ')} · comparación raw @ ${Number(d.raw_reference?.reference_height_m || 100).toFixed(0)} m`
+        ? ` · cálculo espacial anclado · ${Object.entries(d.provider_weights || {}).map(([p,w]) => `${p} ${(100*w).toFixed(0)}%`).join(' / ')} · comparación raw @ ${Number(d.raw_reference?.reference_height_m || 100).toFixed(0)} m`
         : (physOn ? ` · física (${d.n_corrected || 0}/${d.n_sites})` : '');
       const nMaps = Object.keys(d).filter(k => d[k] && Array.isArray(d[k].z)).length;
       document.getElementById('krig3-status').textContent =
@@ -8380,7 +8446,7 @@ async function mcdaRunAnalysis() {
     : 'Buscando sitios candidatos interpolados dentro del área exploratoria…';
   try {
     mcdaClearSpatialMarkers();
-    const guidedMcp = !!WP.activeDataSource?.startsWith('mcp:') && krig3AdvancedMcpRequested();
+    const guidedMcp = projectHasSpatialSource() && krig3AdvancedMcpRequested();
     if (guidedMcp) {
       document.getElementById('mcda-progress-text').textContent =
         'Preparando la calibración MCP y sus campos espaciales…';
@@ -8668,6 +8734,11 @@ function mcdaLayoutAuditHtml(a) {
       ['Colector MST', `${mcdaAuditNumber(a.collection_length_m, 1)} m`],
     ]),
     mcdaAuditCard('Energía y pérdidas', [
+      ['Fuente de producción', mcdaAuditEscape(a.production_source?.source_label || a.production_source?.method || 'Resultado guardado sin detalle de fuente')],
+      ['Método', mcdaAuditEscape(a.production_source?.method || '—')],
+      ['Periodo meteorológico', mcdaAuditEscape([a.production_source?.period_start, a.production_source?.period_end].filter(Boolean).join(' → ') || '—')],
+      ['Registros utilizados / excluidos', `${a.production_source?.rows_used ?? '—'} / ${a.production_source?.rows_excluded ?? '—'}`],
+      ['Integración de estelas', a.production_source?.method === 'historical_series_spatial_scaling' ? 'Frecuencias históricas conjuntas de velocidad y dirección; ajuste espacial por turbina' : 'Consultar método de producción'],
       ['AEP bruto teórico', `${mcdaAuditNumber(energy.aep_gross_theoretical_mwh, 1)} MWh`],
       ['AEP neto pre-estela', `${mcdaAuditNumber(energy.aep_net_pre_wake_mwh, 1)} MWh`],
       ['AEP después de estela', `${mcdaAuditNumber(energy.aep_after_wake_operational_mwh, 1)} MWh`],
@@ -11200,6 +11271,7 @@ function renderMCPVisualizations(result) {
       <div class="mcp-kpi">CERTE sincronizado · 1 h<b>k ${mcpFmt(hourlyBaseline.weibull?.k)} · λ ${mcpFmt(hourlyBaseline.weibull?.lambda)} m/s</b></div>
       <div class="mcp-kpi">Figura CERTE 2018<b>${match ? 'Coincide' : 'Revisar'} · k 1.809 · λ 10.522 m/s</b></div>
       <div class="mcp-kpi">Efecto sobre orientación<b>TV ${mcpFmt(baseline.aggregation_effect?.rose_total_variation_pct_points, 2)} puntos porcentuales</b></div>`;
+    if (baselineKpis) baselineKpis.innerHTML += measuredHeightTable(baseline.height_profile);
     _drawWindRose(rawBaseline.wind_rose_36, 'mcp-chart-certe-rose', 'mcp-certe-rose-legend');
     putChart('mcp-chart-certe-weibull', {
       type: 'bar',
@@ -12425,7 +12497,7 @@ async function continueGlobeToSingleStation() {
     KRIG.sites = []; KRIG.selected.clear(); KRIG.principal = null;
     KRIG.poi = { ...study.poi }; KRIG._appliedGlobePoi = null;
     const mode = document.getElementById('krig3-generation-mode');
-    if (mode) mode.value = 'windpro_classic';
+    if (mode) mode.value = 'mcp_advanced';
     krig3SyncGenerationMode();
     collapseGlobeStage();
     document.querySelector('.nav-btn[data-module="resumen"]')?.click();
@@ -12532,7 +12604,7 @@ async function continueGlobeToReanalysis() {
     KRIG._appliedGlobePoi = null;
     krig3InvalidateCalibration('se cambió a un estudio sin estación observada');
     const mode = document.getElementById('krig3-generation-mode');
-    if (mode) mode.value = 'windpro_classic';
+    if (mode) mode.value = 'mcp_advanced';
     const manual = document.getElementById('krig3-manual-mode');
     if (manual) manual.checked = false;
     const radiusInput = document.getElementById('krig3-poi-radius');
@@ -13855,7 +13927,7 @@ function updateResumenHeader() {
     else if (source?.label) parts.push(`${source.kind === 'reanalysis' ? 'Referencia virtual' : 'Fuente observada'} · ${source.label}`);
     if (singleStationMode() && source) {
       parts.push(`Fuente temporal: ${source.source_id} · sin MCP`);
-      if (source.period_start && source.period_end) parts.push(`${source.period_start.slice(0, 10)} a ${source.period_end.slice(0, 10)}`);
+      if (source.period_start && source.period_end) parts.push(windSourcePeriodText(source));
       if (source.file_ids?.length) parts.push(`Archivos: ${source.file_ids.join(', ')}`);
       if (source.transformations?.some(step => step.method === 'hellmann')) parts.push(`Hellmann: ${source.source_height_m} → ${source.target_height_m} m`);
     }
@@ -13905,6 +13977,15 @@ function updateResumenVerdict() {
 }
 
 function renderSavedOverview(r) {
+  refreshResourcePeriod();
+  const period = document.getElementById('overview-source-period');
+  if (period) {
+    const source = r?.data_source;
+    const overview = r?.overview;
+    period.textContent = source && overview
+      ? `${source.label || source.source_id} · ${source.period_selection === 'full_available_record' ? 'Todo el registro disponible · ' : ''}${windSourcePeriodText(source)}${source.years?.length ? ' · Años: ' + source.years.join(', ') : ''}${overview.time_resolution_min ? ' · Registros de ' + overview.time_resolution_min + ' min' : ''}`
+      : '';
+  }
     renderOverviewKPIs(r.overview);
     renderDailyTS(r.overview?.daily_series);
     renderHistogramOverview(r.histogram);

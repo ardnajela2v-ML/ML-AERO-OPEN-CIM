@@ -65,6 +65,11 @@ def _profile_columns(frame: pd.DataFrame, observation_height_m: float) -> Dict[f
         height = _height_from_column(str(column))
         if height is not None and str(column).startswith("WS_") and str(column).endswith("_mean"):
             columns[height] = str(column)
+    # Prefer each height's A/B composite (or its sole unsuffixed sensor).
+    for height in list(columns):
+        combined = f"WS_{height:g}m_mean"
+        if combined in frame:
+            columns[height] = combined
     if "wind_speed_obs" in frame.columns:
         columns[float(observation_height_m)] = "wind_speed_obs"
     return dict(sorted(columns.items()))

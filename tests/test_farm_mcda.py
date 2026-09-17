@@ -381,6 +381,7 @@ class LayoutTopsisTests(unittest.TestCase):
             project_years=20, price_usd_kwh=0.083,
             historical_wind={
                 'ws': np.asarray([np.nan, 4.0, 8.0, 12.0, 30.0]),
+                'wd': np.asarray([270., 270., 270., 270., 270.]),
                 'dt_hours': 1.0,
                 'measurement_height_m': 80.0,
                 'source_id': 'observed',

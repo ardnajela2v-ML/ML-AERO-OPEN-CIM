@@ -293,13 +293,15 @@ def _validation_weight(provider_poi: pd.DataFrame, observed: pd.DataFrame,
 def _provider_weights(validations: Mapping[str, Mapping[str, Any]], participating: Sequence[str]) -> dict[str, float]:
     if not participating:
         return {}
-    inverse: dict[str, float] = {}
-    for provider in participating:
-        rmse = validations.get(provider, {}).get("rmse_monthly_balanced")
-        if rmse is not None and np.isfinite(rmse) and float(rmse) > 0:
-            inverse[provider] = 1.0 / float(rmse)
-    if len(inverse) != len(participating):
+    errors = {provider: validations.get(provider, {}).get('rmse_monthly_balanced')
+              for provider in participating}
+    if any(error is None or not np.isfinite(error) or float(error) < 0 for error in errors.values()):
         return {provider: 1.0 / len(participating) for provider in participating}
+    perfect = [provider for provider, error in errors.items() if float(error) == 0]
+    if perfect:
+        return {provider: (1.0 / len(perfect) if provider in perfect else 0.0)
+                for provider in participating}
+    inverse = {provider: 1.0 / float(error) for provider, error in errors.items()}
     total = sum(inverse.values())
     return {provider: value / total for provider, value in inverse.items()}
 
@@ -399,17 +401,20 @@ def calibrate_spatial_nodes(
     train_year: int = 2018,
     validation_year: int = 2019,
     min_years: int = MIN_CLIMATOLOGY_YEARS,
+    period_policy: str = 'climatology',
+    anchor_metadata: Mapping[str, Any] | None = None,
     min_coverage: float = MIN_ANNUAL_COVERAGE,
     roughness_resolver: Callable[[float, float], Mapping[str, Any]] | None = None,
     progress_callback: Callable[[int, str], None] | None = None,
+    series_sink: dict | None = None,
 ) -> dict[str, Any]:
-    """Calibrate typed reanalysis nodes around a published M04 MCP hindcast."""
+    """Apply the same spatial anomaly chain to an explicit temporal anchor."""
 
     if not str(target_height_m).strip() or float(target_height_m) <= 0:
         raise ValueError("target_height_m must be positive")
     anchor = _as_hourly_utc(anchor_frame)
     if "wind_speed" not in anchor:
-        raise ValueError("Published MCP source requires wind_speed")
+        raise ValueError("Temporal source requires wind_speed")
     observed = _as_hourly_utc(observed_frame) if observed_frame is not None else None
     typed = [dict(row) for row in stations if row.get("data_kind") == "reanalysis" and row.get("provider") in {"ERA5", "MERRA2"}]
     if not typed:
@@ -449,40 +454,59 @@ def calibrate_spatial_nodes(
         for row, frame in loaded
     }
     providers_available = sorted({row["provider"] for row, _ in loaded})
-    candidate_years = sorted(year for year, coverage in anchor_coverage.items() if coverage >= min_coverage)
-    valid_years = []
-    for year in candidate_years:
-        provider_counts = {
-            provider: sum(
-                coverage_by_station[row["station_id"]].get(year, 0.0) >= min_coverage
-                for row, _ in loaded if row["provider"] == provider
+    if period_policy not in {'climatology', 'selected_record'}:
+        raise ValueError('Unknown spatial period policy')
+    if period_policy == 'selected_record':
+        valid_anchor = anchor.loc[anchor['wind_speed'].notna()]
+        if len(valid_anchor) < 24:
+            raise ValueError('Se requieren al menos 24 horas válidas en el periodo seleccionado')
+        start, end = valid_anchor.index.min(), valid_anchor.index.max()
+        anchor_period = valid_anchor
+        period_years = sorted(set(int(year) for year in valid_anchor.index.year))
+        eligible = defaultdict(list)
+        for row, frame in loaded:
+            aligned = frame.reindex(valid_anchor.index)
+            coverage = float(aligned['wind_speed_ref'].notna().mean())
+            if coverage >= min_coverage:
+                eligible[row['provider']].append((row, aligned))
+            else:
+                excluded.append({'station_id': row['station_id'], 'reason': 'insufficient_selected_period_overlap',
+                                 'overlap_coverage_pct': coverage * 100})
+    else:
+        candidate_years = sorted(year for year, coverage in anchor_coverage.items() if coverage >= min_coverage)
+        valid_years = []
+        for year in candidate_years:
+            provider_counts = {
+                provider: sum(
+                    coverage_by_station[row["station_id"]].get(year, 0.0) >= min_coverage
+                    for row, _ in loaded if row["provider"] == provider
+                )
+                for provider in providers_available
+            }
+            if any(count >= MIN_PROVIDER_NODES for count in provider_counts.values()):
+                valid_years.append(year)
+        period_years = longest_consecutive_years(valid_years)
+        if len(period_years) < int(min_years):
+            raise ValueError(
+                f"The longest continuous common period has {len(period_years)} years; {min_years} are required"
             )
-            for provider in providers_available
-        }
-        if any(count >= MIN_PROVIDER_NODES for count in provider_counts.values()):
-            valid_years.append(year)
-    period_years = longest_consecutive_years(valid_years)
-    if len(period_years) < int(min_years):
-        raise ValueError(
-            f"The longest continuous common period has {len(period_years)} years; {min_years} are required"
-        )
-    start = pd.Timestamp(year=period_years[0], month=1, day=1, tz="UTC")
-    end = pd.Timestamp(year=period_years[-1] + 1, month=1, day=1, tz="UTC") - pd.Timedelta(hours=1)
-    anchor_period = anchor.loc[start:end]
-    if progress_callback:
-        progress_callback(28, f"Periodo común {period_years[0]}–{period_years[-1]} · {len(period_years)} años")
+        start = pd.Timestamp(year=period_years[0], month=1, day=1, tz="UTC")
+        end = pd.Timestamp(year=period_years[-1] + 1, month=1, day=1, tz="UTC") - pd.Timedelta(hours=1)
+        anchor_period = anchor.loc[start:end]
+        if progress_callback:
+            progress_callback(28, f"Periodo común {period_years[0]}–{period_years[-1]} · {len(period_years)} años")
 
-    eligible: dict[str, list[tuple[dict[str, Any], pd.DataFrame]]] = defaultdict(list)
-    for row, frame in loaded:
-        cov = coverage_by_station[row["station_id"]]
-        minimum = min((cov.get(year, 0.0) for year in period_years), default=0.0)
-        if minimum >= min_coverage:
-            eligible[row["provider"]].append((row, frame.loc[start:end]))
-        else:
-            excluded.append({
-                "station_id": row["station_id"], "provider": row["provider"],
-                "reason": "coverage_below_threshold", "minimum_annual_coverage": float(minimum),
-            })
+        eligible: dict[str, list[tuple[dict[str, Any], pd.DataFrame]]] = defaultdict(list)
+        for row, frame in loaded:
+            cov = coverage_by_station[row["station_id"]]
+            minimum = min((cov.get(year, 0.0) for year in period_years), default=0.0)
+            if minimum >= min_coverage:
+                eligible[row["provider"]].append((row, frame.loc[start:end]))
+            else:
+                excluded.append({
+                    "station_id": row["station_id"], "provider": row["provider"],
+                    "reason": "coverage_below_threshold", "minimum_annual_coverage": float(minimum),
+                })
 
     validations: dict[str, dict[str, Any]] = {}
     provider_poi: dict[str, pd.DataFrame] = {}
@@ -536,7 +560,8 @@ def calibrate_spatial_nodes(
         poi_frame = provider_poi[provider]
         for row, frame in eligible[provider]:
             node_period = frame.loc[(frame.index >= start) & (frame.index <= end)]
-            expected_period_hours = sum(_expected_hours(year) for year in period_years)
+            expected_period_hours = (len(anchor_period) if period_policy == 'selected_record'
+                                     else sum(_expected_hours(year) for year in period_years))
             node_coverage_pct = min(
                 100.0,
                 100.0 * float(node_period["wind_speed_ref"].notna().sum()) / max(1, expected_period_hours),
@@ -553,7 +578,8 @@ def calibrate_spatial_nodes(
                 aligned["poi_wind_speed_ref"] + LOW_WIND_OFFSET_MS
             )
             training_anomaly = anomaly.loc[anomaly.index.year == int(train_year)].dropna()
-            fit_sample = training_anomaly if len(training_anomaly) >= 100 else anomaly.dropna()
+            fit_sample = (training_anomaly if period_policy == "climatology" and len(training_anomaly) >= 100
+                          else anomaly.dropna())
             q01, q99 = np.quantile(fit_sample, [0.01, 0.99])
             anomaly_limited = anomaly.clip(float(q01), float(q99))
             calibrated_speed = np.maximum(
@@ -588,6 +614,9 @@ def calibrate_spatial_nodes(
                 density = np.where(np.isfinite(calculated_density), calculated_density, 1.225)
             sectors = sector_statistics(generalized, calibrated_direction, density)
             power_density = float(np.nanmean(0.5 * density * np.power(generalized, 3)))
+            if series_sink is not None:
+                series_sink[row['station_id']] = pd.DataFrame({
+                    'wind_speed': generalized, 'wind_direction': calibrated_direction}, index=aligned.index)
             calibrated_nodes.append({
                 "station_id": row["station_id"], "display_name": row.get("display_name") or row["station_id"],
                 "provider": provider, "latitude": float(row["latitude"]), "longitude": float(row["longitude"]),
@@ -602,7 +631,7 @@ def calibrate_spatial_nodes(
                 "weibull_k": k_value, "weibull_lambda": lambda_value,
                 "air_density_mean": float(np.nanmean(density)), "power_density_wm2": power_density,
                 "anomaly_log_q01": float(q01), "anomaly_log_q99": float(q99),
-                "anomaly_training_year": int(train_year), "sectorial": sectors,
+                "anomaly_training_year": int(train_year) if period_policy == "climatology" else None, "sectorial": sectors,
                 "roughness": roughness, "qc_status": "included" if provider in participating else "diagnostic_only",
                 "field_role": "official" if provider in participating else "diagnostic_only",
                 "file_ids": list(row.get("file_ids") or []),
@@ -629,24 +658,33 @@ def calibrate_spatial_nodes(
         "mcp_uncertainty_half_width_ms": mcp_half_width,
         "qc_status": "spatial_anchor", "field_role": "anchor",
     }
+    if anchor_metadata:
+        anchor_record.update(dict(anchor_metadata))
+    if series_sink is not None:
+        series_sink[anchor_record['station_id']] = pd.DataFrame({
+            'wind_speed': anchor_generalized,
+            'wind_direction': anchor_direction if anchor_direction is not None else np.nan}, index=anchor_period.index)
     if progress_callback:
         progress_callback(88, "Calculando pesos ERA5/MERRA-2 y trazabilidad")
     return {
         "method": METHOD,
         "direction_convention": "meteorological_from_true_north_clockwise",
-        "training_year": int(train_year), "validation_year": int(validation_year),
+        "training_year": int(train_year) if period_policy == "climatology" else None,
+        "validation_year": int(validation_year) if observed_frame is not None else None,
         "missing_validation_policy": "missing months omitted; available months equally weighted",
         "common_period": {
             "start": start.isoformat(), "end": end.isoformat(),
             "start_year": period_years[0], "end_year": period_years[-1],
             "years": period_years, "n_years": len(period_years),
-            "minimum_annual_coverage_pct": float(min_coverage * 100.0),
+            "minimum_annual_coverage_pct": float(min_coverage * 100.0) if period_policy == "climatology" else None,
+            "period_policy": period_policy, "anchor_valid_hours": int(anchor_speed.notna().sum()),
+            "minimum_overlap_coverage_pct": float(min_coverage * 100.0),
         },
         "project_reference": {
             "height_m": float(reference_height_m), "roughness_z0_m": float(reference_z0_m),
             "roughness_method": "sector_log_law_worldcover_with_dem_slope_fallback",
             "orography_removed": False,
-            "orographic_limitation": "M04 local orographic component remains in the spatial anchor",
+            "orographic_limitation": "Anchor local orographic component remains in the spatial anchor",
         },
         "anchor": anchor_record,
         "nodes": calibrated_nodes,
@@ -979,7 +1017,7 @@ def build_calibrated_maps(
 
     screening = terrain_screening(elevation, template["bounds"])
     result = {
-        "wind": _wrap_grid(template, wind, "Viento MCP espacial calibrado a altura objetivo"),
+        "wind": _wrap_grid(template, wind, "Viento espacial anclado a la fuente elegida a altura objetivo"),
         "wind_neutral": _wrap_grid(template, speed_generalized, f"Viento generalizado ({h_ref:g} m, z₀={z0_ref:g} m)"),
         "wind_raw_reference": _wrap_grid(
             template, raw_reference,
@@ -995,7 +1033,7 @@ def build_calibrated_maps(
         "weibull_lambda": _wrap_grid(template, lambda_target, "Weibull λ · reconstrucción histórica"),
         "power_density": _wrap_grid(template, power_density, "Densidad de potencia histórica"),
         "uncertainty": {
-            **_wrap_grid(template, uncertainty, "Incertidumbre MCP + Kriging + dispersión de proveedores"),
+            **_wrap_grid(template, uncertainty, "Incertidumbre de la fuente + Kriging + dispersión de proveedores"),
             "unit": "m/s", "kriging_variance_unit": "(m/s)^2",
         },
         "elevation": _wrap_grid(template, elevation, "Altitud DEM · diagnóstico"),
@@ -1038,7 +1076,7 @@ def build_calibrated_maps(
     }
     for provider, grid_values in provider_speed_grids.items():
         key = "wind_" + provider.lower()
-        result[key] = _wrap_grid(template, grid_values, f"{provider} calibrado y anclado a M04 MCP")
+        result[key] = _wrap_grid(template, grid_values, f"{provider} calibrado y anclado a la fuente elegida")
         result["providers"][provider] = {
             "weight": weights.get(provider), "wind_layer": key,
             "variogram": selections.get(provider),
@@ -1109,5 +1147,5 @@ def build_calibrated_maps(
         result["inversion"] = _wrap_grid(template, capex, "Inversión inicial (USD)")
         result["van"] = _wrap_grid(template, van, "Valor Actual Neto (USD)")
     if progress_callback:
-        progress_callback(96, "Mapas MCP espaciales, direccionales y físicos listos")
+        progress_callback(96, "Mapas espaciales, direccionales y físicos listos")
     return result

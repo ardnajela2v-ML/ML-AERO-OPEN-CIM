@@ -229,6 +229,16 @@ def compute_month_hour_heatmap(df, col='wind_speed'):
 
 # ─── EXTREME EVENTS ───────────────────────────────────────────────────────────
 
+def _sample_hours(df):
+    """Nominal interval per record; gaps never count as measured hours."""
+    if isinstance(df.index, pd.DatetimeIndex) and len(df.index) > 1:
+        deltas = df.index.sort_values().to_series().diff().dt.total_seconds()
+        positive = deltas[deltas > 0]
+        if not positive.empty:
+            return float(positive.mode().iloc[0] / 3600.0)
+    return 1.0
+
+
 def compute_extreme_events(df, col='wind_speed', thresholds=None):
     """
     Count hours per month above each threshold (e.g. 15, 20 m/s).
@@ -253,8 +263,8 @@ def compute_extreme_events(df, col='wind_speed', thresholds=None):
         result['series'].append({
             'threshold': thr,
             'label':     f'≥{thr} m/s',
-            'counts':    [int(counts.get(m, 0)) for m in months],
-            'total':     int(len(above)),
+            'counts':    [round(float(counts.get(m, 0)) * _sample_hours(df), 2) for m in months],
+            'total':     round(len(above) * _sample_hours(df), 2),
             'pct':       round(float(len(above) / len(s) * 100), 2),
         })
     return result
@@ -412,9 +422,12 @@ def compute_site_overview(df, ws_col='wind_speed', wd_col='wind_dir',
             result['wd_mean_circular'] = round(circular_mean(wd_vals), 2)
             result['wd_std_circular']  = round(circular_std(wd_vals), 2)
 
-    # Hours above thresholds
+    # Convert native observations (e.g. CERTE 10 min) to measured hours.
+    sample_hours = _sample_hours(df)
+    result['time_resolution_min'] = round(sample_hours * 60, 3)
+    result['valid_hours'] = round(len(s) * sample_hours, 2)
     for thr in [10, 15, 20, 25]:
-        result[f'h_above_{thr}ms'] = int((s >= thr).sum())
+        result[f'h_above_{thr}ms'] = round(float((s >= thr).sum()) * sample_hours, 2)
         result[f'pct_above_{thr}ms'] = round(float((s >= thr).mean() * 100), 2)
 
     # % time near mean ± 1 m/s band
@@ -432,7 +445,9 @@ def compute_site_overview(df, ws_col='wind_speed', wd_col='wind_dir',
     # Pressure stats
     if pres_col in df.columns:
         p = df[pres_col].dropna()
-        result['pressure_mean'] = round(float(p.mean()), 2)
+        result['pressure_mean_pa'] = round(float(p.mean()), 2)
+        result['pressure_mean'] = round(float(p.mean()) / 100.0, 2)
+        result['pressure_mean_unit'] = 'hPa'
 
     # Daily mean time series (for overview chart)
     if isinstance(df.index, pd.DatetimeIndex):
