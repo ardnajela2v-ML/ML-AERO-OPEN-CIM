@@ -9011,13 +9011,12 @@ function mcdaRenderRanking(r) {
     ['van_usd', 'VAN', 'USD', 0, 1],
     ['lcoe_usd_kwh', 'LCOE', 'USD/kWh', 5, 1],
     ['capex_usd_per_installed_kw', 'CAPEX / kW instalado', 'USD/kW', 0, 1],
-    ['discounted_payback_years', 'Recuperación descontada', 'años', 2, 1],
   ];
   const head = document.querySelector('#mcda-rank-tbl thead');
   const applied = r?.weights || {};
   if (head) head.innerHTML = parkMode
     ? '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th>' + columns.map(([key, label, unit]) => {
-      const direction = ['lcoe_usd_kwh', 'capex_usd_per_installed_kw', 'discounted_payback_years'].includes(key) ? '↓' : '↑';
+      const direction = ['lcoe_usd_kwh', 'capex_usd_per_installed_kw'].includes(key) ? '↓' : '↑';
       const weight = applied[key] == null ? 'Sin peso efectivo' : `${(100 * applied[key]).toFixed(1)}% efectivo`;
       return `<th style="min-width:115px">${label} ${direction}<br><small>${unit}</small><br><small>${weight}</small></th>`;
     }).join('') + '</tr>'

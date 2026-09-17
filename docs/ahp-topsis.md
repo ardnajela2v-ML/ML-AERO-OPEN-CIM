@@ -635,6 +635,83 @@ limitan cuánto peso poner en el valor numérico exacto de cada ρ, y son la
 razón por la que este hallazgo se documenta como "respondido para este
 sitio", no como "cerrado para todo el estudio".
 
+### Quinta actividad, 2026-09-17: se retira recuperación descontada; juicio del investigador reemplaza el nivel por citas
+
+El investigador decidió, por fin, resolver la redundancia ρ=±1.0000 con LCOE
+que quedó documentada como "decisión consciente, no corregida" desde la
+"Segunda decisión" (arriba): **se retira `discounted_payback_years` de
+`LAYOUT_WEIGHTS`** (baja a `LAYOUT_AUDIT_ONLY`; se sigue calculando y
+mostrando en el detalle de cada alternativa, ver §8).
+
+**Primer intento, descartado el mismo día**: quitar la fila/columna de
+recuperación descontada de la matriz de 8×8 ya publicada (Tercera actividad)
+y recalcular sin juicios nuevos — matemáticamente válido (las 21
+comparaciones entre los otros 7 criterios ya estaban en esa matriz), λmax=7.0503,
+CR=0.0064. El investigador lo rechazó de inmediato: los niveles de prioridad
+de esa matriz seguían basados en "qué tan citado está cada criterio en la
+literatura", y el investigador explícitamente no acepta ese criterio de
+prioridad — "que sea el más citado no significa que sea el mejor, hay que
+pensar a mayor profundidad".
+
+**Juicio final, dado directamente por el investigador**: un ranking 1º-7º
+explícito de los 7 criterios restantes, por su propio conocimiento y
+análisis, sin derivarlo de conteo de citas ni de la matriz anterior:
+
+| Lugar | Criterio |
+|---:|---|
+| 1º (más importante) | Horas cerca de Cp máximo |
+| 2º | VAN (bruto) |
+| 3º | AEP P90 (bruto) |
+| 4º | CAPEX por kW instalado |
+| 5º | Factor de capacidad neto |
+| 6º | Cp efectivo de la serie completa |
+| 7º (menos importante) | LCOE |
+
+Un ranking ordinal no trae información de *cuánto* más importante es un
+lugar que el siguiente. Para construir la matriz de comparaciones por pares
+se adoptó un supuesto simplificador, expuesto aquí sin disfrazarlo de dato
+del investigador: nivel = 8 − posición del ranking (nivel 7 para el 1º lugar,
+nivel 1 para el 7º), con espaciado lineal parejo entre lugares consecutivos.
+Cada comparación por pares es la razón entre los dos niveles, redondeada al
+valor más cercano de la escala 1-9 de Saaty — mismo método auditable que la
+Tercera actividad, aplicado ahora sobre el ranking del investigador en vez de
+sobre "niveles de prioridad" basados en literatura.
+
+**Matriz completa** (orden: horas Cp máx., VAN, AEP P90, CAPEX/kW, factor de
+capacidad, Cp efectivo, LCOE):
+
+```
+[[1,   1,   1,   2,   2,   3,   7  ],
+ [1,   1,   1,   1,   2,   3,   6  ],
+ [1,   1,   1,   1,   2,   2,   5  ],
+ [1/2, 1,   1,   1,   1,   2,   4  ],
+ [1/2, 1/2, 1/2, 1,   1,   1,   3  ],
+ [1/3, 1/3, 1/2, 1/2, 1,   1,   2  ],
+ [1/7, 1/6, 1/5, 1/4, 1/3, 1/2, 1  ]]
+```
+
+**Resultado de `calculate_ahp`**: λmax=7.08415, CI=0.01403, RI=1.32 (n=7,
+Saaty 1987), **CR=0.0106** (‹0.10, consistente):
+
+| Criterio | Peso |
+|---|---:|
+| Horas cerca de Cp máximo | 23.11% |
+| VAN (bruto) | 20.47% |
+| AEP P90 (bruto) | 18.81% |
+| CAPEX por kW instalado | 15.16% |
+| Factor de capacidad neto | 10.73% |
+| Cp efectivo de la serie completa | 8.13% |
+| LCOE | 3.60% |
+
+Bloque técnico 60.8% / económico 39.2%. **Nota explícita de método, no un
+dato del investigador**: la linealidad del mapeo nivel=8−posición es una
+simplificación de esta sesión; si el investigador considera que el salto de
+importancia entre, por ejemplo, el 1º y 2º lugar es mucho mayor (o menor) que
+entre el 6º y 7º, la matriz debe ajustarse a mano en esos pares específicos
+y recalcularse — no está pendiente ninguna verificación adicional de
+independencia numérica aquí (el ranking es un juicio de valor del
+investigador, no una hipótesis a probar con datos).
+
 ## 7. Verificación del software
 
 `tests/test_ahp.py` verifica prioridades conocidas, reciprocidad, datos faltantes,
@@ -655,3 +732,52 @@ script reproducible detrás del hallazgo de §6 "Cuarta actividad" (bloque
 técnico sin redundancia probada) — no es una prueba automatizada de
 regresión, es una herramienta de verificación de investigación pensada
 para rehacerse contra otros sitios del estudio.
+
+## 8. Criterios técnicos y económicos evaluados y descartados (consolidado)
+
+Tabla de referencia para la tesis: **todo** criterio que en algún momento se
+calculó, se consideró como candidato de `LAYOUT_WEIGHTS`, o se probó y no
+cumplió los requisitos para entrar al ranking ponderado. Todos siguen
+**calculándose y mostrándose** en el detalle/auditoría de cada alternativa
+(`LAYOUT_AUDIT_ONLY` en `core/multicriteria.py`) — "descartado del ranking"
+no significa "eliminado del programa": queda disponible para reabrir la
+discusión con datos reales del estudio en cualquier momento. La columna
+"Motivo" distingue tres tipos de razón, porque mezclarlos sin declararlo fue
+precisamente el problema señalado en §6 "Cuarta actividad": **(R)** redundancia
+matemática probada o fuertemente sospechada con un criterio ya incluido,
+**(C)** constante entre alternativas de una misma corrida (no puede mover un
+ranking comparativo), **(D)** dato/estándar faltante para calcularlo de forma
+correcta.
+
+| Criterio | Motivo | Detalle |
+|---|:---:|---|
+| `benefit_cost_ratio` (B/C) | R | ρ=±1.0000 con LCOE bajo precio/tasa/OPEX% constantes entre alternativas — transformación no lineal del mismo cociente PV(ingresos)/PV(costos) (§6, verificado en código). |
+| `roi`, `irr` | R | Misma familia algebraica que LCOE/B-C bajo los mismos supuestos — mismo ρ=±1.0000 (§6). |
+| `payback_years`, `discounted_payback_years` | R | Igual redundancia que B/C con LCOE (§6, §6 "Quinta actividad"); `discounted_payback_years` se mantuvo ponderado desde 2026-09-13 hasta 2026-09-17 por decisión consciente del investigador (cobertura narrativa ante un comité de tesis), luego retirado. |
+| DSCR (razón de cobertura de deuda) | R | Evaluado como posible sustituto de payback y descartado: ρ(LCOE, DSCR)=−1.0000 verificado en código (§6 "Cuarta actividad") — bajo los mismos supuestos de precio/OPEX/deuda fijos, es una función lineal de AEP/CAPEX, la misma variable que LCOE desde el lado opuesto. Nunca se integró como columna calculada (no existe en `LAYOUT_AUDIT_ONLY`; vive en `/api/energy/leveraged`, desconectado de `rank_layout_alternatives`). |
+| `van_usd_per_installed_mw`, `aep_p90_mwh_per_installed_mw` | R | Con factor de capacidad fijo y solo la escala variando (n turbinas de un mismo modelo), el cociente por MW instalado se vuelve prácticamente constante (verificado en código, §6) — VAN y AEP pasaron a bruto. |
+| `van_usd_per_effective_km2`, `aep_p90_mwh_per_effective_km2`, `energy_density_mwh_km2` | C | El área efectiva del polígono es la misma constante para todas las alternativas de un mismo ranking (`effective_park_area`); dividir entre una constante no cambia la normalización vectorial de TOPSIS (observación matemática, §1/§6) — no aportan información que AEP/VAN bruto no den ya. |
+| `capex_usd` (bruto, sin normalizar) | R (asimetría deliberada) | A diferencia de VAN/AEP, CAPEX es un criterio de costo ("menos es mejor"); con área fija, CAPEX bruto premiaría trivialmente instalar menos capacidad — la operación opuesta a lo que premian VAN/AEP. Se usa `capex_usd_per_installed_kw` en su lugar (§6). |
+| `opex_usd_per_installed_kw_year`, `opex_lifetime_usd` | R | Proporcionales exactos a CAPEX bajo `opex_pct_capex` fijo entre alternativas de una corrida — no aportan un eje independiente de `capex_usd_per_installed_kw` (§6). |
+| `wake_loss_pct` | C | Resultado de una búsqueda de layout acotada por `max_wake_loss_pct`, un parámetro que el analista fija igual para todas las alternativas de una corrida — no es una propiedad intrínseca de la turbina/sitio (§6). |
+| `aep_uncertainty_pct`, `curtailment_loss_pct` | C | Parámetros de proyecto (supuestos de incertidumbre y de curtailment) constantes entre alternativas de una misma corrida (§6). |
+| `iec_suitability_score` | D | Hardcodeado a `0.5` en todo el programa — no implementado. Requiere datos del fabricante no disponibles (`ct_curve`, `iec_class`, `extreme_wind`, `ambient_turbulence`; ver `bankable_missing` en `core/farm_mcda.py`). Criterio real y estandarizado (IEC 61400-1) que queda como extensión futura genuina, no un descarte permanente (§6). |
+| VAN apalancado (deuda) | D | Endpoint `/api/energy/leveraged` existe pero desconectado del loop de `rank_layout_alternatives`; integrarlo exige decidir de dónde sale `debt_ratio_pct` por alternativa — decisión de modelado nueva, no ejecutada (§6). |
+| `cp_at_site_mean` | R (sospechada) | Cp evaluado en un solo punto (la velocidad media del sitio), mientras que `cp_effective_full_series` promedia el Cp real hora a hora sobre toda la serie — un resumen más completo de la misma interacción curva-recurso; se prefirió el segundo por eso, no por una prueba de correlación numérica entre ambos (pendiente si se quiere formalizar). |
+| `cpmax_speed_mismatch_ms` | R (sospechada) | `\|v̄ − v(Cp máx.)\|` en m/s: mecánicamente relacionado con `cp_at_site_mean`/`hours_near_cpmax` (mismo par curva-recurso, unidad distinta) — no verificado numéricamente, no se incluyó por esa sospecha de redundancia sin resolver, igual que `cp_at_site_mean`. |
+| `resource_operational_availability_pct` | R (sospechada) | % de horas con `ws` entre cut-in y cut-out — se espera correlacionado con `hours_near_cpmax`/factor de capacidad al derivarse del mismo par curva-recurso; no se ha corrido la verificación de §6 "Cuarta actividad" (Spearman con datos reales) para este par específico — pendiente, mismo método ya disponible en `scripts/verify_technical_criteria_correlation.py`. |
+| `hours_at_or_above_90pct_rated` | D | Umbral de "cerca de la potencia nominal" (90%) sin definición estándar en la industria eólica (Energy Numbers, Windpower Monthly, §6 "Cuarta actividad") — mismo problema documentado que el 95% de `hours_near_cpmax`, pero sin la ventaja de que ese último al menos tiene literatura sobre el *concepto* (tiempo cerca de Cp máx.), solo no del umbral exacto. |
+| `collection_length_m`, `civil_complexity_index` | R (parcial) | Proxies de ingeniería de layout (longitud de cable colector total y por turbina); su efecto económico ya se captura en `capex_usd_per_installed_kw` vía `collection_cable_cost_usd`. No se ha verificado si aportan información técnica independiente más allá de ese costo ya contado — pendiente si se quiere reabrir como criterio de constructibilidad puro. |
+
+**Cómo usar esta tabla en la tesis**: no es una lista de "errores corregidos"
+— es evidencia de un proceso de selección de criterios deliberado y
+auditable, con cada exclusión trazable a una razón matemática verificada en
+código (R probada), a una limitación estructural del diseño experimental (C),
+o a una carencia de datos declarada (D), nunca a una omisión sin explicar.
+Las filas marcadas "R (sospechada)" son honestamente eso — sospecha
+razonada, no verificación numérica — y son el trabajo pendiente más concreto
+si se quiere cerrar esa brecha antes de someter la tesis: correr
+`scripts/verify_technical_criteria_correlation.py` (o extenderlo) contra
+`cp_at_site_mean`, `cpmax_speed_mismatch_ms` y
+`resource_operational_availability_pct` con datos reales de más de un sitio
+del estudio.

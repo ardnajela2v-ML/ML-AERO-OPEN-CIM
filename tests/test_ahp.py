@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from core.ahp import calculate_ahp
+from core.ahp import calculate_ahp, RANDOM_INDEX
 from core.multicriteria import LAYOUT_WEIGHTS, LAYOUT_DIRECTION
 
 
@@ -45,7 +45,7 @@ def client():
 
 
 def assessment():
-    w = np.array([9.] + [1.] * 7)
+    w = np.array([9.] + [1.] * (len(LAYOUT_WEIGHTS) - 1))
     return {'criteria': list(LAYOUT_WEIGHTS), 'matrix': (w[:, None] / w[None, :]).tolist(),
             'author': 'Synthetic test only', 'objective': 'Test decision',
             'rationale': 'Synthetic ratios for regression, not research judgments.'}
@@ -61,12 +61,17 @@ def alternatives():
     return rows
 
 
+def _first_criterion_expected_weight():
+    n = len(LAYOUT_WEIGHTS)
+    return 9 / (9 + (n - 1))
+
+
 def test_endpoint_exports_traceable_assessment(client):
     result = client.post('/api/multicriteria/ahp', json=assessment())
     assert result.status_code == 200
     data = result.get_json()
-    assert data['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(9 / 16)
-    assert data['ri'] == 1.41
+    assert data['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(_first_criterion_expected_weight())
+    assert data['ri'] == RANDOM_INDEX[len(LAYOUT_WEIGHTS)]
     assert data['author'] == assessment()['author']
     assert data['criteria_basis_status'] == 'bibliographic_review_pending'
     assert data['schema'] == 'layout-ahp-v1'
@@ -82,13 +87,14 @@ def test_rank_recomputes_weights_instead_of_trusting_payload(client):
     assert response.status_code == 200, response.get_json()
     data = response.get_json()
     assert data['ranking'][0]['label'] == 'test-2'
-    assert data['ahp_assessment']['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(9 / 16)
-    assert data['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(9 / 16)
+    assert data['ahp_assessment']['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(_first_criterion_expected_weight())
+    assert data['weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(_first_criterion_expected_weight())
 
 
 def test_inconsistent_assessment_cannot_rank_even_with_forged_status(client):
     ahp = assessment()
-    ahp['matrix'] = np.ones((8, 8)).tolist()
+    n = len(LAYOUT_WEIGHTS)
+    ahp['matrix'] = np.ones((n, n)).tolist()
     for i, j in [(0, 1), (1, 2), (2, 0)]:
         ahp['matrix'][i][j], ahp['matrix'][j][i] = 9, 1/9
     ahp['consistent'] = True
@@ -107,7 +113,7 @@ def test_robustness_uses_and_reports_ahp_center(client):
         'ahp_assessment': assessment(), 'n_samples': 50})
     assert response.status_code == 200, response.get_json()
     data = response.get_json()
-    assert data['base_weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(9/16)
+    assert data['base_weights'][list(LAYOUT_WEIGHTS)[0]] == pytest.approx(_first_criterion_expected_weight())
     assert data['ahp_assessment']['author'] == assessment()['author']
     assert data['alternatives'][0]['win_rate_pct'] == 100
 

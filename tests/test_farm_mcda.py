@@ -249,9 +249,9 @@ class FarmScientificModelTests(unittest.TestCase):
 
 
 class LayoutTopsisTests(unittest.TestCase):
-    def test_each_of_eight_criteria_can_drive_selection(self):
+    def test_each_of_seven_criteria_can_drive_selection(self):
         from core.multicriteria import LAYOUT_DIRECTION
-        self.assertEqual(len(LAYOUT_WEIGHTS), 8)
+        self.assertEqual(len(LAYOUT_WEIGHTS), 7)
         for criterion in LAYOUT_WEIGHTS:
             with self.subTest(criterion=criterion):
                 a = self.alternative('a', 1.0)

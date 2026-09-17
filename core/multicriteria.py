@@ -164,14 +164,45 @@ LAYOUT_WEIGHTS = {
     # (0.22-0.63), lejos de los ±1.0000 probados en el bloque económico. No
     # cambia esta matriz (no había penalización que retirar); sigue
     # pendiente repetir la verificación en otros sitios del estudio.
-    'cp_effective_full_series': 0.1041868085680245,
-    'hours_near_cpmax': 0.10960883502133105,
-    'factor_capacidad': 0.2137956435893556,
-    'aep_p90_mwh': 0.19329532545925715,
-    'van_usd': 0.10960883502133101,
-    'lcoe_usd_kwh': 0.12159368182163764,
-    'capex_usd_per_installed_kw': 0.10418680856802454,
-    'discounted_payback_years': 0.04372406195103838,
+    #
+    # 2026-09-17: se retira `discounted_payback_years` de los pesos (baja a
+    # LAYOUT_AUDIT_ONLY, se sigue calculando y mostrando). Resuelve la
+    # redundancia ρ=±1.0000 con LCOE documentada desde el 2026-09-13 y nunca
+    # corregida (ver docs/ahp-topsis.md §6, que ya recomendaba esta acción).
+    #
+    # Primera propuesta (descartada el mismo día): quitar la fila/columna de
+    # recuperación descontada de la matriz de 8x8 ya publicada y recalcular
+    # sin juicios nuevos (λmax=7.0503, CR=0.0064). El investigador la
+    # reemplazó de inmediato por su propio juicio (ver siguiente párrafo) —
+    # "que sea el más citado [LCOE] no significa que sea el mejor".
+    #
+    # Juicio final del investigador (2026-09-17): ranking explícito 1º-7º de
+    # los 7 criterios, dado directamente por el investigador (no derivado de
+    # conteo de citas ni de la matriz previa): 1º horas cerca de Cp máximo,
+    # 2º VAN bruto, 3º AEP P90 bruto, 4º CAPEX/kW, 5º factor de capacidad,
+    # 6º Cp efectivo de la serie completa, 7º (menos importante) LCOE. Un
+    # ranking ordinal no trae información de magnitud (cuánto más importante
+    # es el 1º que el 2º) — se asumió una escala de "nivel" lineal simple
+    # (nivel = 8 − posición del ranking, de 7 a 1) para poder construir la
+    # matriz de comparaciones por pares (razón de niveles, redondeada al
+    # valor más cercano de la escala 1-9 de Saaty, mismo método que el
+    # expediente de 28 comparaciones de la "Tercera actividad"). Esta
+    # linealidad es un supuesto simplificador expuesto aquí explícitamente,
+    # no un dato del investigador — si algún salto entre lugares del ranking
+    # es en realidad mucho mayor o menor que otro, debe ajustarse la matriz
+    # (ver docs/ahp-topsis.md §6 "Quinta actividad"). Resultado de
+    # `core.ahp.calculate_ahp`: λmax=7.08415, CI=0.01403, RI=1.32 (n=7),
+    # CR=0.0106 (‹0.10, consistente). Bloque técnico 60.8% / económico 39.2%
+    # — LCOE (7º/7, el criterio con más citas en §1) queda con el peso más
+    # bajo del set por decisión explícita del investigador, no de la
+    # literatura: "que sea el más citado no significa que sea el mejor".
+    'hours_near_cpmax': 0.2311314876969732,
+    'van_usd': 0.2046550499137324,
+    'aep_p90_mwh': 0.18810285560539022,
+    'capex_usd_per_installed_kw': 0.15156273227622008,
+    'factor_capacidad': 0.1072896466943155,
+    'cp_effective_full_series': 0.08125790256137676,
+    'lcoe_usd_kwh': 0.03600032525199196,
 }
 
 # These values remain available in the alternative audit, but are no longer
@@ -187,6 +218,7 @@ LAYOUT_AUDIT_ONLY = (
     'opex_lifetime_usd', 'iec_suitability_score', 'aep_uncertainty_pct',
     'curtailment_loss_pct', 'civil_complexity_index',
     'roi', 'irr', 'payback_years', 'benefit_cost_ratio',
+    'discounted_payback_years',
 )
 
 LAYOUT_DIRECTION = {
