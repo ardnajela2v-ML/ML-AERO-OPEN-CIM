@@ -47,9 +47,7 @@
     </button>
     <button class="nav-btn" data-module="mcp">MCP Lab</button>
     <button class="nav-btn active" data-module="resumen">Recurso Eólico</button>
-    <button class="nav-btn" data-module="park-config">Configuración del parque</button>
     <button class="nav-btn" data-module="kriging">Diseño y optimización del parque eólico</button>
-    <button class="nav-btn" data-module="parque" style="display:none" hidden>Parque</button>
     <button class="nav-btn" data-module="techno">Evaluación Tecnoeconómica</button>
     <button class="nav-btn" data-module="mapa" style="display:none" hidden>Mapa & Kriging</button>
     <button class="nav-btn" data-module="hybrid" style="display:none" hidden>Sistema Híbrido</button>
@@ -691,119 +689,6 @@
 
 </section>
 
-<!-- ╔════════════ CENTRO DE CONFIGURACIÓN DEL PARQUE ════════════╗ -->
-<section class="module" id="mod-park-config">
-  <div class="module-header">
-    <h1 class="module-title">Centro de configuración del parque eólico</h1>
-    <p class="module-desc">Define el esquema comercial, los archivos de demanda y precios, y los valores base financieros del proyecto.</p>
-  </div>
-
-  <!-- ═══ TAB: CONFIGURACIÓN DEL PROYECTO ══════════════════════════════════ -->
-  <div id="park-project-panel" class="tab-content active">
-    <div class="card card--accent mb-3">
-      <div class="card-header">
-        <span class="card-title">1 · Esquema comercial</span>
-        <span class="badge badge--info" id="park-config-revision">Configuración nueva</span>
-      </div>
-      <div class="card-body">
-        <div style="display:grid;grid-template-columns:minmax(260px,1fr) minmax(360px,2fr);gap:16px;align-items:start">
-          <div class="form-row" style="margin:0">
-            <label class="form-label" for="park-commercial-mode">Modo de comercialización</label>
-            <select class="form-select" id="park-commercial-mode">
-              <option value="total_sale" selected>Venta total</option>
-              <option value="self_consumption">Autoconsumo</option>
-              <option value="self_consumption_surplus">Autoconsumo con venta de excedentes</option>
-            </select>
-          </div>
-          <div id="park-demand-series-block" hidden style="display:none;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface-2)">
-            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px">
-              <strong style="font-size:.82rem">Serie histórica de demanda</strong>
-              <span class="cbadge r">OBLIGATORIA</span>
-            </div>
-            <div id="park-demand-file-slot"></div>
-          </div>
-        </div>
-        <input id="park-demand-source" type="hidden" value="none">
-        <input id="park-annual-demand" type="hidden" value="0">
-
-        <div class="form-grid-4 mt-2">
-          <div>
-            <label class="form-label" for="park-sale-scheme">Liquidación de energía vendida</label>
-            <select class="form-select" id="park-sale-scheme">
-              <option value="spot_pml" selected>Mercado · PML nodal</option>
-              <option value="ppa">PPA / contrato bilateral</option>
-              <option value="mixed">Mixto · PPA + PML</option>
-            </select>
-          </div>
-          <div>
-            <label class="form-label" for="park-pml-node">NodoP / zona de carga</label>
-            <input class="form-input" id="park-pml-node" type="text" placeholder="Pendiente de seleccionar nodo CENACE">
-          </div>
-        </div>
-        <div id="park-commercial-note" class="features-summary mt-2"></div>
-      </div>
-    </div>
-
-    <div class="card card--accent mb-3">
-      <div class="card-header">
-        <span class="card-title">2 · Parámetros comerciales y financieros</span>
-        <span class="badge badge--warn" id="park-readiness-badge">Pendiente</span>
-      </div>
-      <div class="card-body">
-        <div id="park-pml-file-slot" style="margin-bottom:16px"></div>
-        <div class="form-grid-4">
-          <div>
-            <label class="form-label" for="park-base-fx">Tipo de cambio base (MXN/USD)</label>
-            <input class="form-input" id="park-base-fx" type="number" min="0.01" step="0.01" placeholder="Ej. 20.00" inputmode="decimal">
-          </div>
-          <div>
-            <label class="form-label" for="park-base-interest">Tasa de interés anual base (%)</label>
-            <input class="form-input" id="park-base-interest" type="number" min="0" step="0.01" placeholder="Ej. 10.00" inputmode="decimal">
-          </div>
-          <div>
-            <label class="form-label" for="park-project-horizon">Vida de evaluación (años)</label>
-            <input class="form-input" id="park-project-horizon" type="number" min="5" max="40" value="25">
-          </div>
-          <div>
-            <label class="form-label" for="park-reporting-currency">Moneda de reporte</label>
-            <select class="form-select" id="park-reporting-currency">
-              <option value="USD" selected>USD · dólar</option>
-              <option value="MXN">MXN · peso mexicano</option>
-            </select>
-          </div>
-        </div>
-        <div class="mt-2" style="display:flex;justify-content:flex-end">
-          <button class="btn-primary" id="btn-save-park-configuration" type="button">Guardar configuración</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><span class="card-title">3 · Estado de la configuración</span></div>
-        <div class="card-body"><div id="park-market-readiness" class="val-metric-list"></div></div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">Criterio regulatorio y de mercado</span></div>
-        <div class="card-body" style="line-height:1.55">
-          <p><strong>Venta total:</strong> toda la generación neta se valora con el archivo de precios cargado.</p>
-          <p class="text-muted mt-2" style="font-size:.75rem"><strong>Autoconsumo:</strong> requiere una serie histórica de demanda para comparar simultáneamente consumo y generación.</p>
-          <p class="text-muted mt-2" style="font-size:.75rem">El tipo de cambio y la tasa son valores base manuales de esta revisión del proyecto.</p>
-        </div>
-      </div>
-    </div>
-
-    <div class="card card--accent mt-3">
-      <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
-        <div><strong id="park-config-status-title">Configuración incompleta</strong><div class="text-muted" id="park-config-status-text">Carga el archivo de precios y captura el tipo de cambio y la tasa base.</div></div>
-        <button class="btn-primary" id="btn-park-continue-design" type="button" disabled>Continuar a Diseño y optimización →</button>
-      </div>
-    </div>
-  </div>
-
-
-</section>
-
 <!-- ╔══════════════════ ENERGY LAB ══════════════════╗ -->
 <section class="module" id="mod-energy">
   <div class="module-header">
@@ -1241,16 +1126,16 @@
   </div>
 
   <!-- Sub-tabs internas -->
-  <div class="resumen-tabs" role="tablist">
-    <button class="resumen-tab is-active" data-rtab="recurso" type="button">① Recurso</button>
-    <button class="resumen-tab" data-rtab="viento" type="button">② Viento</button>
-    <button class="resumen-tab" data-rtab="avanzado" type="button">③ Avanzado</button>
-    <span class="resumen-tabs__sep"></span>
+  <div class="subtabs" role="tablist">
+    <button class="subtab is-active" data-subtab="recurso" type="button">① Recurso</button>
+    <button class="subtab" data-subtab="viento" type="button">② Viento</button>
+    <button class="subtab" data-subtab="avanzado" type="button">③ Avanzado</button>
+    <span class="subtabs__sep"></span>
     <button class="btn-secondary resumen-recalc" id="btn-resumen-recalc" type="button" title="Re-ejecutar las tres etapas con los datos cargados">↻ Re-calcular</button>
   </div>
 
   <!-- ═════════════ Sub-sección RECURSO (ex Resumen) ═════════════ -->
-  <div class="resumen-section is-active" data-rsect="recurso">
+  <div class="subsection is-active" data-subtab="recurso">
   <div class="sh">
     <div>
       <div class="st">Resumen del Sitio</div>
@@ -1315,7 +1200,7 @@
   </div><!-- /sub-sección recurso -->
 
   <!-- ═════════════ Sub-sección VIENTO ═════════════ -->
-  <div class="resumen-section" data-rsect="viento">
+  <div class="subsection" data-subtab="viento">
   <div class="sh">
     <div>
       <div class="st">Análisis de Viento</div>
@@ -1405,7 +1290,7 @@
   </div><!-- /sub-sección viento -->
 
   <!-- ═════════════ Sub-sección AVANZADO ═════════════ -->
-  <div class="resumen-section" data-rsect="avanzado">
+  <div class="subsection" data-subtab="avanzado">
   <div class="module-header">
     <h2 class="module-title" style="font-size:1.15rem">Recurso Avanzado</h2>
     <p class="module-desc">Turbulencia CERTE medida a 10 minutos · Extensión histórica modelada · Cizalladura · Sectores · Extremos</p>
@@ -1564,9 +1449,17 @@
 <section class="module" id="mod-kriging">
   <div class="module-header">
     <h1 class="module-title">Diseño y optimización del parque eólico</h1>
-    <p class="module-desc">Kriging clásico, selección multicriterio y diseño optimizado del parque eólico con layout, estelas y AEP.</p>
+    <p class="module-desc">Configuración comercial y financiera, interpolación geoespacial (Kriging), selección de aerogenerador óptimo (TOPSIS) y diseño del parque con layout, estelas y AEP.</p>
   </div>
 
+  <div class="subtabs" role="tablist">
+    <button class="subtab is-active" data-subtab="parametros" type="button">① Parámetros y configuración</button>
+    <button class="subtab" data-subtab="geo" type="button">② Interpolación geoespacial · micrositing</button>
+    <button class="subtab" data-subtab="topsis" type="button">③ Selección de aerogenerador óptimo para el sitio</button>
+    <button class="subtab" data-subtab="parque" type="button">④ Parque</button>
+  </div>
+
+  <div class="subsection is-active" data-subtab="parametros">
   <div class="card">
     <div class="card-header">
       <span class="card-title">Parámetros</span>
@@ -1597,14 +1490,6 @@
             <option value="2021">2021</option>
             <option value="2022">2022</option>
           </select></div>
-        <div><label class="form-label">Demanda (MWh/año)</label>
-          <input class="form-input" type="number" id="krig3-demand" value="1000" step="100"></div>
-        <div><label class="form-label">Tasa (%)</label>
-          <input class="form-input" type="number" id="krig3-tasa" value="8" step="0.5"></div>
-        <div><label class="form-label">Precio configurado (USD/kWh)</label>
-          <input class="form-input" type="number" id="krig3-price" step="0.0001" placeholder="Desde PML cargado" readonly></div>
-        <div><label class="form-label">USD→MXN</label>
-          <input class="form-input" type="number" id="krig3-fx" value="20" step="0.5"></div>
         <div><label class="form-label">Modelo</label>
           <select class="form-select" id="krig3-model">
             <option value="exponential" selected>Exponencial</option>
@@ -1618,6 +1503,16 @@
           </select></div>
         <div><label class="form-label">Zoom tras Kriging (km)</label>
           <input class="form-input" type="number" id="krig3-zoom-km" value="100" step="25" min="25"></div>
+      </div>
+      <!-- Demanda/tasa/precio/FX ya no se capturan aquí — son los mismos
+           valores de la sub-pestaña "Configuración del parque" (mismo tab),
+           sincronizados por krig3PullProjectParams(). Se conservan ocultos
+           para no tocar el resto del código que los lee por ID. -->
+      <div style="display:none">
+        <input type="number" id="krig3-demand" value="1000" step="100">
+        <input type="number" id="krig3-tasa" value="8" step="0.5">
+        <input type="number" id="krig3-price" step="0.0001" readonly>
+        <input type="number" id="krig3-fx" value="20" step="0.5">
       </div>
       <p class="text-muted mt-2" style="font-size:.72rem">
         CAPEX de diseño: benchmark IRENA onshore 2024 — 1,041 USD/kW instalado;
@@ -1669,6 +1564,109 @@
     </div>
   </div>
 
+    <!-- ═══ Configuración del parque (fusionada aquí, antes módulo aparte) ═══ -->
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">1 · Esquema comercial</span>
+        <span class="badge badge--info" id="park-config-revision">Configuración nueva</span>
+      </div>
+      <div class="card-body">
+        <div style="display:grid;grid-template-columns:minmax(260px,1fr) minmax(360px,2fr);gap:16px;align-items:start">
+          <div class="form-row" style="margin:0">
+            <label class="form-label" for="park-commercial-mode">Modo de comercialización</label>
+            <select class="form-select" id="park-commercial-mode">
+              <option value="total_sale" selected>Venta total</option>
+              <option value="self_consumption">Autoconsumo</option>
+              <option value="self_consumption_surplus">Autoconsumo con venta de excedentes</option>
+            </select>
+          </div>
+          <div id="park-demand-series-block" hidden style="display:none;border:1px solid var(--border);border-radius:10px;padding:12px;background:var(--surface-2)">
+            <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:8px">
+              <strong style="font-size:.82rem">Serie histórica de demanda</strong>
+              <span class="cbadge r">OBLIGATORIA</span>
+            </div>
+            <div id="park-demand-file-slot"></div>
+          </div>
+        </div>
+        <input id="park-demand-source" type="hidden" value="none">
+        <input id="park-annual-demand" type="hidden" value="0">
+
+        <div class="form-grid-4 mt-2">
+          <div>
+            <label class="form-label" for="park-sale-scheme">Liquidación de energía vendida</label>
+            <select class="form-select" id="park-sale-scheme">
+              <option value="spot_pml" selected>Mercado · PML nodal</option>
+              <option value="ppa">PPA / contrato bilateral</option>
+              <option value="mixed">Mixto · PPA + PML</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" for="park-pml-node">NodoP / zona de carga</label>
+            <input class="form-input" id="park-pml-node" type="text" placeholder="Pendiente de seleccionar nodo CENACE">
+          </div>
+        </div>
+        <div id="park-commercial-note" class="features-summary mt-2"></div>
+      </div>
+    </div>
+
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">2 · Parámetros comerciales y financieros</span>
+        <span class="badge badge--warn" id="park-readiness-badge">Pendiente</span>
+      </div>
+      <div class="card-body">
+        <div id="park-pml-file-slot" style="margin-bottom:16px"></div>
+        <div class="form-grid-4">
+          <div>
+            <label class="form-label" for="park-base-fx">Tipo de cambio base (MXN/USD)</label>
+            <input class="form-input" id="park-base-fx" type="number" min="0.01" step="0.01" placeholder="Ej. 20.00" inputmode="decimal">
+          </div>
+          <div>
+            <label class="form-label" for="park-base-interest">Tasa de interés anual base (%)</label>
+            <input class="form-input" id="park-base-interest" type="number" min="0" step="0.01" placeholder="Ej. 10.00" inputmode="decimal">
+          </div>
+          <div>
+            <label class="form-label" for="park-project-horizon">Vida de evaluación (años)</label>
+            <input class="form-input" id="park-project-horizon" type="number" min="5" max="40" value="25">
+          </div>
+          <div>
+            <label class="form-label" for="park-reporting-currency">Moneda de reporte</label>
+            <select class="form-select" id="park-reporting-currency">
+              <option value="USD" selected>USD · dólar</option>
+              <option value="MXN">MXN · peso mexicano</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2" style="display:flex;justify-content:flex-end">
+          <button class="btn-primary" id="btn-save-park-configuration" type="button">Guardar configuración</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-header"><span class="card-title">3 · Estado de la configuración</span></div>
+        <div class="card-body"><div id="park-market-readiness" class="val-metric-list"></div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Criterio regulatorio y de mercado</span></div>
+        <div class="card-body" style="line-height:1.55">
+          <p><strong>Venta total:</strong> toda la generación neta se valora con el archivo de precios cargado.</p>
+          <p class="text-muted mt-2" style="font-size:.75rem"><strong>Autoconsumo:</strong> requiere una serie histórica de demanda para comparar simultáneamente consumo y generación.</p>
+          <p class="text-muted mt-2" style="font-size:.75rem">El tipo de cambio y la tasa son valores base manuales de esta revisión del proyecto.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card card--accent mt-3">
+      <div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+        <div><strong id="park-config-status-title">Configuración incompleta</strong><div class="text-muted" id="park-config-status-text">Carga el archivo de precios y captura el tipo de cambio y la tasa base.</div></div>
+        <button class="btn-primary" id="btn-park-continue-design" type="button" disabled>Continuar a Diseño y optimización →</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="subsection" data-subtab="geo">
   <!-- Mapa único con selector de capa -->
   <div class="card mt-3">
     <div class="card-header">
@@ -1933,6 +1931,9 @@
     </div>
   </div>
 
+  </div>
+
+  <div class="subsection" data-subtab="topsis">
   <!-- ═══════════ ANÁLISIS MULTI-SITIO × TURBINA + RANKING MULTICRITERIO ═══════════ -->
   <div class="card mt-3">
     <div class="card-header">
@@ -2160,10 +2161,9 @@
       </div>
     </div>
   </div>
-</section>
+  </div>
 
-<!-- ╔══════════════════ PARQUE EÓLICO ══════════════════╗ -->
-<section class="module" id="mod-parque">
+  <div class="subsection" data-subtab="parque">
   <div class="module-header">
     <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
     <p class="module-desc">
@@ -2445,8 +2445,8 @@
       </table>
     </div>
   </div>
+  </div>
 </section>
-
 <!-- ╔══════════════════ MAPA & GRILLA DE RECURSO ══════════════════╗ -->
 <section class="module" id="mod-mapa">
   <div class="module-header">

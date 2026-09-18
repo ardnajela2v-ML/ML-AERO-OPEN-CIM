@@ -158,6 +158,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindWind();
   bindAdvanced();
   bindResumenUnified();
+  bindKrigingSubtabs();
   bindHybrid();
   bindTechno();
   bindExport();
@@ -522,13 +523,10 @@ function bindProjectFiles() {
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function bindNavigation() {
   const moduleGroups = {
-    kriging: ['kriging', 'parque'],
-    parque: ['kriging', 'parque'],
     validation: ['validation', 'export'],
     export: ['validation', 'export']
   };
   const primaryModule = {
-    parque: 'kriging',
     export: 'validation'
   };
   document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -879,7 +877,7 @@ function bindParkConfiguration() {
       toast('Completa el archivo de precios, tipo de cambio y tasa; en autoconsumo también la serie de demanda.', 'warn');
       return;
     }
-    document.querySelector('.nav-btn[data-module="kriging"]')?.click();
+    krigingGoToSubtab('geo');
   });
   updateParkCommercialControls();
   renderParkConfigurationReadiness();
@@ -10447,9 +10445,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('parque-wake-dir')?.addEventListener('change', () => {
     if (PARQUE.wakeVisible) parqueRenderWakeCones();
   });
-  document.querySelectorAll('.nav-btn[data-module="parque"]').forEach(b => {
-    b.addEventListener('click', () => requestAnimationFrame(parqueActivate));
-  });
 });
 
 
@@ -13070,9 +13065,8 @@ async function qdStartCalc() {
     equity_discount_rate_pct: QD.params.equityRate,
   };
 
-  // Navigate to Parque and run
-  const parqueBtn = document.querySelector('.nav-btn[data-module="parque"]');
-  if (parqueBtn) parqueBtn.click();
+  // Navigate to Parque (ahora sub-pestaña de Diseño y optimización) and run
+  krigingGoToSubtab('parque');
 
   WP._qdPipelineReady = true;
   setTimeout(async () => {
@@ -13645,7 +13639,7 @@ function resetSimulationState() {
   resetPipelineSteps?.();
 
   // 7) Sub-tab por defecto = Recurso
-  switchResumenTab?.('recurso');
+  switchSubTab?.('mod-resumen', 'recurso');
 
   setStatus?.('Globe reiniciado — selecciona un área y decide si existe una estación real.');
 }
@@ -13861,22 +13855,55 @@ function leafletClearAll() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+//  DISEÑO Y OPTIMIZACIÓN DEL PARQUE — módulo unificado (Parámetros y
+//  configuración + Interpolación geoespacial + Selección TOPSIS + Parque)
+// ════════════════════════════════════════════════════════════════════════════
+function bindKrigingSubtabs() {
+  document.querySelectorAll('#mod-kriging .subtab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      switchSubTab('mod-kriging', tab.dataset.subtab);
+      // El mapa de Parque necesita invalidateSize() al volverse visible
+      // (Leaflet no mide un contenedor oculto) — parqueActivate() ya
+      // maneja esto de forma idempotente (parqueInitMap la reutiliza si
+      // ya existe) y refresca turbinas/ranking/demanda por si cambiaron
+      // en otra pestaña mientras tanto.
+      if (tab.dataset.subtab === 'parque' && typeof parqueActivate === 'function') {
+        requestAnimationFrame(parqueActivate);
+      }
+    });
+  });
+}
+
+/** Cambia a la pestaña `name` de Diseño y optimización del parque,
+ * activando primero el módulo si hace falta (equivalente a lo que antes
+ * hacía navegar a los módulos separados "Configuración del parque" /
+ * "Parque"). */
+function krigingGoToSubtab(name) {
+  const btn = document.querySelector('.nav-btn[data-module="kriging"]');
+  if (btn && !btn.classList.contains('active')) btn.click();
+  switchSubTab('mod-kriging', name);
+  if (name === 'parque' && typeof parqueActivate === 'function') {
+    requestAnimationFrame(parqueActivate);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 //  RESUMEN EÓLICO — módulo unificado (Recurso + Viento + Avanzado)
 // ════════════════════════════════════════════════════════════════════════════
 function bindResumenUnified() {
   // Sub-tabs
-  document.querySelectorAll('.resumen-tab').forEach(tab => {
-    tab.addEventListener('click', () => switchResumenTab(tab.dataset.rtab));
+  document.querySelectorAll('#mod-resumen .subtab').forEach(tab => {
+    tab.addEventListener('click', () => switchSubTab('mod-resumen', tab.dataset.subtab));
   });
   // Re-calcular
   document.getElementById('btn-resumen-recalc')?.addEventListener('click', () => {
     if (!WP.sessionId) { toast('No hay sesión activa', 'warning'); return; }
     runResumenPipeline();
   });
-  // CTA → Centro de modelaje
+  // CTA → Centro de modelaje (ahora la sub-pestaña "Parámetros y configuración"
+  // de Diseño y optimización del parque)
   document.getElementById('btn-go-to-park-config')?.addEventListener('click', () => {
-    const parkConfigBtn = document.querySelector('.nav-btn[data-module="park-config"]');
-    parkConfigBtn?.click();
+    krigingGoToSubtab('parametros');
   });
   // Configuración del parque concentra únicamente los dos archivos requeridos:
   // demanda (cuando hay autoconsumo) y PML. FX y tasa son campos manuales.
@@ -14035,12 +14062,17 @@ function krig3PullProjectParams() {
   });
 }
 
-function switchResumenTab(name) {
-  document.querySelectorAll('.resumen-tab').forEach(t => {
-    t.classList.toggle('is-active', t.dataset.rtab === name);
+/** Sub-pestañas genéricas (usado por Recurso Eólico y Diseño y optimización
+ * del parque) — escopado a moduleId para que dos módulos con sus propias
+ * sub-pestañas no se pisen entre sí aunque compartan las mismas clases. */
+function switchSubTab(moduleId, name) {
+  const root = document.getElementById(moduleId);
+  if (!root) return;
+  root.querySelectorAll('.subtab').forEach(t => {
+    t.classList.toggle('is-active', t.dataset.subtab === name);
   });
-  document.querySelectorAll('.resumen-section').forEach(s => {
-    s.classList.toggle('is-active', s.dataset.rsect === name);
+  root.querySelectorAll('.subsection').forEach(s => {
+    s.classList.toggle('is-active', s.dataset.subtab === name);
   });
 }
 
@@ -14087,7 +14119,7 @@ async function runResumenPipeline() {
   // Asegurar que el módulo Resumen esté visible
   const btn = document.querySelector('.nav-btn[data-module="resumen"]');
   if (btn && !btn.classList.contains('active')) btn.click();
-  switchResumenTab('recurso');
+  switchSubTab('mod-resumen', 'recurso');
 }
 
 function resetPipelineSteps() {

@@ -2228,8 +2228,8 @@ body.light .resumen-verdict__cta {
   border-color: rgba(15,95,168,0.3);
 }
 
-/* Sub-tabs */
-.resumen-tabs {
+/* Sub-tabs (genérico — usado por Recurso Eólico y Diseño y optimización del parque) */
+.subtabs {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2237,7 +2237,7 @@ body.light .resumen-verdict__cta {
   border-bottom: 1px solid var(--border);
   padding-bottom: 0;
 }
-.resumen-tab {
+.subtab {
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -2249,21 +2249,21 @@ body.light .resumen-verdict__cta {
   cursor: pointer;
   transition: all 0.15s;
 }
-.resumen-tab:hover { color: var(--text-primary); }
-.resumen-tab.is-active {
+.subtab:hover { color: var(--text-primary); }
+.subtab.is-active {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
-.resumen-tabs__sep { flex: 1; }
+.subtabs__sep { flex: 1; }
 .resumen-recalc {
   font-size: 11.5px;
   padding: 6px 12px;
 }
 
 /* Sub-secciones */
-.resumen-section { display: none; }
-.resumen-section.is-active { display: block; animation: resumenFadeIn 0.25s ease; }
-@keyframes resumenFadeIn {
+.subsection { display: none; }
+.subsection.is-active { display: block; animation: subtabFadeIn 0.25s ease; }
+@keyframes subtabFadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
