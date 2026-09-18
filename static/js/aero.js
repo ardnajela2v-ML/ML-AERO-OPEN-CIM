@@ -152,13 +152,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindThemeToggle();
   bindDataHub();
   bindParkConfiguration();
-  bindEnergyLab();
   bindOverview();
   bindWind();
   bindAdvanced();
   bindResumenUnified();
   bindKrigingSubtabs();
-  bindHybrid();
   bindTechno();
   bindExport();
   bindMarketDataHub();
@@ -252,12 +250,11 @@ function collectProjectClientState() {
       nav: document.querySelector('.nav-btn.active')?.dataset.module, collapsed: GLOBE.collapsed },
     wp: projectJsonClone({
       windStats: WP.windStats, technoResult: WP.technoResult,
-      advancedResult: WP.advancedResult, hybridResult: WP.hybridResult,
+      advancedResult: WP.advancedResult,
       qcResult: WP.qcResult, mcpResult: WP.mcpResult,
-      energySimulation: WP.energySimulation, marketResults: WP.marketResults,
-      farmResult: WP.farmResult, farmLayout: WP.farmLayout, turbineComparison: WP.turbineComparison,
+      marketResults: WP.marketResults,
       technoInputsInitialized: WP.technoInputsInitialized, technoInputsDirty: WP.technoInputsDirty,
-      energyResult: WP.energyResult, technoActiveScenario: WP.technoActiveScenario,
+      technoActiveScenario: WP.technoActiveScenario,
       technoScenarios: WP.technoScenarios, levParams: WP.levParams,
       technoFinalLoss: WP.technoFinalLoss, referenceHeight: WP.referenceHeight,
       referenceMethod: WP.referenceMethod, mcpStudy: WP.mcpStudy,
@@ -294,8 +291,6 @@ function collectProjectClientState() {
     }),
     parque: projectJsonClone({ result: PARQUE.result, optResult: PARQUE.optResult,
       wakeProfile: PARQUE.wakeProfile, layerKey: PARQUE.layerKey }),
-    mapa: projectJsonClone({ result: MAPA.result, sites: MAPA.sites, grid: MAPA.grid,
-      var: MAPA.var, mode: MAPA.mode, areaBounds: MAPA.areaBounds, parkPoints: MAPA.parkPoints }),
     risk: projectJsonClone(_riskData),
     quickDesign: projectJsonClone({ station: QD.station, refHeight: QD.refHeight, results: QD.results, params: QD.params }),
     globe: projectJsonClone({
@@ -394,7 +389,6 @@ async function applyProjectClientState(state) {
     } catch (_) {}
   }
   if (state.parque) Object.assign(PARQUE, state.parque);
-  if (state.mapa) Object.assign(MAPA, state.mapa);
   _riskData = state.risk || null;
   Object.assign(QD, state.quickDesign || {}, { active: false });
   if (state.globe) {
@@ -523,11 +517,8 @@ function bindProjectFiles() {
 function bindNavigation() {
   const moduleGroups = {
     validation: ['validation', 'export'],
-    export: ['validation', 'export']
   };
-  const primaryModule = {
-    export: 'validation'
-  };
+  const primaryModule = {};
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const mod = btn.dataset.module;
@@ -1050,71 +1041,7 @@ function renderParkConfigurationReadiness() {
     : 'Carga el archivo de precios y captura tipo de cambio y tasa; en autoconsumo también carga la demanda.';
 }
 
-function bindEnergyLab() {
-  // Tab switching
-  document.querySelectorAll('#mod-energy .tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const tabName = btn.dataset.tab;
-      document.querySelectorAll('#mod-energy .tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('#mod-energy .tab-content').forEach(c => c.classList.remove('active'));
-      btn.classList.add('active');
-      document.getElementById(`${tabName}-tab`).classList.add('active');
-    });
-  });
-
-  // Single turbine functionality
-  document.getElementById('turbine-builtin').addEventListener('change', e => {
-    const manual = document.getElementById('turbine-manual-form');
-    manual.style.opacity = e.target.value ? '0.4' : '1';
-  });
-  document.getElementById('btn-run-energy').addEventListener('click', runEnergy);
-  document.getElementById('btn-compare-turbines').addEventListener('click', compareTurbines);
-
-  // Wind farm functionality
-  bindFarmLayout();
-}
-
-async function runEnergy() {
-  const builtin = document.getElementById('turbine-builtin').value;
-  const turbineCfg = builtin ? { builtin_model: builtin } : {
-    name: document.getElementById('t-name').value,
-    rated_power_kw: parseFloat(document.getElementById('t-rated').value),
-    cut_in: parseFloat(document.getElementById('t-cutin').value),
-    rated_speed: parseFloat(document.getElementById('t-rated-spd').value),
-    cut_out: parseFloat(document.getElementById('t-cutout').value),
-    rotor_diameter_m: parseFloat(document.getElementById('t-rotor').value),
-    hub_height_m: parseFloat(document.getElementById('t-hub').value),
-  };
-
-  const simCfg = {
-    n_turbines: parseInt(document.getElementById('t-n').value),
-    availability: parseFloat(document.getElementById('availability').value) / 100,
-    electrical_losses: parseFloat(document.getElementById('elec-losses').value) / 100,
-    wake_losses: parseFloat(document.getElementById('wake-losses').value) / 100,
-    ws_height_m: wsH(),
-    altitude_m: parseFloat(document.getElementById('site-altitude').value) || null,
-    extrapolation: document.getElementById('extrapolation').value,
-  };
-
-  setStatus('Ejecutando simulación energética…');
-  try {
-    const r = await api('/api/energy/compute', 'POST', {
-      session_id: WP.sessionId, data_source: WP.activeDataSource,
-      turbine: turbineCfg, simulation: simCfg
-    });
-
-    WP.energyResult = r;
-    WP.energySimulation = simCfg;
-    renderSavedEnergy(r, simCfg);
-
-    toast('Simulación completada', 'success');
-    setStatus(`CF: ${r.summary.capacity_factor_pct}% | FLH: ${Math.round(r.summary.full_load_hours)} h | AEP P50: ${r.aep?.aep_p50_mwh?.toLocaleString()} MWh`);
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-    setStatus('Error en simulación energética.');
-  }
-}
-
+// ─── UTILIDADES DE GRÁFICOS COMPARTIDAS ────────────────────────────────────────
 /** Da estilo de "nube por frecuencia" a un scatter (ws, kW): agrupa los puntos
  * en celdas ws×potencia y pondera opacidad/radio por cuántas observaciones
  * cayeron en cada celda. La potencia sigue siendo f(ws) casi determinística
@@ -1139,369 +1066,6 @@ function densityStyledScatter(pts, color) {
     radius.push(1.3 + 2.6 * freq);
   });
   return { backgroundColor, borderColor, radius };
-}
-
-function renderPowerCurveChart(turbine, timeseries, nTurbines) {
-  destroyChart('power-curve');
-  if (!turbine) return;
-  const ctx = document.getElementById('power-curve-chart').getContext('2d');
-  const nominal = turbine.rated_power_kw;
-  const curvePts = turbine.curve_ws.map((ws, i) => ({ x: ws, y: turbine.curve_pw[i] }));
-  const maxCurveWs = turbine.curve_ws[turbine.curve_ws.length - 1] || 25;
-  // timeseries.power_kw es la potencia del PARQUE (turbina × n_turbinas); hay
-  // que llevarla a potencia por aerogenerador para compararla contra la curva.
-  const perTurbine = Number(nTurbines) > 0 ? Number(nTurbines) : 1;
-  const obsPts = [];
-  const wsArr = timeseries?.ws_hub || [];
-  const pArr  = timeseries?.power_kw || [];
-  for (let i = 0; i < Math.min(wsArr.length, pArr.length); i++) {
-    if (Number.isFinite(wsArr[i]) && Number.isFinite(pArr[i])) obsPts.push({ x: wsArr[i], y: pArr[i] / perTurbine });
-  }
-  const maxWs = obsPts.length ? Math.max(maxCurveWs, ...obsPts.map(p => p.x)) : maxCurveWs;
-  const obsStyle = densityStyledScatter(obsPts, '#9F7AEA');
-  WP.charts['power-curve'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      datasets: [
-        ...(obsPts.length ? [{
-          type: 'scatter', label: 'Observaciones del sitio (densidad)',
-          data: obsPts, order: 2,
-          backgroundColor: obsStyle.backgroundColor, borderColor: obsStyle.borderColor,
-          pointRadius: obsStyle.radius, pointHoverRadius: 5, showLine: false,
-        }] : []),
-        { label: turbine.name, data: curvePts, order: 0,
-          borderColor: acc(), backgroundColor: acc()+'20',
-          borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 },
-        ...(nominal ? [{ label: `Nominal ${nominal} kW`, order: 1,
-          data: [{ x: 0, y: nominal }, { x: maxWs, y: nominal }],
-          borderColor: gold()+'66', borderDash: [4,3], borderWidth: 1, pointRadius: 0, fill: false }] : [])
-      ]
-    },
-    options: { responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{labels:{font:{size:9},boxWidth:10}} },
-      scales:{
-        x:{type:'linear', grid:{color:gridColor()}, title:{display:true,text:'Velocidad (m/s)',font:{size:9}}, ticks:{font:{size:9}}},
-        y:{grid:{color:gridColor()}, title:{display:true,text:'Potencia (kW)',font:{size:9}}, ticks:{font:{size:9}}}
-      }
-    }
-  });
-}
-
-function renderMonthlyEnergyChart(monthly) {
-  destroyChart('monthly-energy');
-  if (!monthly) return;
-  const ctx = document.getElementById('monthly-energy-chart').getContext('2d');
-  // year-aware coloring like .bak
-  const yearColors = [acc(), acc3(), gold(), acc2()];
-  const yearMap = {}; let yi = 0;
-  const bgColors = (monthly.labels || []).map(m => {
-    const yr = String(m).split('-')[0];
-    if (!(yr in yearMap)) yearMap[yr] = yearColors[yi++ % yearColors.length];
-    return yearMap[yr] + 'cc';
-  });
-  WP.charts['monthly-energy'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: monthly.labels,
-      datasets: [{ label: 'Energía neta (MWh)', data: monthly.energy_mwh,
-        backgroundColor: bgColors, borderWidth: 0, borderRadius: 3 }]
-    },
-    options: { responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false} },
-      scales:{ x:{grid:{display:false}, ticks:{maxTicksLimit:18,font:{size:8},maxRotation:45}},
-               y:{grid:{color:gridColor()}, ticks:{font:{size:9}}} } }
-  });
-}
-
-function renderPowerTimeseries(ts) {
-  destroyChart('power-ts');
-  if (!ts) return;
-  const ctx = document.getElementById('power-ts-chart').getContext('2d');
-  WP.charts['power-ts'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: ts.labels,
-      datasets: [{ label: 'Potencia media diaria (kW)', data: ts.power_kw,
-        borderColor: acc3(), backgroundColor: acc3()+'18',
-        fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.3 }]
-    },
-    options: { responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{labels:{font:{size:9},boxWidth:10}} },
-      scales:{ x:{grid:{color:gridColor()}, ticks:{maxTicksLimit:12,font:{size:9}}},
-               y:{grid:{color:gridColor()}, min:0, ticks:{font:{size:9}}} } }
-  });
-}
-
-function populateTurbineFicha(turbine, summary, simCfg) {
-  const card  = document.getElementById('turbine-ficha-card');
-  const badge = document.getElementById('turbine-ficha-badge');
-  const tLeft = document.querySelector('#turbine-ficha-tbl-left tbody');
-  const tRight= document.querySelector('#turbine-ficha-tbl-right tbody');
-  if (!card || !tLeft || !tRight || !turbine) return;
-  card.style.display = '';
-  if (badge) badge.textContent = turbine.name || 'Aerogenerador';
-  const rowL = (k, v) => `<tr><td>${k}</td><td>${v ?? '—'}</td></tr>`;
-  tLeft.innerHTML = [
-    rowL('Nombre', turbine.name),
-    rowL('Potencia nominal', `${turbine.rated_power_kw?.toLocaleString()} kW`),
-    rowL('Diámetro rotor', `${turbine.rotor_diameter_m} m`),
-    rowL('Altura de buje', `${turbine.hub_height_m} m`),
-    rowL('Cut-in', `${turbine.cut_in_ms ?? turbine.cut_in} m/s`),
-    rowL('Cut-out', `${turbine.cut_out_ms ?? turbine.cut_out} m/s`),
-  ].join('');
-  tRight.innerHTML = [
-    rowL('Nº turbinas', simCfg?.n_turbines ?? 1),
-    rowL('Factor de capacidad', summary?.capacity_factor_pct ? summary.capacity_factor_pct + '%' : '—'),
-    rowL('FLH', summary?.full_load_hours ? Math.round(summary.full_load_hours).toLocaleString() + ' h' : '—'),
-    rowL('Energía bruta', summary?.energy_gross_mwh ? summary.energy_gross_mwh.toLocaleString() + ' MWh' : '—'),
-    rowL('Energía neta', summary?.energy_net_mwh ? summary.energy_net_mwh.toLocaleString() + ' MWh' : '—'),
-    rowL('Disponibilidad', simCfg?.availability != null ? (simCfg.availability*100).toFixed(0) + '%' : '—'),
-  ].join('');
-}
-
-function renderSensitivityChart(sensitivity) {
-  destroyChart('sensitivity');
-  if (!sensitivity.length) return;
-  const ctx = document.getElementById('sensitivity-chart').getContext('2d');
-  WP.charts['sensitivity'] = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels: sensitivity.map(s => s.assumption),
-      datasets: [{
-        label: 'Δ AEP (%)',
-        data: sensitivity.map(s => s.delta_pct),
-        backgroundColor: sensitivity.map(s => s.delta_pct >= 0 ? acc() + '50' : acc2() + '50'),
-        borderColor:     sensitivity.map(s => s.delta_pct >= 0 ? acc() : acc2()),
-        borderWidth: 1,
-      }]
-    },
-    options: {
-      indexAxis: 'y',
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { grid: { color: gridColor() }, title: { display: true, text: 'Δ AEP (%)' } },
-        y: { grid: { display: false }, ticks: { font: { size: 10 } } }
-      }
-    }
-  });
-}
-
-async function compareTurbines() {
-  setStatus('Comparando turbinas…');
-  try {
-    const r = await api('/api/energy/compare_turbines', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      ws_height_m: wsH(),
-    });
-
-    WP.turbineComparison = r;
-    renderSavedTurbineComparison(r);
-
-    toast('Comparación completada', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  }
-}
-
-// ─── WIND FARM LAYOUT ────────────────────────────────────────────────────────
-function bindFarmLayout() {
-  const canvas = document.getElementById('farm-layout-canvas');
-  const ctx = canvas.getContext('2d');
-  let turbines = [];
-  let scale = 1000; // meters per pixel
-  let offsetX = canvas.width / 2;
-  let offsetY = canvas.height / 2;
-  let selectedTurbine = null;
-  let isDragging = false;
-
-  // Scale control
-  document.getElementById('layout-scale').addEventListener('input', e => {
-    scale = parseInt(e.target.value);
-    document.getElementById('canvas-scale').textContent = `1:${scale}`;
-    drawLayout();
-  });
-
-  // Rotation control
-  document.getElementById('layout-rotation').addEventListener('input', e => {
-    const rotation = parseInt(e.target.value);
-    document.getElementById('rotation-value').textContent = `${rotation}°`;
-    // TODO: Implement rotation
-  });
-
-  // Add turbine button
-  document.getElementById('add-turbine-btn').addEventListener('click', () => {
-    const x = Math.random() * 2000 - 1000; // -1000 to 1000 meters
-    const y = Math.random() * 2000 - 1000;
-    turbines.push({ id: turbines.length, x, y });
-    drawLayout();
-    updateTurbinesTable();
-  });
-
-  // Clear layout
-  document.getElementById('clear-layout-btn').addEventListener('click', () => {
-    turbines = [];
-    drawLayout();
-    updateTurbinesTable();
-  });
-
-  // Simulate farm
-  document.getElementById('simulate-farm-btn').addEventListener('click', runFarmSimulation);
-
-  // Canvas interaction
-  canvas.addEventListener('mousedown', e => {
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left - offsetX) * scale;
-    const y = (e.clientY - rect.top - offsetY) * scale;
-
-    selectedTurbine = turbines.find(t => {
-      const dx = t.x - x;
-      const dy = t.y - y;
-      return Math.sqrt(dx*dx + dy*dy) < 50; // 50m radius for selection
-    });
-
-    if (selectedTurbine) {
-      isDragging = true;
-    }
-  });
-
-  canvas.addEventListener('mousemove', e => {
-    if (isDragging && selectedTurbine) {
-      const rect = canvas.getBoundingClientRect();
-      selectedTurbine.x = (e.clientX - rect.left - offsetX) * scale;
-      selectedTurbine.y = (e.clientY - rect.top - offsetY) * scale;
-      drawLayout();
-    }
-  });
-
-  canvas.addEventListener('mouseup', () => {
-    isDragging = false;
-    updateTurbinesTable();
-  });
-
-  WP.restoreFarmLayout = saved => { turbines = projectJsonClone(saved || []); drawLayout(); updateTurbinesTable(); };
-
-  function drawLayout() {
-    WP.farmLayout = projectJsonClone(turbines);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Draw grid
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.lineWidth = 1;
-    for (let i = 0; i < canvas.width; i += 50) {
-      ctx.beginPath();
-      ctx.moveTo(i, 0);
-      ctx.lineTo(i, canvas.height);
-      ctx.stroke();
-    }
-    for (let i = 0; i < canvas.height; i += 50) {
-      ctx.beginPath();
-      ctx.moveTo(0, i);
-      ctx.lineTo(canvas.width, i);
-      ctx.stroke();
-    }
-
-    // Draw turbines
-    turbines.forEach(turbine => {
-      const screenX = offsetX + turbine.x / scale;
-      const screenY = offsetY + turbine.y / scale;
-
-      // Turbine base
-      ctx.fillStyle = turbine === selectedTurbine ? 'var(--accent)' : 'var(--text-primary)';
-      ctx.beginPath();
-      ctx.arc(screenX, screenY, 8, 0, 2 * Math.PI);
-      ctx.fill();
-
-      // Turbine label
-      ctx.fillStyle = 'var(--text-primary)';
-      ctx.font = '10px var(--font-mono)';
-      ctx.textAlign = 'center';
-      ctx.fillText(turbine.id.toString(), screenX, screenY - 12);
-    });
-
-    // Draw scale indicator
-    ctx.fillStyle = 'var(--text-muted)';
-    ctx.font = '12px var(--font)';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${(50 * scale).toLocaleString()}m`, 10, canvas.height - 10);
-    ctx.strokeStyle = 'var(--text-muted)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(10, canvas.height - 20);
-    ctx.lineTo(60, canvas.height - 20);
-    ctx.stroke();
-  }
-
-  function updateTurbinesTable() {
-    const tbody = document.getElementById('farm-turbines-tbody');
-    tbody.innerHTML = turbines.length === 0
-      ? '<tr><td colspan="8" class="empty-msg">Añade turbinas y simula el parque</td></tr>'
-      : turbines.map(t => `
-          <tr>
-            <td>${t.id}</td>
-            <td>${t.x.toFixed(0)}</td>
-            <td>${t.y.toFixed(0)}</td>
-            <td id="aep-${t.id}">-</td>
-            <td id="aep-no-wake-${t.id}">-</td>
-            <td id="wake-loss-${t.id}">-</td>
-            <td id="cf-${t.id}">-</td>
-            <td><button class="btn btn-sm" onclick="removeTurbine(${t.id})">×</button></td>
-          </tr>
-        `).join('');
-  }
-
-  window.removeTurbine = (id) => {
-    turbines = turbines.filter(t => t.id !== id);
-    drawLayout();
-    updateTurbinesTable();
-  };
-
-  drawLayout();
-}
-
-async function runFarmSimulation() {
-  const turbines = Array.from(document.querySelectorAll('#farm-turbines-tbody tr')).map((tr, i) => {
-    const cells = tr.querySelectorAll('td');
-    if (cells.length < 3) return null;
-    return [parseFloat(cells[1].textContent), parseFloat(cells[2].textContent)];
-  }).filter(Boolean);
-
-  if (turbines.length === 0) {
-    toast('Añade al menos una turbina', 'error');
-    return;
-  }
-
-  const builtin = document.getElementById('turbine-builtin').value;
-  const turbineCfg = builtin ? { builtin_model: builtin } : {
-    name: document.getElementById('t-name').value || 'Custom',
-    rated_power_kw: parseFloat(document.getElementById('t-rated').value) || 2000,
-    cut_in: parseFloat(document.getElementById('t-cutin').value) || 3.0,
-    rated_speed: parseFloat(document.getElementById('t-rated-spd').value) || 12.0,
-    cut_out: parseFloat(document.getElementById('t-cutout').value) || 25.0,
-    rotor_diameter_m: parseFloat(document.getElementById('t-rotor').value) || 80,
-    hub_height_m: parseFloat(document.getElementById('t-hub').value) || 80,
-  };
-
-  setStatus('Simulando parque eólico…');
-  try {
-    const r = await api('/api/farm/simulate', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      layout: turbines,
-      turbine: turbineCfg,
-      ws_height_m: wsH(),
-      availability: parseFloat(document.getElementById('availability').value) / 100 || 1.0,
-      electrical_losses: parseFloat(document.getElementById('elec-losses').value) / 100 || 0.0,
-    });
-
-    WP.farmResult = r;
-    renderSavedFarm(r);
-
-    toast('Simulación del parque completada', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  }
 }
 
 // ─── CHART HELPERS ────────────────────────────────────────────────────────────
@@ -5289,141 +4853,6 @@ function populateReturnTable(rp) {
   </tr>`).join('');
 }
 
-// ─── SISTEMA HÍBRIDO (HOMER Pro-style) ───────────────────────────────────────
-
-function bindHybrid() {
-  document.getElementById('btn-run-hybrid').addEventListener('click', runHybrid);
-}
-
-async function runHybrid() {
-  const btn = document.getElementById('btn-run-hybrid');
-  btn.disabled = true; btn.textContent = 'Simulando…';
-  setStatus('Simulando sistema híbrido…');
-  try {
-    const body = {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      lat: parseFloat(document.getElementById('hyb-lat').value) || 20,
-      load: {
-        annual_kwh:   parseFloat(document.getElementById('hyb-load-kwh').value)  || 1e6,
-        peak_kw:      parseFloat(document.getElementById('hyb-load-peak').value) || 228,
-        profile_type: document.getElementById('hyb-load-type').value,
-      },
-      wind: {
-        capacity_kw:  parseFloat(document.getElementById('hyb-wind-kw').value)    || 500,
-        hub_height_m: parseFloat(document.getElementById('hyb-wind-hub').value)   || 80,
-        cut_in:       parseFloat(document.getElementById('hyb-wind-cutin').value) || 3,
-        rated_speed:  parseFloat(document.getElementById('hyb-wind-rated').value) || 12,
-      },
-      solar: {
-        capacity_kwp: parseFloat(document.getElementById('hyb-solar-kwp').value) || 0,
-        pr:           parseFloat(document.getElementById('hyb-solar-pr').value)  || 0.80,
-      },
-      battery: {
-        capacity_kwh: parseFloat(document.getElementById('hyb-batt-kwh').value)   || 0,
-        c_rate:       parseFloat(document.getElementById('hyb-batt-crate').value) || 0.5,
-      },
-      diesel: {
-        capacity_kw: parseFloat(document.getElementById('hyb-diesel-kw').value)     || 0,
-        fuel_price:  parseFloat(document.getElementById('hyb-diesel-price').value)  || 0.90,
-      },
-    };
-
-    const r = await api('/api/hybrid/simulate', 'POST', body);
-    WP.hybridResult = r;
-
-    renderSavedHybrid(r);
-
-    toast('Simulación híbrida completa', 'success');
-    setStatus('Sistema híbrido simulado.');
-  } catch(e) {
-    toast('Error: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = 'Simular sistema híbrido';
-  }
-}
-
-function renderHybridDispatch(traces) {
-  if (!traces) return;
-  destroyChart('hybridDispatch');
-  const ctx = document.getElementById('chart-hybrid-dispatch').getContext('2d');
-  const labels = traces.load.map((_, i) => i);
-  WP.charts.hybridDispatch = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Carga', data: traces.load, borderColor: ink(), fill: false, pointRadius: 0, borderWidth: 1.5 },
-        { label: 'Renovables', data: traces.renewables, borderColor: acc(), backgroundColor: acc() + '30', fill: true, pointRadius: 0, borderWidth: 1 },
-        { label: 'Batería', data: traces.battery, borderColor: acc3(), backgroundColor: acc3() + '20', fill: true, pointRadius: 0, borderWidth: 1 },
-        { label: 'Diésel', data: traces.diesel, borderColor: acc2(), backgroundColor: acc2() + '30', fill: true, pointRadius: 0, borderWidth: 1 },
-        { label: 'No atendida', data: traces.unmet, borderColor: '#e55', backgroundColor: '#e5530f20', fill: true, pointRadius: 0, borderWidth: 1 },
-      ],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      plugins: { legend: { labels: { color: ink(), font: { size: 10 } } } },
-      scales: {
-        x: { display: false },
-        y: { title: { display: true, text: 'kW', color: mut() },
-             ticks: { color: mut() }, grid: { color: mut() + '22' } },
-      },
-    },
-  });
-}
-
-function renderHybridEnergy(r) {
-  destroyChart('hybridEnergy');
-  const ctx = document.getElementById('chart-hybrid-energy').getContext('2d');
-  const labels = ['Viento', 'Solar', 'Diésel', 'No atendida'];
-  const data   = [r.wind_kwh || 0, r.solar_kwh || 0, r.diesel_kwh || 0, r.unmet_kwh || 0];
-  const colors = [acc(), gold(), acc2(), '#e55'];
-  WP.charts.hybridEnergy = new Chart(ctx, {
-    type: 'doughnut',
-    data: { labels, datasets: [{ data, backgroundColor: colors, borderWidth: 2,
-      borderColor: document.body.classList.contains('light') ? '#FFFFFF' : '#121823' }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: ink(), font: { size: 10 } } },
-        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${Math.round(ctx.parsed).toLocaleString()} kWh` } },
-      },
-    },
-  });
-}
-
-function populateHybridCapex(eco) {
-  if (!eco?.capex) return;
-  const body = document.getElementById('hyb-capex-body');
-  const total = eco.capex.total || 1;
-  const items = [
-    { k: 'wind', label: 'Viento' }, { k: 'solar', label: 'Solar PV' },
-    { k: 'battery', label: 'Batería' }, { k: 'diesel', label: 'Diésel' },
-  ];
-  body.innerHTML = items.filter(it => eco.capex[it.k] > 0).map(it => `<tr>
-    <td>${it.label}</td>
-    <td>$${Math.round(eco.capex[it.k]).toLocaleString()}</td>
-    <td>${(eco.capex[it.k] / total * 100).toFixed(1)}%</td>
-  </tr>`).join('') + `<tr class="best-row">
-    <td><strong>Total CAPEX</strong></td>
-    <td><strong>$${Math.round(total).toLocaleString()}</strong></td>
-    <td>100%</td>
-  </tr>`;
-
-  const list = document.getElementById('hyb-econ-list');
-  list.innerHTML = [
-    ['O&M anual', `$${Math.round(eco.om_annual).toLocaleString()}`],
-    ['NPC', `$${Math.round(eco.npc).toLocaleString()}`],
-    ['LCOE', `${eco.lcoe_usd_kwh?.toFixed(4)} USD/kWh`],
-    ['CO₂ evitado', `${eco.co2_saved_t_yr} t/año`],
-    ['Tasa descuento', `${(eco.discount_rate * 100).toFixed(0)}%`],
-    ['Vida útil', `${eco.lifetime_yr} años`],
-  ].map(([k, v]) => `<div class="val-metric-item">
-    <span class="val-metric-name">${k}</span>
-    <span class="val-metric-val">${v}</span>
-  </div>`).join('');
-}
-
 // ═══════════════════════ KRIGING — mapa único + curvas ══════════════════════
 const KRIG = {
   task_id: null,
@@ -5640,6 +5069,19 @@ function krig3SetExtent(mode) {
   }
 }
 
+/** Lee latitud/longitud desde la metadata de sesión cargada en Data Hub. */
+function sessionCenterFromMeta() {
+  const items = document.querySelectorAll('#meta-grid .meta-item');
+  let lat = null, lon = null;
+  items.forEach(it => {
+    const lab = it.querySelector('.meta-item-label')?.textContent?.trim().toLowerCase() || '';
+    const val = it.querySelector('.meta-item-val')?.textContent?.trim();
+    if (lab.startsWith('lat') && !isNaN(parseFloat(val))) lat = parseFloat(val);
+    if (lab.startsWith('lon') && !isNaN(parseFloat(val))) lon = parseFloat(val);
+  });
+  return (lat != null && lon != null) ? { lat, lon } : null;
+}
+
 function krig3FocusSite() {
   krig3InitMap();
   // Preferimos POI del Globe (selección del usuario); si no, sitio principal
@@ -5653,8 +5095,8 @@ function krig3FocusSite() {
     const s = KRIG.sites.find(x => x.filename === KRIG.principal);
     if (s) target = { lat: s.lat, lon: s.lon };
   }
-  if (!target && typeof mapaCenterFromSession === 'function') {
-    target = mapaCenterFromSession();
+  if (!target) {
+    target = sessionCenterFromMeta();
   }
   if (!target) {
     toast('Carga un sitio en Data Hub o marca un parque principal.', 'warning');
@@ -6758,7 +6200,6 @@ function krig3InvalidateSpatialResults() {
   MCDA.taskId = null;
   MCDA.lastSpatial = null; MCDA.lastAnalysis = null; MCDA.lastRanking = null;
   PARQUE.result = null; PARQUE.optResult = null; PARQUE.wakeProfile = null;
-  WP.farmResult = null; WP.farmLayout = null;
   WP.technoResult = null; WP.technoInputsInitialized = false;
   WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
   _riskData = null;
@@ -9240,10 +8681,8 @@ function ingSprinkle() {
     // (selector, topic)
     ['[data-module="kriging"]',              'kriging'],
     ['#mod-wind .card-title',                'weibull'],
-    ['#mod-energy .card-title',              'aep'],
     ['#mod-techno .card-title',              'aep'],
     ['#mod-advanced .card-title',            'orography'],
-    ['#mod-hybrid .card-title',              'aep'],
     ['#krig-map',                            'kriging'],
     ['#mcda-rank-tbl',                       'aep'],
   ];
@@ -9414,9 +8853,7 @@ function parqueInitMap() {
 function parqueRenderKrigingLayer(key) {
   const map = parqueInitMap();
   if (!map) return;
-  let krigResult = null;
-  if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
-  else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
+  let krigResult = (typeof KRIG !== 'undefined' && KRIG.result) ? KRIG.result : null;
 
   if (!krigResult) {
     document.getElementById('parque-map-status').textContent = 'Sin Kriging';
@@ -9459,9 +8896,7 @@ function parqueRenderPolygon() {
   const map = parqueInitMap();
   if (!map) return;
   if (PARQUE.polyLayer) { map.removeLayer(PARQUE.polyLayer); PARQUE.polyLayer = null; }
-  let pts = null;
-  if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) pts = MAPA.parkPoints;
-  else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) pts = KRIG.parkPoints;
+  let pts = (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) ? KRIG.parkPoints : null;
 
   if (!pts || pts.length < 3) return;
   PARQUE.polyLayer = L.polygon(pts, {
@@ -10022,7 +9457,7 @@ async function parqueOptimizeTopsis(winner) {
   if (!unchanged) {
     toast('Los parámetros cambiaron. Ejecuta TOPSIS nuevamente o selecciona otra vez su alternativa para recuperar la base comparable.', 'warning'); return;
   }
-  const currentPolygon = MAPA.parkPoints?.length >= 3 ? MAPA.parkPoints : KRIG.parkPoints;
+  const currentPolygon = KRIG.parkPoints;
   const saved = winner.layout_constraints.polygon;
   if (currentPolygon?.length !== saved.length || currentPolygon.some((p, i) =>
       Math.abs(p[0] - saved[i].lat) > 1e-8 || Math.abs(p[1] - saved[i].lon) > 1e-8)) {
@@ -10048,7 +9483,7 @@ async function parqueOptimizeTopsis(winner) {
     if (result.error) throw new Error(result.error);
     // A response for an older selection must never replace the current model.
     if (parqueSelectedTopsis() !== winner) return;
-    const latestPolygon = MAPA.parkPoints?.length >= 3 ? MAPA.parkPoints : KRIG.parkPoints;
+    const latestPolygon = KRIG.parkPoints;
     if (latestPolygon?.length !== saved.length || latestPolygon.some((p, i) =>
         Math.abs(p[0] - saved[i].lat) > 1e-8 || Math.abs(p[1] - saved[i].lon) > 1e-8)) {
       throw new Error('El polígono cambió durante la búsqueda. Ejecuta TOPSIS nuevamente.');
@@ -10132,9 +9567,7 @@ function parqueApplyConfiguration(id) {
 async function parqueOptimize() {
   const topsis = parqueSelectedTopsis();
   if (topsis) { await parqueOptimizeTopsis(topsis); return; }
-  let polygon = null;
-  if (typeof MAPA !== 'undefined' && MAPA.parkPoints?.length >= 3) polygon = MAPA.parkPoints;
-  else if (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) polygon = KRIG.parkPoints;
+  let polygon = (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) ? KRIG.parkPoints : null;
 
   if (!polygon || polygon.length < 3) {
     toast('Dibuja y cierra el polígono del parque en la sección de diseño primero.', 'warning');
@@ -10144,9 +9577,7 @@ async function parqueOptimize() {
   if (!turbineKey) { toast('Selecciona una turbina.', 'warning'); return; }
 
   // Wind grid from kriging result
-  let krigResult = null;
-  if (typeof MAPA !== 'undefined' && MAPA.result?.grids) krigResult = MAPA.result.grids;
-  else if (typeof KRIG !== 'undefined' && KRIG.result) krigResult = KRIG.result;
+  let krigResult = (typeof KRIG !== 'undefined' && KRIG.result) ? KRIG.result : null;
 
   const layerKey   = document.getElementById('parque-map-layer')?.value || 'wind';
   const windGrid   = krigResult ? (krigResult[layerKey] || krigResult['wind'] || krigResult['speed'] || null) : null;
@@ -10401,17 +9832,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
-// ═══════════════════════ MAPA & GRILLA DE RECURSO ═══════════════════════════
-const MAPA = {
-  map: null, baseLayer: null, gridLayer: null,
-  result: null, sites: [], grid: null, var: 'speed',
-  mode: 'mexico',
-  areaBounds: null, areaLayer: null, areaDraft: null, areaStart: null, selectingArea: false,
-  drawingPark: false, parkPoints: [], parkLayer: null, parkMarkers: [],
-};
-
-const MAPA_MEXICO_BOUNDS = [[14.2, -118.6], [33.2, -86.5]];
-
+// ─── Tiles de mapa compartidos (Kriging, Parque) ─────────────────────────────
 const MAPA_TILES = {
   dark:    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
   voyager: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
@@ -10419,483 +9840,6 @@ const MAPA_TILES = {
   topo:    'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
   sat:     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
 };
-
-function mapaInit() {
-  if (MAPA.map) return MAPA.map;
-  const map = window.L.map('mapa-leaflet', {
-    center: [23.5, -102], zoom: 5, scrollWheelZoom: true,
-  });
-  MAPA.map = map;
-  mapaSetBase(document.getElementById('mapa-baselayer').value);
-  mapaSetExtent('mexico');
-  map.on('click', mapaHandleClick);
-  map.on('mousedown', mapaAreaMouseDown);
-  map.on('mousemove', mapaAreaMouseMove);
-  map.on('mouseup', mapaAreaMouseUp);
-  return map;
-}
-
-function mapaSetBase(key) {
-  if (!MAPA.map) return;
-  if (MAPA.baseLayer) MAPA.map.removeLayer(MAPA.baseLayer);
-  const url = MAPA_TILES[key] || MAPA_TILES.dark;
-  MAPA.baseLayer = window.L.tileLayer(url, {
-    maxZoom: (key === 'osm' || key === 'topo') ? 18 : 16,
-    subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
-    attribution: '© OpenStreetMap · © Esri',
-  }).addTo(MAPA.map);
-}
-
-function mapaSetExtent(mode) {
-  if (!MAPA.map) return;
-  MAPA.mode = mode;
-  document.getElementById('btn-mapa-mexico')?.classList.toggle('is-active', mode === 'mexico');
-  document.getElementById('btn-mapa-world')?.classList.toggle('is-active', mode === 'world');
-  if (mode === 'mexico') {
-    MAPA.map.setMaxBounds(MAPA_MEXICO_BOUNDS);
-    MAPA.map.fitBounds(MAPA_MEXICO_BOUNDS, { padding: [18, 18] });
-  } else {
-    MAPA.map.setMaxBounds(null);
-  }
-}
-
-function mapaCenterFromSession() {
-  // Try to read latitude/longitude from the loaded session metadata UI.
-  const items = document.querySelectorAll('#meta-grid .meta-item');
-  let lat = null, lon = null;
-  items.forEach(it => {
-    const lab = it.querySelector('.meta-item-label')?.textContent?.trim().toLowerCase() || '';
-    const val = it.querySelector('.meta-item-val')?.textContent?.trim();
-    if (lab.startsWith('lat') && !isNaN(parseFloat(val))) lat = parseFloat(val);
-    if (lab.startsWith('lon') && !isNaN(parseFloat(val))) lon = parseFloat(val);
-  });
-  return (lat != null && lon != null) ? { lat, lon } : null;
-}
-
-function mapaFocusSite() {
-  mapaInit();
-  const center = mapaCenterFromSession() || MAPA.result?.center;
-  if (!center) {
-    toast('Carga un sitio en Data Hub primero.', 'warning');
-    return;
-  }
-  MAPA.map.setView([center.lat, center.lon], 9);
-}
-
-function mapaBoundsPayload() {
-  if (!MAPA.areaBounds) return null;
-  const sw = MAPA.areaBounds.getSouthWest();
-  const ne = MAPA.areaBounds.getNorthEast();
-  return {
-    lat_min: sw.lat, lat_max: ne.lat,
-    lon_min: sw.lng, lon_max: ne.lng,
-  };
-}
-
-function mapaSetStatus(msg) {
-  const el = document.getElementById('mapa-status');
-  if (el) el.textContent = msg;
-}
-
-async function mapaBuild() {
-  if (!WP.sessionId) { toast('Sin sesión.', 'error'); return; }
-  mapaInit();
-  const center = mapaCenterFromSession();
-  if (!center) {
-    toast('Carga un sitio en Data Hub primero (necesito lat/lon).', 'error');
-    return;
-  }
-  const body = {
-    session_id: WP.sessionId,
-    center_lat: center.lat,
-    center_lon: center.lon,
-    year:       parseInt(document.getElementById('mapa-year').value),
-    radius_km:  parseFloat(document.getElementById('mapa-radius').value),
-    n_grid:     parseInt(document.getElementById('mapa-n').value),
-    model:      document.getElementById('mapa-model').value,
-    p_nom_kw:   2000,
-    rotor_m:    80,
-  };
-  const fixedBounds = mapaBoundsPayload();
-  if (fixedBounds) body.bounds = fixedBounds;
-  mapaSetStatus('Calculando…');
-  try {
-    const r = await api('/api/grid/build', 'POST', body);
-    if (r.error) throw new Error(r.error);
-    MAPA.result = r;
-    MAPA.sites  = r.sites || [];
-    mapaSetStatus(`${r.n_sites} sitios · ${body.n_grid}×${body.n_grid}`);
-    mapaRenderVariable(MAPA.var);
-    const targetBounds = fixedBounds || r.bounds;
-    MAPA.map.fitBounds(
-      [[targetBounds.lat_min, targetBounds.lon_min], [targetBounds.lat_max, targetBounds.lon_max]],
-      { padding: [25, 25] });
-    setTimeout(() => MAPA.map.invalidateSize(), 60);
-    toast('Grilla generada', 'success');
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-    mapaSetStatus('Error');
-  }
-}
-
-function mapaRenderVariable(varKey) {
-  if (!MAPA.result || !MAPA.map) return;
-  MAPA.var = varKey;
-  const grid = MAPA.result.grids[varKey];
-  if (!grid) return;
-  MAPA.grid = grid;
-
-  if (MAPA.gridLayer) MAPA.map.removeLayer(MAPA.gridLayer);
-  const { z, bounds, z_min, z_max } = grid;
-  const ny = z.length, nx = z[0].length;
-  const canvas = document.createElement('canvas');
-  canvas.width = nx; canvas.height = ny;
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(nx, ny);
-  const rng = z_max - z_min;
-  for (let j = 0; j < ny; j++) {
-    const row = z[ny - 1 - j];
-    for (let i = 0; i < nx; i++) {
-      const t = rng > 0 ? (row[i] - z_min) / rng : 0.5;
-      const [r_, g_, b_] = krigColor(t);
-      const idx = (j * nx + i) * 4;
-      img.data[idx] = r_; img.data[idx+1] = g_; img.data[idx+2] = b_;
-      img.data[idx+3] = 190;
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  const overlay = window.L.imageOverlay(canvas.toDataURL(),
-    [[bounds.lat_min, bounds.lon_min], [bounds.lat_max, bounds.lon_max]],
-    { opacity: 0.75 });
-  const group = window.L.layerGroup([overlay]);
-
-  // Site markers colored by the same variable
-  (MAPA.sites || []).forEach(s => {
-    const v = Number(s[varKey] ?? 0);
-    const t = rng > 0 ? (v - z_min) / rng : 0.5;
-    const [r_, g_, b_] = krigColor(t);
-    const m = window.L.circleMarker([s.lat, s.lon], {
-      radius: 6, color: '#111', weight: 1,
-      fillColor: `rgb(${r_|0},${g_|0},${b_|0})`, fillOpacity: 1,
-    }).bindPopup(
-      `<b>${s.filename}</b><br>` +
-      `Lat ${s.lat.toFixed(3)} · Lon ${s.lon.toFixed(3)}<br>` +
-      `Vel: <b>${s.speed.toFixed(2)}</b> m/s<br>` +
-      `Ráfaga: <b>${(s.gust || 0).toFixed(2)}</b> m/s<br>` +
-      `Pd: <b>${s.power.toFixed(0)}</b> W/m²<br>` +
-      `KPI: <b>${(s.resource_score || 0).toFixed(1)}</b>/100`);
-    group.addLayer(m);
-  });
-
-  // Center marker
-  if (MAPA.result.center) {
-    const c = MAPA.result.center;
-    group.addLayer(window.L.circleMarker([c.lat, c.lon], {
-      radius: 9, color: '#fff', weight: 2, fillColor: '#facc15', fillOpacity: 1,
-    }).bindPopup(`<b>Sitio cargado</b><br>${c.lat.toFixed(3)}, ${c.lon.toFixed(3)}`));
-  }
-
-  // Optimal candidate markers
-  (MAPA.result.optimal_sites || []).forEach(s => {
-    if (MAPA.parkPoints.length >= 3 && !mapaPointInPolygon([s.lat, s.lon], MAPA.parkPoints)) return;
-    const radius = Math.max(7, 13 - (s.rank || 6));
-    group.addLayer(window.L.circleMarker([s.lat, s.lon], {
-      radius, color: '#0f172a', weight: 2,
-      fillColor: '#22c55e', fillOpacity: 0.95,
-    }).bindPopup(
-      `<b>#${s.rank} sitio candidato</b><br>${s.filename}<br>` +
-      `Score: <b>${s.score.toFixed(1)}</b>/100<br>` +
-      `Vel: ${s.speed.toFixed(2)} m/s · Ráfaga: ${s.gust.toFixed(2)} m/s<br>` +
-      `Densidad: ${s.power.toFixed(0)} W/m²`));
-  });
-
-  group.addTo(MAPA.map);
-  MAPA.gridLayer = group;
-
-  document.getElementById('mapa-title').textContent = grid.title;
-  document.getElementById('mapa-legend').textContent =
-    `${z_min.toFixed(2)} → ${z_max.toFixed(2)} ${grid.unit}`;
-  const lbls = document.getElementById('mapa-cbar-lbl');
-  lbls.innerHTML =
-    `<span>${z_min.toFixed(2)}</span>` +
-    `<span>${((z_min+z_max)/2).toFixed(2)}</span>` +
-    `<span>${z_max.toFixed(2)} ${grid.unit}</span>`;
-
-  const vals = MAPA.sites.map(s => s[varKey]);
-  const mean = vals.reduce((a,b)=>a+b,0) / (vals.length || 1);
-  document.getElementById('mapa-stats').innerHTML =
-    `<b>Sitios:</b> ${MAPA.sites.length}<br>` +
-    `<b>Min:</b> ${Math.min(...vals).toFixed(2)} ${grid.unit}<br>` +
-    `<b>Max:</b> ${Math.max(...vals).toFixed(2)} ${grid.unit}<br>` +
-    `<b>Media:</b> ${mean.toFixed(2)} ${grid.unit}<br>` +
-    `<b>Modelo:</b> ${grid.model}<br>` +
-    `<b>Área fija:</b> ${MAPA.areaBounds ? 'sí' : 'no'}`;
-  mapaRenderOptimalList();
-}
-
-function mapaHandleClick(e) {
-  if (MAPA.drawingPark) {
-    mapaAddParkPoint(e.latlng);
-    return;
-  }
-  mapaOnClick(e);
-}
-
-function mapaOnClick(e) {
-  if (!MAPA.grid) return;
-  const { z, bounds } = MAPA.grid;
-  const ny = z.length, nx = z[0].length;
-  const dy = (bounds.lat_max - bounds.lat_min) / (ny - 1);
-  const dx = (bounds.lon_max - bounds.lon_min) / (nx - 1);
-  const j = Math.round((e.latlng.lat - bounds.lat_min) / dy);
-  const i = Math.round((e.latlng.lng - bounds.lon_min) / dx);
-  if (j < 0 || j >= ny || i < 0 || i >= nx) return;
-  const v = z[j][i];
-  document.getElementById('mapa-pt').innerHTML =
-    `<b>Click:</b> ${e.latlng.lat.toFixed(3)}, ${e.latlng.lng.toFixed(3)}<br>` +
-    `<b>Celda (${i},${j}):</b> ${v.toFixed(2)} ${MAPA.grid.unit}`;
-}
-
-function mapaBeginAreaSelection() {
-  mapaInit();
-  MAPA.selectingArea = true;
-  mapaSetStatus('Dibuja rectángulo');
-  toast('Arrastra sobre el mapa para fijar el área de estudio.', 'info');
-}
-
-function mapaAreaMouseDown(e) {
-  if (!MAPA.selectingArea) return;
-  MAPA.areaStart = e.latlng;
-  MAPA.map.dragging.disable();
-  e.originalEvent.preventDefault();
-}
-
-function mapaAreaMouseMove(e) {
-  if (!MAPA.selectingArea || !MAPA.areaStart) return;
-  if (MAPA.areaDraft) MAPA.map.removeLayer(MAPA.areaDraft);
-  MAPA.areaDraft = window.L.rectangle([MAPA.areaStart, e.latlng], {
-    color: '#22c55e', weight: 2, fillOpacity: 0.12, dashArray: '6 4',
-  }).addTo(MAPA.map);
-}
-
-function mapaAreaMouseUp(e) {
-  if (!MAPA.selectingArea || !MAPA.areaStart) return;
-  const bounds = window.L.latLngBounds(MAPA.areaStart, e.latlng);
-  MAPA.selectingArea = false;
-  MAPA.areaStart = null;
-  MAPA.map.dragging.enable();
-  if (MAPA.areaDraft) {
-    MAPA.map.removeLayer(MAPA.areaDraft);
-    MAPA.areaDraft = null;
-  }
-  if (MAPA.areaLayer) MAPA.map.removeLayer(MAPA.areaLayer);
-  MAPA.areaBounds = bounds;
-  MAPA.areaLayer = window.L.rectangle(bounds, {
-    color: '#22c55e', weight: 2, fillOpacity: 0.08,
-  }).addTo(MAPA.map);
-  MAPA.map.fitBounds(bounds, { padding: [24, 24] });
-  mapaSetStatus('Área fija');
-  toast('Área de estudio fijada. Puedes salir del encuadre y volver a generar.', 'success');
-}
-
-function mapaClearArea() {
-  if (MAPA.areaLayer && MAPA.map) MAPA.map.removeLayer(MAPA.areaLayer);
-  if (MAPA.areaDraft && MAPA.map) MAPA.map.removeLayer(MAPA.areaDraft);
-  MAPA.areaLayer = null;
-  MAPA.areaDraft = null;
-  MAPA.areaBounds = null;
-  MAPA.selectingArea = false;
-  mapaSetStatus(MAPA.result ? `${MAPA.result.n_sites} sitios` : '—');
-}
-
-function mapaAddParkPoint(latlng) {
-  MAPA.parkPoints.push([latlng.lat, latlng.lng]);
-  const marker = window.L.circleMarker(latlng, {
-    radius: 4, color: '#fff', weight: 1, fillColor: '#f59e0b', fillOpacity: 1,
-  }).addTo(MAPA.map);
-  MAPA.parkMarkers.push(marker);
-  mapaRenderParkLayer(false);
-}
-
-function mapaRenderParkLayer(closed=true) {
-  if (MAPA.parkLayer && MAPA.map) MAPA.map.removeLayer(MAPA.parkLayer);
-  if (MAPA.parkPoints.length < 2) {
-    mapaUpdateParkInfo();
-    return;
-  }
-  MAPA.parkLayer = closed && MAPA.parkPoints.length >= 3
-    ? window.L.polygon(MAPA.parkPoints, { color: '#f59e0b', weight: 2, fillOpacity: 0.14 }).addTo(MAPA.map)
-    : window.L.polyline(MAPA.parkPoints, { color: '#f59e0b', weight: 2, dashArray: '4 4' }).addTo(MAPA.map);
-  mapaUpdateParkInfo();
-}
-
-function mapaStartParkDraw() {
-  mapaInit();
-  MAPA.drawingPark = true;
-  toast('Haz clic para agregar vértices del parque; cierra la figura al terminar.', 'info');
-}
-
-function mapaFinishPark() {
-  MAPA.drawingPark = false;
-  if (MAPA.parkPoints.length < 3) {
-    toast('Necesitas al menos 3 puntos para cerrar la figura.', 'warning');
-    return;
-  }
-  mapaRenderParkLayer(true);
-  mapaRenderVariable(MAPA.var);
-}
-
-function mapaClearPark() {
-  MAPA.drawingPark = false;
-  if (MAPA.parkLayer && MAPA.map) MAPA.map.removeLayer(MAPA.parkLayer);
-  MAPA.parkMarkers.forEach(m => MAPA.map && MAPA.map.removeLayer(m));
-  MAPA.parkLayer = null;
-  MAPA.parkMarkers = [];
-  MAPA.parkPoints = [];
-  mapaUpdateParkInfo();
-  mapaRenderVariable(MAPA.var);
-}
-
-function mapaPolygonAreaKm2(points) {
-  if (points.length < 3) return 0;
-  const lat0 = points.reduce((s, p) => s + p[0], 0) / points.length;
-  const coords = points.map(([lat, lon]) => {
-    const x = lon * 111.32 * Math.cos(lat0 * Math.PI / 180);
-    const y = lat * 110.57;
-    return [x, y];
-  });
-  let area = 0;
-  for (let i = 0; i < coords.length; i++) {
-    const [x1, y1] = coords[i];
-    const [x2, y2] = coords[(i + 1) % coords.length];
-    area += x1 * y2 - x2 * y1;
-  }
-  return Math.abs(area) / 2;
-}
-
-function mapaPointInPolygon(point, polygon) {
-  const [lat, lon] = point;
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [lati, loni] = polygon[i];
-    const [latj, lonj] = polygon[j];
-    const cross = ((loni > lon) !== (lonj > lon)) &&
-      (lat < (latj - lati) * (lon - loni) / ((lonj - loni) || 1e-12) + lati);
-    if (cross) inside = !inside;
-  }
-  return inside;
-}
-
-function mapaUpdateParkInfo() {
-  const el = document.getElementById('mapa-park-info');
-  if (!el) return;
-  if (MAPA.parkPoints.length < 3) {
-    el.textContent = MAPA.parkPoints.length
-      ? `${MAPA.parkPoints.length} vértices definidos. Falta cerrar la figura.`
-      : 'Dibuja una figura sobre Leaflet para delimitar la zona del parque.';
-    return;
-  }
-  const area = mapaPolygonAreaKm2(MAPA.parkPoints);
-  el.innerHTML = `<b>Zona de parque:</b> ${area.toFixed(2)} km² · ${MAPA.parkPoints.length} vértices`;
-}
-
-function mapaRenderOptimalList() {
-  const el = document.getElementById('mapa-optimal-list');
-  if (!el) return;
-  let sites = (MAPA.result?.optimal_sites || []);
-  if (MAPA.parkPoints.length >= 3) {
-    sites = sites.filter(s => mapaPointInPolygon([s.lat, s.lon], MAPA.parkPoints));
-  }
-  if (!sites.length) {
-    el.textContent = MAPA.result ? 'Sin candidatos dentro del área actual.' : 'Genera la grilla para calcular candidatos.';
-    return;
-  }
-  el.innerHTML = sites.slice(0, 8).map(s => (
-    `<div style="padding:.35rem 0;border-bottom:1px solid var(--border)">` +
-    `<b>#${s.rank}</b> ${s.filename}<br>` +
-    `Score ${s.score.toFixed(1)} · Vel ${s.speed.toFixed(2)} m/s · ` +
-    `Ráfaga ${s.gust.toFixed(2)} m/s · Pd ${s.power.toFixed(0)} W/m²` +
-    `</div>`
-  )).join('');
-}
-
-function mapaExportGeoJSON() {
-  if (!MAPA.result) { toast('Genera la grilla primero.', 'error'); return; }
-  const fc = {
-    type: 'FeatureCollection',
-    features: MAPA.sites.map(s => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
-      properties: {
-        filename: s.filename, speed_ms: s.speed, power_density_wm2: s.power,
-        gust_ms: s.gust, resource_score: s.resource_score,
-        aep_mwh: s.aep, cf_pct: s.cf, weibull_C: s.weibull_C, weibull_K: s.weibull_K,
-      },
-    })).concat((MAPA.result.optimal_sites || []).map(s => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
-      properties: { kind: 'optimal_site', rank: s.rank, score: s.score, filename: s.filename },
-    }))),
-  };
-  if (MAPA.areaBounds) {
-    const b = mapaBoundsPayload();
-    fc.features.push({
-      type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [[
-        [b.lon_min, b.lat_min], [b.lon_max, b.lat_min],
-        [b.lon_max, b.lat_max], [b.lon_min, b.lat_max],
-        [b.lon_min, b.lat_min],
-      ]] },
-      properties: { kind: 'fixed_area' },
-    });
-  }
-  if (MAPA.parkPoints.length >= 3) {
-    fc.features.push({
-      type: 'Feature',
-      geometry: { type: 'Polygon', coordinates: [[
-        ...MAPA.parkPoints.map(([lat, lon]) => [lon, lat]),
-        [MAPA.parkPoints[0][1], MAPA.parkPoints[0][0]],
-      ]] },
-      properties: { kind: 'park_zone', area_km2: mapaPolygonAreaKm2(MAPA.parkPoints) },
-    });
-  }
-  const blob = new Blob([JSON.stringify(fc, null, 2)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `aero_resource_grid_${Date.now()}.geojson`;
-  a.click();
-  toast('GeoJSON exportado', 'success');
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const baseSel = document.getElementById('mapa-baselayer');
-  if (baseSel) baseSel.addEventListener('change', () => mapaSetBase(baseSel.value));
-  const varSel = document.getElementById('mapa-var');
-  if (varSel) varSel.addEventListener('change', () => mapaRenderVariable(varSel.value));
-  const btnBuild = document.getElementById('btn-mapa-build');
-  if (btnBuild) btnBuild.addEventListener('click', mapaBuild);
-  const btnExport = document.getElementById('btn-mapa-export');
-  if (btnExport) btnExport.addEventListener('click', mapaExportGeoJSON);
-  document.getElementById('btn-mapa-mexico')?.addEventListener('click', () => mapaSetExtent('mexico'));
-  document.getElementById('btn-mapa-world')?.addEventListener('click', () => mapaSetExtent('world'));
-  document.getElementById('btn-mapa-site')?.addEventListener('click', mapaFocusSite);
-  document.getElementById('btn-mapa-select-area')?.addEventListener('click', mapaBeginAreaSelection);
-  document.getElementById('btn-mapa-clear-area')?.addEventListener('click', mapaClearArea);
-  document.getElementById('btn-mapa-draw-park')?.addEventListener('click', mapaStartParkDraw);
-  document.getElementById('btn-mapa-finish-park')?.addEventListener('click', mapaFinishPark);
-  document.getElementById('btn-mapa-clear-park')?.addEventListener('click', mapaClearPark);
-  document.querySelectorAll('.nav-btn[data-module="mapa"]').forEach(b => {
-    b.addEventListener('click', () => {
-      requestAnimationFrame(() => {
-        mapaInit();
-        const c = mapaCenterFromSession();
-        if (c && !MAPA.result) MAPA.map.setView([c.lat, c.lon], 7);
-        if (MAPA.map) MAPA.map.invalidateSize();
-        setTimeout(() => MAPA.map && MAPA.map.invalidateSize(), 200);
-      });
-    });
-  });
-});
 
 // ═════════════════════════ MARKET DATA HUB ═════════════════════════════
 const MARKET_CATS = ['demand', 'pml'];
@@ -12579,15 +11523,14 @@ function globeSetPreparing(value) {
 
 function invalidateProjectWindResults() {
   WP.windSourceEpoch = (WP.windSourceEpoch || 0) + 1;
-  for (const key of ['windStats', 'advancedResult', 'energyResult', 'technoResult', 'qcResult',
-    'hybridResult', 'energySimulation', 'farmResult', 'farmLayout', 'turbineComparison']) WP[key] = null;
+  for (const key of ['windStats', 'advancedResult', 'energyResult', 'technoResult', 'qcResult']) WP[key] = null;
   WP.technoScenarios.integrated = { inputs: null, result: null, leveraged: null };
   WP.technoInputsInitialized = false;
   WP.technoInputsDirty = false;
   _riskData = null;
   MCDA.lastSpatial = null; MCDA.lastAnalysis = null; MCDA.lastRanking = null;
   PARQUE.result = null; PARQUE.optResult = null; PARQUE.wakeProfile = null;
-  MAPA.result = null; CLUSTER.result = null;
+  CLUSTER.result = null;
   KRIG.result = null; KRIG.task_id = null;
   krig3InvalidateCalibration('cambió la fuente temporal del proyecto');
   Object.keys(WP.charts || {}).forEach(id => { WP.charts[id]?.destroy?.(); delete WP.charts[id]; });
@@ -14240,59 +13183,6 @@ function renderSavedAdvanced(r) {
 
 }
 
-function renderSavedHybrid(r) {
-    // KPI row
-    document.getElementById('hyb-kpi-row').style.display = '';
-    document.getElementById('hyb-kpi-rf').textContent   = (r.renewable_fraction ?? 0).toFixed(1) + '%';
-    document.getElementById('hyb-kpi-lcoe').textContent  = r.economics?.lcoe_usd_kwh?.toFixed(4) ?? '—';
-    document.getElementById('hyb-kpi-npc').textContent   = r.economics?.npc ? '$' + Math.round(r.economics.npc).toLocaleString() : '—';
-    document.getElementById('hyb-kpi-co2').textContent   = r.economics?.co2_saved_t_yr ?? '—';
-    document.getElementById('hyb-kpi-lpsp').textContent  = (r.lpsp_pct ?? 0).toFixed(3) + '%';
-    document.getElementById('hyb-kpi-fuel').textContent  = r.fuel_liters ? Math.round(r.fuel_liters).toLocaleString() : '—';
-
-    const n = r.traces?.step ? Math.round(r.traces.load.length) : 0;
-    document.getElementById('hyb-badge-pts').textContent = `${n} puntos`;
-
-    renderHybridDispatch(r.traces);
-    renderHybridEnergy(r);
-    populateHybridCapex(r.economics);
-
-}
-
-function renderSavedEnergy(r, simCfg) {
-    // KPIs
-    const kpis = document.getElementById('energy-kpis');
-    kpis.classList.remove('hidden');
-    document.getElementById('kpi-cf').textContent     = `${r.summary.capacity_factor_pct}%`;
-    document.getElementById('kpi-aep').textContent    = r.aep?.aep_p50_mwh?.toLocaleString() ?? r.summary.energy_net_mwh?.toLocaleString();
-    document.getElementById('kpi-flh').textContent    = Math.round(r.summary.full_load_hours).toLocaleString();
-    document.getElementById('kpi-energy-net').textContent = r.summary.energy_net_mwh?.toLocaleString();
-    document.getElementById('kpi-p90').textContent    = r.aep?.aep_p90_mwh?.toLocaleString() ?? '—';
-
-    // P-values card
-    if (r.aep && r.aep.aep_p50_mwh) {
-      const aepCard = document.getElementById('aep-card');
-      aepCard.classList.remove('hidden');
-      document.getElementById('p-value-row').innerHTML = [
-        ['P10', r.aep.aep_p10_mwh, 'p10'],
-        ['P50', r.aep.aep_p50_mwh, 'p50'],
-        ['P75', r.aep.aep_p75_mwh, 'p75'],
-        ['P90', r.aep.aep_p90_mwh, 'p90'],
-      ].map(([l, v, cls]) => `
-        <div class="p-val-item ${cls}">
-          <div class="p-val-label">${l}</div>
-          <div class="p-val-value">${v?.toLocaleString() ?? '—'} MWh</div>
-        </div>`).join('');
-    }
-
-    renderPowerCurveChart(r.turbine, r.timeseries, r.n_turbines);
-    renderMonthlyEnergyChart(r.monthly);
-    renderPowerTimeseries(r.timeseries);
-    renderSensitivityChart(r.sensitivity || []);
-    populateTurbineFicha(r.turbine, r.summary, simCfg);
-
-}
-
 function renderSavedQC(r) {
     const rpt = r.report;
     const container = document.getElementById('qc-results');
@@ -14400,17 +13290,12 @@ async function renderSavedProjectResults() {
   for (const [category, result] of Object.entries(WP.marketResults || {})) {
     if (MARKET_CATS.includes(category)) await show('Mercado', () => _renderMarketResult(category, result));
   }
-  if (WP.farmLayout) await show('Layout', () => WP.restoreFarmLayout?.(WP.farmLayout));
-  if (WP.farmResult) await show('Simulación del parque', () => renderSavedFarm(WP.farmResult));
-  if (WP.turbineComparison) await show('Comparación de turbinas', () => renderSavedTurbineComparison(WP.turbineComparison));
   if (WP.qcResult) await show('Calidad', () => renderSavedQC(WP.qcResult));
   if (WP.windStats) {
     await show('Resumen', () => renderSavedOverview(WP.windStats));
     await show('Viento', () => renderSavedWind(WP.windStats));
   }
   if (WP.advancedResult) await show('Recurso avanzado', () => renderSavedAdvanced(WP.advancedResult));
-  if (WP.energyResult?.summary) await show('Energía', () => renderSavedEnergy(WP.energyResult, WP.energySimulation || {}));
-  if (WP.hybridResult) await show('Híbrido', () => renderSavedHybrid(WP.hybridResult));
   if (WP.mcpResult) await show('MCP', () => renderMCPResult(WP.mcpResult));
   if (KRIG.calibration) await show('Calibración', () => krig3RenderCalibration(KRIG.calibration));
   if (KRIG.result) await show('Kriging', () => {
@@ -14422,7 +13307,6 @@ async function renderSavedProjectResults() {
     krig3ZoomToPrincipal();
     document.getElementById('krig3-status').textContent = `${KRIG.result.n_sites || KRIG.sites.length} sitios · resultado guardado`;
   });
-  if (MAPA.result) await show('Mapa', () => mapaRenderVariable(MAPA.var || 'speed'));
   if (PARQUE.optResult) await show('Parque', () => {
     parqueInitMap();
     renderSavedPark(PARQUE.optResult, PARQUE.layerKey || 'wind', PARQUE.optResult.turbine?.name || '');
@@ -14435,37 +13319,3 @@ async function renderSavedProjectResults() {
   if (failures.length) toast(`Resultados guardados; no se pudieron mostrar: ${failures.join(', ')}`, 'warning');
 }
 
-function renderSavedFarm(r) {
-    // Update KPIs
-    document.getElementById('farm-n-turbines').textContent = r.n_turbines;
-    document.getElementById('farm-installed-mw').textContent = r.installed_mw;
-    document.getElementById('farm-aep-mwh').textContent = r.aep_mwh.toLocaleString();
-    document.getElementById('farm-cf-pct').textContent = `${r.cf_pct}%`;
-    document.getElementById('farm-wake-loss-pct').textContent = `${r.wake_loss_pct}%`;
-    document.getElementById('farm-flh').textContent = r.flh;
-
-    // Update per-turbine table
-    r.turbines.forEach(turbine => {
-      document.getElementById(`aep-${turbine.i}`).textContent = turbine.aep_mwh;
-      document.getElementById(`aep-no-wake-${turbine.i}`).textContent = turbine.aep_no_wake_mwh;
-      document.getElementById(`wake-loss-${turbine.i}`).textContent = `${turbine.wake_loss_pct}%`;
-      document.getElementById(`cf-${turbine.i}`).textContent = `${turbine.cf_pct}%`;
-    });
-
-}
-
-function renderSavedTurbineComparison(r) {
-    const tbody = document.getElementById('turbine-comp-tbody');
-    tbody.innerHTML = (r.comparison || []).map((t, i) => `
-      <tr ${i === 0 ? 'class="best-row"' : ''}>
-        <td class="model-name">${i === 0 ? '★ ' : ''}${t.name}</td>
-        <td>${t.rated_power_kw?.toLocaleString()}</td>
-        <td>${t.rotor_diameter_m}</td>
-        <td>${t.hub_height_m}</td>
-        <td style="color:${i===0?'var(--green)':''}">${t.capacity_factor_pct}%</td>
-        <td>${t.full_load_hours?.toLocaleString()}</td>
-        <td>${t.mean_power_kw?.toLocaleString()}</td>
-        <td><span class="badge badge--${i===0?'success':'info'}">#${t.rank}</span></td>
-      </tr>`).join('');
-
-}

@@ -25,15 +25,14 @@ function context() {
 }
 test('snapshot includes all completed module data, no charts or runtime objects', () => {
   const { run } = context();
-  run(`WP.advancedResult = {turbulence: [1,2]}; WP.hybridResult = {annual: [3]};
-    WP.mcpResult = {run_id:'saved'}; WP.farmResult = {aep_mwh:123};
-    PARQUE.wakeProfile = {deficit_pct:[12]}; MAPA.result = {speed:[5]};
+  run(`WP.advancedResult = {turbulence: [1,2]};
+    WP.mcpResult = {run_id:'saved'};
+    PARQUE.wakeProfile = {deficit_pct:[12]};
     _riskData = {base:{npv_usd:123}}; KRIG.selected = new Set(['station']);`);
   const state = JSON.parse(run('JSON.stringify(collectProjectClientState())'));
   assert.equal(state.snapshot_version, 2);
   assert.deepEqual(state.wp.advancedResult.turbulence, [1, 2]);
   assert.equal(state.wp.mcpResult.run_id, 'saved');
-  assert.equal(state.wp.farmResult.aep_mwh, 123);
   assert.deepEqual(state.parque.wakeProfile.deficit_pct, [12]);
   assert.deepEqual(state.krig.selected, ['station']);
   assert.equal(state.risk.base.npv_usd, 123);
@@ -43,13 +42,13 @@ test('snapshot includes all completed module data, no charts or runtime objects'
 test('saved outputs are rendered without rerunning any module', async () => {
   const { run, sandbox } = context();
   sandbox.seen = [];
-  const names = ['renderSavedOverview','renderSavedWind','renderSavedAdvanced','renderSavedEnergy',
-    'renderSavedHybrid','renderSavedQC','renderMCPResult','krig3RenderCalibration','krig3RenderLayer',
-    'krig3RenderCurve','krig3PopulateCurveSelect','krig3ZoomToPrincipal','mapaRenderVariable','parqueInitMap','renderSavedPark','parqueRenderWakeChart',
+  const names = ['renderSavedOverview','renderSavedWind','renderSavedAdvanced',
+    'renderSavedQC','renderMCPResult','krig3RenderCalibration','krig3RenderLayer',
+    'krig3RenderCurve','krig3PopulateCurveSelect','krig3ZoomToPrincipal','parqueInitMap','renderSavedPark','parqueRenderWakeChart',
     'renderTechnoScenarioResult','renderRiskSection','updateResumenHeader','updateResumenVerdict'];
   names.forEach(name => run(`${name} = (...args) => seen.push('${name}');`));
-  run(`WP.windStats={}; WP.advancedResult={}; WP.energyResult={summary:{}}; WP.hybridResult={};
-    WP.qcResult={}; WP.mcpResult={}; KRIG.calibration={}; KRIG.result={}; MAPA.result={};
+  run(`WP.windStats={}; WP.advancedResult={};
+    WP.qcResult={}; WP.mcpResult={}; KRIG.calibration={}; KRIG.result={};
     PARQUE.optResult={}; PARQUE.wakeProfile={}; WP.technoScenarios.integrated.result={}; _riskData={};`);
   await run('renderSavedProjectResults()');
   names.forEach(name => assert.ok(sandbox.seen.includes(name), name));

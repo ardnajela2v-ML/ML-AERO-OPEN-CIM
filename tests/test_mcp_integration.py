@@ -214,7 +214,7 @@ class MCPIntegrationTests(unittest.TestCase):
             'df_energy': pd.DataFrame({'energy_kwh': [12.5, 19.25]}),
         })
         wp = {key: {'saved': [1, 2, 3]} for key in (
-            'advancedResult', 'hybridResult', 'qcResult', 'mcpResult', 'energySimulation')}
+            'advancedResult', 'qcResult', 'mcpResult', 'energySimulation')}
         exported = self.client.post('/api/projects/export', json={
             'session_id': self.sid, 'client_state': {'schema_version': 1, 'snapshot_version': 2, 'wp': wp},
         })

@@ -80,9 +80,7 @@ from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
                               compute_turbulence_intensity, compute_wind_shear,
                               compute_sector_analysis, compute_return_periods,
                               compute_month_hour_heatmap)
-from core.hybrid import (SolarPVModel, BatteryStorage, DieselGenerator,
-                          HybridDispatch, HybridEconomics,
-                          build_load_profile, estimate_clearsky_ghi)
+from core.hybrid import build_load_profile
 from core.site_catalog import get_site_info
 from core.mcp_catalog import (M04_LATITUDE, M04_LONGITUDE, M04_STATION_ID,
                               build_mcp_catalog, public_catalog, catalog_index,
@@ -359,7 +357,7 @@ def create_app():
         'mcp_study', 'reanalysis_study', 'single_station_study', 'active_study_mode',
         'mcp_uploads', 'mcp_runs', 'data_sources',
         'active_data_source', 'wind_stats', 'wind_advanced',
-        'hybrid_result', 'energy_summary', 'df_energy', 'market', 'demand', 'pml',
+        'energy_summary', 'df_energy', 'market', 'demand', 'pml',
         'kriging_calibrations', 'active_kriging_calibration_id',
     }
 
@@ -1116,7 +1114,7 @@ def create_app():
         if isinstance(client_state, dict) and isinstance(client_state.get('wp'), dict):
             active_wp_keys = {
                 'windStats', 'technoResult', 'energyResult',
-                'advancedResult', 'hybridResult', 'qcResult', 'mcpResult',
+                'advancedResult', 'qcResult', 'mcpResult',
                 'energySimulation', 'marketResults', 'farmResult', 'farmLayout', 'turbineComparison',
                 'technoInputsInitialized', 'technoInputsDirty',
                 'technoActiveScenario', 'technoScenarios', 'levParams',
@@ -1438,7 +1436,7 @@ def create_app():
 
     def _invalidate_wind_results(sess):
         for key in ('qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
-                    'df_energy', 'energy_summary', 'hybrid_result',
+                    'df_energy', 'energy_summary',
                     'active_kriging_calibration_id'):
             sess.pop(key, None)
 
@@ -1807,7 +1805,7 @@ def create_app():
             }
             for stale_key in (
                 'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
-                'df_energy', 'energy_summary', 'hybrid_result',
+                'df_energy', 'energy_summary',
             ):
                 sess.pop(stale_key, None)
         return jsonify(_reanalysis_study_payload(sess))
@@ -2327,7 +2325,7 @@ def create_app():
             # recalcular QC, energía y resultados posteriores.
             for stale_key in (
                 'qc_report', 'qc_flags', 'wind_stats', 'wind_advanced',
-                'df_energy', 'energy_summary', 'hybrid_result',
+                'df_energy', 'energy_summary',
             ):
                 sess.pop(stale_key, None)
             record['published_source_id'] = source_id
@@ -2977,125 +2975,6 @@ def create_app():
             return jsonify({'error': str(e)}), 500
 
     # ─── HYBRID SYSTEM (HOMER Pro-style) ──────────────────────────────────────
-
-    @app.route('/api/hybrid/simulate', methods=['POST'])
-    def hybrid_simulate():
-        """Simulate Wind + Solar + Battery + Diesel dispatch for a given load."""
-        body = request.get_json(silent=True) or {}
-        sid  = _require_sid(body)
-        sess = get_session(sid)
-        df = _analysis_df(sess, body)
-        if df is None:
-            return jsonify({'error': 'No data loaded.'}), 400
-
-        try:
-            ws_col = _energy_ws_col(sess, body)
-            ws_h   = _sess_ws_h(body, sess, 'ws_height')
-            lat    = float(body.get('lat', 20.0))
-
-            # --- Wind power ---
-            wind_cfg    = body.get('wind', {})
-            wind_kw_cap = float(wind_cfg.get('capacity_kw', 500))
-            hub_h       = float(wind_cfg.get('hub_height_m', 80))
-            alpha_exp   = float(wind_cfg.get('alpha', 0.143))
-            ws_arr      = df[ws_col].fillna(df[ws_col].median()).values if ws_col in df.columns else np.zeros(len(df))
-            ws_hub      = ws_arr * (hub_h / ws_h) ** alpha_exp
-
-            # Simple power curve: cubic between cut-in/rated/cut-out
-            cut_in  = float(wind_cfg.get('cut_in', 3.0))
-            rated   = float(wind_cfg.get('rated_speed', 12.0))
-            cut_out = float(wind_cfg.get('cut_out', 25.0))
-            wind_kw = np.where(
-                (ws_hub >= cut_in) & (ws_hub < rated),
-                wind_kw_cap * ((ws_hub - cut_in) / (rated - cut_in)) ** 3,
-                np.where((ws_hub >= rated) & (ws_hub <= cut_out), wind_kw_cap, 0.0)
-            )
-
-            # --- Solar PV ---
-            solar_cfg = body.get('solar', {})
-            solar_kwp = float(solar_cfg.get('capacity_kwp', 0))
-            solar_kw  = np.zeros(len(df))
-            if solar_kwp > 0:
-                ghi = estimate_clearsky_ghi(df.index if isinstance(df.index, pd.DatetimeIndex)
-                                            else pd.date_range('2020-01-01', periods=len(df), freq='h'),
-                                            lat=lat,
-                                            cloud_factor=float(solar_cfg.get('cloud_factor', 0.65)))
-                pv  = SolarPVModel(capacity_kwp=solar_kwp,
-                                   pr=float(solar_cfg.get('pr', 0.80)))
-                solar_kw = pv.power_kw(ghi)
-
-            # --- Battery ---
-            batt_cfg = body.get('battery', {})
-            batt_kwh = float(batt_cfg.get('capacity_kwh', 0))
-            battery  = None
-            if batt_kwh > 0:
-                battery = BatteryStorage(
-                    capacity_kwh=batt_kwh,
-                    c_rate=float(batt_cfg.get('c_rate', 0.5)),
-                    eta_rt=float(batt_cfg.get('eta_rt', 0.92)))
-
-            # --- Diesel ---
-            diesel_cfg = body.get('diesel', {})
-            diesel_kw  = float(diesel_cfg.get('capacity_kw', 0))
-            diesel     = None
-            if diesel_kw > 0:
-                diesel = DieselGenerator(
-                    capacity_kw=diesel_kw,
-                    fuel_price_usd_l=float(diesel_cfg.get('fuel_price', 0.90)))
-
-            # --- Load ---
-            load_cfg = body.get('load', {})
-            annual_kwh = float(load_cfg.get('annual_kwh', 1_000_000))
-            peak_kw    = float(load_cfg.get('peak_kw', annual_kwh / 4380))
-            profile_t  = load_cfg.get('profile_type', 'residential')
-            load_kw    = build_load_profile(annual_kwh, peak_kw, profile_t, len(df))
-
-            # --- Dispatch ---
-            sim = HybridDispatch()
-            result = sim.simulate(load_kw, wind_kw, solar_kw, battery, diesel)
-
-            # --- Economics ---
-            econ_cfg = body.get('economics', {})
-            eco = HybridEconomics()
-            economics = eco.compute(
-                wind_kw=wind_kw_cap, solar_kw=solar_kwp,
-                battery_kwh=batt_kwh, diesel_kw=diesel_kw,
-                dispatch=result,
-                discount_rate=float(econ_cfg.get('discount_rate', 0.08)),
-                lifetime=int(econ_cfg.get('lifetime', 25)))
-
-            result['economics'] = economics
-            result['config'] = {
-                'wind_kw': wind_kw_cap, 'solar_kwp': solar_kwp,
-                'battery_kwh': batt_kwh, 'diesel_kw': diesel_kw,
-                'load_annual_kwh': annual_kwh, 'profile': profile_t,
-            }
-            result['data_source'] = _analysis_source_info(sess, body)
-            if not _store_wind_results(sess, hybrid_result=result):
-                return _err('La fuente cambió durante el cálculo', 409)
-            return jsonify(numpy_to_python(result))
-
-        except Exception as e:
-            logger.exception('Error en %s', request.path)
-            return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/hybrid/load_profile', methods=['POST'])
-    def hybrid_load_profile():
-        """Return synthetic load profile for preview."""
-        body       = request.get_json(silent=True) or {}
-        annual_kwh = float(body.get('annual_kwh', 1_000_000))
-        peak_kw    = float(body.get('peak_kw', annual_kwh / 4380))
-        ptype      = body.get('profile_type', 'residential')
-        n          = int(body.get('n_hours', 8760))
-        profile    = build_load_profile(annual_kwh, peak_kw, ptype, n)
-        step       = max(1, n // 720)
-        return jsonify({
-            'load_kw': [round(float(v), 2) for v in profile[::step]],
-            'peak_kw': round(float(profile.max()), 2),
-            'mean_kw': round(float(profile.mean()), 2),
-            'annual_kwh': round(float(profile.sum()), 0),
-            'step': step,
-        })
 
     # ─── TECHNO-ECONOMIC ──────────────────────────────────────────────────────────
 
@@ -4354,194 +4233,6 @@ def create_app():
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
-
-    @app.route('/api/grid/build', methods=['POST'])
-    def grid_build_resource():
-        """
-        Build a multi-variable resource grid centred on a session site (or an
-        arbitrary lat/lon) using Ordinary Kriging across all sites within
-        radius_km. Returns 4 grids in one shot (speed/power/AEP/CF) plus
-        the per-site values.
-
-        OPTIMIZADO: lee archivos en paralelo (ThreadPool, 6 workers) y usa
-        cache mtime-aware. Segunda llamada ~instantanea (O(n) vs O(n*IO)).
-        """
-        from math import gamma as _gamma
-        from scipy.stats import weibull_min as _wbl
-
-        body = request.get_json(silent=True) or {}
-        sid  = _require_sid(body)
-        sess = sessions.get(sid, {})
-
-        cen_lat = body.get('center_lat')
-        cen_lon = body.get('center_lon')
-        if cen_lat is None and 'meta' in sess:
-            cen_lat = sess['meta'].get('latitude')
-            cen_lon = sess['meta'].get('longitude')
-        if cen_lat is None or cen_lon is None:
-            return jsonify({'error': 'Sin centro: carga un sitio o pasa center_lat/center_lon'}), 400
-        cen_lat, cen_lon = float(cen_lat), float(cen_lon)
-
-        radius_km = float(body.get('radius_km', 200))
-        n_grid    = int(body.get('n_grid', 60))
-        model     = body.get('model', 'exponential')
-        year      = body.get('year')
-        if year is not None:
-            year = int(year)
-        fixed_bounds = body.get('bounds') or None
-        if fixed_bounds:
-            try:
-                fixed_bounds = {
-                    'lat_min': float(fixed_bounds['lat_min']),
-                    'lat_max': float(fixed_bounds['lat_max']),
-                    'lon_min': float(fixed_bounds['lon_min']),
-                    'lon_max': float(fixed_bounds['lon_max']),
-                }
-                if fixed_bounds['lat_min'] > fixed_bounds['lat_max']:
-                    fixed_bounds['lat_min'], fixed_bounds['lat_max'] = fixed_bounds['lat_max'], fixed_bounds['lat_min']
-                if fixed_bounds['lon_min'] > fixed_bounds['lon_max']:
-                    fixed_bounds['lon_min'], fixed_bounds['lon_max'] = fixed_bounds['lon_max'], fixed_bounds['lon_min']
-            except Exception:
-                return jsonify({'error': 'Bounds inválidos para el área seleccionada'}), 400
-        p_nom_kw  = float(body.get('p_nom_kw', 2000))
-        rotor_m   = float(body.get('rotor_m', 80))
-        cp        = float(body.get('cp', 0.4))
-
-        folder = Config.DATA_FOLDER
-        if not os.path.isdir(folder):
-            return jsonify({'error': f'DATA_FOLDER no existe: {folder}'}), 404
-
-        v_arr   = np.linspace(0.1, 25, 200)
-        A_rotor = np.pi * (rotor_m ** 2) / 4
-        p_kw    = np.minimum(0.5 * 1.225 * A_rotor * cp * v_arr ** 3 / 1000.0, p_nom_kw)
-
-        # 1. Filtrar por radio (solo parse de nombre, sin IO de disco)
-        candidate_paths = []
-        for fn in sorted(os.listdir(folder)):
-            if fn.startswith('.') or not fn.lower().endswith('.txt'):
-                continue
-            coords = parse_coords_from_filename(fn)
-            if not coords:
-                continue
-            lat, lon = coords
-            if fixed_bounds:
-                if not (fixed_bounds['lat_min'] <= lat <= fixed_bounds['lat_max'] and
-                        fixed_bounds['lon_min'] <= lon <= fixed_bounds['lon_max']):
-                    continue
-            else:
-                if _haversine_km(lat, lon, cen_lat, cen_lon) > radius_km:
-                    continue
-            candidate_paths.append(os.path.join(folder, fn))
-
-        if not candidate_paths:
-            msg = 'el área seleccionada' if fixed_bounds else f'radio {radius_km} km'
-            return jsonify({'error': f'Sin archivos .txt en {msg}'}), 400
-
-        # 2. Leer en paralelo con cache mtime-aware (I/O bound -> ThreadPool)
-        stat_list = parallel_read_sites(candidate_paths, year=year)
-
-        # 3. Calcular AEP/CF por sitio (vectorial, rapido)
-        sites = []
-        for path, stats in zip(candidate_paths, stat_list):
-            if stats is None or stats['_n'] < 24:
-                continue
-            fn  = os.path.basename(path)
-            C   = stats['weibull_C']
-            K   = stats['weibull_K']
-            rho = stats['rho_mean']
-            try:
-                pdf     = _wbl.pdf(v_arr, K, scale=C)
-                aep_kwh = float(np.trapz(p_kw * pdf, v_arr) * 8760)
-                pd_wm2  = 0.5 * rho * (C ** 3) * _gamma(1 + 3 / max(K, 0.1))
-            except Exception:
-                aep_kwh, pd_wm2 = 0.0, 0.0
-            cf_pct = 100.0 * aep_kwh / (p_nom_kw * 8760) if p_nom_kw > 0 else 0.0
-            ws_hub = np.asarray(stats.get('ws_hub', []), dtype=float)
-            gust_ms = float(np.nanpercentile(ws_hub, 99.5)) if ws_hub.size else float(stats.get('v_max', 0.0))
-            sites.append({
-                'filename':  fn,
-                'lat':       stats['_lat'],
-                'lon':       stats['_lon'],
-                'speed':     float(stats['v_mean']),
-                'gust':      gust_ms,
-                'power':     float(pd_wm2),
-                'aep':       float(aep_kwh / 1000.0),
-                'cf':        float(cf_pct),
-                'weibull_C': float(C),
-                'weibull_K': float(K),
-            })
-
-        if len(sites) < 3:
-            msg = 'del área seleccionada' if fixed_bounds else f'en {radius_km} km del centro'
-            return jsonify({'error':
-                f'Necesitas ≥ 3 sitios {msg} (hay {len(sites)})'}), 400
-
-        def _scaled(vals):
-            arr = np.asarray(vals, dtype=float)
-            lo, hi = float(np.nanmin(arr)), float(np.nanmax(arr))
-            if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-                return np.full(len(arr), 50.0)
-            return 100.0 * (arr - lo) / (hi - lo)
-
-        speed_s = _scaled([s['speed'] for s in sites])
-        power_s = _scaled([s['power'] for s in sites])
-        gust_s  = _scaled([s['gust'] for s in sites])
-        for idx, s in enumerate(sites):
-            s['resource_score'] = float(0.45 * speed_s[idx] + 0.35 * power_s[idx] + 0.20 * gust_s[idx])
-
-        optimal_sites = sorted(sites, key=lambda s: s['resource_score'], reverse=True)[:12]
-        optimal_sites = [
-            {
-                'rank': i + 1,
-                'score': float(s['resource_score']),
-                'filename': s['filename'],
-                'lat': s['lat'],
-                'lon': s['lon'],
-                'speed': s['speed'],
-                'gust': s['gust'],
-                'power': s['power'],
-                'aep': s['aep'],
-                'cf': s['cf'],
-            }
-            for i, s in enumerate(optimal_sites)
-        ]
-
-        lats = [s['lat'] for s in sites]
-        lons = [s['lon'] for s in sites]
-
-        units  = {'speed': 'm/s', 'gust': 'm/s', 'power': 'W/m²', 'resource_score': 'pts'}
-        titles = {
-            'speed': 'Velocidad de viento @ hub (m/s)',
-            'gust':  'Ráfaga/extremo anual P99.5 @ hub (m/s)',
-            'power': 'Densidad de potencia del viento (W/m²)',
-            'resource_score': 'KPI compuesto de recurso eólico (0-100)',
-        }
-
-        grids = {}
-        for var in ('speed', 'gust', 'power', 'resource_score'):
-            vals = [s[var] for s in sites]
-            try:
-                g = kriging_grid(lons, lats, vals, n=n_grid, model=model,
-                                 bounds=fixed_bounds)
-            except Exception as e:
-                return jsonify({'error': f'Kriging falló para {var}: {e}'}), 500
-            g['unit']  = units[var]
-            g['title'] = titles[var]
-            grids[var] = g
-
-        bounds = grids['speed']['bounds']
-        return jsonify(numpy_to_python({
-            'center':    {'lat': cen_lat, 'lon': cen_lon},
-            'radius_km': radius_km,
-            'n_sites':   len(sites),
-            'sites':     sites,
-            'optimal_sites': optimal_sites,
-            'bounds':    bounds,
-            'grids':     grids,
-            'p_nom_kw':  p_nom_kw,
-            'rotor_m':   rotor_m,
-            'area_bounds': fixed_bounds,
-        }))
 
     @app.route('/api/farm/wake_profile', methods=['POST'])
     def farm_wake_profile():
