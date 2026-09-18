@@ -4990,6 +4990,29 @@ function krig3SyncGenerationMode() {
       studyBadge.className = 'badge badge--info';
     }
   }
+  // El título y las notas de este panel decían "MCP" incluso cuando la
+  // fuente anclada era una sola estación/referencia o el conjunto de
+  // reanálisis del área (sin MCP real) — deben describir la fuente que
+  // realmente está activa.
+  const isMcp = !!WP.activeDataSource?.startsWith('mcp:');
+  const title = document.getElementById('krig3-downscaling-title');
+  if (title) {
+    title.textContent = isMcp ? 'Continuidad MCP → Diseño'
+      : WP.studyMode === 'reanalysis_only' ? 'Continuidad de reanálisis del área → Diseño'
+      : WP.studyMode === 'single_reference' ? 'Continuidad de referencia virtual → Diseño'
+      : WP.studyMode === 'observed_only' ? 'Continuidad de estación real → Diseño'
+      : 'Continuidad de fuente → Diseño';
+  }
+  const methodNote = document.getElementById('krig3-method-note');
+  if (methodNote) {
+    methodNote.textContent = isMcp
+      ? 'El hindcast MCP publicado fija el clima absoluto. Los nodos se neutralizan, se interpola el campo neutral y se reaplica por píxel la rugosidad WorldCover con respaldo de pendiente DEM, igual que en el método clásico.'
+      : 'La fuente elegida fija el clima absoluto (sin reconstrucción MCP). Los nodos ERA5/MERRA-2 se neutralizan, se interpola el campo neutral y se reaplica por píxel la rugosidad WorldCover con respaldo de pendiente DEM, igual que en el método clásico.';
+  }
+  // La comparación "raw vs calibrado" solo existe cuando hay una calibración
+  // MCP real contra M04; en los demás anclajes no hay ese contraste.
+  const rawNote = document.getElementById('krig3-raw-method-note');
+  if (rawNote) rawNote.style.display = isMcp ? '' : 'none';
 }
 
 // Rampa RdYlBu reversed (azul→rojo)
