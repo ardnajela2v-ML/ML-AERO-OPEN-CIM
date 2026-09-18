@@ -39,6 +39,21 @@ test('area decisions depend on available stations, not current selection', () =>
     if (kind==='virtual' && virtual<3) assert.match(ctx.element('globe-source-choice').innerHTML,/value="reanalysis_only" disabled/);
   }
 });
+test('a nearby real station does not block choosing the reanalysis-only area path', () => {
+  // Con estación real + ≥3 referencias en el radio ("mixed"), el usuario debe
+  // poder elegir trabajar solo con ERA5/MERRA-2 del área sin usar esa
+  // estación ni hacer MCP — antes esa opción desaparecía del selector.
+  const ctx = context(); area(ctx, 1, 3);
+  ctx.run('globeUpdateContinueState()');
+  const html = ctx.element('globe-source-choice').innerHTML;
+  assert.match(html, /value="mcp"/);
+  assert.match(html, /value="observed_only"/);
+  assert.match(html, /value="reanalysis_only"/);
+  assert.match(html, /value="single_reference"/);
+  ctx.run(`GLOBE.sourceChoice = 'reanalysis_only'; globeUpdateContinueState();`);
+  assert.equal(ctx.element('btn-globe-continue-reanalysis').style.display, '');
+  assert.equal(ctx.element('btn-globe-continue-reanalysis').disabled, false);
+});
 test('single real is automatic, multiple reals require selection, radius removes stale picks', async () => {
   const ctx=context(); area(ctx,1,0);ctx.element('globe-radius').value='200';
   ctx.run('globeRenderStationList=()=>globeUpdateContinueState(); globeUpdateStatus=()=>{};');

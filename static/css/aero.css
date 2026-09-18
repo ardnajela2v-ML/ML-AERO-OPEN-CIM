@@ -348,7 +348,7 @@ html, body {
 .module { display: none; }
 .module.active { display: block; }
 
-/* MCP Lab */
+/* Reconstrucción histórica del viento (ex MCP Lab) */
 .mcp-study-grid {
   display: grid;
   grid-template-columns: minmax(220px, 1.2fr) minmax(280px, 2fr) repeat(3, minmax(120px, .65fr));

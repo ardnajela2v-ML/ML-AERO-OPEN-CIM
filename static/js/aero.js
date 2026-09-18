@@ -327,6 +327,7 @@ async function applyProjectClientState(state) {
     WP.technoScenarios = { integrated };
     if (!integrated.result && WP.technoResult) integrated.result = WP.technoResult;
     krig3ActivatePublishedSource();
+    refreshReconstruccionDisclosure();
   }
   if (state.krig) {
     Object.assign(KRIG, state.krig);
@@ -10053,9 +10054,6 @@ function bindMCPLab() {
       toast(`No se pudo guardar la altura objetivo: ${e.message}`, 'error');
     }
   });
-  document.querySelector('.nav-btn[data-module="mcp"]')?.addEventListener('click', () => {
-    setTimeout(() => loadMCPStudy(WP.importedProject ? WP.mcpStudy : null), 30);
-  });
 }
 
 async function persistMCPTargetHeight() {
@@ -11464,11 +11462,19 @@ function globeUpdateContinueState() {
   const choice = document.getElementById('globe-source-choice');
   const single = document.getElementById('globe-single-reference');
   const sub = document.getElementById('globe-panel-sub');
-  const options = kind === 'mixed'
-    ? [['mcp', 'Realizar MCP'], ['observed_only', 'Usar solo la estación real']]
-    : kind === 'virtual'
-    ? [['reanalysis_only', `Procesar el conjunto (${references.length} virtuales; mínimo 3)`], ['single_reference', 'Elegir una sola referencia virtual']]
-    : kind === 'observed' ? [['observed_only', 'Usar estación real observada']] : [];
+  // Cada opción depende únicamente de qué datos existen en el radio, no de
+  // si además hay otro tipo disponible: una estación real cercana no debe
+  // "anclar" al usuario a MCP/estación real si también hay referencias
+  // ERA5/MERRA-2 y prefiere trabajar solo con el área de reanálisis.
+  const options = [];
+  if (kind === 'mixed') options.push(['mcp', 'Realizar MCP']);
+  if (observed.length) {
+    options.push(['observed_only', kind === 'mixed' ? 'Usar solo la estación real' : 'Usar estación real observada']);
+  }
+  if (references.length) {
+    options.push(['reanalysis_only', `Procesar el conjunto (${references.length} virtuales; mínimo 3)`]);
+    options.push(['single_reference', 'Elegir una sola referencia virtual']);
+  }
   if (!options.some(([value]) => value === GLOBE.sourceChoice)) GLOBE.sourceChoice = '';
   if (kind === 'observed') GLOBE.sourceChoice = 'observed_only';
   if (choice) {
@@ -11489,7 +11495,7 @@ function globeUpdateContinueState() {
   if (sub) sub.textContent = !available
     ? (GLOBE.catalogStatus === 'error' ? 'El catálogo no está disponible. Reintenta la carga.' : 'Selecciona un área; espera a que termine la carga del catálogo.')
     : kind === 'empty' ? 'Agrega una estación real o virtual para continuar.'
-    : kind === 'mixed' ? '¿Deseas realizar MCP o usar solo una estación real como fuente temporal?'
+    : kind === 'mixed' ? '¿Deseas realizar MCP, usar solo la estación real, o trabajar con las referencias ERA5/MERRA-2 del área sin estación real?'
     : kind === 'observed' ? (observed.length === 1 ? 'La estación real se usará automáticamente como fuente observada del proyecto.' : 'Elige una estación real de la lista como fuente observada del proyecto.')
     : references.length < 3 ? 'Elige una referencia virtual, o agrega más estaciones para procesar un conjunto de al menos tres.'
     : '¿Deseas procesar las virtuales del área o elegir una sola referencia?';
@@ -11502,7 +11508,7 @@ function globeUpdateContinueState() {
   };
   const hasObserved = observed.some(site => globeSiteKey(site) === GLOBE.master);
   configure('btn-globe-continue-mcp', GLOBE.sourceChoice === 'mcp', hasObserved && GLOBE.mcpReferences.size > 0,
-    'Continuar a MCP Lab →');
+    'Continuar a Reconstrucción histórica (MCP) →');
   configure('btn-globe-continue-reanalysis', GLOBE.sourceChoice === 'reanalysis_only', references.length >= 3,
     `Preparar recurso con ${references.length} virtuales →`);
   configure('btn-globe-continue-single', ['observed_only', 'single_reference'].includes(GLOBE.sourceChoice),
@@ -11576,6 +11582,7 @@ async function continueGlobeToSingleStation() {
     krig3SyncGenerationMode();
     collapseGlobeStage();
     document.querySelector('.nav-btn[data-module="resumen"]')?.click();
+    refreshReconstruccionDisclosure();
     toast(`Fuente temporal: ${study.published_source.label}. Kriging conserva sus estaciones espaciales.`, 'success');
     if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
   } catch (e) { toast(`No se pudo preparar la estación: ${e.message}`, 'error'); }
@@ -11604,7 +11611,7 @@ async function continueGlobeToMCP() {
     GLOBE.studyMode = 'mcp_observed';
     if (GLOBE.mcpReferences.size === 1) toast('Una sola referencia es válida; se recomiendan varias para comparar.', 'warn');
     collapseGlobeStage();
-    document.querySelector('.nav-btn[data-module="mcp"]')?.click();
+    resumenGoToSubtab('reconstruccion');
     await loadMCPStudy();
   } catch (e) {
     toast(`No se pudo crear el estudio MCP: ${e.message}`, 'error');
@@ -11612,7 +11619,10 @@ async function continueGlobeToMCP() {
 }
 
 async function continueGlobeToReanalysis() {
-  if (GLOBE.preparing || GLOBE.sourceChoice !== 'reanalysis_only' || !GLOBE.poi || globeAreaOptions(GLOBE.visibleSites).observed.length) return;
+  // No exige que el radio esté libre de estaciones reales: el usuario puede
+  // elegir trabajar solo con el área ERA5/MERRA-2 aunque haya una estación
+  // observada cerca (esa estación simplemente no se usa en este estudio).
+  if (GLOBE.preparing || GLOBE.sourceChoice !== 'reanalysis_only' || !GLOBE.poi) return;
   const references = GLOBE.visibleSites.filter(site => site.data_kind === 'reanalysis');
   if (references.length < 3) {
     toast('Amplía el radio: se requieren al menos tres referencias ERA5/MERRA-2.', 'warn');
@@ -11687,6 +11697,7 @@ async function continueGlobeToReanalysis() {
     krig3SyncGenerationMode();
     collapseGlobeStage();
     document.querySelector('.nav-btn[data-module="resumen"]')?.click();
+    refreshReconstruccionDisclosure();
     toast(`Recurso del área preparado con ${references.length} referencias ERA5/MERRA-2. MCP se omitió.`, 'success');
     if (typeof runResumenPipeline === 'function') setTimeout(() => runResumenPipeline(), 250);
   } catch (e) {
@@ -12789,8 +12800,20 @@ function krigingGoToSubtab(name) {
 function bindResumenUnified() {
   // Sub-tabs
   document.querySelectorAll('#mod-resumen .subtab').forEach(tab => {
-    tab.addEventListener('click', () => switchSubTab('mod-resumen', tab.dataset.subtab));
+    tab.addEventListener('click', () => {
+      switchSubTab('mod-resumen', tab.dataset.subtab);
+      // "Reconstrucción histórica" (ex MCP Lab) antes se refrescaba al
+      // entrar al módulo "MCP" independiente; ahora es la 1ra sub-pestaña
+      // de Recurso Eólico, así que el refresco ocurre al abrirla.
+      if (tab.dataset.subtab === 'reconstruccion') {
+        refreshReconstruccionDisclosure();
+        setTimeout(() => loadMCPStudy(WP.importedProject ? WP.mcpStudy : null), 30);
+      }
+    });
   });
+  // Estado inicial del desplegable de reconstrucción MCP (colapsado con
+  // leyenda mientras no haya sesión o el estudio activo no sea MCP).
+  refreshReconstruccionDisclosure();
   // Re-calcular
   document.getElementById('btn-resumen-recalc')?.addEventListener('click', () => {
     if (!WP.sessionId) { toast('No hay sesión activa', 'warning'); return; }
@@ -12824,6 +12847,33 @@ function bindResumenUnified() {
   document.querySelector('.nav-btn[data-module="kriging"]')?.addEventListener('click', () => {
     setTimeout(() => krig3AutoFitFromGlobe(), 80);
   });
+}
+
+/** Cambia a la sub-pestaña `name` de Recurso Eólico, activando primero el
+ * módulo si hace falta (reemplaza la navegación al antiguo módulo
+ * independiente "MCP Lab"). */
+function resumenGoToSubtab(name) {
+  const btn = document.querySelector('.nav-btn[data-module="resumen"]');
+  if (btn && !btn.classList.contains('active')) btn.click();
+  switchSubTab('mod-resumen', name);
+  if (name === 'reconstruccion') refreshReconstruccionDisclosure();
+}
+
+/** Ajusta el desplegable "Reconstrucción histórica del viento" (ex MCP Lab,
+ * ahora 1ra sub-pestaña de Recurso Eólico): expandido cuando el estudio
+ * activo del proyecto es MCP, colapsado con una leyenda cuando no se
+ * realizó MCP (fuente única, reanálisis de área, etc.). El usuario siempre
+ * puede abrirlo a mano; esto solo fija el estado por defecto según el
+ * estudio activo. */
+function refreshReconstruccionDisclosure() {
+  const details = document.getElementById('reconstruccion-mcp-details');
+  const summary = document.getElementById('reconstruccion-mcp-summary');
+  if (!details || !summary) return;
+  const isMcp = WP.studyMode === 'mcp_observed';
+  details.open = isMcp;
+  summary.textContent = isMcp
+    ? 'Reconstrucción histórica MCP · ver detalle del estudio'
+    : 'No se realizó reconstrucción histórica MCP para este análisis · clic para ver detalle';
 }
 
 // Encuadra el mapa Kriging a ~35 km del POI del Globe, fija la estación
