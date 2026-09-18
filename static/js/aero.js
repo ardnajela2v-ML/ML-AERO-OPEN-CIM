@@ -12788,6 +12788,24 @@ function leafletClearAll() {
 //  DISEÑO Y OPTIMIZACIÓN DEL PARQUE — módulo unificado (Parámetros y
 //  configuración + Interpolación geoespacial + Selección TOPSIS + Parque)
 // ════════════════════════════════════════════════════════════════════════════
+/** El mapa Kriging (#krig3-map) se crea la primera vez que se entra al
+ * módulo, mientras la sub-pestaña activa por defecto es "parametros" — es
+ * decir, con el contenedor de "geo" todavía en display:none. Leaflet mide
+ * el div en ese momento y se queda con un tamaño incorrecto (solo pinta el
+ * rincón que alcanzó a medir) hasta que alguien le pide recalcular con el
+ * contenedor ya visible. Se llama cada vez que "geo" se vuelve la
+ * sub-pestaña activa, sea por click o por navegación cruzada. */
+function krig3ActivateMapSubtab() {
+  krig3InitMap();
+  krig3LoadSites();
+  requestAnimationFrame(() => {
+    if (KRIG.map) KRIG.map.invalidateSize();
+    // Segunda invalidación tras la transición CSS de la sub-pestaña, por si
+    // el layout todavía se estaba acomodando en la primera pasada.
+    setTimeout(() => { if (KRIG.map) KRIG.map.invalidateSize(); }, 200);
+  });
+}
+
 function bindKrigingSubtabs() {
   document.querySelectorAll('#mod-kriging .subtab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -12800,6 +12818,7 @@ function bindKrigingSubtabs() {
       if (tab.dataset.subtab === 'parque' && typeof parqueActivate === 'function') {
         requestAnimationFrame(parqueActivate);
       }
+      if (tab.dataset.subtab === 'geo') krig3ActivateMapSubtab();
     });
   });
 }
@@ -12815,6 +12834,7 @@ function krigingGoToSubtab(name) {
   if (name === 'parque' && typeof parqueActivate === 'function') {
     requestAnimationFrame(parqueActivate);
   }
+  if (name === 'geo') krig3ActivateMapSubtab();
 }
 
 // ════════════════════════════════════════════════════════════════════════════
