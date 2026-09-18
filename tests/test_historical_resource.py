@@ -79,6 +79,86 @@ class HistoricalProductionTests(unittest.TestCase):
         self.assertEqual(refined['production_source'], provenance)
         self.assertEqual(result['ranking']['ranking'][0]['production_source'], provenance)
 
+    def test_hour_of_year_survives_the_same_valid_mask_as_ws_wd(self):
+        resource = {**self.resource, 'hour_of_year': [10, 20, 30, 40, 50]}
+        prepared = prepare_historical_wind(resource, 80)
+        # rows 3 (ws NaN) y 4 (wd NaN) se excluyen — hour_of_year debe seguir
+        # exactamente esa misma máscara, no un recorte independiente.
+        np.testing.assert_array_equal(prepared['hour_of_year'], [10, 20, 30])
+
+    def test_chronological_revenue_present_only_with_pml_and_hour_of_year(self):
+        options = dict(wake_model='jensen', rho_override=1.2)
+        price = np.full(8760, 0.08)
+        price[18:22] = 0.20  # tarde-noche cara
+        resource_with_hours = {**self.resource, 'hour_of_year': [1, 19, 20, 3, 4]}
+        prepared = prepare_historical_wind(resource_with_hours, 80)
+
+        with_price = historical_layout_simulation(
+            [[0, 0]], self.turbine, prepared, None, (16.505, -94.995),
+            price_hourly_usd_kwh=price, **options)
+        self.assertIn('chronological_revenue', with_price)
+        chron = with_price['chronological_revenue']
+        self.assertGreater(chron['revenue_usd_year1'], 0)
+        self.assertIsNotNone(chron['capture_ratio'])
+
+        without_price = historical_layout_simulation(
+            [[0, 0]], self.turbine, prepared, None, (16.505, -94.995), **options)
+        self.assertNotIn('chronological_revenue', without_price)
+        # AEP de la vía normal no cambia por calcular (o no) el ingreso real.
+        self.assertEqual(with_price['aep_mwh'], without_price['aep_mwh'])
+
+        resource_no_hours = prepare_historical_wind(self.resource, 80)  # sin hour_of_year
+        no_hours_result = historical_layout_simulation(
+            [[0, 0]], self.turbine, resource_no_hours, None, (16.505, -94.995),
+            price_hourly_usd_kwh=price, **options)
+        self.assertNotIn('chronological_revenue', no_hours_result)
+
+    def test_flat_price_gives_capture_ratio_of_one(self):
+        options = dict(wake_model='jensen', rho_override=1.2)
+        flat_price = np.full(8760, 0.08)
+        resource_with_hours = {**self.resource, 'hour_of_year': [1, 19, 20, 3, 4]}
+        prepared = prepare_historical_wind(resource_with_hours, 80)
+        result = historical_layout_simulation(
+            [[0, 0]], self.turbine, prepared, None, (16.505, -94.995),
+            price_hourly_usd_kwh=flat_price, **options)
+        self.assertAlmostEqual(result['chronological_revenue']['capture_ratio'], 1.0, places=6)
+
+    def test_park_layout_uses_real_hourly_revenue_when_pml_is_loaded(self):
+        points = [[-300., 0.], [300., 0.]]
+
+        def geometry(*args, **kwargs):
+            result = {'max_n_fit': 2, 'n_placed': 2, 'layout_xy_m': points,
+                      'layout_latlon': [[16.505, -94.998], [16.505, -94.992]],
+                      'layout_config': {}, 'min_sep_m': 600, 'area_km2': .4, 'n_layouts_evaluated': 1}
+            if kwargs.get('layout_evaluator'):
+                result['constraint_evaluation'] = kwargs['layout_evaluator'](points)
+            return result
+
+        resource_with_hours = copy.deepcopy(self.resource)
+        resource_with_hours['hour_of_year'] = [1, 19, 20, 3, 4]
+        skewed_price = np.full(8760, 0.08)
+        skewed_price[[1, 19, 20, 3, 4]] = [0.01, 0.01, 0.01, 0.01, 0.01]  # mucho más barato que el promedio
+
+        with patch('core.farm_mcda.optimize_layout_structured', side_effect=geometry), patch(
+                'core.farm_mcda._joint_synthetic_wind', side_effect=AssertionError('Must use history')):
+            flat = analyze_park_layouts(self.sites, self.polygon, 'aerogeneradores',
+                ['gamesa21_p2000_r45.csv'], wind_grid=self.grid,
+                project_years=25, price_usd_kwh=.08, target_height_m=80,
+                max_wake_loss_pct=99, wake_model='jensen', historical_wind=copy.deepcopy(self.resource))
+            real = analyze_park_layouts(self.sites, self.polygon, 'aerogeneradores',
+                ['gamesa21_p2000_r45.csv'], wind_grid=self.grid,
+                project_years=25, price_usd_kwh=.08, target_height_m=80,
+                max_wake_loss_pct=99, wake_model='jensen', historical_wind=resource_with_hours,
+                price_hourly_usd_kwh=skewed_price)
+        flat_row, real_row = flat['alternatives'][0], real['alternatives'][0]
+        self.assertIsNone(flat_row['chronological_revenue'])
+        self.assertIsNotNone(real_row['chronological_revenue'])
+        self.assertLess(real_row['chronological_revenue']['capture_ratio'], 1.0)
+        # Mismo AEP (mismo viento) pero VAN real menor: el parque generó
+        # sobre todo en horas que resultaron baratas en el PML.
+        self.assertAlmostEqual(flat_row['aep_p50_mwh'], real_row['aep_p50_mwh'])
+        self.assertLess(real_row['van_usd'], flat_row['van_usd'])
+
     def test_individual_site_energy_annualizes_the_selected_record(self):
         from core.kriging import turbine_site_economics
         x = np.array([0., 4., 8., 12., 25.])

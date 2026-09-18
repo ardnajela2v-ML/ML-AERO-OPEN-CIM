@@ -550,6 +550,46 @@ class MCPIntegrationTests(unittest.TestCase):
         self.assertEqual(captured[0]['provenance']['selected_year'], 2020)
         self.assertGreater(float(np.mean(captured[0]['pressure_pa'])), 90000)
 
+    def test_spatial_topsis_computes_hour_of_year_and_loads_pml_when_available(self):
+        """Fase 1/2 de robustez de ingreso real (chronological_revenue, ver
+        project_windpro_pending_investigations): api.py debe (a) calcular
+        hour_of_year desde las fechas reales de la fuente activa y (b) pasar
+        el PML horario cargado en la sesión — ambos None/ausentes si no
+        aplica, sin romper el camino existente."""
+        station = self._upload_single_observation(start='2020-01-01')
+        self.assertEqual(self._select_single_station(station).status_code, 200)
+        pml = self.client.post('/api/pml/load', json={'session_id': self.sid})
+        self.assertEqual(pml.status_code, 200, pml.get_data(as_text=True))
+
+        spatial = {'sites': [{'v_mean': 6, 'rho_mean': 1.2}], 'n_virtual_sites': 1,
+                   'spatial_sources': [{'station_id': 'era5-test'}]}
+        captured = {}
+        def evaluate(**kwargs):
+            captured['historical_wind'] = kwargs['historical_wind']
+            captured['price_hourly_usd_kwh'] = kwargs.get('price_hourly_usd_kwh')
+            return {'alternatives': [], 'ranking': {'ranking': []}}
+        with patch('api.analyze_spatial_topsis_sites', return_value=spatial), patch(
+                'api.analyze_park_layouts', side_effect=evaluate):
+            response = self.client.post('/api/multicriteria/spatial', json={
+                'session_id': self.sid, 'scope': 'park', 'price_usd_kwh': .08, 'project_years': 25,
+                'polygon': [{'lat': 16.5, 'lon': -95}, {'lat': 16.5, 'lon': -94.99},
+                            {'lat': 16.51, 'lon': -95}]})
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            task_id = response.get_json()['task_id']
+            for _ in range(200):
+                task = self.client.get(f'/api/kriging/status/{task_id}').get_json()
+                if task['status'] in ['done', 'error']:
+                    break
+                time.sleep(.01)
+            self.assertEqual(task['status'], 'done', task)
+        # Fila 0 = 2020-01-01 00:00 UTC -> hora 0 del año; 72 horas
+        # consecutivas de enero no cruzan un cambio de mes/bisiesto.
+        np.testing.assert_array_equal(captured['historical_wind']['hour_of_year'], np.arange(72))
+        price = captured['price_hourly_usd_kwh']
+        self.assertIsInstance(price, list)
+        self.assertEqual(len(price), 8760)
+        self.assertTrue(all(0 <= p <= 5 for p in price))  # rango plausible USD/kWh, no MXN/MWh sin convertir
+
     def test_resource_period_preserves_observed_source_and_project_roundtrip(self):
         station = self._upload_single_observation(start='2019-12-31')
         self.assertEqual(self._select_single_station(station).status_code, 200)

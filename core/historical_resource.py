@@ -48,11 +48,16 @@ def prepare_historical_wind(resource, target_height_m, require_direction=True):
             if len(values) != len(speed):
                 raise ValueError('Temperatura/presión y viento deben compartir las mismas fechas.')
             result[key] = values[valid]
+    if resource.get('hour_of_year') is not None:
+        hour_of_year = np.asarray(resource['hour_of_year'], dtype=int).reshape(-1)
+        if len(hour_of_year) == len(speed):
+            result['hour_of_year'] = hour_of_year[valid]
     return result
 
 
-def historical_layout_simulation(points, turbine, resource, wind_grid, origin, **options):
-    from core.farm import _sample_wind_grid, _xy_to_latlon, simulate_wind_farm
+def historical_layout_simulation(points, turbine, resource, wind_grid, origin,
+                                  price_hourly_usd_kwh=None, **options):
+    from core.farm import _sample_wind_grid, _xy_to_latlon, simulate_wind_farm, chronological_revenue
     multipliers = np.ones(len(points))
     if wind_grid:
         coords = np.asarray(points, dtype=float)
@@ -67,4 +72,18 @@ def historical_layout_simulation(points, turbine, resource, wind_grid, origin, *
         sample_duration_hours=resource['dt_hours'], **options)
     result['production_source'] = {**resource['provenance'],
         'local_speed_multipliers': multipliers.tolist()}
+    # Fase 1/2 de robustez de ingresos: si hay PML horario cargado y la fuente
+    # trae hora del año (ver prepare_historical_wind), cruza generación×precio
+    # hora por hora en vez de AEP×precio promedio. Ausente por defecto — no
+    # cambia nada si no se cargó PML.
+    if price_hourly_usd_kwh is not None and resource.get('hour_of_year') is not None:
+        chron_kwargs = {k: options[k] for k in
+            ('k_wake', 'ct', 'n_sectors', 'availability', 'electrical_losses', 'wake_model', 'rho_override')
+            if k in options}
+        result['chronological_revenue'] = chronological_revenue(
+            points, turbine, np.asarray(resource['ws']), np.asarray(resource['wd']),
+            resource['hour_of_year'], price_hourly_usd_kwh,
+            sample_duration_hours=resource['dt_hours'],
+            temperature_c=resource.get('temperature_c'), pressure_pa=resource.get('pressure_pa'),
+            local_wind_multipliers=multipliers, **chron_kwargs)
     return result

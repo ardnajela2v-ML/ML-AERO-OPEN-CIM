@@ -1878,6 +1878,36 @@ def create_app():
         payload['ready_for_design'] = bool(all(readiness.values()))
         return payload
 
+    def _pml_value_to_usd_kwh(value, fx_rate, unit):
+        """Réplica exacta de _pmlToUsdKwh (aero.js) para convertir un valor
+        PML a USD/kWh en el servidor — mismas reglas de unidad/heurística de
+        magnitud, para no duplicar la conversión con resultados distintos."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(v):
+            return None
+        fx = None
+        try:
+            fx = float(fx_rate)
+        except (TypeError, ValueError):
+            fx = None
+        normalized_unit = str(unit or '').upper().replace(' ', '')
+        if 'USD/KWH' in normalized_unit:
+            return v
+        if 'USD/MWH' in normalized_unit:
+            return v / 1000.0
+        if 'MXN/KWH' in normalized_unit:
+            return v / fx if fx else None
+        if 'MXN/MWH' in normalized_unit:
+            return v / fx / 1000.0 if fx else None
+        if v > 50:
+            return v / fx / 1000.0 if fx else None
+        if v > 1:
+            return v / 1000.0
+        return v
+
     def _store_fixed_pml_profile(sess, *, source_key, meta, profile,
                                  normalization, base_year=2018):
         """Publica el PML observado de 2018 como perfil fijo, sin modelos."""
@@ -6006,8 +6036,27 @@ def create_app():
             return _err(str(exc))
         source_info = None
         historical_wind = None
+        price_hourly_usd_kwh = None
         if body.get('session_id'):
             source_session = get_session(str(body['session_id']))
+            # PML horario (Fase 1/2 de ingreso real): si ya se cargó un PML
+            # fijo para esta sesión, se cruza generación×precio hora por hora
+            # en vez de AEP×precio promedio (ver core.farm.chronological_revenue).
+            # None si no hay PML cargado — no cambia nada del comportamiento actual.
+            pml_model = ((source_session.get('park_configuration') or {})
+                        .get('market_models', {}).get('pml', {}))
+            pml_hourly = pml_model.get('hourly_profile_2018')
+            if isinstance(pml_hourly, list) and len(pml_hourly) == 8760:
+                fx_rate = (source_session.get('park_configuration') or {}).get('base_fx_mxn_usd')
+                try:
+                    price_hourly_usd_kwh = [
+                        _pml_value_to_usd_kwh(value, fx_rate, pml_model.get('unit'))
+                        for value in pml_hourly
+                    ]
+                    if any(value is None for value in price_hourly_usd_kwh):
+                        price_hourly_usd_kwh = None
+                except (TypeError, ValueError):
+                    price_hourly_usd_kwh = None
             source_info = _analysis_source_info(source_session, body)
             source_frame = _analysis_df(source_session, body)
             if source_frame is not None and len(source_frame):
@@ -6037,6 +6086,15 @@ def create_app():
                     for column, output in [('temperature', 'temperature_c'), ('pressure', 'pressure_pa')]:
                         if column in source_frame:
                             historical_wind[output] = pd.to_numeric(source_frame[column], errors='coerce').to_numpy(dtype=float)
+                    if isinstance(source_frame.index, pd.DatetimeIndex):
+                        # Hora 0-8759 asumiendo un año calendario de 8760 horas
+                        # fijas (mismo supuesto que el PML publicado, que no
+                        # trae fecha propia — ver core.forecasting.read_pml).
+                        # 29 de febrero se reasigna al 28 (día 59 tope 365).
+                        day_of_year = np.minimum(source_frame.index.dayofyear, 365) - 1
+                        historical_wind['hour_of_year'] = (
+                            day_of_year * 24 + source_frame.index.hour
+                        ).to_numpy(dtype=int) % 8760
         source_selection_token = source_session.get('_source_selection_token') if source_info else None
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None
@@ -6233,6 +6291,7 @@ def create_app():
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
                         weights=body.get('layout_weights'),
                         historical_wind=historical_wind,
+                        price_hourly_usd_kwh=price_hourly_usd_kwh,
                     )
                     for alternative in layout_result.get('alternatives', []):
                         alternative['spatial_sources'] = spatial.get('spatial_sources', [])

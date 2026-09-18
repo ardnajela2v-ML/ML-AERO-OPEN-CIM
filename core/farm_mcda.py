@@ -122,17 +122,24 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
                cost_model: CostModel, discount_rate: float, project_years: int,
                price_usd_kwh: float, collection_length_m: float,
                cable_usd_per_m: float = 75.0, degradation_pct: float = DEFAULT_DEGRADATION_PCT,
-               decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT):
+               decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT,
+               revenue_year1_override: Optional[float] = None):
     cap = cost_model.capex_breakdown(turbine.rated_power_kw, n_turbines)
     cable_cost = max(0.0, collection_length_m * cable_usd_per_m)
     foundation_cost = cost_model.foundation_cost_usd(
         turbine.rotor_diameter_m, turbine.hub_height_m, n_turbines)
     capex = float(cap['total_capex_usd']) + cable_cost + foundation_cost
     annual_opex = cost_model.opex_annual_usd(capex)
+    # revenue_year1_override: ingreso real del año 1 cruzando generación×precio
+    # hora por hora (core.farm.chronological_revenue), en vez de
+    # aep_p50_mwh×1000×price_usd_kwh. Solo el año 1 — los años 2-25 siguen
+    # degradando/escalando desde ese punto de partida real, no desde el
+    # promedio plano (ver project_cashflows.year1_revenue_override).
     lifecycle = project_cashflows(
         capex, annual_opex, aep_p50_mwh * 1000.0, price_usd_kwh,
         discount_rate, project_years, degradation_pct=degradation_pct,
-        decommissioning_pct=decommissioning_pct)
+        decommissioning_pct=decommissioning_pct,
+        year1_revenue_override=revenue_year1_override)
     decommissioning = lifecycle['decommissioning_usd']
     cashflows = lifecycle['cashflows']
     cashflow_table = lifecycle['cashflow_table']
@@ -205,7 +212,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
                          weights: Optional[Dict[str, float]] = None,
-                         historical_wind: Optional[Dict] = None):
+                         historical_wind: Optional[Dict] = None,
+                         price_hourly_usd_kwh: Optional[List[float]] = None):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -291,7 +299,8 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                     wake_model=wake_model, rho_override=rho)
                 if resource is not None:
                     return historical_layout_simulation(points, turbine, resource,
-                        wind_grid, (lat0, lon0), **options)
+                        wind_grid, (lat0, lon0), price_hourly_usd_kwh=price_hourly_usd_kwh,
+                        **options)
                 result = simulate_wind_farm(points, turbine, ws, wd, **options)
                 result['production_source'] = {'method': 'synthetic_weibull', 'source_id': None}
                 return result
@@ -331,6 +340,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 continue
             other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
             aep_p50 = float(sim['aep_mwh']) * other_survival
+            # Ingreso real (Fase 1/2): cruza generación×precio hora por hora
+            # en vez de AEP×precio promedio (ver core.farm.chronological_revenue).
+            # Solo activo si hay PML horario cargado en la sesión Y fuente
+            # histórica con hora del año — si no, revenue_year1_override queda
+            # None y _economics usa aep_p50×precio como siempre.
+            chron = sim.get('chronological_revenue')
+            revenue_year1_override = (
+                chron['revenue_usd_year1'] * other_survival
+                if chron and chron.get('revenue_usd_year1') is not None else None)
             uncertainty_components = dict(uncertainty_components_pct or {
                 'resource': 6.0, **({'mcp': 4.0} if historical_wind is None or historical_wind.get('source_kind') == 'mcp' else {}), 'wake': 3.0,
                 'power_curve': 2.0, 'losses': 2.0,
@@ -344,6 +362,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             econ = _economics(
                 turbine, selected_n, aep_p50, cost_model, discount_rate,
                 project_years, price_usd_kwh, collection_length,
+                revenue_year1_override=revenue_year1_override,
             )
             installed_mw = selected_n * turbine.rated_power_kw / 1000.0
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
@@ -409,6 +428,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'aep_gross_mwh': sim['aep_gross_mwh'],
                 'aep_mwh': aep_p50,
                 'production_source': sim.get('production_source'),
+                'chronological_revenue': chron,
                 'turbine_production': sim.get('turbines', []),
                 'record_energy_mwh_before_additional_losses': sim.get('record_energy_mwh'),
                 'aep_p50_mwh': aep_p50,

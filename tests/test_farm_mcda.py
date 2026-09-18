@@ -9,6 +9,7 @@ from core.farm import (
     WakeModelDomainError,
     _build_structured_grid,
     _rotate_to_wind_axis,
+    chronological_revenue,
     effective_wind_per_turbine,
     gaussian_deficit,
     gaussian_min_valid_distance_d,
@@ -246,6 +247,58 @@ class FarmScientificModelTests(unittest.TestCase):
         installed = design.capex_breakdown(rated_kw=1000, n_turbines=1)
         self.assertEqual(installed['total_capex_usd'], 1_041_000)
         self.assertEqual(benchmark['total_installed_usd_per_kw'], 1041.0)
+
+
+class ChronologicalRevenueTests(unittest.TestCase):
+    """core.farm.chronological_revenue: cruza generación×precio hora por hora
+    en vez de AEP×precio promedio (ver docs de la Fase 1/2 de robustez de
+    ingresos, project_windpro_pending_investigations)."""
+
+    def setUp(self):
+        self.turbine = PowerCurve.from_file('aerogeneradores/gamesa21_p2000_r45.csv')
+        rng = np.random.default_rng(7)
+        self.ws = rng.uniform(3, 15, 200)
+        self.wd = rng.uniform(0, 360, 200)
+        self.hour_of_year = np.arange(200)
+
+    def test_flat_price_reproduces_the_average_price_revenue(self):
+        flat_price = np.full(8760, 0.075)
+        result = chronological_revenue(
+            [[0, 0], [500, 0]], self.turbine, self.ws, self.wd, self.hour_of_year, flat_price)
+        self.assertAlmostEqual(result['capture_ratio'], 1.0, places=6)
+        self.assertAlmostEqual(result['avg_realized_price_usd_kwh'], 0.075, places=6)
+        self.assertAlmostEqual(result['revenue_usd_year1'], result['aep_mwh'] * 1000 * 0.075,
+                               delta=result['revenue_usd_year1'] * 1e-6 + 1e-6)
+
+    def test_generation_concentrated_in_expensive_hours_raises_capture_ratio(self):
+        # Todas las horas de esta muestra son "caras"; el resto del año barato.
+        price = np.full(8760, 0.02)
+        price[self.hour_of_year] = 0.20
+        result = chronological_revenue(
+            [[0, 0], [500, 0]], self.turbine, self.ws, self.wd, self.hour_of_year, price)
+        self.assertGreater(result['capture_ratio'], 1.0)
+        self.assertAlmostEqual(result['avg_realized_price_usd_kwh'], 0.20, places=6)
+
+    def test_price_array_must_have_8760_hours(self):
+        with self.assertRaisesRegex(ValueError, '8760'):
+            chronological_revenue(
+                [[0, 0], [500, 0]], self.turbine, self.ws, self.wd,
+                self.hour_of_year, np.full(100, 0.08))
+
+    def test_mismatched_lengths_are_rejected(self):
+        with self.assertRaises(ValueError):
+            chronological_revenue(
+                [[0, 0], [500, 0]], self.turbine, self.ws, self.wd[:-1],
+                self.hour_of_year, np.full(8760, 0.08))
+
+    def test_wake_reduces_revenue_relative_to_a_single_turbine(self):
+        price = np.full(8760, 0.08)
+        one = chronological_revenue(
+            [[0, 0]], self.turbine, self.ws, self.wd, self.hour_of_year, price, wake_model='jensen')
+        two_close = chronological_revenue(
+            [[0, 0], [200, 0]], self.turbine, self.ws, self.wd, self.hour_of_year, price, wake_model='jensen')
+        # La segunda turbina, con estela, no puede aportar tanto como una libre.
+        self.assertLess(two_close['revenue_usd_year1'], one['revenue_usd_year1'] * 2)
 
 
 class LayoutTopsisTests(unittest.TestCase):

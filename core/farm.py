@@ -570,6 +570,121 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     }
 
 
+def chronological_revenue(layout_xy: np.ndarray, turbine: 'PowerCurve',
+                          ws: np.ndarray, wd: np.ndarray, hour_of_year: np.ndarray,
+                          price_hourly_usd_kwh: np.ndarray, *,
+                          sample_duration_hours: float = 1.0,
+                          k_wake: float = 0.075, ct: float = 0.8, n_sectors: int = 36,
+                          availability: float = 1.0, electrical_losses: float = 0.0,
+                          temperature_c=None, pressure_pa=None, humidity_pct=0.0,
+                          local_wind_multipliers: Optional[np.ndarray] = None,
+                          wake_model: str = 'jensen',
+                          rho_override: Optional[float] = None) -> dict:
+    """
+    Cross each hour's wake-derated generation against that SAME hour's real
+    price, instead of AEP anual × precio promedio. Complementa a
+    simulate_wind_farm (que colapsa la serie a una tabla de frecuencias
+    sector×velocidad) — aquí se conserva la identidad de cada hora para poder
+    emparejarla con el PML de esa hora.
+
+    hour_of_year: índice 0-8759 de cada muestra de ws/wd, asumiendo que
+    price_hourly_usd_kwh[0] es la hora 0 del 1 de enero en el mismo huso
+    horario que la serie de viento (CERTE: UTC-6 fijo) — un supuesto
+    explícito, no verificado contra una fecha real del archivo PML (que no
+    trae fecha, ver core/forecasting.py::read_pml). 29 de febrero se
+    reasigna a la hora equivalente del 28 (price_hourly_usd_kwh tiene 8760
+    horas fijas, sin año bisiesto).
+
+    La dirección se sigue discretizando en `n_sectors` sectores para el
+    cálculo de estela (misma aproximación de simulate_wind_farm, calculada
+    una sola vez por sector — no por hora), pero la velocidad y el precio de
+    cada hora se conservan sin agrupar.
+    """
+    layout = np.asarray(layout_xy, dtype=float)
+    n = len(layout)
+    ws = np.asarray(ws, dtype=float).reshape(-1)
+    wd = np.asarray(wd, dtype=float).reshape(-1) % 360.0
+    hour_of_year = np.asarray(hour_of_year, dtype=int).reshape(-1) % 8760
+    price_hourly_usd_kwh = np.asarray(price_hourly_usd_kwh, dtype=float).reshape(-1)
+    if len(price_hourly_usd_kwh) != 8760:
+        raise ValueError('price_hourly_usd_kwh debe tener exactamente 8760 valores.')
+    T = len(ws)
+    if len(wd) != T or len(hour_of_year) != T:
+        raise ValueError('ws, wd y hour_of_year deben compartir la misma longitud.')
+    if n == 0 or T == 0:
+        return {'revenue_usd_year1': 0.0, 'aep_mwh': 0.0,
+                'avg_realized_price_usd_kwh': None, 'capture_ratio': None, 'n_hours': 0}
+
+    valid = np.isfinite(ws) & np.isfinite(wd) & (ws >= 0)
+    if not valid.any():
+        return {'revenue_usd_year1': 0.0, 'aep_mwh': 0.0,
+                'avg_realized_price_usd_kwh': None, 'capture_ratio': None, 'n_hours': 0}
+    ws, wd, hour_of_year = ws[valid], wd[valid], hour_of_year[valid]
+    T = len(ws)
+
+    if rho_override is not None and math.isfinite(float(rho_override)) and float(rho_override) > 0:
+        rho_mean = float(rho_override)
+    elif temperature_c is not None and pressure_pa is not None:
+        temperature_c = np.asarray(temperature_c, dtype=float).reshape(-1)[valid]
+        pressure_pa = np.asarray(pressure_pa, dtype=float).reshape(-1)[valid]
+        rho_mean = float(np.mean(air_density(temperature_c, pressure_pa, humidity_pct)))
+    else:
+        rho_mean = 1.225
+
+    if local_wind_multipliers is not None:
+        local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float).reshape(-1)
+        if local_wind_multipliers.shape[0] != n:
+            local_wind_multipliers = np.ones(n)
+        ws_free = ws[:, None] * local_wind_multipliers[None, :]  # (T, n)
+    else:
+        ws_free = np.repeat(ws[:, None], n, axis=1)
+
+    # Razón de velocidad por estela, calculada UNA VEZ por sector (misma
+    # discretización direccional que simulate_wind_farm), aplicada luego a
+    # la velocidad real (no agrupada) de cada hora.
+    sector_deg = 360.0 / n_sectors
+    sector_idx = np.floor(wd / sector_deg).astype(int) % n_sectors
+    rotor_d = float(turbine.rotor_diameter_m or 80.0)
+    ratio_by_sector = np.ones((n_sectors, n), dtype=float)
+    if n > 1:
+        for s in range(n_sectors):
+            center = (s + 0.5) * sector_deg
+            ratio_by_sector[s] = effective_wind_per_turbine(
+                layout, np.ones(n), center, rotor_d, k=k_wake, ct=ct, wake_model=wake_model)
+    v_eff = ws_free * ratio_by_sector[sector_idx]  # (T, n)
+
+    power_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # (T, n)
+    survival = float(availability) * (1.0 - float(electrical_losses))
+    power_kw = power_kw * survival
+    park_power_kw = power_kw.sum(axis=1)  # (T,)
+    dt_h = float(sample_duration_hours) if sample_duration_hours else 1.0
+    energy_kwh = park_power_kw * dt_h
+
+    price_at_hour = price_hourly_usd_kwh[hour_of_year]
+    total_revenue_usd = float(np.sum(energy_kwh * price_at_hour))
+    total_energy_kwh = float(np.sum(energy_kwh))
+    total_hours = T * dt_h
+    annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
+
+    aep_mwh = total_energy_kwh * annualization_factor / 1000.0
+    revenue_year1 = total_revenue_usd * annualization_factor
+    avg_price = total_revenue_usd / total_energy_kwh if total_energy_kwh > 0 else None
+    naive_revenue = total_energy_kwh * float(np.mean(price_hourly_usd_kwh))
+    capture_ratio = (total_revenue_usd / naive_revenue) if naive_revenue > 0 else None
+
+    return {
+        'revenue_usd_year1': round(revenue_year1, 2),
+        'aep_mwh': round(aep_mwh, 2),
+        'avg_realized_price_usd_kwh': round(avg_price, 6) if avg_price is not None else None,
+        'avg_flat_price_usd_kwh': round(float(np.mean(price_hourly_usd_kwh)), 6),
+        'capture_ratio': round(capture_ratio, 4) if capture_ratio is not None else None,
+        'n_hours': T,
+        'rho_mean': round(rho_mean, 4),
+        'method': 'chronological_hourly_generation_times_hourly_price',
+        'calendar_assumption': 'price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento',
+    }
+
+
 # ── Coordinate utilities ──────────────────────────────────────────────────────
 
 def _latlon_to_xy(lats, lons, origin_lat: float, origin_lon: float):
