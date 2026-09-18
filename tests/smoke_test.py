@@ -145,13 +145,6 @@ def run():
     })
     ok('techno-economic evaluation', r)
 
-    # ── AI assistant ──
-    r = requests.post(f'{BASE}/api/ai/chat',
-                      json={'session_id': sid, 'question': '¿Cuál es el factor de capacidad?'})
-    d = ok('AI assistant', r)
-    if d:
-        print(f'     AI: {d["answer"][:120]}…')
-
     print('\n═══ Smoke test complete ═══\n')
 
 

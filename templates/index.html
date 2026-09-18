@@ -54,7 +54,6 @@
     <button class="nav-btn" data-module="energy" style="display:none" hidden>Energy Lab</button>
     <button class="nav-btn" data-module="validation">Validación y exportación</button>
     <button class="nav-btn" data-module="export" style="display:none" hidden>Exportar</button>
-    <button class="nav-btn" data-module="ai">AI Assistant</button>
   </nav>
   <div class="topbar-actions">
     <button class="btn-icon" id="btn-project-export" type="button"
@@ -951,39 +950,6 @@
           </tbody>
         </table>
       </div>
-    </div>
-  </div>
-</section>
-
-<!-- ╔══════════════════ AI ASSISTANT ══════════════════╗ -->
-<section class="module" id="mod-ai">
-  <div class="module-header">
-    <h1 class="module-title">AI Assistant</h1>
-    <p class="module-desc">Consulta los resultados de tu sesión. Respuestas ancladas en los datos calculados, no en generalizaciones.</p>
-  </div>
-
-  <div class="ai-container">
-    <div class="ai-chat-window" id="ai-chat-window">
-      <div class="ai-msg ai-msg--system">
-        <div class="ai-avatar">AO</div>
-        <div class="ai-bubble">
-          Hola. Soy el asistente de AERO OPEN CIM. Mis respuestas se basan en los datos y resultados de tu sesión actual.
-          Puedes preguntarme sobre calidad de datos, distribución Weibull, recurso eólico, energía, factor de capacidad y evaluación tecnoeconómica.
-        </div>
-      </div>
-    </div>
-
-    <div class="ai-chips" id="ai-chips">
-      <button class="chip" data-q="¿Cómo están la calidad y los datos faltantes?">Calidad de datos</button>
-      <button class="chip" data-q="¿Cuál es el parámetro k de Weibull?">Distribución Weibull</button>
-      <button class="chip" data-q="¿Cuál es el factor de capacidad y el AEP?">Factor de capacidad</button>
-      <button class="chip" data-q="¿Cómo se valida científicamente el sistema?">Validación científica</button>
-      <button class="chip" data-q="¿Qué limitaciones tiene el sistema?">Limitaciones</button>
-    </div>
-
-    <div class="ai-input-row">
-      <input type="text" class="ai-input" id="ai-input" placeholder="Escribe una pregunta sobre tus datos y resultados...">
-      <button class="btn-primary" id="ai-send">Enviar</button>
     </div>
   </div>
 </section>

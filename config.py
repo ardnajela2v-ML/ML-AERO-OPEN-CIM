@@ -22,9 +22,6 @@ class Config:
     CACHE_FOLDER = os.environ.get(
         'AERO_CACHE_FOLDER',
         os.path.join(BASE_DIR, '.cache', 'aero'))
-    OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '').strip()
-    OPENAI_MODEL = os.environ.get('OPENAI_MODEL', 'gpt-4.1-mini').strip()
-    OPENAI_TIMEOUT_SEC = int(os.environ.get('OPENAI_TIMEOUT_SEC', '30'))
 
     # Physical constants
     AIR_DENSITY_SEA_LEVEL = 1.225   # kg/m³ at 15°C, 1013.25 hPa

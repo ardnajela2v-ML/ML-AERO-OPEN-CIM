@@ -153,7 +153,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindDataHub();
   bindParkConfiguration();
   bindEnergyLab();
-  bindAI();
   bindOverview();
   bindWind();
   bindAdvanced();
@@ -1503,52 +1502,6 @@ async function runFarmSimulation() {
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
   }
-}
-
-// ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
-function bindAI() {
-  const input = document.getElementById('ai-input');
-  document.getElementById('ai-send').addEventListener('click', sendAI);
-  input.addEventListener('keydown', e => { if (e.key === 'Enter') sendAI(); });
-  document.getElementById('ai-chips').addEventListener('click', e => {
-    if (e.target.classList.contains('chip')) {
-      document.getElementById('ai-input').value = e.target.dataset.q;
-      sendAI();
-    }
-  });
-}
-
-async function sendAI() {
-  const inp = document.getElementById('ai-input');
-  const q = inp.value.trim();
-  if (!q) return;
-
-  addAIMessage(q, true);
-  inp.value = '';
-
-  const typingEl = addAIMessage('…', false);
-  try {
-    const r = await api('/api/ai/chat', 'POST', {
-      session_id: WP.sessionId, question: q
-    });
-    typingEl.querySelector('.ai-bubble').textContent = r.answer;
-  } catch (e) {
-    typingEl.querySelector('.ai-bubble').textContent = `Error: ${e.message}`;
-  }
-  const win = document.getElementById('ai-chat-window');
-  win.scrollTop = win.scrollHeight;
-}
-
-function addAIMessage(text, isUser) {
-  const win = document.getElementById('ai-chat-window');
-  const div = document.createElement('div');
-  div.className = `ai-msg ${isUser ? 'ai-msg--user' : 'ai-msg--system'}`;
-  div.innerHTML = `
-    <div class="ai-avatar">${isUser ? 'Tú' : 'WP'}</div>
-    <div class="ai-bubble">${text}</div>`;
-  win.appendChild(div);
-  win.scrollTop = win.scrollHeight;
-  return div;
 }
 
 // ─── CHART HELPERS ────────────────────────────────────────────────────────────
