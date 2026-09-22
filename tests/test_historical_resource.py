@@ -58,7 +58,14 @@ class HistoricalProductionTests(unittest.TestCase):
             if kwargs.get('layout_evaluator'):
                 result['constraint_evaluation'] = kwargs['layout_evaluator'](points)
             return result
-        with patch('core.farm_mcda.optimize_layout_structured', side_effect=geometry), patch(
+        # La tercera familia (greedy-vértice) corre en paralelo a las dos
+        # estructuradas dentro de generate_feasible_layouts_grid -- sin
+        # patchearla también competiría con geometría real (no controlada
+        # por el fixture) por el campeonato de la tecnología, rompiendo la
+        # reproducibilidad exacta de `points` que esta prueba verifica.
+        with patch('core.layout_generation.optimize_layout_structured', side_effect=geometry), patch(
+                'core.layout_generation.optimize_layout_greedy_vertex',
+                side_effect=ValueError('sin candidatos en este fixture')), patch(
                 'core.farm_mcda._joint_synthetic_wind', side_effect=AssertionError('Must use history')):
             result = analyze_park_layouts(self.sites, self.polygon, 'aerogeneradores',
                 ['gamesa21_p2000_r45.csv'], wind_grid=self.grid,
@@ -139,7 +146,14 @@ class HistoricalProductionTests(unittest.TestCase):
         skewed_price = np.full(8760, 0.08)
         skewed_price[[1, 19, 20, 3, 4]] = [0.01, 0.01, 0.01, 0.01, 0.01]  # mucho más barato que el promedio
 
-        with patch('core.farm_mcda.optimize_layout_structured', side_effect=geometry), patch(
+        # La tercera familia (greedy-vértice) corre en paralelo a las dos
+        # estructuradas dentro de generate_feasible_layouts_grid -- sin
+        # patchearla también competiría con geometría real (no controlada
+        # por el fixture) por el campeonato de la tecnología, rompiendo la
+        # reproducibilidad exacta de `points` que esta prueba verifica.
+        with patch('core.layout_generation.optimize_layout_structured', side_effect=geometry), patch(
+                'core.layout_generation.optimize_layout_greedy_vertex',
+                side_effect=ValueError('sin candidatos en este fixture')), patch(
                 'core.farm_mcda._joint_synthetic_wind', side_effect=AssertionError('Must use history')):
             flat = analyze_park_layouts(self.sites, self.polygon, 'aerogeneradores',
                 ['gamesa21_p2000_r45.csv'], wind_grid=self.grid,

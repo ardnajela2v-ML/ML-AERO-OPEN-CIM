@@ -16,13 +16,24 @@ import math
 import warnings
 import numpy as np
 import pandas as pd
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Callable
 
 from core.energy import PowerCurve, air_density
+from core.terrain import sample_slope_grid_deg
 
 
 class WakeModelDomainError(ValueError):
     """Raised when a layout requests a wake model outside its valid domain."""
+
+
+# Piso técnico duro de separación entre turbinas, en diámetros de rotor.
+# No es un valor de UI ni negociable por el usuario: por debajo de esto el
+# modelo de estela Jensen deja de ser válido en campo cercano y las cargas
+# de fatiga por turbulencia inducida (IEC 61400-1) se vuelven la restricción
+# real, no la pérdida por estela. La búsqueda de layout puede explorar
+# separaciones más cerradas que el valor de referencia del usuario, pero
+# nunca por debajo de este piso.
+TECHNICAL_MIN_SPACING_D = 2.5
 
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
@@ -734,6 +745,35 @@ def _distance_to_polygon_edges_xy(x: float, y: float, poly_xs, poly_ys) -> float
     return best
 
 
+def build_slope_mask_fn(lats_p: List[float], lons_p: List[float],
+                        max_slope_deg: Optional[float],
+                        n_grid: int = 15) -> Optional[Callable[[float, float], bool]]:
+    """Construye un filtro de factibilidad por pendiente máxima, en
+    términos de lat/lon (no xy local, porque la pendiente se muestrea del
+    DEM en esas coordenadas -- ver core.terrain.sample_slope_grid_deg).
+
+    Devuelve None si `max_slope_deg` no está configurado (comportamiento
+    idéntico al anterior: sin filtro de pendiente). Muestra una rejilla
+    `n_grid`×`n_grid` sobre el cuadro delimitador del polígono UNA sola vez
+    (el DEM ya cachea por tile en core.terrain) y resuelve cada consulta de
+    punto candidato por vecino más cercano -- suficiente para una máscara de
+    factibilidad de prefactibilidad, no para un mapa de pendiente de precisión.
+    """
+    if max_slope_deg is None:
+        return None
+    grid_lats = list(np.linspace(min(lats_p), max(lats_p), n_grid))
+    grid_lons = list(np.linspace(min(lons_p), max(lons_p), n_grid))
+    slope_grid = sample_slope_grid_deg(grid_lats, grid_lons)
+    limit = float(max_slope_deg)
+
+    def slope_mask_fn(lat: float, lon: float) -> bool:
+        j = min(range(len(grid_lats)), key=lambda idx: abs(grid_lats[idx] - lat))
+        i = min(range(len(grid_lons)), key=lambda idx: abs(grid_lons[idx] - lon))
+        return slope_grid[j][i] <= limit
+
+    return slope_mask_fn
+
+
 def _point_allowed_xy(x: float, y: float, poly_xs, poly_ys,
                       exclusion_polys_xy=None, boundary_setback_m: float = 0.0) -> bool:
     if not _point_in_polygon_xy(x, y, poly_xs, poly_ys):
@@ -1018,6 +1058,252 @@ def optimize_layout_greedy(
     }
 
 
+def optimize_layout_greedy_vertex(
+        polygon_latlon,
+        turbine: PowerCurve,
+        ws: Optional[np.ndarray] = None,
+        wd: Optional[np.ndarray] = None,
+        wind_grid: Optional[Dict[str, Any]] = None,
+        fallback_wind_ms: float = 9.0,
+        min_spacing_d: float = 3.0,
+        grid_step_d: float = 1.0,
+        k_wake: float = 0.075,
+        ct: float = 0.8,
+        n_rose_sectors: int = 16,
+        rho: float = 1.225,
+        exclusion_polygons=None,
+        boundary_setback_m: float = 0.0,
+        wake_model: str = 'jensen',
+        max_slope_deg: Optional[float] = None,
+        axis_tolerance_deg: float = 20.0,
+        n_max_cap: Optional[int] = None) -> dict:
+    """
+    Greedy vertex-seeded, wind-axis turbine placement.
+
+    A third, structurally different family from the regular
+    aligned/staggered grids of optimize_layout_structured: instead of
+    testing a single rigid (orientation, spacing, stagger) pattern across
+    the whole polygon, it grows the layout one turbine at a time from an
+    upwind polygon vertex, always searching the next position along the
+    wind-aligned axes (parallel/antiparallel to the dominant wind, and
+    cross-wind) radiating from each already-placed turbine. This adapts
+    locally to an irregular boundary the way a single regular grid cannot,
+    at the cost of an irregular (non-row/column) result — a packing-
+    maximising complement to the energy-maximising regular families, not a
+    replacement for them.
+
+    Algorithm
+    ---------
+    1. Dominant direction: same energy-weighted wind rose as
+       optimize_layout_structured (never the previous hardcoded westerly
+       placeholder of optimize_layout_greedy).
+    2. Seed vertex: the polygon vertex with the smallest projection onto
+       the downwind axis (i.e. the most upwind corner) — placement starts
+       there so growth proceeds across the full downwind depth of the
+       site, matching standard practice of filling a site from its upwind
+       edge.
+    3. Candidate universe: a fine regular grid (grid_step_d × D) inside the
+       polygon/exclusions/slope mask, same feasibility primitives as the
+       rest of this module (_point_allowed_xy, build_slope_mask_fn).
+    4. Growth loop: at each step, for every placed turbine and each of the
+       4 wind-aligned ray directions (±downwind, ±crosswind), find the
+       nearest remaining candidate within axis_tolerance_deg of that ray —
+       this is the "search every axis of every turbine" shortlist. Score
+       each shortlisted candidate by wake-discounted power at the real
+       dominant direction and place the best one; candidates within
+       min_spacing_d × D of it are then excluded, exactly as in
+       optimize_layout_greedy. If the axis shortlist is empty (can happen
+       near a re-entrant boundary corner) the search falls back to scoring
+       every remaining candidate, so growth never dead-ends while free
+       space remains — same guarantee as the original global GSP.
+
+    Because growth only ever adds turbines, the placement order is a
+    single nested sequence valid for every N from 1 up to the returned
+    max_n_fit: sequence_xy_m[:n] is a complete, feasible n-turbine layout.
+    Callers needing several N should slice this one sequence instead of
+    re-running the search per N (unlike optimize_layout_structured, whose
+    regular-grid Nmax and per-N energy pass are genuinely different
+    searches).
+
+    References
+    ----------
+    - Feng J, Shen WZ (2015). Solving the wind farm layout optimization
+      problem using random search algorithm. Renewable Energy 78:182-192.
+      (base greedy sequential placement, reused from optimize_layout_greedy)
+    - Standard wind farm design practice of siting the first row(s) at the
+      upwind edge of a site to preserve downwind depth for later rows.
+    """
+    D         = float(turbine.rotor_diameter_m or 80.0)
+    min_sep_m = min_spacing_d * D
+    step_m    = max(0.1, float(grid_step_d)) * D
+
+    poly: List[Tuple[float, float]] = []
+    for p in polygon_latlon:
+        if isinstance(p, dict):
+            poly.append((float(p['lat']), float(p['lon'])))
+        else:
+            poly.append((float(p[0]), float(p[1])))
+    if len(poly) < 3:
+        raise ValueError('El polígono del parque necesita al menos 3 vértices.')
+
+    lats_p = [p[0] for p in poly]
+    lons_p = [p[1] for p in poly]
+    lat0   = sum(lats_p) / len(lats_p)
+    lon0   = sum(lons_p) / len(lons_p)
+    poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+    slope_mask_fn = build_slope_mask_fn(lats_p, lons_p, max_slope_deg)
+
+    exclusion_polys_xy = []
+    for exclusion in exclusion_polygons or []:
+        ex_latlon = [
+            (float(p['lat']), float(p['lon'])) if isinstance(p, dict)
+            else (float(p[0]), float(p[1])) for p in exclusion
+        ]
+        if len(ex_latlon) >= 3:
+            exclusion_polys_xy.append(_latlon_to_xy(
+                [p[0] for p in ex_latlon], [p[1] for p in ex_latlon], lat0, lon0))
+
+    rho_val = float(rho) if rho and math.isfinite(float(rho)) and rho > 0 else 1.225
+    if ws is not None and wd is not None and len(ws) > 0:
+        dom_dir, _, _ = energy_weighted_dominant_direction(
+            ws, wd, turbine, n_sectors=n_rose_sectors, rho=rho_val)
+        ws_valid = ws[np.isfinite(ws) & (ws > 0)]
+        v_mean = float(np.mean(ws_valid)) if len(ws_valid) > 0 else fallback_wind_ms
+    else:
+        dom_dir = 270.0
+        v_mean = fallback_wind_ms
+
+    toward_deg = (dom_dir + 180.0) % 360.0
+    tr = math.radians(toward_deg)
+    u_down  = np.array([ math.sin(tr),  math.cos(tr)])   # downwind (E,N)
+    u_cross = np.array([ math.cos(tr), -math.sin(tr)])   # cross-wind
+    axis_dirs = [u_down, -u_down, u_cross, -u_cross]
+
+    xmin = min(poly_xs); xmax = max(poly_xs)
+    ymin = min(poly_ys); ymax = max(poly_ys)
+
+    candidates: List[Dict[str, float]] = []
+    x = xmin + step_m * 0.5
+    while x <= xmax + step_m * 0.1:
+        y = ymin + step_m * 0.5
+        while y <= ymax + step_m * 0.1:
+            if _point_allowed_xy(x, y, poly_xs, poly_ys, exclusion_polys_xy,
+                                 max(0.0, float(boundary_setback_m))):
+                lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
+                if slope_mask_fn is None or slope_mask_fn(lats_c[0], lons_c[0]):
+                    v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
+                         if wind_grid else None)
+                    if v is None or not math.isfinite(v) or v <= 0:
+                        v = fallback_wind_ms
+                    candidates.append({
+                        'x': x, 'y': y,
+                        'lat': lats_c[0], 'lon': lons_c[0],
+                        'v': float(v),
+                    })
+            y += step_m
+        x += step_m
+
+    if not candidates:
+        raise ValueError(
+            f'Sin candidatos dentro del polígono con D={D:.0f} m y paso de '
+            f'grilla {grid_step_d}×D={step_m:.0f} m.  Reduce la separación '
+            f'mínima o usa un aerogenerador de menor diámetro de rotor.')
+
+    # Seed at the most upwind polygon vertex: smallest projection onto the
+    # downwind axis. Growth starts there and proceeds across the site's
+    # downwind depth, instead of an arbitrary highest-wind starting point.
+    vertex_proj = [float(np.dot([vx, vy], u_down)) for vx, vy in zip(poly_xs, poly_ys)]
+    seed_vertex_idx = int(np.argmin(vertex_proj))
+    seed_vx, seed_vy = poly_xs[seed_vertex_idx], poly_ys[seed_vertex_idx]
+    seed = min(candidates, key=lambda c: math.hypot(c['x'] - seed_vx, c['y'] - seed_vy))
+    seed_vertex_lat, seed_vertex_lon = _xy_to_latlon([seed_vx], [seed_vy], lat0, lon0)
+
+    def wake_discounted_score(c: Dict[str, float], placed_arr: Optional[np.ndarray]) -> float:
+        sq_sum = 0.0
+        if placed_arr is not None and len(placed_arr):
+            cand_pt  = np.array([[c['x'], c['y']]])
+            pts_rot  = _rotate_to_wind_axis(placed_arr, dom_dir)
+            cand_rot = _rotate_to_wind_axis(cand_pt,   dom_dir)[0]
+            deficit_fn = gaussian_deficit if wake_model == 'gaussian' else jensen_deficit
+            for pr in pts_rot:
+                dx = float(cand_rot[0]) - float(pr[0])
+                dy = float(cand_rot[1]) - float(pr[1])
+                sq_sum += deficit_fn(dx, dy, D, k=k_wake, ct=ct) ** 2
+        v_eff = max(0.0, c['v'] * (1.0 - math.sqrt(sq_sum)))
+        return float(turbine.power_kw(v_eff))
+
+    placed: List[Dict[str, float]] = [seed]
+    remaining = [
+        c for c in candidates
+        if c is not seed and math.hypot(c['x'] - seed['x'], c['y'] - seed['y']) >= min_sep_m
+    ]
+    tol_rad = math.radians(max(1.0, float(axis_tolerance_deg)))
+
+    cap = n_max_cap if n_max_cap and n_max_cap > 0 else len(candidates)
+    while remaining and len(placed) < cap:
+        placed_arr = np.array([[p['x'], p['y']] for p in placed])
+
+        # Axis shortlist: nearest remaining candidate to each placed
+        # turbine along each of the 4 wind-aligned rays, within tolerance.
+        shortlist_idx = set()
+        for p in placed:
+            for axis in axis_dirs:
+                best_j, best_d = None, math.inf
+                for j, c in enumerate(remaining):
+                    dx, dy = c['x'] - p['x'], c['y'] - p['y']
+                    dist = math.hypot(dx, dy)
+                    if dist < 1e-6:
+                        continue
+                    cosang = max(-1.0, min(1.0, (dx * axis[0] + dy * axis[1]) / dist))
+                    if math.acos(cosang) <= tol_rad and dist < best_d:
+                        best_d, best_j = dist, j
+                if best_j is not None:
+                    shortlist_idx.add(best_j)
+        # Near a re-entrant boundary corner the axis rays from every placed
+        # turbine can miss all remaining free space even though it exists —
+        # fall back to the full remaining set so growth never dead-ends.
+        step_candidates = [remaining[j] for j in shortlist_idx] if shortlist_idx else remaining
+
+        best_c, best_score = None, -math.inf
+        for c in step_candidates:
+            score = wake_discounted_score(c, placed_arr)
+            if score > best_score:
+                best_score, best_c = score, c
+        placed.append(best_c)
+        remaining = [
+            c for c in remaining
+            if c is not best_c and math.hypot(c['x'] - best_c['x'], c['y'] - best_c['y']) >= min_sep_m
+        ]
+
+    sequence_latlon = [[p['lat'], p['lon']] for p in placed]
+    sequence_xy_m   = [[p['x'],  p['y']]   for p in placed]
+
+    n_p = len(poly_xs)
+    area_m2 = abs(sum(
+        poly_xs[i] * poly_ys[(i + 1) % n_p] -
+        poly_xs[(i + 1) % n_p] * poly_ys[i]
+        for i in range(n_p)
+    )) / 2.0
+
+    return {
+        'sequence_latlon':   sequence_latlon,
+        'sequence_xy_m':     sequence_xy_m,
+        'wind_at_sequence':  [round(p['v'], 3) for p in placed],
+        'max_n_fit':         len(placed),
+        'n_candidates':      len(candidates),
+        'dominant_dir_deg':  round(dom_dir, 1),
+        'seed_vertex_latlon': [round(seed_vertex_lat[0], 6), round(seed_vertex_lon[0], 6)],
+        'origin_lat':        lat0,
+        'origin_lon':        lon0,
+        'D_m':               D,
+        'min_sep_m':         round(min_sep_m, 1),
+        'area_km2':          round(area_m2 / 1e6, 4),
+        'boundary_setback_m': round(max(0.0, float(boundary_setback_m)), 2),
+        'exclusion_count':    len(exclusion_polys_xy),
+        'wake_model':         wake_model,
+    }
+
+
 # ── Structured (rose-aligned) layout helpers ─────────────────────────────────
 
 def _build_structured_grid(
@@ -1032,6 +1318,7 @@ def _build_structured_grid(
         boundary_setback_m: float = 0.0,
         along_offset_fraction: float = 0.0,
         cross_offset_fraction: float = 0.0,
+        slope_mask_fn: Optional[Callable[[float, float], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Generate candidate turbine positions on a structured grid aligned with
@@ -1083,16 +1370,17 @@ def _build_structured_grid(
                     x, y, poly_xs, poly_ys, exclusion_polys_xy,
                     boundary_setback_m):
                 lats_c, lons_c = _xy_to_latlon([x], [y], lat0, lon0)
-                v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
-                     if wind_grid else None)
-                if v is None or not math.isfinite(v) or v <= 0:
-                    v = fallback_wind_ms
-                candidates.append({
-                    'x': x, 'y': y,
-                    'lat': lats_c[0], 'lon': lons_c[0],
-                    'v': float(v),
-                    'row': r,
-                })
+                if slope_mask_fn is None or slope_mask_fn(lats_c[0], lons_c[0]):
+                    v = (_sample_wind_grid(wind_grid, lats_c[0], lons_c[0])
+                         if wind_grid else None)
+                    if v is None or not math.isfinite(v) or v <= 0:
+                        v = fallback_wind_ms
+                    candidates.append({
+                        'x': x, 'y': y,
+                        'lat': lats_c[0], 'lon': lons_c[0],
+                        'v': float(v),
+                        'row': r,
+                    })
             c += s_perp_m
         a += s_para_m
         r += 1
@@ -1184,6 +1472,7 @@ def optimize_layout_structured(
         candidate_limit: int = 0,
         layout_evaluator=None,
         max_wake_loss_pct: Optional[float] = None,
+        max_slope_deg: Optional[float] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1230,6 +1519,7 @@ def optimize_layout_structured(
     lat0 = sum(lats_p) / len(lats_p)
     lon0 = sum(lons_p) / len(lons_p)
     poly_xs, poly_ys = _latlon_to_xy(lats_p, lons_p, lat0, lon0)
+    slope_mask_fn = build_slope_mask_fn(lats_p, lons_p, max_slope_deg)
     exclusion_polys_xy = []
     for exclusion in exclusion_polygons or []:
         ex_latlon = [
@@ -1308,7 +1598,7 @@ def optimize_layout_structured(
                         poly_xs, poly_ys, lat0, lon0, D,
                         orientation_deg, min_para_d, min_perp_d, stagger,
                         wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                        along_offset, cross_offset,
+                        along_offset, cross_offset, slope_mask_fn,
                     )
                     if cands:
                         capacity_seeds.append({
@@ -1364,6 +1654,7 @@ def optimize_layout_structured(
                     seed['orientation_deg'], s_para_d, s_perp_d, stagger,
                     wind_grid, v_mean, exclusion_polys_xy, setback_m,
                     seed['along_offset_fraction'], seed['cross_offset_fraction'],
+                    slope_mask_fn,
                 )
                 if len(cands) < target_n:
                     continue

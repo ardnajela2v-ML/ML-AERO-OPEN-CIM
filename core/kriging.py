@@ -1188,7 +1188,7 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
                                  filter_filenames: Optional[List[str]] = None,
                                  turbine_filenames: Optional[List[str]] = None,
                                  cost_model: Optional[CostModel] = None,
-                                 historical_wind=None, target_height_m=None):
+                                 historical_wind=None, target_height_m=None, resource_only=False):
     """
     Build virtual analysis sites from the kriged geospatial field.
 
@@ -1347,9 +1347,11 @@ def analyze_spatial_topsis_sites(wind_folder: str, turbines_folder: str, year: i
     if turbine_filenames:
         keep_turbines = set(turbine_filenames)
         turb_files = [f for f in turb_files if f in keep_turbines]
-    if not turb_files:
+    if not turb_files and not resource_only:
         raise ValueError('Selecciona al menos una turbina válida para el análisis TOPSIS.')
 
+    if resource_only:
+        turb_files = []
     turbines = []
     for tf in turb_files:
         try:
@@ -1454,7 +1456,7 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
                                 max_points: int = 72,
                                 turbine_filenames: Optional[List[str]] = None,
                                 cost_model: Optional[CostModel] = None,
-                                historical_wind=None, target_height_m=None):
+                                historical_wind=None, target_height_m=None, resource_only=False):
     """Evaluate TOPSIS candidates from the published MCP spatial fields.
 
     This is the guided Design path.  It deliberately does not reopen raw
@@ -1537,9 +1539,11 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
     if turbine_filenames:
         selected_turbines = set(turbine_filenames)
         turb_files = [filename for filename in turb_files if filename in selected_turbines]
-    if not turb_files:
+    if not turb_files and not resource_only:
         raise ValueError('Selecciona al menos una turbina válida para el análisis TOPSIS.')
 
+    if resource_only:
+        turb_files = []
     turbines = []
     for filename in turb_files:
         try:
@@ -1550,7 +1554,7 @@ def analyze_spatial_topsis_maps(field_bundle: dict, turbines_folder: str,
             ))
         except Exception as exc:
             log.warning('analyze_spatial_topsis_maps: skip turbine %s — %s', filename, exc)
-    if not turbines:
+    if not turbines and not resource_only:
         raise ValueError('Ninguna curva de potencia seleccionada pudo leerse.')
 
     historical = None

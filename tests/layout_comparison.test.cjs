@@ -57,7 +57,7 @@ test('comparison dispatches selected ranked model rather than an unrelated wind 
   run(`MCDA.lastRanking={ranking:[{turbina:'first.csv', n_aerogeneradores:3, layout_latlon:[]},
     {turbina:'selected.csv', n_aerogeneradores:2, layout_latlon:[]}]};
     parqueOptimizeTopsis = async row => { window.dispatched = row.turbina; };`);
-  await run('parqueOptimize()');
+  await run('parqueOptimizeManual()');
   assert.equal(run('window.dispatched'), 'selected.csv');
 });
 

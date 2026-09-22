@@ -534,6 +534,17 @@ def _slope_grid_deg(elev: List[List[float]], lats: List[float],
     return out
 
 
+def sample_slope_grid_deg(lats: List[float], lons: List[float]) -> List[List[float]]:
+    """Pendiente (grados) sobre una rejilla rectangular arbitraria -- misma
+    fuente DEM/caché que `estimate_dem_slope_z0`, pero pública y para
+    N×M puntos en vez de un solo parche 3×3 alrededor de una coordenada.
+    Usada por el filtro de pendiente máxima en la generación de layouts
+    (core.layout_generation / core.farm._point_allowed_xy), no solo para
+    derivar rugosidad z0."""
+    elev = sample_grid_elevation(lats, lons)
+    return _slope_grid_deg(elev, lats, lons)
+
+
 def estimate_dem_slope_z0(lat: float, lon: float, delta_deg: float = 0.005) -> float:
     """Estimate the classic WindProPlatform roughness fallback from DEM slope."""
 

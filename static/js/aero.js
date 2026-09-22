@@ -275,6 +275,7 @@ function collectProjectClientState() {
     mcda: projectJsonClone({
       lastAnalysis: MCDA.lastAnalysis, lastRanking: MCDA.lastRanking,
       lastSpatial: MCDA.lastSpatial, scope: MCDA.scope,
+      nRangeByTurbine: MCDA.nRangeByTurbine,
       // defaults NO se guarda: es un caché de /api/multicriteria/defaults
       // (servidor), no un dato del proyecto — guardarlo congelaba el esquema
       // de criterios vigente al momento de guardar dentro del archivo.
@@ -352,7 +353,7 @@ async function applyProjectClientState(state) {
   }
   if (state.mcda) {
     const legacyBaseWeights = state.mcda.scenarioWeights?.base || null;
-    Object.assign(MCDA, {ahpDraft:null, ahpResult:null, ahpApplied:null, weightSource:'reference'}, state.mcda);
+    Object.assign(MCDA, {ahpDraft:null, ahpResult:null, ahpApplied:null, weightSource:'reference', nRangeByTurbine:{}, taskId:null, generationToken:null}, state.mcda);
     MCDA.weightSchema = state.mcda.weightSchema || null;
     // MCDA.defaults es un caché de /api/multicriteria/defaults, no un dato
     // del proyecto: si el `state.mcda` restaurado trae un `defaults` viejo
@@ -416,7 +417,8 @@ async function applyProjectClientState(state) {
     try { mcdaRenderRanking(MCDA.lastRanking); } catch (_) {}
   }
   if (MCDA.lastSpatial) {
-    try { mcdaRenderMiniMap(MCDA.lastSpatial); } catch (_) {}
+    mcdaRenderCandidates();
+    try { parqueRenderSiteContext(MCDA.lastSpatial); } catch (_) {}
   }
   Object.entries(state.controls || {}).forEach(([id, saved]) => {
     const el = document.getElementById(id);
@@ -565,15 +567,9 @@ function bindThemeToggle() {
     if (typeof WP !== 'undefined' && WP.charts) {
       Object.values(WP.charts).forEach(c => { if (c) c.update(); });
     }
-    // If Kriging map exists, swap tiles to match
-    if (typeof KRIG !== 'undefined' && KRIG.map) {
-      KRIG.map.eachLayer(l => { if (l instanceof L.TileLayer) KRIG.map.removeLayer(l); });
-      const url = t === 'light'
-        ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
-        : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
-      L.tileLayer(url, { maxZoom: 16,
-        attribution: '© Esri · © OpenStreetMap contributors' }).addTo(KRIG.map);
-    }
+    // El cambio de tema claro/oscuro de la app ya NO fuerza el basemap del mapa
+    // Kriging a gris oscuro/claro: se respeta la capa base que el usuario eligió
+    // (OSM, TopoMap, satélite, o gris si así lo prefiere).
   };
   applyTheme(pickAutoTheme());
   document.getElementById('theme-toggle').addEventListener('click', () => {
@@ -932,6 +928,7 @@ async function saveParkConfiguration({ quiet = false } = {}) {
   try {
     const config = await api(`/api/sessions/${WP.sessionId}/park-configuration`, 'PUT', payload);
     applyParkConfiguration(config);
+    mcdaInvalidateLayouts();
     krig3PullProjectParams();
     if (!quiet) toast('Configuración del parque guardada', 'success');
     return config;
@@ -1169,7 +1166,7 @@ async function applyResourcePeriod() {
     KRIG.sites = []; KRIG.selected.clear(); KRIG.principal = null;
     KRIG._appliedGlobePoi = null;
     if (selection.year != null) {
-      ['krig3-year', 'mcda-year', 'mapa-year'].forEach(id => {
+      ['krig3-year', 'mapa-year'].forEach(id => {
         const input = document.getElementById(id);
         if (input) {
           if (![...input.options].some(option => option.value === String(selection.year))) {
@@ -2328,9 +2325,9 @@ function technoParkLayout() {
   // Alternativa elegida a mano entre las ya evaluadas por TOPSIS (todas con
   // estela real, calculadas en la misma corrida de "Diseño y optimización").
   // Se prioriza sobre el ganador #1 aplicado en Parque sin volver a simular nada.
-  const overrideKey = WP.technoSelectedTopsisTurbine;
+  const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
+  const overrideKey = WP.technoSelectedTopsisTurbine || ranking[0]?.turbina;
   if (overrideKey) {
-    const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
     const row = ranking.find(r => (r.turbina || r.label) === overrideKey && Number(r.n_aerogeneradores) > 0);
     const rowAep = Number(row?.aep_mwh ?? row?.aep_p50_mwh);
     if (row && Number.isFinite(rowAep) && rowAep > 0) {
@@ -2345,6 +2342,7 @@ function technoParkLayout() {
       };
     }
   }
+  if (mcdaHasLayoutCandidates()) return null;
   const opt = PARQUE.optResult;
   const sim = PARQUE.result;
   const nPlaced = Number(opt?.n_placed ?? sim?.n_turbines);
@@ -2513,7 +2511,9 @@ function renderTechnoScenarioResult() {
 function renderTechnoLayoutPreview() {
   const el = document.getElementById('te-layout-preview');
   if (!el) return;
-  const pts = PARQUE.optResult?.layout_xy_m || [];
+  const selected = technoParkLayout();
+  const ranked = MCDA.lastRanking?.ranking?.find(row => row.turbina === selected?.turbine_key);
+  const pts = ranked?.layout_xy_m || (mcdaHasLayoutCandidates() ? [] : PARQUE.optResult?.layout_xy_m) || [];
   if (!pts.length) {
     el.innerHTML = '<span class="text-muted" style="font-size:.78rem">Optimiza Parque para ver el layout de referencia.</span>';
     return;
@@ -4877,6 +4877,7 @@ const KRIG = {
   // Overlays físicos opcionales (Fase 1: visualización)
   hillshadeLayer: null,
   landcoverLayer: null,
+  oimLayer: null,          // OpenInfrastructureMap (líneas/subestaciones eléctricas)
   overlayOpacity: 0.6,
   // Punto de interés (POI) — emplazamiento del parque marcado por el usuario
   poi: null,                // {lat, lon}
@@ -5055,9 +5056,8 @@ function krig3InitMap() {
   // México centrado: lat ~23.5, lon ~-102, zoom 5 muestra todo el país
   const map = L.map('krig3-map', { center: [23.5, -102], zoom: 5, scrollWheelZoom: true });
   KRIG.map = map;
-  const isLight = document.body.classList.contains('light');
-  const initialBase = (document.getElementById('krig3-baselayer')?.value)
-    || (isLight ? 'voyager' : 'dark');
+  // Default: OpenStreetMap (no gris oscuro/claro) salvo que el usuario ya haya elegido otra capa.
+  const initialBase = document.getElementById('krig3-baselayer')?.value || 'osm';
   krig3SetBase(initialBase);
   krig3SetExtent('mexico');
   return map;
@@ -5068,7 +5068,8 @@ function krig3SetBase(key) {
   if (!KRIG.map) return;
   if (KRIG.baseLayer) KRIG.map.removeLayer(KRIG.baseLayer);
   const url = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES[key])
-    || 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
+    || (typeof MAPA_TILES !== 'undefined' && MAPA_TILES.osm)
+    || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
   KRIG.baseLayer = L.tileLayer(url, {
     maxZoom: (key === 'osm' || key === 'topo') ? 18 : 16,
     subdomains: (key === 'osm' || key === 'topo') ? 'abc' : 'abcd',
@@ -5204,6 +5205,7 @@ function krig3StartParkDraw() {
   toast('Haz clic sobre el mapa para agregar vértices; cierra la figura al terminar.', 'info');
 }
 function krig3AddParkPoint(latlng) {
+  mcdaInvalidateLayouts();
   KRIG.parkPoints.push([latlng.lat, latlng.lng]);
   const marker = L.circleMarker(latlng, {
     radius: 4, color: '#fff', weight: 1, fillColor: '#f59e0b', fillOpacity: 1,
@@ -5230,6 +5232,7 @@ function krig3FinishPark() {
   if (typeof mcdaUpdateScopeUi === 'function') mcdaUpdateScopeUi();
 }
 function krig3ClearPark() {
+  mcdaInvalidateLayouts();
   KRIG.drawingPark = false;
   if (KRIG.parkLayer && KRIG.map) KRIG.map.removeLayer(KRIG.parkLayer);
   KRIG.parkMarkers.forEach(m => KRIG.map && KRIG.map.removeLayer(m));
@@ -5921,6 +5924,21 @@ const KRIG_LANDCOVER_URL =
   + '&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fpng'
   + '&TileMatrix=EPSG%3A3857%3A{z}&TileCol={x}&TileRow={y}';
 
+// OpenInfrastructureMap (openinframap.org) — tiles vectoriales (MVT/pbf) con
+// infraestructura eléctrica (líneas de transmisión, subestaciones, plantas).
+// No es un endpoint oficialmente documentado para uso externo; si deja de
+// responder, el overlay simplemente no se activa (fallo silencioso).
+const KRIG_OIM_TILE_URL = 'https://openinframap.org/tiles/{z}/{x}/{y}.pbf';
+const KRIG_OIM_STYLE = {
+  power_line:            { weight: 1.6, color: '#f59e0b', opacity: 0.85 },
+  power_line_underground:{ weight: 1.2, color: '#f59e0b', opacity: 0.5, dashArray: '2,3' },
+  power_substation_point:{ radius: 4, color: '#f59e0b', fillColor: '#fbbf24', fillOpacity: 0.9, weight: 1 },
+  power_substation_polygon:{ weight: 1.2, color: '#f59e0b', fillColor: '#fbbf24', fillOpacity: 0.25 },
+  power_plant_point:     { radius: 5, color: '#ef4444', fillColor: '#f87171', fillOpacity: 0.9, weight: 1 },
+  power_plant_area:      { weight: 1.2, color: '#ef4444', fillColor: '#f87171', fillOpacity: 0.2 },
+  power_tower:           { radius: 2, color: '#f59e0b', fillColor: '#f59e0b', fillOpacity: 0.8, weight: 1 },
+};
+
 function krig3ToggleHillshade(on) {
   krig3InitMap();
   if (on) {
@@ -5951,6 +5969,35 @@ function krig3ToggleLandcover(on) {
   } else if (KRIG.landcoverLayer) {
     KRIG.map.removeLayer(KRIG.landcoverLayer);
     KRIG.landcoverLayer = null;
+  }
+  krig3SyncOverlayUI();
+}
+
+function krig3ToggleOIM(on) {
+  krig3InitMap();
+  if (on) {
+    if (KRIG.oimLayer) return;
+    if (typeof L.vectorGrid === 'undefined' || !L.vectorGrid.protobuf) {
+      toast('No se pudo cargar la capa de OpenInfrastructureMap (Leaflet.VectorGrid no disponible).', 'error');
+      document.getElementById('krig3-ovl-oim').checked = false;
+      return;
+    }
+    try {
+      KRIG.oimLayer = L.vectorGrid.protobuf(KRIG_OIM_TILE_URL, {
+        maxNativeZoom: 14,
+        interactive: false,
+        vectorTileLayerStyles: KRIG_OIM_STYLE,
+      }).addTo(KRIG.map);
+      if (KRIG.oimLayer.bringToFront) KRIG.oimLayer.bringToFront();
+    } catch (e) {
+      console.warn('[krig3] OpenInfrastructureMap overlay falló:', e);
+      toast('OpenInfrastructureMap no disponible en este momento.', 'warning');
+      KRIG.oimLayer = null;
+      document.getElementById('krig3-ovl-oim').checked = false;
+    }
+  } else if (KRIG.oimLayer) {
+    KRIG.map.removeLayer(KRIG.oimLayer);
+    KRIG.oimLayer = null;
   }
   krig3SyncOverlayUI();
 }
@@ -6221,6 +6268,7 @@ function krig3InvalidateSpatialResults() {
   const status = document.getElementById('krig3-status');
   if (status) status.textContent = 'Recalcula los mapas con la selección actual';
   KRIG.result = null; KRIG.task_id = null;
+  MCDA.generationToken = null;
   MCDA.taskId = null;
   MCDA.lastSpatial = null; MCDA.lastAnalysis = null; MCDA.lastRanking = null;
   PARQUE.result = null; PARQUE.optResult = null; PARQUE.wakeProfile = null;
@@ -7010,6 +7058,8 @@ document.addEventListener('DOMContentLoaded', () => {
     (e) => krig3ToggleHillshade(e.target.checked));
   document.getElementById('krig3-ovl-landcover')?.addEventListener('change',
     (e) => krig3ToggleLandcover(e.target.checked));
+  document.getElementById('krig3-ovl-oim')?.addEventListener('change',
+    (e) => krig3ToggleOIM(e.target.checked));
   document.getElementById('krig3-ovl-opacity')?.addEventListener('input',
     (e) => krig3SetOverlayOpacity((+e.target.value) / 100));
 
@@ -7324,6 +7374,33 @@ function applyClusterSelectionToTopsis(filenames) {
   document.getElementById('mcda-turbine-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+// Piso técnico duro de separación entre turbinas, en diámetros de rotor —
+// debe reflejar core.farm.TECHNICAL_MIN_SPACING_D. No es ajustable desde la
+// UI: por debajo de esto el modelo de estela Jensen deja de ser válido en
+// campo cercano y las cargas por turbulencia (IEC 61400-1) son la
+// restricción real. Los inputs de separación por fila/columna son el ancla
+// "de referencia" que la búsqueda usa como techo superior de exploración;
+// el mínimo real explorado siempre baja hasta este piso cuando la pérdida
+// por estela configurada lo permite (ver core/layout_generation.py).
+const TECHNICAL_FLOOR_D = 2.5;
+
+function parqueSpacingRange(referenceStart, conventionalMax) {
+  const values = [];
+  const gap = referenceStart - TECHNICAL_FLOOR_D;
+  if (gap > 0.5) {
+    values.push(Number(TECHNICAL_FLOOR_D.toFixed(2)));
+    values.push(Number(((TECHNICAL_FLOOR_D + referenceStart) / 2).toFixed(2)));
+  } else if (gap > 1e-9) {
+    values.push(Number(TECHNICAL_FLOOR_D.toFixed(2)));
+  }
+  const end = Math.max(referenceStart, conventionalMax);
+  for (let value = referenceStart; value <= end + 1e-9; value += 1) {
+    values.push(Number(value.toFixed(2)));
+  }
+  if (values[values.length - 1] < end) values.push(end);
+  return values;
+}
+
 const MCDA = {
   taskId: null,
   lastAnalysis: null,   // raw analyze_sites output
@@ -7333,10 +7410,19 @@ const MCDA = {
   layoutWeights: null,
   ahpDraft: null, ahpResult: null, ahpApplied: null, weightSource: 'reference',
   scope:        'area',
-  miniMap:      null,
-  miniBase:     null,
-  miniLayers:   [],
   turbines:     [],
+  // Receptores de ruido/shadow flicker: fuente de verdad única, poblada por
+  // click en el mapa del parque (ver mcdaToggleReceptorPlacement/
+  // mcdaAddReceptor, parqueRenderSiteContext), ya no por un textarea JSON
+  // ni un mini-mapa aparte. mcdaReceptorPoints() la expone tal cual.
+  receptors:       [],
+  placingReceptor: false,
+  // Override manual de N por tecnología (una entrada por archivo de
+  // turbina): se activa desde el botón "usar esta alternativa" del panel
+  // de diagnóstico ambiental (ruido/shadow flicker) para forzar, en la
+  // siguiente corrida, el N de la alternativa que sí cumple -- sin tocar
+  // el resto de las tecnologías de la corrida. Ver mcdaUseMitigationAlternative.
+  nRangeByTurbine: {},
 };
 
 function mcdaActiveAhp() {
@@ -7386,6 +7472,11 @@ function mcdaRenderAhp() {
     MCDA.ahpDraft = {criteria: keys, pairs: {}, author:'', objective:'', rationale:''};
     MCDA.ahpResult = null;
   }
+  const pairCount = keys.length * (keys.length - 1) / 2;
+  document.getElementById('mcda-ahp-intro').textContent =
+    `AHP individual para los ${keys.length} criterios actuales del parque (${pairCount} comparaciones). `
+    + 'Compara su importancia respecto al objetivo del estudio, no qué turbina gana. '
+    + 'La revisión bibliográfica de los criterios sigue pendiente.';
   const draft = MCDA.ahpDraft;
   for (const key of ['author', 'objective', 'rationale'])
     document.getElementById(`mcda-ahp-${key}`).value = draft[key] || '';
@@ -7413,7 +7504,11 @@ function mcdaRenderAhpResult() {
   const a = MCDA.ahpResult;
   document.getElementById('btn-mcda-ahp-apply').disabled = !a?.consistent;
   document.getElementById('btn-mcda-ahp-export').disabled = !a;
-  if (!a) { out.textContent = 'Completa las 28 comparaciones, autor, objetivo y justificación. El borrador no modifica los pesos aplicados.'; return; }
+  if (!a) {
+    const n = MCDA.ahpDraft?.criteria?.length || 0;
+    out.textContent = `Completa las ${n * (n - 1) / 2} comparaciones, autor, objetivo y justificación. El borrador no modifica los pesos aplicados.`;
+    return;
+  }
   const labels = MCDA.defaults?.layout_labels || {};
   out.innerHTML = `<p><b>${a.consistent ? 'Consistencia aceptable' : 'Revisar juicios antes de aplicar'}</b> · CR ${a.cr.toFixed(4)} (límite ${a.cr_threshold}) · CI ${a.ci.toFixed(4)} · RI ${a.ri} · λmax ${a.lambda_max.toFixed(4)}</p>`
     + '<ul>' + Object.entries(a.weights).map(([key,w]) => `<li>${mcdaAhpEscape(labels[key] || key)}: ${(w*100).toFixed(3)}%</li>`).join('') + '</ul>'
@@ -7455,7 +7550,7 @@ async function mcdaApplyAhp() {
   TOPSIS_ROBUST.result = null;
   const robustCard = document.getElementById('topsis-robust-card');
   if (robustCard) robustCard.style.display = 'none';
-  if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') await mcdaRankNow();
+  if (mcdaHasLayoutCandidates()) await mcdaRankNow();
   else toast('Pesos AHP aplicados. Ejecuta el análisis de parques para obtener el ranking.', 'success');
 }
 
@@ -7466,13 +7561,40 @@ function mcdaExportAhp() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Traduce las comparaciones por pares de un expediente AHP de un orden de
+ * criterios a otro. `pairs` guarda cada comparación bajo una clave posicional
+ * "i-j" (i<j) referida a `fromCriteria`, no al nombre del criterio, así que
+ * un simple copy-paste asignaría mal las respuestas si el orden cambia. Aquí
+ * se reubica cada valor por NOMBRE de criterio: se busca su posición nueva en
+ * `toCriteria` y, si el orden relativo del par se invierte, se usa el
+ * recíproco (Saaty: a_ji = 1/a_ij) para conservar el mismo juicio. */
+function mcdaRemapAhpPairs(fromCriteria, pairs, toCriteria) {
+  const remapped = {};
+  for (let i = 0; i < fromCriteria.length; i++) {
+    for (let j = i + 1; j < fromCriteria.length; j++) {
+      const raw = pairs?.[`${i}-${j}`];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const ni = toCriteria.indexOf(fromCriteria[i]);
+      const nj = toCriteria.indexOf(fromCriteria[j]);
+      if (ni === -1 || nj === -1) continue;
+      if (ni < nj) {
+        remapped[`${ni}-${nj}`] = raw;
+      } else if (nj < ni) {
+        const value = Number(raw);
+        remapped[`${nj}-${ni}`] = Number.isFinite(value) && value !== 0 ? String(1 / value) : raw;
+      }
+    }
+  }
+  return remapped;
+}
+
 /** Importa un expediente AHP exportado con mcdaExportAhp() (o un borrador
  * {criteria, pairs, ...} equivalente) y recalcula pesos/CR contra el backend
  * — nunca confía en los números ya calculados del archivo como definitivos.
- * Los criterios deben coincidir EXACTAMENTE (mismo orden) con el esquema
- * actual de 8 criterios de parque: las claves de `pairs` son posiciones
- * (`"i-j"`), no nombres, así que un orden distinto asignaría mal las
- * respuestas sin que se note. */
+ * El archivo debe traer EXACTAMENTE los 8 criterios actuales de parque (sin
+ * agregar ni quitar ninguno), pero el ORDEN puede diferir: se remapean las
+ * comparaciones por nombre de criterio (mcdaRemapAhpPairs), igual que ya
+ * valida el backend (que compara por conjunto, no por orden). */
 async function mcdaImportAhpFile(event) {
   const file = event.target.files?.[0];
   event.target.value = '';
@@ -7487,24 +7609,30 @@ async function mcdaImportAhpFile(event) {
     }
     const defaults = await mcdaLoadDefaults();
     const currentCriteria = Object.keys(defaults.layout_weights || {});
-    if (JSON.stringify(data.criteria) !== JSON.stringify(currentCriteria)) {
-      throw new Error('Los criterios del archivo no coinciden (mismo orden) con los 8 criterios actuales de parque — probablemente es de otra versión de la plataforma.');
+    const sameSet = data.criteria.length === currentCriteria.length
+      && currentCriteria.every(key => data.criteria.includes(key))
+      && data.criteria.every(key => currentCriteria.includes(key));
+    if (!sameSet) {
+      throw new Error('Los criterios del archivo no coinciden con los 8 criterios actuales de parque — probablemente es de otra versión de la plataforma.');
     }
+    const sameOrder = JSON.stringify(data.criteria) === JSON.stringify(currentCriteria);
     let pairs = {};
     if (data.pairs && typeof data.pairs === 'object') {
-      pairs = {...data.pairs};
+      pairs = sameOrder ? {...data.pairs} : mcdaRemapAhpPairs(data.criteria, data.pairs, currentCriteria);
     } else if (Array.isArray(data.matrix)) {
+      const rawPairs = {};
       for (let i = 0; i < data.criteria.length; i++) {
         for (let j = i + 1; j < data.criteria.length; j++) {
           const value = data.matrix[i]?.[j];
-          if (value != null) pairs[`${i}-${j}`] = String(value);
+          if (value != null) rawPairs[`${i}-${j}`] = String(value);
         }
       }
+      pairs = sameOrder ? rawPairs : mcdaRemapAhpPairs(data.criteria, rawPairs, currentCriteria);
     } else {
       throw new Error('El archivo no tiene matrix ni pairs para reconstruir las comparaciones.');
     }
     MCDA.ahpDraft = {
-      criteria: data.criteria, pairs,
+      criteria: currentCriteria, pairs,
       author: typeof data.author === 'string' ? data.author : '',
       objective: typeof data.objective === 'string' ? data.objective : '',
       rationale: typeof data.rationale === 'string' ? data.rationale : '',
@@ -7512,7 +7640,9 @@ async function mcdaImportAhpFile(event) {
     MCDA.ahpResult = null;
     mcdaRenderAhp();
     await mcdaCalculateAhp();
-    toast('Expediente AHP importado y recalculado contra el esquema actual.', 'success');
+    toast(sameOrder
+      ? 'Expediente AHP importado y recalculado contra el esquema actual.'
+      : 'Expediente AHP importado (criterios reordenados automáticamente) y recalculado.', 'success');
   } catch (e) {
     toast(`No se pudo importar el AHP: ${e.message}`, 'error');
   }
@@ -7700,6 +7830,228 @@ function mcdaExclusionPolygons() {
   return polygons;
 }
 
+function mcdaReceptorPoints() {
+  return MCDA.receptors.slice();
+}
+
+const MCDA_RECEPTOR_TYPES = {
+  vivienda: 'Vivienda', escuela: 'Escuela', otro: 'Otro',
+};
+
+function mcdaToggleReceptorPlacement(forceOn) {
+  MCDA.placingReceptor = forceOn ?? !MCDA.placingReceptor;
+  const btn = document.getElementById('btn-mcda-receptor-place');
+  if (btn) {
+    btn.classList.toggle('is-active', MCDA.placingReceptor);
+    btn.textContent = MCDA.placingReceptor ? '📍 Click en el mapa para colocar…' : '📍 Colocar receptor';
+  }
+  const map = PARQUE.map;
+  if (map) map.getContainer().style.cursor = MCDA.placingReceptor ? 'crosshair' : '';
+}
+
+function mcdaHandleParqueMapClick(e) {
+  if (!MCDA.placingReceptor) return;
+  mcdaAddReceptor(e.latlng);
+}
+
+function mcdaAddReceptor(latlng) {
+  MCDA.receptors.push({
+    lat: Number(latlng.lat.toFixed(6)), lon: Number(latlng.lng.toFixed(6)),
+    type: 'vivienda', period: 'night',
+  });
+  mcdaRenderReceptorList();
+  parqueRenderSiteContext();
+}
+
+function mcdaRemoveReceptor(idx) {
+  MCDA.receptors.splice(idx, 1);
+  mcdaRenderReceptorList();
+  parqueRenderSiteContext();
+}
+
+function mcdaSetReceptorField(idx, field, value) {
+  if (!MCDA.receptors[idx]) return;
+  MCDA.receptors[idx][field] = value;
+  parqueRenderSiteContext();
+}
+
+function mcdaRenderReceptorList() {
+  const container = document.getElementById('mcda-receptor-list');
+  if (!container) return;
+  if (!MCDA.receptors.length) {
+    container.innerHTML = '<p class="text-muted" style="font-size:.72rem;padding:.4rem">Sin receptores — usa «Colocar receptor» y haz click en el mapa.</p>';
+    return;
+  }
+  container.innerHTML = MCDA.receptors.map((r, i) => `
+    <div style="display:flex;gap:.35rem;align-items:center;padding:.3rem .4rem;font-size:.72rem;border-bottom:1px solid var(--border)">
+      <span style="flex:0 0 auto;color:var(--text-muted)">#${i + 1}</span>
+      <select class="form-select mcda-receptor-type" data-idx="${i}" style="font-size:.7rem;padding:.1rem .25rem;width:auto">
+        ${Object.entries(MCDA_RECEPTOR_TYPES).map(([key, label]) =>
+          `<option value="${key}" ${r.type === key ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <select class="form-select mcda-receptor-period" data-idx="${i}" style="font-size:.7rem;padding:.1rem .25rem;width:auto">
+        <option value="day" ${r.period === 'day' ? 'selected' : ''}>Día</option>
+        <option value="night" ${r.period === 'night' ? 'selected' : ''}>Noche</option>
+      </select>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted)">${r.lat.toFixed(4)}, ${r.lon.toFixed(4)}</span>
+      <button type="button" class="mcp-ref-remove mcda-receptor-remove" data-idx="${i}" title="Quitar">×</button>
+    </div>`).join('');
+  container.querySelectorAll('.mcda-receptor-remove').forEach(btn =>
+    btn.addEventListener('click', () => mcdaRemoveReceptor(Number(btn.dataset.idx))));
+  container.querySelectorAll('.mcda-receptor-type').forEach(sel =>
+    sel.addEventListener('change', () => mcdaSetReceptorField(Number(sel.dataset.idx), 'type', sel.value)));
+  container.querySelectorAll('.mcda-receptor-period').forEach(sel =>
+    sel.addEventListener('change', () => mcdaSetReceptorField(Number(sel.dataset.idx), 'period', sel.value)));
+}
+
+function mcdaNoiseLimitDba() {
+  const day = Number(document.getElementById('mcda-noise-limit-day')?.value);
+  const night = Number(document.getElementById('mcda-noise-limit-night')?.value);
+  if (!Number.isFinite(day) && !Number.isFinite(night)) return null;
+  return {
+    day: Number.isFinite(day) ? day : 55.0,
+    night: Number.isFinite(night) ? night : 45.0,
+  };
+}
+
+function mcdaShadowFlickerLimitHours() {
+  const value = Number(document.getElementById('mcda-flicker-limit')?.value);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** Botón "usar esta alternativa" del panel de diagnóstico ambiental: fuerza
+ * el N de esa tecnología a la alternativa que sí cumple ruido/flicker (del
+ * mismo pool que ya se calculó) y vuelve a correr el análisis -- las demás
+ * tecnologías de la corrida no se ven afectadas (n_range_by_turbine es por
+ * archivo de turbina, no global). */
+function mcdaUseMitigationAlternative(turbinaFilename, nTurbines) {
+  MCDA.nRangeByTurbine[turbinaFilename] = [nTurbines, nTurbines];
+  toast(`Forzando ${nTurbines} turbinas para ${turbinaFilename} — re-ejecutando…`, 'info');
+  mcdaRunAnalysis();
+}
+
+function mcdaClearNRangeOverride(turbinaFilename) {
+  delete MCDA.nRangeByTurbine[turbinaFilename];
+  toast(`Restricción de N removida para ${turbinaFilename} — re-ejecutando…`, 'info');
+  mcdaRunAnalysis();
+}
+
+// Fase 2b: restricciones de infraestructura automáticas vía OpenStreetMap
+// (Overpass API) -- mismos datos que openinframap.org. Cada feature se
+// muestra individualmente para que el usuario elija incluirla como
+// exclusión o descartarla; nunca se aplica nada automáticamente.
+let OSM_LAST_RESULT = null;
+
+async function mcdaOsmImport() {
+  const polygon = mcdaParkPolygon();
+  if (!polygon) { toast('Dibuja primero el polígono del parque.', 'warning'); return; }
+  const radiusKm = Number(document.getElementById('osm-radius-km')?.value) || 2;
+  const container = document.getElementById('osm-import-results');
+  if (container) container.innerHTML = '<p class="text-muted" style="font-size:.72rem">Consultando OpenStreetMap…</p>';
+  let data;
+  try {
+    data = await api('/api/infrastructure/osm_import', 'POST', { polygon, radius_km: radiusKm });
+  } catch (e) {
+    if (container) container.innerHTML = `<p style="font-size:.72rem;color:var(--red)">Error: ${mcdaAuditEscape(e.message)}</p>`;
+    return;
+  }
+  if (!data.ok) {
+    if (container) container.innerHTML = `<p style="font-size:.72rem;color:var(--orange)">
+      No se pudo consultar OpenStreetMap (${mcdaAuditEscape(data.error || 'error desconocido')}).
+      Las exclusiones dibujadas a mano siguen funcionando igual.</p>`;
+    return;
+  }
+  OSM_LAST_RESULT = data;
+  mcdaOsmRenderResults(data);
+}
+
+function mcdaOsmRenderResults(data) {
+  const container = document.getElementById('osm-import-results');
+  if (!container) return;
+  if (!data.features.length) {
+    container.innerHTML = '<p class="text-muted" style="font-size:.72rem">Sin infraestructura encontrada en el radio configurado.</p>';
+    return;
+  }
+  const byCategory = {};
+  data.features.forEach((f, idx) => {
+    f._idx = idx;
+    (byCategory[f.category] = byCategory[f.category] || []).push(f);
+  });
+  const groups = Object.entries(byCategory).map(([category, items]) => {
+    const isReceptor = items[0].kind === 'receptor';
+    return `
+    <details style="margin-top:.35rem" open>
+      <summary style="cursor:pointer;font-size:.74rem;font-weight:600">
+        ${mcdaAuditEscape(data.category_labels[category] || category)} (${items.length})
+        ${isReceptor ? `<span class="badge badge--info" style="font-size:.62rem;margin-left:.3rem">receptor, radio ≤${data.receptor_max_radius_km ?? 1} km</span>` : ''}
+      </summary>
+      <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:.3rem;margin-top:.25rem">
+        ${items.map(f => `
+          <div style="display:flex;align-items:center;gap:.4rem;font-size:.7rem;padding:.15rem 0">
+            <input type="checkbox" id="osm-feat-${f._idx}" data-idx="${f._idx}">
+            <span style="flex:1">${mcdaAuditEscape(f.name || f.osm_id)} · ${f.coords.length} pto(s)</span>
+            ${isReceptor ? `
+              <label style="color:var(--text-secondary)">periodo</label>
+              <select id="osm-period-${f._idx}" style="font-size:.7rem;padding:.1rem .2rem">
+                <option value="night" selected>Noche</option>
+                <option value="day">Día</option>
+              </select>` : `
+              <label style="color:var(--text-secondary)">buffer (m)</label>
+              <input type="number" id="osm-buffer-${f._idx}" value="${f.default_buffer_m}" min="1" step="5"
+                style="width:60px;padding:.1rem .25rem;font-size:.7rem">`}
+          </div>`).join('')}
+      </div>
+    </details>`;
+  }).join('');
+  container.innerHTML = groups + `
+    <button class="btn-primary" id="btn-osm-apply" type="button" style="font-size:.72rem;padding:.3rem .55rem;margin-top:.4rem"
+      onclick="mcdaOsmApplySelected()">Agregar seleccionados (exclusión / receptor según categoría)</button>`;
+}
+
+async function mcdaOsmApplySelected() {
+  if (!OSM_LAST_RESULT) return;
+  const selected = OSM_LAST_RESULT.features.filter(f =>
+    document.getElementById(`osm-feat-${f._idx}`)?.checked);
+  if (!selected.length) { toast('No seleccionaste ningún objeto.', 'warning'); return; }
+  const exclusionFeatures = selected.filter(f => f.kind !== 'receptor');
+  const receptorFeatures  = selected.filter(f => f.kind === 'receptor');
+
+  const newPolygons = [];
+  for (const feature of exclusionFeatures) {
+    const bufferM = Number(document.getElementById(`osm-buffer-${feature._idx}`)?.value) || feature.default_buffer_m;
+    if (bufferM <= 0) continue;
+    try {
+      const result = await api('/api/infrastructure/osm_buffer', 'POST', {
+        coords: feature.coords, geometry_type: feature.geometry_type, buffer_m: bufferM,
+      });
+      newPolygons.push(result.polygon);
+    } catch (e) {
+      toast(`No se pudo procesar ${feature.osm_id}: ${e.message}`, 'warning');
+    }
+  }
+  if (newPolygons.length) {
+    const textarea = document.getElementById('mcda-exclusions');
+    let existing = [];
+    try { existing = mcdaExclusionPolygons(); } catch (_) { existing = []; }
+    textarea.value = JSON.stringify([...existing, ...newPolygons]);
+    mcdaInvalidateLayouts();
+    toast(`${newPolygons.length} exclusión(es) agregada(s) desde OpenStreetMap.`, 'success');
+  }
+
+  for (const feature of receptorFeatures) {
+    const period = document.getElementById(`osm-period-${feature._idx}`)?.value === 'day' ? 'day' : 'night';
+    MCDA.receptors.push({
+      lat: feature.receptor_point[0], lon: feature.receptor_point[1],
+      type: feature.receptor_type, period,
+    });
+  }
+  if (receptorFeatures.length) {
+    mcdaRenderReceptorList();
+    toast(`${receptorFeatures.length} receptor(es) agregado(s) desde OpenStreetMap.`, 'success');
+  }
+  if (newPolygons.length || receptorFeatures.length) parqueRenderSiteContext();
+}
+
 function mcdaClearSpatialMarkers() {
   if (KRIG.map && Array.isArray(KRIG.mcdaMarkers)) {
     KRIG.mcdaMarkers.forEach(m => KRIG.map.removeLayer(m));
@@ -7707,47 +8059,26 @@ function mcdaClearSpatialMarkers() {
   KRIG.mcdaMarkers = [];
 }
 
-function mcdaInitMiniMap() {
-  const el = document.getElementById('mcda-mini-map');
-  if (!el || typeof L === 'undefined') return null;
-  if (MCDA.miniMap) {
-    setTimeout(() => MCDA.miniMap.invalidateSize(), 40);
-    return MCDA.miniMap;
-  }
-  MCDA.miniMap = L.map(el, {
-    center: [23.5, -102],
-    zoom: 5,
-    zoomControl: false,
-    attributionControl: false,
-    scrollWheelZoom: false,
-  });
-  const url = (typeof MAPA_TILES !== 'undefined' && (MAPA_TILES.voyager || MAPA_TILES.osm))
-    || 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-  MCDA.miniBase = L.tileLayer(url, {
-    maxZoom: 18,
-    subdomains: 'abc',
-    crossOrigin: 'anonymous',
-  }).addTo(MCDA.miniMap);
-  setTimeout(() => MCDA.miniMap.invalidateSize(), 80);
-  return MCDA.miniMap;
+function mcdaClearSiteContextLayers() {
+  if (!PARQUE.map) return;
+  PARQUE.siteContextLayers.forEach(l => PARQUE.map.removeLayer(l));
+  PARQUE.siteContextLayers = [];
 }
 
-function mcdaClearMiniLayers() {
-  if (!MCDA.miniMap) return;
-  MCDA.miniLayers.forEach(l => MCDA.miniMap.removeLayer(l));
-  MCDA.miniLayers = [];
-}
-
-function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
-  const map = mcdaInitMiniMap();
+// Consolidado en el único mapa del parque (PARQUE.map, mismo widget que ya
+// pinta el raster Kriging + turbinas aplicadas + estelas): antes esto vivía
+// en un mini-mapa aparte (mcda-mini-map) con sus propias capas base/tile,
+// sin capa Kriging ni turbinas arrastrables. Dibuja polígono, exclusiones,
+// receptores (clicables para quitar) y muestras de recurso -- todo lo que
+// el mini-mapa hacía y parque-map no tenía. La vista previa de turbinas
+// (círculos no arrastrables, distintos de parquePlotTurbinesOnMap que sí
+// usa marcadores arrastrables para el layout YA aplicado) usa su propio
+// arreglo de capas para no interferir con esa otra función.
+function parqueRenderSiteContext(result = MCDA.lastSpatial) {
+  const map = parqueInitMap();
   if (!map) return;
-  mcdaClearMiniLayers();
-  const title = document.getElementById('mcda-mini-title');
-  const status = document.getElementById('mcda-mini-status');
+  mcdaClearSiteContextLayers();
   const areaMode = MCDA.scope === 'area';
-  if (title) title.textContent = areaMode
-    ? 'Mapa TOPSIS — escenario de decisión'
-    : 'Mapa TOPSIS — exploración global';
 
   let focusLayer = null;
   if (areaMode) {
@@ -7759,7 +8090,7 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
         fillColor: '#f59e0b',
         fillOpacity: 0.12,
       }).addTo(map);
-      MCDA.miniLayers.push(focusLayer);
+      PARQUE.siteContextLayers.push(focusLayer);
     }
     try {
       mcdaExclusionPolygons().forEach(exclusion => {
@@ -7767,9 +8098,18 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
           color: '#dc2626', weight: 2, dashArray: '5 4',
           fillColor: '#ef4444', fillOpacity: 0.18,
         }).addTo(map);
-        MCDA.miniLayers.push(layer);
+        PARQUE.siteContextLayers.push(layer);
       });
     } catch (_) { /* validation is shown before running */ }
+    MCDA.receptors.forEach((receptor, i) => {
+      const layer = L.circleMarker([receptor.lat, receptor.lon], {
+        radius: 6, color: '#9333ea', weight: 2,
+        fillColor: '#a855f7', fillOpacity: 0.7,
+      }).bindTooltip(`#${i + 1} ${MCDA_RECEPTOR_TYPES[receptor.type] || receptor.type} (${receptor.period === 'day' ? 'día' : 'noche'}) — click para quitar`)
+        .on('click', () => mcdaRemoveReceptor(i))
+        .addTo(map);
+      PARQUE.siteContextLayers.push(layer);
+    });
   } else {
     const b = mcdaCurrentAreaBounds();
     if (b) {
@@ -7779,7 +8119,7 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
         fillColor: '#22c55e',
         fillOpacity: 0.08,
       }).addTo(map);
-      MCDA.miniLayers.push(focusLayer);
+      PARQUE.siteContextLayers.push(focusLayer);
     }
   }
 
@@ -7802,25 +8142,21 @@ function mcdaRenderMiniMap(result = MCDA.lastSpatial) {
       (s.dominant_direction_deg != null ? ` · Dir ${Number(s.dominant_direction_deg).toFixed(0)}°` : ''),
       { direction: 'top' }
     ).addTo(map);
-    MCDA.miniLayers.push(marker);
+    PARQUE.siteContextLayers.push(marker);
   });
-  const winningLayout = result?.ranking?.ranking?.[0]?.layout_latlon || [];
+  const selectedLayout = result?.alternatives?.[MCDA.previewIndex || 0];
+  const winningLayout = selectedLayout?.layout_latlon || result?.ranking?.ranking?.[0]?.layout_latlon || [];
   winningLayout.forEach((point, i) => {
     const marker = L.circleMarker(point, {
       radius: 5, color: '#0f766e', weight: 2,
       fillColor: '#2dd4bf', fillOpacity: 0.95,
     }).bindTooltip(
-      `Aerogenerador ${i + 1} del layout TOPSIS ganador`,
+      `Aerogenerador ${i + 1} del layout seleccionado`,
       { direction: 'top' }
     ).addTo(map);
-    MCDA.miniLayers.push(marker);
+    PARQUE.siteContextLayers.push(marker);
   });
 
-  if (status) {
-    status.textContent = orderedSites.length
-      ? `${orderedSites.length} muestras de recurso · ${winningLayout.length} aeros ganadores`
-      : (focusLayer ? 'Área enfocada' : 'Sin área');
-  }
   if (orderedSites.length) {
     const bounds = L.latLngBounds(orderedSites.map(s => [s.lat, s.lon]));
     if (focusLayer && focusLayer.getBounds) bounds.extend(focusLayer.getBounds());
@@ -7875,6 +8211,51 @@ function mcdaRenderSpatialMarkers(result) {
   });
 }
 
+function mcdaInvalidateLayouts() {
+  MCDA.taskId = null;
+  MCDA.generationToken = null;
+  MCDA.lastSpatial = null;
+  MCDA.lastAnalysis = null;
+  MCDA.lastRanking = null;
+  MCDA.previewIndex = 0;
+  PARQUE.optResult = null;
+  PARQUE.result = null;
+  WP.technoSelectedTopsisTurbine = null;
+  mcdaRenderCandidates();
+  mcdaRenderRanking({ranking: [], note: 'Los insumos cambiaron. Genera layouts de nuevo en Parque.'});
+  for (const id of ['topsis-robust-card', 'gsens-batch-card']) {
+    const card = document.getElementById(id);
+    if (card) card.style.display = 'none';
+  }
+  const status = document.getElementById('mcda-status');
+  if (status) status.textContent = 'Layouts pendientes de generar';
+}
+
+function mcdaHasLayoutCandidates() {
+  return ['farm_layout_candidates_v1', 'farm_layout_mcda_v2'].includes(MCDA.lastSpatial?.analysis_kind);
+}
+
+function mcdaRenderCandidates() {
+  const el = document.getElementById('layout-candidates');
+  if (!el) return;
+  const rows = mcdaHasLayoutCandidates() ? (MCDA.lastSpatial.alternatives || []) : [];
+  const errors = MCDA.lastSpatial?.errors || [];
+  el.innerHTML = rows.map((a, i) => `<details class="card mt-2"><summary style="padding:.7rem">
+    ${mcdaAuditEscape(a.turbina)} · ${a.n_aerogeneradores} turbinas ·
+    P50 ${mcdaAuditNumber(a.aep_p50_mwh)} MWh/año · VAN ${mcdaAuditMoney(a.van_usd)} ·
+    estela ${mcdaAuditNumber(a.wake_loss_pct)}%
+    ${a.environmental_feasibility?.ok === false ? ' · Revisar ruido/sombra' : ''}
+    </summary><div class="card-body"><button class="btn-secondary" type="button"
+    onclick="mcdaPreviewCandidate(${i})">Ver layout en el mapa</button>${mcdaLayoutAuditHtml(a)}</div></details>`).join('')
+    + errors.map(e => `<p>${mcdaAuditEscape(e.turbine)}: ${mcdaAuditEscape(e.reason)}</p>`).join('')
+    + (!rows.length ? '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>' : '');
+}
+
+function mcdaPreviewCandidate(index) {
+  MCDA.previewIndex = index;
+  parqueRenderSiteContext();
+}
+
 function mcdaUpdateScopeUi() {
   const areaMode = MCDA.scope === 'area';
   document.querySelectorAll('.mcda-subtab').forEach(btn => {
@@ -7885,11 +8266,11 @@ function mcdaUpdateScopeUi() {
   });
   const runBtn = document.getElementById('btn-mcda-run');
   if (runBtn) runBtn.textContent = areaMode
-    ? '▶ Analizar aerogeneradores del parque'
+    ? '▶ Generar layouts por tecnología'
     : '▶ Ejecutar análisis exploratorio';
   const help = document.getElementById('mcda-scope-help');
   if (help) help.textContent = areaMode
-    ? 'Modo parque: optimiza cantidades y layouts factibles por turbina, calcula estelas, AEP y economía, y después aplica TOPSIS.'
+    ? 'TOPSIS compara los layouts ya evaluados en Parque; cambiar pesos no genera ni modifica sus geometrías.'
     : 'Modo exploratorio: TOPSIS usa puntos interpolados dentro del recuadro y marca sitios candidatos en el mapa.';
   const info = document.getElementById('mcda-area-info');
   if (info) {
@@ -7905,14 +8286,17 @@ function mcdaUpdateScopeUi() {
         : 'Selecciona un recuadro en el mapa Kriging para la exploración global.';
     }
   }
-  mcdaRenderMiniMap();
+  parqueRenderSiteContext();
 }
 
 function mcdaSetScope(scope) {
+  MCDA.generationToken = null;
   MCDA.scope = scope === 'exploratory' ? 'exploratory' : 'area';
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
   MCDA.lastSpatial = null;
+  MCDA.taskId = null;
+  mcdaRenderCandidates();
   mcdaUpdateScopeUi();
   mcdaBuildWeightSliders();
   const body = document.getElementById('mcda-rank-body');
@@ -7941,6 +8325,7 @@ async function mcdaResetWeights() {
 }
 
 async function mcdaRunAnalysis() {
+  if (MCDA.taskId) { toast('La generación sigue en curso.', 'info'); return; }
   krig3InitMap();
   if (!KRIG.sites.length) await krig3LoadSites();
   mcdaUpdateScopeUi();
@@ -7961,45 +8346,47 @@ async function mcdaRunAnalysis() {
   }
   const turbineFilenames = mcdaSelectedTurbines();
   if (!turbineFilenames.length) {
-    toast('Selecciona al menos una turbina de interés para TOPSIS.', 'warning');
+    toast('Selecciona al menos una turbina de interés para el estudio.', 'warning');
     return;
   }
   const marketInputs = parkEquivalentDesignInputs();
   const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
   if (!Number.isFinite(projectYears) || projectYears < 5 ||
       !Number.isFinite(marketInputs.price_usd_kwh)) {
-    toast('Guarda la vida del proyecto y carga el archivo de precios antes de ejecutar TOPSIS.', 'warning');
+    toast('Guarda la vida del proyecto y carga el archivo de precios antes de generar layouts.', 'warning');
     return;
   }
-  const safetyMinD = Math.max(3, Number(document.getElementById('parque-min-sep-d')?.value) || 3);
-  const rowStartD = Math.max(safetyMinD, Number(document.getElementById('parque-row-sep-d')?.value) || 3);
-  const colStartD = Math.max(safetyMinD, Number(document.getElementById('parque-col-sep-d')?.value) || 3);
+  // Año, tasa y tipo de cambio ya no se capturan en este panel: se toman de
+  // la configuración del parque (Evaluación tecnoeconómica) y del recurso
+  // eólico (Mapa & Kriging). Si faltan, se bloquea con un aviso claro en
+  // lugar de asumir un valor por default silencioso.
+  if (!Number.isFinite(marketInputs.tasa) || !Number.isFinite(marketInputs.price_mxn_per_usd)) {
+    toast('Configura la tasa de descuento y el tipo de cambio USD→MXN del proyecto (Evaluación tecnoeconómica) antes de generar layouts.', 'warning');
+    return;
+  }
+  const resourceYear = parseInt(document.getElementById('krig3-year')?.value) || 2018;
+  const rowRefD = Math.max(TECHNICAL_FLOOR_D, Number(document.getElementById('parque-row-sep-d')?.value) || 3);
+  const colRefD = Math.max(TECHNICAL_FLOOR_D, Number(document.getElementById('parque-col-sep-d')?.value) || 3);
   const wakeLimitRaw = Number(document.getElementById('parque-max-wake-loss')?.value);
   const wakeLimitPct = Number.isFinite(wakeLimitRaw) ? Math.max(0, wakeLimitRaw) : 5;
-  const spacingRange = (start, conventionalMax) => {
-    const values = [];
-    const end = Math.max(start, conventionalMax);
-    for (let value = start; value <= end + 1e-9; value += 1) {
-      values.push(Number(value.toFixed(2)));
-    }
-    if (values[values.length - 1] < end) values.push(end);
-    return values;
-  };
+  const spacingRange = parqueSpacingRange;
   let exclusionPolygons = [];
+  let receptorPoints = [];
   try {
     exclusionPolygons = areaMode ? mcdaExclusionPolygons() : [];
+    receptorPoints = areaMode ? mcdaReceptorPoints() : [];
   } catch (e) {
     toast(e.message, 'warning');
     return;
   }
   const body = {
     scope:         areaMode ? 'park' : 'exploratory',
-    year:          parseInt(document.getElementById('mcda-year').value),
-    demand_mwh:    marketInputs.demand_mwh ?? parseFloat(document.getElementById('mcda-demand').value),
-    tasa:          marketInputs.tasa ?? parseFloat(document.getElementById('mcda-tasa').value) / 100,
+    year:          resourceYear,
+    demand_mwh:    marketInputs.demand_mwh,
+    tasa:          marketInputs.tasa,
     price_usd_kwh: marketInputs.price_usd_kwh,
     project_years: projectYears,
-    price_mxn_per_usd: marketInputs.price_mxn_per_usd ?? parseFloat(document.getElementById('mcda-fx').value),
+    price_mxn_per_usd: marketInputs.price_mxn_per_usd,
     market_trajectories: marketInputs.trajectories,
     n_grid:        parseInt(document.getElementById('krig3-n')?.value) || 80,
     model:         document.getElementById('krig3-model')?.value || 'exponential',
@@ -8009,32 +8396,48 @@ async function mcdaRunAnalysis() {
     max_points:    areaMode ? 56 : (parseInt(document.getElementById('mcda-maxfiles').value) || 60),
     turbine_filenames: turbineFilenames,
     commercialization_mode: marketInputs.trajectories?.commercialization_mode || 'total_sale',
-    min_spacing_d: safetyMinD,
-    s_para_range: spacingRange(rowStartD, 10),
-    s_perp_range: spacingRange(colStartD, 6),
+    min_spacing_d: TECHNICAL_FLOOR_D,
+    s_para_range: spacingRange(rowRefD, 10),
+    s_perp_range: spacingRange(colRefD, 6),
     max_wake_loss_pct: wakeLimitPct,
+    target_height_m: Number(wsH()),
+    grid_limit_mw: document.getElementById('parque-grid-limit')?.value.trim()
+      ? Number(document.getElementById('parque-grid-limit').value) : null,
     wake_model: 'gaussian',
-    k_wake: 0.04,
+    k_wake: Number(document.getElementById('parque-kwake')?.value) || 0.04,
+    max_slope_deg: document.getElementById('parque-max-slope')?.value.trim()
+      ? Number(document.getElementById('parque-max-slope').value) : null,
     ct: Number(document.getElementById('parque-ct')?.value) || 0.8,
-    availability: (Number(document.getElementById('parque-avail')?.value) || 97) / 100,
-    electrical_losses: (Number(document.getElementById('parque-elec')?.value) || 3) / 100,
+    availability: Number(document.getElementById('parque-avail')?.value ?? 97) / 100,
+    electrical_losses: Number(document.getElementById('parque-elec')?.value ?? 3) / 100,
     exclusion_polygons: exclusionPolygons,
     boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
+    row_sep_reference_d: rowRefD,
+    col_sep_reference_d: colRefD,
+    receptor_points: receptorPoints,
+    noise_limit_dba: receptorPoints.length ? mcdaNoiseLimitDba() : null,
+    shadow_flicker_limit_hours_year: receptorPoints.length ? mcdaShadowFlickerLimitHours() : null,
+    include_environmental: document.getElementById('parque-include-environmental')?.checked || false,
+    n_range_by_turbine: Object.keys(MCDA.nRangeByTurbine).length ? MCDA.nRangeByTurbine : null,
   };
   if (WP.sessionId) body.session_id = WP.sessionId;
   if (WP.activeDataSource) body.data_source = WP.activeDataSource;
   if (areaMode) {
     mcdaRememberLayoutWeights();
-    body.layout_weights = MCDA.layoutWeights || MCDA.defaults?.layout_weights;
-    body.ahp_assessment = mcdaActiveAhp();
     delete body.weights;
   }
   if (areaMode) body.polygon = parkPolygon;
   else body.area_bounds = areaBounds;
+  const generationToken = {};
+  MCDA.generationToken = generationToken;
   document.getElementById('mcda-status').textContent = 'Ejecutando…';
   MCDA.lastSpatial = null;
   MCDA.lastAnalysis = null;
   MCDA.lastRanking = null;
+  PARQUE.optResult = null; PARQUE.result = null;
+  WP.technoSelectedTopsisTurbine = null;
+  mcdaRenderCandidates();
+  mcdaRenderRanking({ranking: [], note: 'Generación en curso; ejecuta TOPSIS al terminar.'});
   document.getElementById('mcda-progress-wrap').style.display = '';
   document.getElementById('mcda-progress-text').textContent = areaMode
     ? 'Interpolando viento real dentro del parque dibujado…'
@@ -8050,7 +8453,8 @@ async function mcdaRunAnalysis() {
       body.physical = !!document.getElementById('krig3-physical')?.checked;
       if (KRIG.orographicSpeedupGrid) body.orographic_speedup_grid = KRIG.orographicSpeedupGrid;
     }
-    const r = await api('/api/multicriteria/spatial', 'POST', body);
+    const r = await api(areaMode ? '/api/farm/layouts/generate' : '/api/multicriteria/spatial', 'POST', body);
+    if (MCDA.generationToken !== generationToken) return;
     MCDA.taskId = r.task_id;
     mcdaPollStatus();
   } catch (e) {
@@ -8078,40 +8482,64 @@ async function mcdaPollStatus() {
       const nSites = MCDA.lastAnalysis.length;
       const nTurbs = MCDA.lastAnalysis.reduce((s, x) => s + (x.turbines||[]).length, 0);
       document.getElementById('mcda-status').textContent = MCDA.scope === 'area'
-        ? `${r.result?.n_valid_models || 0} modelos válidos · 1 layout óptimo dentro del límite de estela por modelo · ${nSites} muestras de recurso`
+        ? `${r.result?.n_valid_models || 0} modelos válidos · 1 layout seleccionado por VAN factible por modelo · ${nSites} muestras de recurso`
         : `${nSites} sitios candidatos · ${nTurbs} evaluaciones`;
       document.getElementById('mcda-progress-fill').style.width = '100%';
-      toast('TOPSIS espacial completado.', 'success');
+      MCDA.taskId = null;
+      MCDA.previewIndex = 0;
+      mcdaRenderCandidates();
+      toast(MCDA.scope === 'area' ? 'Layouts preparados. Revisa las alternativas y continúa a TOPSIS.' : 'Exploración completada.', 'success');
       mcdaRenderRanking(MCDA.lastRanking || { ranking: [] });
       mcdaRenderSpatialMarkers(r.result);
-      mcdaRenderMiniMap(r.result);
+      parqueRenderSiteContext(r.result);
+      if (QD.active && MCDA.scope === 'area') {
+        qdMsg('Layouts preparados. Revisa las alternativas en Parque y ejecuta AHP / TOPSIS para continuar.');
+        krigingGoToSubtab('parque');
+      }
     } else if (r.status === 'error') {
+      MCDA.taskId = null;
       toast(`Análisis falló: ${r.message}`, 'error');
       document.getElementById('mcda-status').textContent = 'Error';
     } else {
       setTimeout(mcdaPollStatus, 800);
     }
   } catch (e) {
+    MCDA.taskId = null;
     toast(`Error polling: ${e.message}`, 'error');
   }
 }
 
 async function mcdaRankNow() {
-  if (MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2') {
+  if (MCDA.taskId) { toast('Espera a que termine la generación de layouts.', 'warning'); return; }
+  if (MCDA.scope === 'area' && !mcdaHasLayoutCandidates()) {
+    toast('Primero genera los layouts en ③ Parque.', 'warning'); return;
+  }
+  if (mcdaHasLayoutCandidates()) {
+    const prepared = MCDA.lastSpatial;
     try {
       const r = await api('/api/multicriteria/rank', 'POST', {
         alternatives: MCDA.lastSpatial.alternatives || [],
         mode: 'layout_alternatives',
         ahp_assessment: mcdaActiveAhp(),
         weights: mcdaGetWeights(),
-        polygon: MCDA.lastSpatial.comparison_polygon || mcdaParkPolygon(),
-        exclusion_polygons: MCDA.lastSpatial.comparison_exclusions || mcdaExclusionPolygons(),
       });
+      if (MCDA.lastSpatial !== prepared) return;
       MCDA.lastRanking = r;
       MCDA.lastSpatial.ranking = r;
       mcdaRenderRanking(r);
+      document.getElementById('mcda-status').textContent = `${r.ranking?.length || 0} alternativas clasificadas`;
       mcdaRenderSpatialMarkers(MCDA.lastSpatial);
-      mcdaRenderMiniMap(MCDA.lastSpatial);
+      parqueRenderSiteContext(MCDA.lastSpatial);
+      if (QD.active && r.ranking?.length) {
+        const winner = r.ranking[0];
+        await quickDesignContinueAfterParque({
+          ...winner, n_placed: winner.n_aerogeneradores,
+          turbine: {name: winner.turbina, ...winner.turbine_specification},
+          simulation: {aep_mwh: winner.aep_p50_mwh, aep_gross_mwh: winner.aep_gross_mwh,
+            wake_loss_pct: winner.wake_loss_pct, cf_pct: winner.factor_capacidad * 100,
+            installed_mw: winner.installed_mw, turbines: winner.turbine_production},
+        });
+      }
     } catch (e) {
       toast(`Error ranking: ${e.message}`, 'error');
     }
@@ -8152,7 +8580,7 @@ async function runTopsisRobustness() {
     toast('Corre TOPSIS primero — se necesitan al menos 2 alternativas.', 'warning');
     return;
   }
-  const isLayout = MCDA.lastSpatial?.analysis_kind === 'farm_layout_mcda_v2';
+  const isLayout = mcdaHasLayoutCandidates();
   const nSamples = Math.max(100, Math.min(2000, parseInt(document.getElementById('topsis-robust-n-samples')?.value) || 500));
   const body = {
     alternatives: ranking,
@@ -8303,7 +8731,7 @@ function mcdaAuditCard(title, rows) {
   </div>`;
 }
 
-function mcdaLayoutAuditHtml(a) {
+function mcdaLayoutAuditHtml(a, readOnly = false) {
   const spec = a.turbine_specification || {};
   const cap = a.capex_breakdown || {};
   const econ = a.economic_assumptions || {};
@@ -8422,6 +8850,71 @@ function mcdaLayoutAuditHtml(a) {
   ].join('');
   const wakeRows = (a.wake_trials || []).map(trial =>
     `<tr><td>${mcdaAuditNumber(trial.n, 0)}</td><td>${mcdaAuditNumber(trial.wake_loss_pct, 3)}%</td></tr>`).join('');
+  const champion = a.champion_selection;
+  const familyLabels = { aligned: '▦ Alineado', staggered: '⬡ Tresbolillo', greedy: '⚡ Greedy (vértice)' };
+  const familyRows = Object.entries(champion?.family_summary || {}).map(([family, s]) => `
+        <tr><td>${familyLabels[family] || family}</td><td>${
+          s.feasible
+            ? `${mcdaAuditNumber(s.n_turbines, 0)} turbinas · VAN ${mcdaAuditMoney(s.van_usd)} · estela ${mcdaAuditNumber(s.wake_loss_pct, 2)}%`
+            : `no factible dentro de la estela máxima (cabían hasta ${mcdaAuditNumber(s.max_n_fit, 0)})`
+        }${s.feasible && Math.abs((s.van_usd ?? NaN) - (a.van_usd ?? NaN)) < 1 ? ' ★ ganador' : ''}</td></tr>`).join('');
+  const championPanel = champion ? `<details style="margin-top:.7rem" open><summary style="cursor:pointer;font-weight:600">Generación de layouts (paso 6, previo a TOPSIS)</summary>
+      <table class="tbl"><tbody>
+        <tr><td>Candidatos generados (N × patrón × familia)</td><td><b>${mcdaAuditNumber(champion.pool_size, 0)}</b></td></tr>
+        <tr><td>Candidatos factibles</td><td>${mcdaAuditNumber(champion.n_feasible, 0)}</td></tr>
+        <tr><td>Rango de N explorado</td><td>${(champion.n_range_explored || []).join(' – ')}</td></tr>
+        <tr><td>Regla de campeón</td><td>${mcdaAuditEscape(champion.rule)}</td></tr>
+        ${Object.entries(champion.rejected_by_reason || {}).map(([reason, count]) =>
+          `<tr><td>Rechazados: ${mcdaAuditEscape(reason)}</td><td>${mcdaAuditNumber(count, 0)}</td></tr>`).join('')}
+      </tbody></table>
+      ${familyRows ? `<b style="font-size:.78rem">Alineado vs. Tresbolillo vs. Greedy (vértice) — las tres familias se buscaron por separado, ninguna se descarta implícitamente</b>
+      <table class="tbl"><tbody>${familyRows}</tbody></table>` : ''}
+    </details>` : '';
+  const env = a.environmental_feasibility;
+  const mitigation = a.mitigation_alternative;
+  const receptorRows = (evalObj, unitLabel) => (evalObj?.per_receptor || []).map(r => `<tr>
+      <td>${mcdaAuditEscape(r.type || '—')} (${mcdaAuditEscape(r.period || '')})</td>
+      <td>${mcdaAuditNumber(r.lp_dba ?? r.hours_year, r.lp_dba != null ? 1 : 2)} ${unitLabel}</td>
+      <td>${mcdaAuditNumber(r.limit_dba ?? r.limit_hours_year, r.limit_dba != null ? 1 : 2)} ${unitLabel}</td>
+      <td>${r.ok ? '✓ cumple' : '✗ excede'}</td>
+    </tr>`).join('');
+  const environmentalPanel = env ? `<details style="margin-top:.7rem" open><summary style="cursor:pointer;font-weight:600">
+      Diagnóstico ruido/sombra del campeón (estela + VAN) — ${env.ok ? '✓ viable' : '✗ NO viable, ver detalle'}
+    </summary>
+      <p class="text-muted" style="font-size:.72rem">
+        El campeón se eligió ignorando ruido/sombra a propósito (solo estela + VAN). Esto es lo que produce
+        ese campeón en los receptores configurados — no se descartó ni se recalculó nada.
+      </p>
+      ${env.noise_evaluation ? `<b style="font-size:.78rem">Ruido</b>
+        <table class="tbl"><thead><tr><th>Receptor</th><th>Nivel</th><th>Límite</th><th></th></tr></thead>
+        <tbody>${receptorRows(env.noise_evaluation, 'dB(A)')}</tbody></table>` : ''}
+      ${env.shadow_flicker_evaluation ? `<b style="font-size:.78rem">Shadow flicker</b>
+        <table class="tbl"><thead><tr><th>Receptor</th><th>Horas/año</th><th>Límite</th><th></th></tr></thead>
+        <tbody>${receptorRows(env.shadow_flicker_evaluation, 'h')}</tbody></table>` : ''}
+      ${!env.ok ? (mitigation ? `
+        <div style="margin-top:.5rem;padding:.5rem;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary)">
+          <b style="font-size:.78rem">Alternativa que sí cumple (mismo pool, sin recalcular)</b>
+          <p style="font-size:.75rem;margin:.3rem 0">
+            ${mcdaAuditNumber(mitigation.n_turbines, 0)} turbinas · VAN ${mcdaAuditMoney(mitigation.van_usd)}
+            (${mitigation.van_delta_usd >= 0 ? '+' : ''}${mcdaAuditMoney(mitigation.van_delta_usd)} vs. el campeón actual)
+          </p>
+          ${readOnly ? '<p>Aplica la mitigación desde ③ Parque y después vuelve a ejecutar TOPSIS.</p>' : `<button class="btn-primary" style="font-size:.72rem;padding:.3rem .55rem"
+            onclick="mcdaUseMitigationAlternative('${mcdaAuditEscape(a.turbina)}', ${mcdaAuditNumber(mitigation.n_turbines, 0)})">
+            Usar esta alternativa (forzar N=${mcdaAuditNumber(mitigation.n_turbines, 0)}) y re-ejecutar
+          </button>`}
+        </div>` : `<p style="font-size:.75rem;color:var(--orange)">
+          No se encontró ninguna alternativa que cumpla dentro del rango de N explorado
+          (${(a.champion_selection?.n_range_explored || []).join(' – ')}). Opciones: ampliar el rango,
+          revisar los receptores/límites, o aceptar el riesgo explícitamente (el campeón actual ya es el
+          que sigue a TOPSIS por defecto — ruido/sombra no lo bloquean, solo quedan documentados aquí).
+        </p>`) : ''}
+      ${!readOnly && MCDA.nRangeByTurbine[a.turbina] ? `
+        <div style="margin-top:.5rem;padding:.4rem .5rem;border:1px dashed var(--border);border-radius:8px">
+          <span style="font-size:.72rem">N forzado a ${MCDA.nRangeByTurbine[a.turbina][0]} para esta tecnología.</span>
+          <button class="btn-secondary" style="font-size:.7rem;padding:.2rem .4rem;margin-left:.4rem"
+            onclick="mcdaClearNRangeOverride('${mcdaAuditEscape(a.turbina)}')">Quitar restricción</button>
+        </div>` : ''}
+    </details>` : '';
   const cashRows = (a.cashflow_table || []).map(row => `<tr>
     <td>${row.year}</td><td>${mcdaAuditNumber(row.energy_mwh, 1)}</td>
     <td>${mcdaAuditMoney(row.revenue_usd)}</td><td>${mcdaAuditMoney(row.opex_usd)}</td>
@@ -8430,6 +8923,8 @@ function mcdaLayoutAuditHtml(a) {
   </tr>`).join('');
   return `<div style="padding:.8rem;background:var(--bg-secondary)">
     <div style="display:flex;gap:.65rem;flex-wrap:wrap">${cards}</div>
+    ${championPanel}
+    ${environmentalPanel}
     <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Pruebas de cantidad y estela</summary>
       <table class="tbl"><thead><tr><th>Turbinas</th><th>Pérdida estela</th></tr></thead><tbody>${wakeRows}</tbody></table>
     </details>
@@ -8519,7 +9014,7 @@ function mcdaRenderRanking(r) {
       <td>${Number.isFinite(Number(a.lcoe_usd_kwh)) ? Number(a.lcoe_usd_kwh).toFixed(4) : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.roi)) ? Number(a.roi).toFixed(2) : 'No calculado'}</td>
       <td>${Number.isFinite(Number(a.capex_usd)) ? Math.round(a.capex_usd).toLocaleString() : 'No calculado'}</td>`}
-    </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="${columnCount}">${mcdaLayoutAuditHtml(a)}</td></tr>`;
+    </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="${columnCount}">${mcdaLayoutAuditHtml(a, true)}</td></tr>`;
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico
   syncTopsisWinnerToModules();
@@ -8633,13 +9128,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const bRe  = document.getElementById('btn-mcda-rerank');
   const bRst = document.getElementById('btn-mcda-reset-w');
   if (bRun) bRun.addEventListener('click', mcdaRunAnalysis);
+  document.getElementById('layout-generation-controls')?.addEventListener('change', event => {
+    if (event.target.matches('input, textarea, select')) mcdaInvalidateLayouts();
+  });
   if (bRe)  bRe.addEventListener('click', mcdaRankNow);
   if (bRst) bRst.addEventListener('click', mcdaResetWeights);
   document.getElementById('btn-mcda-turbines-all')?.addEventListener('click', () => {
+    mcdaInvalidateLayouts();
     document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = true; });
     mcdaUpdateTurbineCount();
   });
   document.getElementById('btn-mcda-turbines-none')?.addEventListener('click', () => {
+    mcdaInvalidateLayouts();
     document.querySelectorAll('.mcda-turbine-check').forEach(el => { el.checked = false; });
     mcdaUpdateTurbineCount();
   });
@@ -8847,7 +9347,42 @@ const PARQUE = {
   turbineMarkers: [], result: null, optResult: null,
   layerKey: 'wind', windVisible: true, mapLocked: false,
   wakeGroup: null, wakeVisible: false,
+  envLayers: [],
+  // Polígono/exclusiones/receptores/muestras de recurso -- ver
+  // parqueRenderSiteContext. Arreglo propio para no interferir con
+  // turbineMarkers (layout YA aplicado, marcadores arrastrables).
+  siteContextLayers: [],
 };
+
+function parqueClearEnvironmentalLayers() {
+  if (!PARQUE.map) return;
+  PARQUE.envLayers.forEach(l => PARQUE.map.removeLayer(l));
+  PARQUE.envLayers = [];
+}
+
+function parqueRenderEnvironmentalSearch(environmentalSearch) {
+  parqueClearEnvironmentalLayers();
+  const summary = document.getElementById('parque-environmental-summary');
+  const buffers = environmentalSearch?.receptor_buffers || [];
+  if (!environmentalSearch?.included || !buffers.length) {
+    if (summary) summary.style.display = 'none';
+    return;
+  }
+  if (PARQUE.map) {
+    buffers.forEach(b => {
+      const layer = L.circle([b.lat, b.lon], {
+        radius: b.radius_m, color: '#dc2626', weight: 1.5, dashArray: '4 3',
+        fillColor: '#ef4444', fillOpacity: 0.12,
+      }).bindTooltip(`Zona de resguardo (${b.reason}) — ${Math.round(b.radius_m)} m`);
+      layer.addTo(PARQUE.map);
+      PARQUE.envLayers.push(layer);
+    });
+  }
+  if (summary) {
+    summary.style.display = '';
+    summary.textContent = `Ruido/sombra incluidos: ${buffers.length} zona(s) de resguardo restadas del área de búsqueda (líneas rojas en el mapa).`;
+  }
+}
 
 function parqueFmt(value, digits = 1, fallback = '—') {
   const n = Number(value);
@@ -8866,10 +9401,17 @@ function parqueInitMap() {
     center: [23.5, -102], zoom: 5,
     zoomControl: true, attributionControl: false,
   });
-  const tileUrl = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES.dark) ||
-    'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
-  PARQUE.baseLayer = L.tileLayer(tileUrl, { maxZoom: 16, crossOrigin: 'anonymous' })
-    .addTo(PARQUE.map);
+  const selectedKey = document.getElementById('parque-base-layer')?.value || 'osm';
+  const tileUrl = (typeof MAPA_TILES !== 'undefined' && MAPA_TILES[selectedKey]) ||
+    (typeof MAPA_TILES !== 'undefined' && MAPA_TILES.osm) ||
+    'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  PARQUE.baseLayer = L.tileLayer(tileUrl, {
+    maxZoom: 18, crossOrigin: 'anonymous',
+    subdomains: (selectedKey === 'osm' || selectedKey === 'topo') ? 'abc' : 'abcd',
+  }).addTo(PARQUE.map);
+  // Picker de receptores (mcdaToggleReceptorPlacement): antes vivía en
+  // MCDA.miniMap, ahora en el único mapa del parque.
+  PARQUE.map.on('click', mcdaHandleParqueMapClick);
   setTimeout(() => PARQUE.map.invalidateSize(), 80);
   return PARQUE.map;
 }
@@ -9087,10 +9629,11 @@ function parqueSetBaseLayer(key) {
     dark:      MAPA_TILES.dark,
     voyager:   MAPA_TILES.voyager,
     osm:       MAPA_TILES.osm,
+    topo:      MAPA_TILES.topo,
     satellite: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
   };
-  const subs = (key === 'osm') ? 'abc' : (key === 'satellite' ? '' : 'abcd');
-  PARQUE.baseLayer = L.tileLayer(urls[key] || urls.dark, {
+  const subs = (key === 'osm' || key === 'topo') ? 'abc' : (key === 'satellite' ? '' : 'abcd');
+  PARQUE.baseLayer = L.tileLayer(urls[key] || urls.osm, {
     maxZoom: 18, subdomains: subs, crossOrigin: 'anonymous',
   }).addTo(map);
   if (PARQUE.windOverlay) PARQUE.windOverlay.bringToFront();
@@ -9394,7 +9937,8 @@ function parqueSelectTurbina(el, forceKey) {
     const limits = winner.layout_constraints;
     if (ctx && limits) {
       for (const [id, value] of [['parque-min-sep-d', limits.min_spacing_d],
-        ['parque-row-sep-d', limits.s_para_range[0]], ['parque-col-sep-d', limits.s_perp_range[0]],
+        ['parque-row-sep-d', limits.row_sep_reference_d ?? Math.min(...limits.s_para_range)],
+        ['parque-col-sep-d', limits.col_sep_reference_d ?? Math.min(...limits.s_perp_range)],
         ['parque-max-wake-loss', limits.max_wake_loss_pct], ['parque-kwake', ctx.k_wake],
         ['parque-ct', ctx.ct], ['parque-avail', ctx.availability * 100],
         ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors]]) {
@@ -9425,44 +9969,10 @@ function parqueShowTopsisEnergy(row) {
 
 // ── Recomendación n° turbinas ─────────────────────────────────────────────────
 async function parqueUpdateRecommendation() {
-  const winner = parqueSelectedTopsis();
-  if (winner) { parqueShowTopsisEnergy(winner); return; }
-  const basis = document.getElementById('parque-energy-basis');
-  if (basis) basis.textContent = 'Estimación independiente para cubrir demanda; incluye estela supuesta del 8%. Ejecuta TOPSIS del parque para usar su base energética.';
-  const turbineKey = document.getElementById('parque-turbine')?.value;
-  const demand     = parseFloat(document.getElementById('parque-demand')?.value) || 5000;
-  if (!turbineKey) return;
-
-  const hubHeight = parseFloat(document.getElementById('parque-ws-h')?.value) || 110;
-  const turbineCfg = { builtin_model: turbineKey, hub_height_m: hubHeight };
-  // Mean wind speed: use MCDA/kriging polygon mean if available
-  let vMean = null, wK = null;
-  const hasSpatialWind = typeof MCDA !== 'undefined' && Array.isArray(MCDA.lastAnalysis) && MCDA.lastAnalysis.length;
-  if (hasSpatialWind) {
-    const v_vals = MCDA.lastAnalysis.map(s => s.v_mean || 0).filter(v => v > 0);
-    if (v_vals.length) vMean = v_vals.reduce((a, b) => a + b, 0) / v_vals.length;
-    const k_vals = MCDA.lastAnalysis.map(s => s.weibull_K || 0).filter(k => k > 0);
-    if (k_vals.length) wK = k_vals.reduce((a, b) => a + b, 0) / k_vals.length;
-  }
-
-  try {
-    const r = await api('/api/farm/recommend', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      turbine: turbineCfg, demand_mwh: demand,
-      ...(Number.isFinite(vMean) ? { v_mean: vMean } : {}),
-      ...(Number.isFinite(wK) ? { weibull_k: wK } : {}),
-      hub_height_m: hubHeight,
-      measurement_height_m: wsH(),
-      availability: (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
-      electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
-    });
-    if (parqueSelectedTopsis() || document.getElementById('parque-turbine')?.value !== turbineKey) return;
-    document.getElementById('parque-rec-n').textContent   = r.n_turbines;
-    document.getElementById('parque-rec-aep').textContent = r.aep_single_net_mwh?.toLocaleString() || '—';
-    const nInp = document.getElementById('parque-n-turbines');
-    if (nInp && (!nInp.value || parseInt(nInp.value) === 0)) nInp.value = r.n_turbines;
-  } catch (e) { /* silent */ }
+  const selected = parqueSelectedTopsis();
+  if (selected) { parqueShowTopsisEnergy(selected); return; }
+  document.getElementById('parque-rec-n').textContent = '—';
+  document.getElementById('parque-rec-aep').textContent = '—';
 }
 
 // ── Optimización y simulación ─────────────────────────────────────────────────
@@ -9472,12 +9982,17 @@ async function parqueOptimizeTopsis(winner) {
   }
   const ctx = winner.energy_context;
   const limits = winner.layout_constraints;
-  const unchanged = [['parque-ws-h', ctx.wind_height_m], ['parque-min-sep-d', limits.min_spacing_d],
-    ['parque-row-sep-d', limits.s_para_range[0]], ['parque-col-sep-d', limits.s_perp_range[0]],
+  // row_sep_reference_d/col_sep_reference_d guardan el valor de referencia tal
+  // cual lo escribió el usuario -- s_para_range[0]/s_perp_range[0] ya NO lo son,
+  // porque parqueSpacingRange antepone valores hacia el piso técnico.
+  const unchanged = [['parque-ws-h', ctx.wind_height_m],
+    ['parque-row-sep-d', limits.row_sep_reference_d ?? Math.min(...limits.s_para_range)],
+    ['parque-col-sep-d', limits.col_sep_reference_d ?? Math.min(...limits.s_perp_range)],
     ['parque-max-wake-loss', limits.max_wake_loss_pct], ['parque-kwake', ctx.k_wake],
     ['parque-ct', ctx.ct], ['parque-avail', ctx.availability * 100],
     ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors]]
-    .every(([id, value]) => Math.abs(Number(document.getElementById(id).value) - value) < 1e-6);
+    .every(([id, value]) => Math.abs(Number(document.getElementById(id).value) - value) < 1e-6)
+    && Math.abs(Number(limits.min_spacing_d) - TECHNICAL_FLOOR_D) < 1e-6;
   if (!unchanged) {
     toast('Los parámetros cambiaron. Ejecuta TOPSIS nuevamente o selecciona otra vez su alternativa para recuperar la base comparable.', 'warning'); return;
   }
@@ -9499,10 +10014,15 @@ async function parqueOptimizeTopsis(winner) {
   progress.style.display = ''; fill.style.width = '35%'; button.disabled = true;
   label.textContent = 'Comparando familias, orientaciones y separaciones con la base energética TOPSIS…';
   try {
+    const includeEnvironmental = document.getElementById('parque-include-environmental')?.checked || false;
     const result = await api('/api/farm/refine_topsis', 'POST', {
       alternative: winner,
       n_turbines: Number(document.getElementById('parque-n-turbines').value) || 0,
       layout_type: document.getElementById('parque-layout-type').value || 'auto',
+      include_environmental: includeEnvironmental,
+      receptor_points: includeEnvironmental ? mcdaReceptorPoints() : [],
+      noise_limit_dba: includeEnvironmental ? mcdaNoiseLimitDba() : null,
+      shadow_flicker_limit_hours_year: includeEnvironmental ? mcdaShadowFlickerLimitHours() : null,
     });
     if (result.error) throw new Error(result.error);
     // A response for an older selection must never replace the current model.
@@ -9571,6 +10091,7 @@ function parqueApplyConfiguration(id) {
   parqueRenderKrigingLayer(layer);
   parqueRenderPolygon();
   parquePlotTurbinesOnMap(row.layout_latlon, sim.turbines);
+  parqueRenderEnvironmentalSearch(result.environmental_search);
   document.getElementById('parque-kpis').style.display = '';
   for (const [key, value, digits] of [['aep', sim.aep_mwh / 1000, 3], ['wl', sim.wake_loss_pct, 2],
        ['cf', sim.cf_pct, 2], ['mw', sim.installed_mw, 3], ['flh', sim.flh, 0], ['dir', parqueModelWindDirection(PARQUE.optResult), 1]]) {
@@ -9589,6 +10110,11 @@ function parqueApplyConfiguration(id) {
 }
 
 async function parqueOptimize() {
+  if (MCDA.scope !== 'area') mcdaSetScope('area');
+  return mcdaRunAnalysis();
+}
+
+async function parqueOptimizeManual() {
   const topsis = parqueSelectedTopsis();
   if (topsis) { await parqueOptimizeTopsis(topsis); return; }
   let polygon = (typeof KRIG !== 'undefined' && KRIG.parkPoints?.length >= 3) ? KRIG.parkPoints : null;
@@ -9626,7 +10152,7 @@ async function parqueOptimize() {
     spatial_sources:   windGrid ? (KRIG.result?.spatial_sources || []) : [],
     v_mean:            vMean,
     weibull_k:         wK,
-    min_spacing_d:     parseFloat(document.getElementById('parque-min-sep-d')?.value) || 5,
+    min_spacing_d:     Math.max(TECHNICAL_FLOOR_D, parseFloat(document.getElementById('parque-min-sep-d')?.value) || 5),
     k_wake:            parseFloat(document.getElementById('parque-kwake')?.value) || 0.075,
     ct:                parseFloat(document.getElementById('parque-ct')?.value) || 0.8,
     availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
@@ -9769,6 +10295,8 @@ function parqueReset() {
   if (PARQUE.wakeGroup  && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.wakeGroup);   PARQUE.wakeGroup   = null; }
   if (PARQUE.windOverlay && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.windOverlay); PARQUE.windOverlay = null; }
   if (PARQUE.polyLayer   && PARQUE.map) { PARQUE.map.removeLayer(PARQUE.polyLayer);   PARQUE.polyLayer   = null; }
+  parqueClearEnvironmentalLayers();
+  document.getElementById('parque-environmental-summary').style.display = 'none';
   if (PARQUE.map) PARQUE.map.setMaxBounds(null);
   PARQUE.mapLocked = false; PARQUE.windVisible = true; PARQUE.wakeVisible = false;
   const wakeBtn = document.getElementById('btn-parque-wake');
@@ -9789,6 +10317,8 @@ function parqueReset() {
 
 // ── Activación del módulo ─────────────────────────────────────────────────────
 function parqueActivate() {
+  mcdaUpdateScopeUi();
+  mcdaRenderCandidates();
   parqueInitMap();
   // Un proyecto importado se abre mostrando su resultado guardado, pero el
   // módulo debe seguir siendo interactivo: sin esto, la turbina/TOPSIS/mapa
@@ -9835,7 +10365,7 @@ function parqueActivate() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  document.getElementById('btn-parque-optimize')?.addEventListener('click', parqueOptimize);
+  document.getElementById('btn-parque-optimize')?.addEventListener('click', parqueOptimizeManual);
   document.getElementById('btn-parque-reset')?.addEventListener('click', parqueReset);
   document.getElementById('parque-map-layer')?.addEventListener('change', e => {
     PARQUE.layerKey = e.target.value;
@@ -12622,7 +13152,7 @@ function initGlobeLeaflet() {
   }).setView([23.5, -102], 5);   // centrado en México
   GLOBE.leafletMap = map;
   const layerSel = document.getElementById('globe-leaflet-layer');
-  leafletSetTile(layerSel?.value || 'dark');
+  leafletSetTile(layerSel?.value || 'osm');
 
   // Click → POI
   map.on('click', (e) => {
@@ -12639,7 +13169,7 @@ function initGlobeLeaflet() {
 
 function leafletSetTile(key) {
   if (!GLOBE.leafletMap) return;
-  const conf = GLOBE_TILE_URLS[key] || GLOBE_TILE_URLS.dark;
+  const conf = GLOBE_TILE_URLS[key] || GLOBE_TILE_URLS.osm;
   if (GLOBE.leafletTile) {
     GLOBE.leafletMap.removeLayer(GLOBE.leafletTile);
     GLOBE.leafletTile = null;
@@ -13026,26 +13556,26 @@ function krig3PullProjectParams() {
   const equivalent = parkEquivalentDesignInputs();
   const tasa = Number(WP.parkConfiguration?.base_interest_rate_pct);
   if (Number.isFinite(tasa) && tasa >= 0) {
-    ['krig3-tasa', 'mcda-tasa'].forEach(id => {
+    ['krig3-tasa'].forEach(id => {
       const input = document.getElementById(id);
       if (input) input.value = tasa.toFixed(2);
     });
   }
   const fx = Number(WP.parkConfiguration?.base_fx_mxn_usd);
   if (Number.isFinite(fx) && fx > 0) {
-    ['krig3-fx', 'mcda-fx'].forEach(id => {
+    ['krig3-fx'].forEach(id => {
       const input = document.getElementById(id);
       if (input) input.value = fx.toFixed(2);
     });
   }
   if (Number.isFinite(equivalent.price_usd_kwh)) {
-    ['krig3-price', 'mcda-price'].forEach(id => {
+    ['krig3-price'].forEach(id => {
       const input = document.getElementById(id);
       if (input) input.value = equivalent.price_usd_kwh.toFixed(4);
     });
   }
   const demand = Math.max(0, Number(equivalent.demand_mwh) || 0);
-  ['krig3-demand', 'mcda-demand', 'parque-demand', 'te-demand'].forEach(id => {
+  ['krig3-demand', 'parque-demand', 'te-demand'].forEach(id => {
     const input = document.getElementById(id);
     if (input) input.value = Math.round(demand).toString();
   });
@@ -13323,6 +13853,7 @@ function renderSavedPark(r, layerKey, turbineKey) {
     parqueRenderKrigingLayer(layerKey);
     parqueRenderPolygon();
     parquePlotTurbinesOnMap(r.layout_latlon, r.simulation?.turbines || null, r);
+    parqueRenderEnvironmentalSearch(r.environmental_search);
 
     // KPIs
     const sim = r.simulation;
@@ -13336,6 +13867,7 @@ function renderSavedPark(r, layerKey, turbineKey) {
     if (lBadge && lcfg) {
       const typeLabel = ({tresbolillo: '⬡ Tresbolillo', staggered: '⬡ Tresbolillo',
         alineado: '▦ Alineado', aligned: '▦ Alineado',
+        greedy: '⚡ Greedy (vértice)',
         topsis_improved: '★ TOPSIS mejorado'})[lcfg.layout_type] || '⚙ GSP';
       const spacings = (lcfg.s_para_d != null && lcfg.s_perp_d != null)
         ? ` · ${lcfg.s_para_d}D×${lcfg.s_perp_d}D` : '';

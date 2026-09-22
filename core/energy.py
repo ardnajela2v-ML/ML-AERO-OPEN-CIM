@@ -219,6 +219,23 @@ def extrapolate_wind_log(v_ref, z_ref, z_target, z0=0.03):
 
 # ─── POWER CURVE ──────────────────────────────────────────────────────────────
 
+def _generic_sound_power_lwa_db(rated_kw: float) -> float:
+    """Estimación genérica del nivel de potencia sonora (Lwa, dB(A)) por
+    clase de potencia, usada solo cuando el archivo de turbina no declara un
+    valor explícito (sufijo `_lw<dB>` en el nombre de archivo). Valores
+    medios aproximados reportados en fichas técnicas de fabricantes
+    ensayadas bajo IEC 61400-11:2012 (no son un valor certificado de ningún
+    modelo concreto -- ver PowerCurve.sound_power_source para trazabilidad).
+    """
+    if rated_kw < 1000:
+        return 97.0
+    if rated_kw < 2500:
+        return 103.0
+    if rated_kw < 4000:
+        return 105.0
+    return 107.0
+
+
 class PowerCurve:
     """
     Represents a wind turbine power curve with physical constraints.
@@ -281,6 +298,11 @@ class PowerCurve:
             curve_points = self._default_curve()
         self._raw_points = curve_points
         self._build_interpolator(curve_points)
+        # Nivel de potencia sonora (Lwa, dB(A)) para el módulo de ruido
+        # (core/acoustic_noise.py) -- None hasta que from_file() lo declare
+        # (explícito en el nombre de archivo) o lo estime genéricamente.
+        self.sound_power_lwa_db = None
+        self.sound_power_source = None
 
     @classmethod
     def from_builtin(cls, model_key):
@@ -326,6 +348,7 @@ class PowerCurve:
         p_match = re.search(r'_p(\d+)',       stem, re.IGNORECASE)
         r_match = re.search(r'_r([\d.]+)',    stem, re.IGNORECASE)
         h_match = re.search(r'_h(\d+(?:\.\d+)?)', stem, re.IGNORECASE)
+        lw_match = re.search(r'_lw([\d.]+)',  stem, re.IGNORECASE)
         rated_kw  = float(p_match.group(1)) if p_match else None
         rotor_r_m = float(r_match.group(1)) if r_match else None
         rotor_m   = (rotor_r_m * 2.0) if rotor_r_m else None  # diameter
@@ -364,12 +387,19 @@ class PowerCurve:
         else:
             hub_h = 80.0
 
-        return cls(name=name_clean,
-                   rated_power_kw=rated_kw,
-                   cut_in=cut_in, rated_speed=rated_spd, cut_out=cut_out,
-                   hub_height_m=hub_h,
-                   rotor_diameter_m=rotor_m or 80.0,
-                   curve_points=pts)
+        turbine = cls(name=name_clean,
+                     rated_power_kw=rated_kw,
+                     cut_in=cut_in, rated_speed=rated_spd, cut_out=cut_out,
+                     hub_height_m=hub_h,
+                     rotor_diameter_m=rotor_m or 80.0,
+                     curve_points=pts)
+        if lw_match:
+            turbine.sound_power_lwa_db = float(lw_match.group(1))
+            turbine.sound_power_source = 'declared_in_filename'
+        else:
+            turbine.sound_power_lwa_db = _generic_sound_power_lwa_db(rated_kw)
+            turbine.sound_power_source = 'generic_class_estimate_iec61400_11'
+        return turbine
 
     def _default_curve(self):
         """Simple generic curve based on rated power and speed."""

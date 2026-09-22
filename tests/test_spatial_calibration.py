@@ -270,6 +270,15 @@ class SpatialCalibrationTests(unittest.TestCase):
                 price_usd_kwh=0.083, anios=31,
                 max_points=6, turbine_filenames=[turbine_name],
             )
+        with tempfile.TemporaryDirectory() as empty_turbine_folder, patch(
+                'core.kriging.turbine_site_economics', side_effect=AssertionError('Unused site economics')):
+            resource = analyze_spatial_topsis_maps(
+                maps, turbines_folder=empty_turbine_folder,
+                scope="exploratory", bounds=maps["wind"]["bounds"],
+                price_usd_kwh=0.083, anios=31, max_points=6, resource_only=True)
+        self.assertEqual([p['v_mean'] for p in resource['sites']],
+                         [p['v_mean'] for p in spatial['sites']])
+        self.assertTrue(all(p['turbines'] == [] for p in resource['sites']))
         self.assertEqual(spatial["field_source"], "mcp_calibrated_maps")
         self.assertEqual(spatial["n_input_stations"], maps["n_sites"])
         self.assertEqual(spatial["n_virtual_sites"], 6)

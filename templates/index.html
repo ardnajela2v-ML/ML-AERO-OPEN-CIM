@@ -14,6 +14,7 @@
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.vectorgrid@1.3.0/dist/Leaflet.VectorGrid.bundled.js" crossorigin=""></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson@3.0.2/dist/topojson.min.js"></script>
@@ -117,10 +118,10 @@
       <button class="globe-mode__btn" data-mode="leaflet" type="button">🗺 2D</button>
       <span class="globe-mode__sep"></span>
       <select id="globe-leaflet-layer" class="globe-mode__layer" title="Capa base (Leaflet)">
-        <option value="dark">Gris oscuro</option>
-        <option value="voyager" selected>Gris claro</option>
-        <option value="osm">OpenStreetMap</option>
+        <option value="osm" selected>OpenStreetMap</option>
         <option value="topo">OpenTopoMap</option>
+        <option value="dark">Gris oscuro</option>
+        <option value="voyager">Gris claro</option>
         <option value="sat">Satélite ESRI</option>
       </select>
     </div>
@@ -1150,14 +1151,14 @@
 <section class="module" id="mod-kriging">
   <div class="module-header">
     <h1 class="module-title">Diseño y optimización del parque eólico</h1>
-    <p class="module-desc">Configuración comercial y financiera, interpolación geoespacial (Kriging), selección de aerogenerador óptimo (TOPSIS) y diseño del parque con layout, estelas y AEP.</p>
+    <p class="module-desc">Configuración comercial y financiera → interpolación geoespacial → layouts, estelas y AEP del parque → selección con AHP / TOPSIS.</p>
   </div>
 
   <div class="subtabs" role="tablist">
     <button class="subtab is-active" data-subtab="parametros" type="button">① Parámetros y configuración</button>
     <button class="subtab" data-subtab="geo" type="button">② Interpolación geoespacial · micrositing</button>
-    <button class="subtab" data-subtab="topsis" type="button">③ Selección de aerogenerador óptimo para el sitio</button>
-    <button class="subtab" data-subtab="parque" type="button">④ Parque</button>
+    <button class="subtab" data-subtab="parque" type="button">③ Parque · generación de layouts</button>
+    <button class="subtab" data-subtab="topsis" type="button">④ Selección de aerogenerador · AHP / TOPSIS</button>
   </div>
 
   <div class="subsection is-active" data-subtab="parametros">
@@ -1423,10 +1424,10 @@
         <button class="btn-secondary"           id="btn-krig3-site"   type="button">Sitio</button>
         <label class="text-muted" style="font-size:.74rem;margin-left:.6rem">Capa</label>
         <select class="form-select" id="krig3-baselayer" style="max-width:170px;height:30px;padding:.15rem .4rem">
-          <option value="dark" selected>Gris oscuro</option>
-          <option value="voyager">Gris claro</option>
-          <option value="osm">OpenStreetMap</option>
+          <option value="osm" selected>OpenStreetMap</option>
           <option value="topo">OpenTopoMap</option>
+          <option value="dark">Gris oscuro</option>
+          <option value="voyager">Gris claro</option>
           <option value="sat">Satélite ESRI</option>
         </select>
       </div>
@@ -1438,6 +1439,9 @@
         </label>
         <label style="display:inline-flex;gap:.3rem;align-items:center;cursor:pointer">
           <input type="checkbox" id="krig3-ovl-landcover"> Cobertura / rugosidad
+        </label>
+        <label style="display:inline-flex;gap:.3rem;align-items:center;cursor:pointer">
+          <input type="checkbox" id="krig3-ovl-oim"> OpenInfrastructureMap
         </label>
         <span class="text-muted" style="font-size:.72rem">Opacidad</span>
         <input type="range" min="10" max="100" value="60" id="krig3-ovl-opacity" style="flex:1;max-width:140px">
@@ -1634,20 +1638,10 @@
 
   </div>
 
-  <div class="subsection" data-subtab="topsis">
-  <!-- ═══════════ ANÁLISIS MULTI-SITIO × TURBINA + RANKING MULTICRITERIO ═══════════ -->
-  <div class="card mt-3">
-    <div class="card-header">
-      <span class="card-title">Selección óptima — Análisis multicriterio (TOPSIS)</span>
-      <span class="badge badge--info" id="mcda-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        En parque dibujado genera layouts físicamente factibles para cada aerogenerador, determina su capacidad máxima,
-        simula estelas y pérdidas, calcula AEP P50/P90 y economía descontada, y después aplica TOPSIS. En exploración global
-        continúa comparando sitios candidatos interpolados. Los ceros no se usan como sustituto de datos ausentes.
-      </p>
-
+  <div class="subsection" data-subtab="parque">
+  <div class="card"><div class="card-header"><span class="card-title">Generación y evaluación de layouts por tecnología</span></div>
+  <div class="card-body"><p>Explora cantidades y geometrías, verifica restricciones y calcula estelas, energía y economía.
+  Conserva el mejor VAN factible encontrado por tecnología para la comparación posterior.</p>
       <div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-bottom:.75rem">
         <button class="btn-secondary mcda-subtab is-active" type="button" data-scope="area">
           Parque dibujado
@@ -1660,31 +1654,76 @@
         </span>
       </div>
 
-      <div class="grid-3">
+      <div class="grid-2" id="layout-generation-controls">
         <!-- Parámetros de análisis -->
         <div class="col-span-1">
-          <h4 style="font-size:.85rem;margin-bottom:.5rem">Parámetros económicos</h4>
-          <div class="form-row"><label class="form-label">Año</label>
-            <select class="form-select" id="mcda-year">
-              <option value="2018" selected>2018</option>
-              <option value="2019">2019</option>
-              <option value="2020">2020</option>
-            </select></div>
-          <div class="form-row"><label class="form-label">Demanda (MWh/año)</label>
-            <input class="form-input" type="number" id="mcda-demand" value="1000" step="100"></div>
-          <div class="form-row"><label class="form-label">Tasa descuento (%)</label>
-            <input class="form-input" type="number" id="mcda-tasa" value="8" step="0.5"></div>
-          <div class="form-row"><label class="form-label">Precio configurado (USD/kWh)</label>
-            <input class="form-input" type="number" id="mcda-price" step="0.0001" placeholder="Desde PML cargado" readonly></div>
-          <div class="form-row"><label class="form-label">USD→MXN</label>
-            <input class="form-input" type="number" id="mcda-fx" value="20" step="0.5"></div>
+          <h4 style="font-size:.85rem;margin-bottom:.5rem">Parámetros del sitio</h4>
+          <p class="text-muted" style="font-size:.72rem;margin-bottom:.5rem">
+            Año, demanda, tasa de descuento, precio y tipo de cambio ya no se capturan aquí:
+            La generación toma esos valores directamente de la configuración del parque y del
+            recurso eólico (pestañas Mapa &amp; Kriging / Evaluación tecnoeconómica).
+          </p>
+          <div class="form-row"><label class="form-label" for="parque-max-slope">Pendiente máxima (°, opcional)</label>
+            <input class="form-input" id="parque-max-slope" type="number" min="0" max="90" step="1" placeholder="Sin restricción"></div>
           <div class="form-row"><label class="form-label">Retiro al lindero (m)</label>
             <input class="form-input" type="number" id="mcda-boundary-setback" value="0" min="0" step="10"
               title="Se aplicará como mínimo el radio del rotor para mantener el rotor dentro del predio."></div>
           <div class="form-row"><label class="form-label">Exclusiones (JSON, opcional)</label>
             <textarea class="form-input" id="mcda-exclusions" rows="3"
               placeholder='[[{"lat":16.50,"lon":-95.00}, {"lat":16.51,"lon":-95.00}, {"lat":16.51,"lon":-94.99}]]'
-              title="Lista JSON de polígonos; cada polígono contiene al menos tres puntos lat/lon."></textarea></div>
+              title="Lista JSON de polígonos; cada polígono contiene al menos tres puntos lat/lon."></textarea>
+            <div style="display:flex;gap:.4rem;align-items:center;margin-top:.35rem">
+              <button class="btn-secondary" id="btn-osm-import" type="button" style="font-size:.72rem;padding:.25rem .5rem"
+                onclick="mcdaOsmImport()">Buscar infraestructura y receptores cercanos (OpenStreetMap)</button>
+              <label style="font-size:.72rem;color:var(--text-secondary)">Radio (km)</label>
+              <input class="form-input" type="number" id="osm-radius-km" value="2" min="0.1" max="20" step="0.5"
+                style="width:70px;padding:.2rem .35rem;font-size:.72rem">
+            </div>
+            <p class="text-muted" style="font-size:.68rem;margin-top:.2rem">
+              Consulta líneas de transmisión, carreteras, subestaciones y aerogeneradores vecinos (mismos datos que
+              openinframap.org, vía OpenStreetMap/Overpass), además de viviendas y escuelas cercanas como receptores
+              sensibles de ruido/sombra (estas últimas acotadas a ≤1 km del sitio, sin importar el radio de arriba,
+              para no inundar la lista en zonas pobladas). Cada objeto se revisa y se agrega como exclusión o como
+              receptor solo si tú lo eliges — nunca automáticamente.
+            </p>
+            <div id="osm-import-results" style="margin-top:.4rem"></div>
+          </div>
+        </div>
+
+        <!-- Ruido y sombra: receptores por click en el mapa, no JSON -->
+        <div class="col-span-1">
+          <h4 style="font-size:.85rem;margin-bottom:.5rem">Ruido y sombra</h4>
+          <p class="text-muted" style="font-size:.72rem;margin-bottom:.5rem">
+            El campeón se elige por estela + VAN; ruido y sombra se evalúan sobre cada candidato y
+            se reportan aparte — no descartan el layout automáticamente salvo que actives la
+            casilla de abajo.
+          </p>
+          <div class="form-row">
+            <button class="btn-secondary" id="btn-mcda-receptor-place" type="button"
+              style="font-size:.75rem;padding:.3rem .55rem" onclick="mcdaToggleReceptorPlacement()"
+              title="Actívalo y haz click en el mapa de abajo para colocar un receptor sensible (vivienda, escuela, etc.)">📍 Colocar receptor</button>
+          </div>
+          <div class="form-row">
+            <div id="mcda-receptor-list" style="border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);max-height:160px;overflow-y:auto"></div>
+          </div>
+          <div class="form-row" style="display:flex;gap:.5rem">
+            <div style="flex:1"><label class="form-label">Límite ruido día (dB(A))</label>
+              <input class="form-input" type="number" id="mcda-noise-limit-day" value="55" min="0" step="1"></div>
+            <div style="flex:1"><label class="form-label">Límite ruido noche (dB(A))</label>
+              <input class="form-input" type="number" id="mcda-noise-limit-night" value="45" min="0" step="1"></div>
+            <div style="flex:1"><label class="form-label">Límite flicker (h/año)</label>
+              <input class="form-input" type="number" id="mcda-flicker-limit" value="30" min="0" step="1"
+                title="30 h/año: máximo astronómico (LAI/WEA-Schattenwurf-Hinweise 2002). 8 h/año: umbral 'realista', no implementado aún."></div>
+          </div>
+          <div class="form-row">
+            <label style="display:flex;gap:.35rem;align-items:center;font-size:.74rem;cursor:pointer" title="Resta del área de búsqueda un círculo de resguardo por cada receptor colocado arriba (ruido: distancia a la que una turbina cae bajo el límite del receptor; sombra: ~10×D, criterio WindPRO/openWind) ANTES de generar layouts — la evaluación real sobre el resultado sigue corriendo siempre, con o sin esta casilla.">
+              <input type="checkbox" id="parque-include-environmental">
+              Incluir ruido y sombra en la búsqueda de layouts
+            </label>
+          </div>
+        </div>
+
+        <div class="col-span-2">
           <div class="form-row mcda-exploratory-only" style="display:none"><label class="form-label">Modo ranking exploratorio</label>
             <select class="form-select" id="mcda-mode">
               <option value="pairs" selected>Todas las combinaciones</option>
@@ -1706,66 +1745,107 @@
             </div>
           </div>
           <p class="text-muted" style="font-size:.7rem;line-height:1.4">
-            TOPSIS usa el benchmark IRENA onshore 2024: 1,041 USD/kW de CAPEX
+            La evaluación usa el benchmark IRENA onshore 2024: 1,041 USD/kW de CAPEX
             instalado (780.75 USD/kW de aerogeneradores al 75%). No modifica el
             valor editable de 1,800 USD/kW en Evaluación tecnoeconómica.
           </p>
-          <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Analizar aerogeneradores del parque</button>
+          <button class="btn-primary w-full mt-2" id="btn-mcda-run">▶ Generar layouts por tecnología</button>
           <div class="progress-bar mt-2" id="mcda-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
             <div id="mcda-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
           </div>
           <p class="text-muted mt-1" id="mcda-progress-text" style="font-size:.75rem"></p>
         </div>
 
-        <!-- Pesos (sliders) -->
-        <div class="col-span-2">
-          <h4 style="font-size:.85rem;margin-bottom:.5rem">Pesos de criterios (TOPSIS) — se renormalizan a 1</h4>
-          <div class="form-row" id="mcda-scenario-row">
-            <label class="form-label">Escenario de decisión</label>
-            <div class="form-input" id="mcda-weight-source" aria-label="Escenario de decisión">Escenario de referencia — sin elicitación AHP</div>
-          </div>
-          <p class="text-muted" id="mcda-scope-help" style="font-size:.78rem;margin-bottom:.6rem">
-            Modo parque: cada aerogenerador se evalúa sobre puntos interpolados dentro del polígono con viento real corregido físicamente.
-          </p>
-          <div id="mcda-weights" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem">
-            <!-- populated by JS -->
-          </div>
-          <div class="flex-end mt-2" style="gap:.4rem">
-            <button class="btn-secondary" id="btn-mcda-reset-w">↺ Valores por defecto</button>
-            <button class="btn-primary" id="btn-mcda-rerank">Re-ranquear con estos pesos</button>
-          </div>
-          <details id="mcda-ahp-panel" class="mt-3">
-            <summary style="cursor:pointer">Obtener pesos con AHP — comparaciones por pares</summary>
-            <p class="text-muted" style="font-size:.78rem">AHP individual para los ocho criterios del parque. Compara su importancia respecto al objetivo del estudio, no qué turbina gana. La revisión bibliográfica de los criterios sigue pendiente.</p>
-            <label for="mcda-ahp-author">Autor de los juicios</label>
-            <input id="mcda-ahp-author" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()">
-            <label for="mcda-ahp-objective">Objetivo de la decisión</label>
-            <textarea id="mcda-ahp-objective" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()"></textarea>
-            <label for="mcda-ahp-rationale">Justificación y referencias de las comparaciones</label>
-            <textarea id="mcda-ahp-rationale" class="form-input" maxlength="4000" rows="4" oninput="mcdaAhpEdited()"></textarea>
-            <p class="text-muted" style="font-size:.78rem">Escala: 1 igual; 3 moderada; 5 fuerte; 7 muy fuerte; 9 extrema. 2, 4, 6 y 8 son intermedios. Cada comparación comienza sin responder.</p>
-            <div id="mcda-ahp-pairs" style="max-height:420px;overflow:auto;font-size:.78rem"></div>
-            <button type="button" class="btn-secondary mt-2" id="btn-mcda-ahp-calculate" onclick="mcdaCalculateAhp()">Calcular pesos y consistencia</button>
-            <div id="mcda-ahp-result" aria-live="polite" style="font-size:.78rem"></div>
-            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-              <button type="button" class="btn-primary" id="btn-mcda-ahp-apply" onclick="mcdaApplyAhp()" disabled>Aplicar a TOPSIS</button>
-              <button type="button" class="btn-secondary" id="btn-mcda-ahp-export" onclick="mcdaExportAhp()" disabled>Exportar expediente AHP</button>
-              <button type="button" class="btn-secondary" onclick="document.getElementById('mcda-ahp-import-file').click()">Importar expediente AHP</button>
-              <input type="file" id="mcda-ahp-import-file" accept="application/json,.json" style="display:none" onchange="mcdaImportAhpFile(event)">
+<div><h4>Restricciones y simulación</h4>
+          <div class="form-row"><label class="form-label" for="parque-grid-limit">Límite de conexión (MW, opcional)</label>
+            <input class="form-input" id="parque-grid-limit" type="number" min="0.01" step="0.1" placeholder="Sin límite"></div>          <div class="form-grid-2">
+            <div>
+              <label class="form-label" title="Distancia euclidiana dura entre centros, usada por 'Optimizar' cuando no hay ganador TOPSIS seleccionado. Nunca baja del piso técnico de 2.5×D (validez de Jensen en campo cercano y cargas por turbulencia IEC 61400-1), aunque se escriba un valor menor.">Seguridad mínima (×D)</label>
+              <input class="form-input" type="number" id="parque-min-sep-d" value="3" step="0.5" min="2.5" max="15">
             </div>
-          </details>
-        </div>
-      </div>
+            <div>
+              <label class="form-label" title="Separación de referencia longitudinal entre filas: la generación de layouts explora también valores más cerrados, hasta el piso técnico de 2.5×D, si la pérdida por estela lo permite — y valores mayores.">Entre filas, referencia (×D)</label>
+              <input class="form-input" type="number" id="parque-row-sep-d" value="3" step="0.5" min="2.5" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Separación de referencia transversal entre columnas: la generación de layouts explora también valores más cerrados, hasta el piso técnico de 2.5×D, si la pérdida por estela lo permite — y valores mayores.">Entre columnas, referencia (×D)</label>
+              <input class="form-input" type="number" id="parque-col-sep-d" value="3" step="0.5" min="2.5" max="15">
+            </div>
+            <div>
+              <label class="form-label" title="Si el parque excede este valor se reduce una turbina y se reoptimiza">Pérdida estela máxima (%)</label>
+              <input class="form-input" type="number" id="parque-max-wake-loss" value="5" step="0.5" min="0" max="30">
+            </div>
+            <div>
+              <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">Expansión de estela k</label>
+              <input class="form-input" type="number" id="parque-kwake" value="0.04" step="0.005" min="0.01" max="0.20">
+            </div>
+            <div>
+              <label class="form-label">Ct (thrust)</label>
+              <input class="form-input" type="number" id="parque-ct" value="0.8" step="0.05" min="0.1" max="1.0">
+            </div>
+            <div>
+              <label class="form-label">Disponibilidad (%)</label>
+              <input class="form-input" type="number" id="parque-avail" value="97" step="1" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Pérd. eléctricas (%)</label>
+              <input class="form-input" type="number" id="parque-elec" value="3" step="0.5" min="0" max="20">
+            </div>
 
-      <div class="mt-3">
-        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.45rem">
-          <span class="card-title" id="mcda-mini-title" style="font-size:.86rem">Mapa TOPSIS — parque dibujado</span>
-          <span class="badge badge--info" id="mcda-mini-status">Sin puntos</span>
+
+
+
+          </div>
+</div></div>      <div class="mt-3">
+        <!-- Mapa único del parque: mismo widget (PARQUE.map) para revisar
+             candidatos antes de TOPSIS y para el diseño optimizado del
+             ganador después -- ya no hay un mini-mapa aparte. -->
+        <div class="card">
+          <div class="card-header" style="flex-wrap:wrap;gap:.3rem">
+            <span class="card-title">Área del parque — campo kriging &amp; layout</span>
+            <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">
+              <select class="form-select" id="parque-base-layer"
+                      style="font-size:.71rem;padding:.15rem .35rem;width:auto"
+                      onchange="parqueSetBaseLayer(this.value)" title="Tipo de mapa base">
+                <option value="osm" selected>🗺 OSM</option>
+                <option value="topo">🧭 Topo</option>
+                <option value="dark">🌑 Oscuro</option>
+                <option value="voyager">🌍 Claro</option>
+                <option value="satellite">🛰 Satélite</option>
+              </select>
+              <select class="form-select" id="parque-map-layer"
+                      style="font-size:.71rem;padding:.15rem .35rem;width:auto"
+                      title="Capa de campo kriging">
+                <option value="wind">💨 Viento (m/s)</option>
+                <option value="wind_directional">🧭 Viento dir.</option>
+                <option value="power_density">⚡ Densidad pot.</option>
+                <option value="gust">💨 Ráfagas</option>
+              </select>
+              <button class="btn-secondary" id="btn-parque-wind-toggle"
+                      onclick="parqueToggleWindLayer()"
+                      style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">Ocultar capa</button>
+              <button class="btn-secondary" id="btn-parque-wake"
+                      onclick="parqueToggleWakes()"
+                      style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🌬 Ver estelas</button>
+              <button class="btn-secondary" id="btn-parque-map-lock"
+                      onclick="parqueToggleMapLock()"
+                      style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🔓 Ver todo</button>
+              <span class="badge badge--info" id="parque-map-status">Sin Kriging</span>
+            </div>
+          </div>
+          <div class="card-body" style="padding:0;position:relative">
+            <div id="parque-map" style="height:440px;border-radius:0 0 8px 8px"></div>
+            <div id="parque-map-legend" style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:.7rem;padding:.3rem .5rem;border-radius:4px;pointer-events:none;display:none"></div>
+            <div id="parque-map-hint" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:.72rem;padding:.25rem .6rem;border-radius:12px;pointer-events:none;white-space:nowrap">
+              Dibuja el polígono del parque en la sección de diseño primero
+            </div>
+          </div>
         </div>
-        <div id="mcda-mini-map" style="width:100%;height:220px;border-radius:8px;overflow:hidden;border:1px solid var(--border)"></div>
         <div id="mcda-map-legend" style="display:flex;gap:1rem;flex-wrap:wrap;margin-top:.45rem;font-size:.74rem;color:var(--text-secondary)">
           <span><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#2dd4bf;border:2px solid #0f766e;margin-right:.3rem"></i>
-            Aerogeneradores del layout TOPSIS ganador</span>
+            Aerogeneradores del layout seleccionado</span>
+          <span><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#9333ea;margin-right:.3rem"></i>
+            Receptores (ruido/sombra) — click quita</span>
           <span><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#facc15;margin-right:.3rem"></i>
             5 muestras prioritarias del recurso eólico</span>
           <span><i style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#38bdf8;margin-right:.3rem"></i>
@@ -1773,152 +1853,23 @@
         </div>
         <p class="text-muted" style="font-size:.72rem;margin-top:.35rem">
           Los puntos azules y amarillos no son aerogeneradores ni alternativas TOPSIS: son muestras del campo eólico usadas para caracterizar el terreno.
-          Nmax es la capacidad física máxima encontrada. La cantidad final es la mayor que, después de reoptimizar el acomodo,
-          mantiene la pérdida total por estela dentro del límite configurado; se muestra como cantidad final/Nmax físico.
+          Nmax es la capacidad física máxima encontrada. La cantidad final corresponde al mayor VAN factible encontrado dentro del límite de estela; se muestra como cantidad final/Nmax físico.
         </p>
       </div>
 
-      <hr class="mt-3 mb-3" style="border:none;border-top:1px solid var(--border);">
+<div id="layout-candidates" aria-live="polite"><p>Genera layouts para revisar las alternativas antes de TOPSIS.</p></div>
+  <button class="btn-primary" type="button" onclick="krigingGoToSubtab('topsis')">Continuar a ④ AHP / TOPSIS</button>
+  </div></div>
 
-      <!-- Ranking table -->
-      <div style="max-height:420px;overflow:auto">
-        <table class="tbl" id="mcda-rank-tbl">
-          <thead><tr>
-            <th>#</th><th>Sitio</th><th>Turbina</th>
-            <th>Score</th><th>Cp efectivo ↑</th><th>Horas ≥95% Cp máx. ↑ (h/año)</th>
-            <th>FC neto ↑ (%)</th><th>AEP P90 ↑ (MWh)</th>
-            <th>VAN ↑ (USD)</th><th>LCOE ↓ (USD/kWh)</th>
-            <th>CAPEX / kW instalado ↓ (USD/kW)</th>
-            <th>Recuperación descontada ↓ (años)</th>
-          </tr></thead>
-          <tbody id="mcda-rank-body">
-            <tr><td colspan="12" class="text-muted">Ejecuta el análisis para ver el ranking.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ ROBUSTEZ TÉCNICO-ECONÓMICA COMPARADA — TODAS LAS TURBINAS DEL RANKING ═══ -->
-  <div class="card mt-3" id="gsens-batch-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Robustez técnico-económica comparada — todas las turbinas del ranking</span>
-      <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Corre el mismo Monte Carlo económico (precio, tasa, OPEX, recurso eólico, inflación y estela)
-        para cada turbina del ranking, sin entrenar Random Forest — solo mide qué tan seguido cada
-        una se mantiene viable ante la incertidumbre, y hasta qué % de estela adicional aguanta antes
-        de dejar de serlo. Complementa al ranking TOPSIS: éste te dice quién gana en el escenario base,
-        esto te dice quién es más confiable si el escenario cambia. Además agrupa esas mismas muestras
-        Monte Carlo de cada alternativa en clústeres de riesgo financiero reales (K-means, k elegido por
-        silhouette) — perfiles de incertidumbre económica, no solo percentiles agregados.
-      </p>
-      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar robustez de todas las turbinas</button>
-      <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
-      <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
-      <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
-    </div>
-  </div>
-
-  <!-- ═══ ROBUSTEZ DE PESOS — TOPSIS (SMAA) ═══ -->
-  <div class="card mt-3" id="topsis-robust-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Robustez de pesos — TOPSIS (SMAA)</span>
-      <span class="badge badge--info" id="topsis-robust-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Perturba los pesos de los criterios TOPSIS con una distribución de Dirichlet centrada en tus
-        pesos actuales (método SMAA — Stochastic Multicriteria Acceptability Analysis) y re-rankea las
-        alternativas ya calculadas miles de veces, sin volver a simular nada. Responde: ¿qué tan seguido
-        gana cada alternativa ante la incertidumbre real de cómo se ponderan los criterios? Además, un
-        Random Forest entrenado sobre esas mismas muestras dice qué criterio de decisión es el que más
-        determina quién gana.
-      </p>
-      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
-        <div>
-          <label class="form-label" style="font-size:.78rem">N° de muestras (Dirichlet)</label>
-          <input type="number" class="form-input" id="topsis-robust-n-samples" value="500" min="100" max="2000" step="100" style="width:110px">
-        </div>
-        <button class="btn-primary" id="btn-topsis-robust-run" type="button">▶ Analizar robustez de pesos</button>
-      </div>
-      <p class="text-muted mt-1" id="topsis-robust-progress-text" style="font-size:.75rem"></p>
-
-      <div id="topsis-robust-results" style="display:none">
-        <div class="grid-2" style="gap:1rem">
-          <div style="min-width:0">
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Estabilidad del ranking por alternativa</p>
-            <div style="position:relative;height:240px"><canvas id="topsis-robust-rank-chart"></canvas></div>
-          </div>
-          <div style="min-width:0">
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
-            <p id="topsis-robust-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
-            <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
-          </div>
-        </div>
-        <div style="overflow:auto;max-height:260px;margin-top:.9rem" id="topsis-robust-table"></div>
-      </div>
-    </div>
-  </div>
-  </div>
-
-  <div class="subsection" data-subtab="parque">
   <div class="module-header">
     <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
-    <p class="module-desc">
-      Layout optimizado con <b>Colocación Secuencial Voraz</b> (Feng &amp; Shen, 2015) sobre el área definida en Diseño y optimización del parque eólico.
-      El campo de viento interpolado por Kriging Ordinario orienta la ubicación de turbinas para maximizar AEP
-      considerando el déficit de estela NOJ (Jensen, 1983) con superposición de Katic et al. (1986).
-      La turbina recomendada se obtiene del ranking TOPSIS de la sección de diseño.
-    </p>
+    <p class="module-desc">Layout optimizado con la turbina seleccionada en el ranking TOPSIS sobre el polígono del parque.</p>
   </div>
 
-  <!-- 2 columnas: mapa grande + panel de control -->
-  <div style="display:grid;grid-template-columns:1fr 340px;gap:.8rem;align-items:start">
-
-    <!-- Mapa del parque -->
-    <div class="card">
-      <div class="card-header" style="flex-wrap:wrap;gap:.3rem">
-        <span class="card-title">Área del parque — campo kriging &amp; layout</span>
-        <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">
-          <select class="form-select" id="parque-base-layer"
-                  style="font-size:.71rem;padding:.15rem .35rem;width:auto"
-                  onchange="parqueSetBaseLayer(this.value)" title="Tipo de mapa base">
-            <option value="dark">🌑 Oscuro</option>
-            <option value="voyager">🌍 Claro</option>
-            <option value="osm">🗺 OSM</option>
-            <option value="satellite">🛰 Satélite</option>
-          </select>
-          <select class="form-select" id="parque-map-layer"
-                  style="font-size:.71rem;padding:.15rem .35rem;width:auto"
-                  title="Capa de campo kriging">
-            <option value="wind">💨 Viento (m/s)</option>
-            <option value="wind_directional">🧭 Viento dir.</option>
-            <option value="power_density">⚡ Densidad pot.</option>
-            <option value="gust">💨 Ráfagas</option>
-          </select>
-          <button class="btn-secondary" id="btn-parque-wind-toggle"
-                  onclick="parqueToggleWindLayer()"
-                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">Ocultar capa</button>
-          <button class="btn-secondary" id="btn-parque-wake"
-                  onclick="parqueToggleWakes()"
-                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🌬 Ver estelas</button>
-          <button class="btn-secondary" id="btn-parque-map-lock"
-                  onclick="parqueToggleMapLock()"
-                  style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🔓 Ver todo</button>
-          <span class="badge badge--info" id="parque-map-status">Sin Kriging</span>
-        </div>
-      </div>
-      <div class="card-body" style="padding:0;position:relative">
-        <div id="parque-map" style="height:440px;border-radius:0 0 8px 8px"></div>
-        <div id="parque-map-legend" style="position:absolute;bottom:8px;left:8px;background:rgba(0,0,0,.55);color:#fff;font-size:.7rem;padding:.3rem .5rem;border-radius:4px;pointer-events:none;display:none"></div>
-        <div id="parque-map-hint" style="position:absolute;top:8px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;font-size:.72rem;padding:.25rem .6rem;border-radius:12px;pointer-events:none;white-space:nowrap">
-          Dibuja el polígono del parque en la sección de diseño primero
-        </div>
-      </div>
-    </div>
+  <!-- Panel de control: el mapa (mismo #parque-map) ya se muestra arriba,
+       visible desde la revisión de candidatos -- aquí solo los controles
+       para aplicar/afinar el layout del ganador de TOPSIS. -->
+  <div style="max-width:420px">
 
     <!-- Panel de control -->
     <div style="display:flex;flex-direction:column;gap:.6rem">
@@ -1984,83 +1935,47 @@
       <div class="card">
         <div class="card-header"><span class="card-title">Parámetros</span></div>
         <div class="card-body" style="padding:.6rem">
-          <div class="form-grid-2">
-            <div>
-              <label class="form-label" title="Distancia euclidiana dura entre centros">Seguridad mínima (×D)</label>
-              <input class="form-input" type="number" id="parque-min-sep-d" value="3" step="0.5" min="3" max="15">
-            </div>
-            <div>
-              <label class="form-label" title="Separación inicial longitudinal entre filas; se prueban valores mayores">Entre filas desde (×D)</label>
-              <input class="form-input" type="number" id="parque-row-sep-d" value="3" step="0.5" min="3" max="15">
-            </div>
-            <div>
-              <label class="form-label" title="Separación inicial transversal entre columnas; se prueban valores mayores">Entre columnas desde (×D)</label>
-              <input class="form-input" type="number" id="parque-col-sep-d" value="3" step="0.5" min="3" max="15">
-            </div>
-            <div>
-              <label class="form-label" title="Si el parque excede este valor se reduce una turbina y se reoptimiza">Pérdida estela máxima (%)</label>
-              <input class="form-input" type="number" id="parque-max-wake-loss" value="5" step="0.5" min="0" max="30">
-            </div>
-            <div>
-              <label class="form-label" title="Alta TI (Istmo) → 0.09-0.10">k estela (modelo TOPSIS)</label>
-              <input class="form-input" type="number" id="parque-kwake" value="0.075" step="0.005" min="0.01" max="0.20">
-            </div>
-            <div>
-              <label class="form-label">Ct (thrust)</label>
-              <input class="form-input" type="number" id="parque-ct" value="0.8" step="0.05" min="0.1" max="1.0">
-            </div>
-            <div>
-              <label class="form-label">Disponibilidad (%)</label>
-              <input class="form-input" type="number" id="parque-avail" value="97" step="1" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">Pérd. eléctricas (%)</label>
-              <input class="form-input" type="number" id="parque-elec" value="3" step="0.5" min="0" max="20">
-            </div>
-            <div>
+<div class="form-grid-2">            <div>
               <label class="form-label" title="Sectores para simulación AEP con estelas">Sectores AEP</label>
               <select class="form-select" id="parque-sectors">
                 <option value="12">12</option>
                 <option value="16">16</option>
                 <option value="36" selected>36</option>
               </select>
-            </div>
-            <div style="grid-column:1/-1">
+            </div>            <div style="grid-column:1/-1">
               <label class="form-label" title="Tipo de disposición del parque. 'Auto' compara alineado, tresbolillo y desplazados con la base TOPSIS y el límite de estela.">Tipo layout</label>
               <select class="form-select" id="parque-layout-type">
                 <option value="auto" selected>🔍 Auto (busca mejor)</option>
                 <option value="aligned">▦ Solo alineado</option>
                 <option value="staggered">⬡ Solo tresbolillo</option>
               </select>
-            </div>
-            <div>
+            </div>            <div>
               <label class="form-label">Altura buje/AEP (m)</label>
               <input class="form-input" type="number" id="parque-ws-h" value="110" step="5">
-            </div>
-            <div>
+            </div>            <div>
               <label class="form-label" title="Dirección FROM donde viene el viento para visualizar estelas en mapa (0=N, 90=E, 270=O)">Dir. estela (°)</label>
               <input class="form-input" type="number" id="parque-wake-dir" value="" placeholder="Desde TOPSIS" step="0.5" min="0" max="359.9">
-            </div>
-          </div>
+            </div></div>
+          <p class="text-muted" id="parque-environmental-summary" style="font-size:.72rem;display:none;margin-top:.3rem"></p>
           <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">
             <span class="text-muted" id="parque-info" style="font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
             <button class="btn-secondary" id="btn-parque-reset" type="button" style="white-space:nowrap">↺ Reset</button>
-            <button class="btn-primary"   id="btn-parque-optimize" type="button" style="white-space:nowrap">⚡ Optimizar</button>
+            <button class="btn-primary"   id="btn-parque-optimize" type="button" style="white-space:nowrap">Simular / refinar tecnología</button>
           </div>
           <div id="parque-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-top:.5rem">
             <div id="parque-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
           </div>
-          <p class="text-muted" style="font-size:.72rem">Con TOPSIS se conservan su modelo de estela, recurso y pérdidas. Para cambiar esos supuestos, vuelve a ejecutar TOPSIS. La cantidad 0 usa la de TOPSIS; puedes reducirla para comparar.</p>
+          <p class="text-muted" style="font-size:.72rem">Con TOPSIS se conservan su modelo de estela, recurso y pérdidas. Para cambiar esos supuestos, vuelve a generar los layouts. La cantidad 0 usa la de TOPSIS; puedes reducirla para comparar.</p>
           <p id="parque-progress-text" style="font-size:.72rem;color:var(--text-muted);margin:.25rem 0 0"></p>
         </div>
       </div>
 
     </div><!-- /panel -->
-  </div><!-- /grid -->
+  </div>
 
   <!-- Quick Design banner (visible only in quick mode) -->
   <div id="qd-parque-banner" style="display:none;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.5rem .9rem;margin-bottom:.6rem;font-size:.8rem;color:#10b981">
-    &#x26A1; <strong>Modo rápido</strong>: polígono listo. Haz clic en <em>⚡ Optimizar</em> para correr el pipeline completo.
+    &#x26A1; <strong>Modo rápido</strong>: genera los layouts, revísalos y continúa a AHP / TOPSIS.
   </div>
 
   <!-- badge estado post-simulación -->
@@ -2146,7 +2061,149 @@
       </table>
     </div>
   </div>
+
   </div>
+
+  <div class="subsection" data-subtab="topsis">
+  <!-- ═══════════ ANÁLISIS MULTI-SITIO × TURBINA + RANKING MULTICRITERIO ═══════════ -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Selección óptima — Análisis multicriterio (TOPSIS)</span>
+      <span class="badge badge--info" id="mcda-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Compara las alternativas calculadas en ③ Parque. Ajusta los pesos o utiliza AHP y ejecuta TOPSIS.
+        Para cambiar posiciones, restricciones o supuestos, regresa a Parque y genera las alternativas de nuevo.
+      </p>
+
+      <div>
+        <!-- Pesos (sliders) -->
+        <div class="col-span-2">
+          <h4 style="font-size:.85rem;margin-bottom:.5rem">Pesos de criterios (TOPSIS) — se renormalizan a 1</h4>
+          <div class="form-row" id="mcda-scenario-row">
+            <label class="form-label">Escenario de decisión</label>
+            <div class="form-input" id="mcda-weight-source" aria-label="Escenario de decisión">Escenario de referencia — sin elicitación AHP</div>
+          </div>
+          <p class="text-muted" id="mcda-scope-help" style="font-size:.78rem;margin-bottom:.6rem">
+            TOPSIS compara los layouts ya evaluados en Parque; cambiar pesos conserva las geometrías.
+          </p>
+          <div id="mcda-weights" style="display:grid;grid-template-columns:1fr 1fr;gap:.5rem .9rem">
+            <!-- populated by JS -->
+          </div>
+          <div class="flex-end mt-2" style="gap:.4rem">
+            <button class="btn-secondary" id="btn-mcda-reset-w">↺ Valores por defecto</button>
+            <button class="btn-primary" id="btn-mcda-rerank">Ejecutar TOPSIS con estos pesos</button>
+          </div>
+          <details id="mcda-ahp-panel" class="mt-3">
+            <summary style="cursor:pointer">Obtener pesos con AHP — comparaciones por pares</summary>
+            <p id="mcda-ahp-intro" class="text-muted" style="font-size:.78rem"></p>
+            <label for="mcda-ahp-author">Autor de los juicios</label>
+            <input id="mcda-ahp-author" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()">
+            <label for="mcda-ahp-objective">Objetivo de la decisión</label>
+            <textarea id="mcda-ahp-objective" class="form-input" maxlength="4000" oninput="mcdaAhpEdited()"></textarea>
+            <label for="mcda-ahp-rationale">Justificación y referencias de las comparaciones</label>
+            <textarea id="mcda-ahp-rationale" class="form-input" maxlength="4000" rows="4" oninput="mcdaAhpEdited()"></textarea>
+            <p class="text-muted" style="font-size:.78rem">Escala: 1 igual; 3 moderada; 5 fuerte; 7 muy fuerte; 9 extrema. 2, 4, 6 y 8 son intermedios. Cada comparación comienza sin responder.</p>
+            <div id="mcda-ahp-pairs" style="max-height:420px;overflow:auto;font-size:.78rem"></div>
+            <button type="button" class="btn-secondary mt-2" id="btn-mcda-ahp-calculate" onclick="mcdaCalculateAhp()">Calcular pesos y consistencia</button>
+            <div id="mcda-ahp-result" aria-live="polite" style="font-size:.78rem"></div>
+            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+              <button type="button" class="btn-primary" id="btn-mcda-ahp-apply" onclick="mcdaApplyAhp()" disabled>Aplicar a TOPSIS</button>
+              <button type="button" class="btn-secondary" id="btn-mcda-ahp-export" onclick="mcdaExportAhp()" disabled>Exportar expediente AHP</button>
+              <button type="button" class="btn-secondary" onclick="document.getElementById('mcda-ahp-import-file').click()">Importar expediente AHP</button>
+              <input type="file" id="mcda-ahp-import-file" accept="application/json,.json" style="display:none" onchange="mcdaImportAhpFile(event)">
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <hr class="mt-3 mb-3" style="border:none;border-top:1px solid var(--border);">
+
+      <!-- Ranking table -->
+      <div style="max-height:420px;overflow:auto">
+        <table class="tbl" id="mcda-rank-tbl">
+          <thead><tr>
+            <th>#</th><th>Sitio</th><th>Turbina</th>
+            <th>Score</th><th>Cp efectivo ↑</th><th>Horas ≥95% Cp máx. ↑ (h/año)</th>
+            <th>FC neto ↑ (%)</th><th>AEP P90 ↑ (MWh)</th>
+            <th>VAN ↑ (USD)</th><th>LCOE ↓ (USD/kWh)</th>
+            <th>CAPEX / kW instalado ↓ (USD/kW)</th>
+          </tr></thead>
+          <tbody id="mcda-rank-body">
+            <tr><td colspan="12" class="text-muted">Genera layouts en ③ Parque y ejecuta TOPSIS con los pesos elegidos.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ ROBUSTEZ TÉCNICO-ECONÓMICA COMPARADA — TODAS LAS TURBINAS DEL RANKING ═══ -->
+  <div class="card mt-3" id="gsens-batch-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Robustez técnico-económica comparada — todas las turbinas del ranking</span>
+      <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Corre el mismo Monte Carlo económico (precio, tasa, OPEX, recurso eólico, inflación y estela)
+        para cada turbina del ranking, sin entrenar Random Forest — solo mide qué tan seguido cada
+        una se mantiene viable ante la incertidumbre, y hasta qué % de estela adicional aguanta antes
+        de dejar de serlo. Complementa al ranking TOPSIS: éste te dice quién gana en el escenario base,
+        esto te dice quién es más confiable si el escenario cambia. Además agrupa esas mismas muestras
+        Monte Carlo de cada alternativa en clústeres de riesgo financiero reales (K-means, k elegido por
+        silhouette) — perfiles de incertidumbre económica, no solo percentiles agregados.
+      </p>
+      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar robustez de todas las turbinas</button>
+      <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
+      <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
+      <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
+    </div>
+  </div>
+
+  <!-- ═══ ROBUSTEZ DE PESOS — TOPSIS (SMAA) ═══ -->
+  <div class="card mt-3" id="topsis-robust-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Robustez de pesos — TOPSIS (SMAA)</span>
+      <span class="badge badge--info" id="topsis-robust-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Perturba los pesos de los criterios TOPSIS con una distribución de Dirichlet centrada en tus
+        pesos actuales (método SMAA — Stochastic Multicriteria Acceptability Analysis) y re-rankea las
+        alternativas ya calculadas miles de veces, sin volver a simular nada. Responde: ¿qué tan seguido
+        gana cada alternativa ante la incertidumbre real de cómo se ponderan los criterios? Además, un
+        Random Forest entrenado sobre esas mismas muestras dice qué criterio de decisión es el que más
+        determina quién gana.
+      </p>
+      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
+        <div>
+          <label class="form-label" style="font-size:.78rem">N° de muestras (Dirichlet)</label>
+          <input type="number" class="form-input" id="topsis-robust-n-samples" value="500" min="100" max="2000" step="100" style="width:110px">
+        </div>
+        <button class="btn-primary" id="btn-topsis-robust-run" type="button">▶ Analizar robustez de pesos</button>
+      </div>
+      <p class="text-muted mt-1" id="topsis-robust-progress-text" style="font-size:.75rem"></p>
+
+      <div id="topsis-robust-results" style="display:none">
+        <div class="grid-2" style="gap:1rem">
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Estabilidad del ranking por alternativa</p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-rank-chart"></canvas></div>
+          </div>
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
+            <p id="topsis-robust-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
+          </div>
+        </div>
+        <div style="overflow:auto;max-height:260px;margin-top:.9rem" id="topsis-robust-table"></div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+
 </section>
 <!-- ╔══════════════════ TECNO-ECONÓMICO ══════════════════╗ -->
 <section class="module" id="mod-techno">

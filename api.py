@@ -96,9 +96,9 @@ from core.spatial_calibration import (METHOD as SPATIAL_CALIBRATION_METHOD,
                                       calibrate_spatial_nodes,
                                       resolve_sector_roughness)
 from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
-                       recommend_n_turbines, optimize_layout_greedy,
+                       recommend_n_turbines, TECHNICAL_MIN_SPACING_D,
                        optimize_layout_structured, energy_weighted_dominant_direction)
-from core.farm_mcda import analyze_park_layouts
+from core.farm_mcda import analyze_park_layouts, generate_park_layouts
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
@@ -4347,7 +4347,7 @@ def create_app():
     @app.route('/api/farm/optimize', methods=['POST'])
     def farm_optimize():
         """
-        Greedy Sequential Placement within a park polygon + AEP simulation.
+        Independent single-technology structured layout + AEP simulation (manual tools).
         Body:
           polygon:           [{lat, lon}, ...] — park boundary (≥ 3 vertices)
           turbine:           {builtin_model? OR full PowerCurve fields}
@@ -4492,7 +4492,7 @@ def create_app():
                 wd=np.asarray(wd,     dtype=float),
                 wind_grid=wind_grid,
                 fallback_wind_ms=v_mean_hub,
-                min_spacing_d=float(body.get('min_spacing_d', 5.0)),
+                min_spacing_d=max(TECHNICAL_MIN_SPACING_D, float(body.get('min_spacing_d', 5.0))),
                 k_wake=float(body.get('k_wake', 0.075)),
                 ct=float(body.get('ct', 0.8)),
                 stagger_options=stagger_opts,
@@ -4562,10 +4562,68 @@ def create_app():
                 turbine, alternative.get('turbine_specification', {}).get('hub_height_m'))
             result = refine_topsis_layout(alternative, turbine,
                 layout_type=body.get('layout_type', 'auto'),
-                n_turbines=int(body.get('n_turbines') or 0))
+                n_turbines=int(body.get('n_turbines') or 0),
+                receptor_points=body.get('receptor_points'),
+                noise_limit_dba=body.get('noise_limit_dba'),
+                shadow_flicker_limit_hours_year=(
+                    float(body['shadow_flicker_limit_hours_year'])
+                    if body.get('shadow_flicker_limit_hours_year') is not None else None),
+                include_environmental=bool(body.get('include_environmental')))
             return jsonify(numpy_to_python(result))
         except (ValueError, KeyError, TypeError, OSError) as exc:
             return _err(str(exc), 400)
+
+    @app.route('/api/infrastructure/osm_import', methods=['POST'])
+    def infrastructure_osm_import():
+        """Fase 2b: infraestructura cercana (líneas de transmisión, carreteras,
+        subestaciones, aerogeneradores vecinos) vía OpenStreetMap/Overpass API
+        -- mismos datos que muestra openinframap.org, consultados directamente.
+        También incluye receptores sensibles (viviendas/escuelas, categorías
+        'kind'=='receptor'), acotados a RECEPTOR_MAX_RADIUS_KM independiente
+        del radio general -- ver core.osm_infrastructure. Devuelve features
+        individuales para que el usuario seleccione/excluya (o agregue como
+        receptor) uno por uno; nunca se aplica nada automáticamente."""
+        from core.osm_infrastructure import (
+            CATEGORY_SPECS, DEFAULT_CATEGORIES, RECEPTOR_MAX_RADIUS_KM, fetch_overpass_features,
+        )
+        body = request.get_json(silent=True) or {}
+        polygon = body.get('polygon') or []
+        if len(polygon) < 3:
+            return _err('Se requiere un polígono con al menos tres vértices.')
+        try:
+            lats = [float(p['lat']) for p in polygon]
+            lons = [float(p['lon']) for p in polygon]
+        except (KeyError, TypeError, ValueError):
+            return _err('Cada punto del polígono necesita lat y lon numéricos.')
+        radius_km = max(0.1, min(20.0, float(body.get('radius_km') or 2.0)))
+        deg_lat = radius_km / 111.32
+        deg_lon = radius_km / (111.32 * max(0.1, float(np.cos(np.radians(sum(lats) / len(lats))))))
+        bbox = (min(lats) - deg_lat, min(lons) - deg_lon,
+                max(lats) + deg_lat, max(lons) + deg_lon)
+        categories = tuple(c for c in (body.get('categories') or DEFAULT_CATEGORIES)
+                          if c in CATEGORY_SPECS) or DEFAULT_CATEGORIES
+        result = fetch_overpass_features(bbox, categories=categories)
+        result['category_labels'] = {key: spec['label'] for key, spec in CATEGORY_SPECS.items()}
+        result['receptor_max_radius_km'] = RECEPTOR_MAX_RADIUS_KM
+        return jsonify(numpy_to_python(result))
+
+    @app.route('/api/infrastructure/osm_buffer', methods=['POST'])
+    def infrastructure_osm_buffer():
+        """Convierte UN feature de OSM (ya elegido por el usuario) en un
+        polígono de exclusión con el buffer indicado -- mismo formato que
+        una exclusión dibujada a mano."""
+        from core.osm_infrastructure import feature_to_exclusion_polygon
+        body = request.get_json(silent=True) or {}
+        coords = body.get('coords') or []
+        geometry_type = body.get('geometry_type') or 'point'
+        buffer_m = body.get('buffer_m')
+        if not coords or buffer_m is None:
+            return _err('Se requieren coords y buffer_m.')
+        try:
+            polygon = feature_to_exclusion_polygon(coords, geometry_type, float(buffer_m))
+            return jsonify({'polygon': polygon})
+        except (ValueError, TypeError) as exc:
+            return _err(str(exc))
 
     @app.route('/api/farm/session_demand', methods=['POST'])
     def farm_session_demand():
@@ -5305,7 +5363,7 @@ def create_app():
         if (not isinstance(criteria, list) or len(criteria) != len(LAYOUT_WEIGHTS)
                 or any(not isinstance(key, str) for key in criteria)
                 or set(criteria) != set(LAYOUT_WEIGHTS)):
-            raise ValueError('AHP debe incluir los ocho criterios actuales del parque.')
+            raise ValueError(f'AHP debe incluir los {len(LAYOUT_WEIGHTS)} criterios actuales del parque.')
         context = {}
         for key in ('author', 'objective', 'rationale'):
             value = payload.get(key)
@@ -5534,6 +5592,7 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/farm/layouts/generate', methods=['POST'])
     @app.route('/api/multicriteria/spatial', methods=['POST'])
     @limiter.limit('5 per minute')
     def mcda_spatial():
@@ -5545,6 +5604,13 @@ def create_app():
         exploratory rectangle (scope=exploratory).
         """
         body = request.get_json(silent=True) or {}
+        generation_only = request.path == '/api/farm/layouts/generate'
+        if generation_only:
+            if body.get('scope', 'park') != 'park':
+                return _err('La generación de layouts requiere scope=park.')
+            # Decision weights belong exclusively to the later ranking action.
+            for key in ('weights', 'layout_weights', 'ahp_assessment'):
+                body.pop(key, None)
         ahp_assessment = None
         if body.get('ahp_assessment') is not None:
             try:
@@ -5746,6 +5812,7 @@ def create_app():
                     tasks[task_id]['progress'] = 75
                     tasks[task_id]['message'] = 'Evaluando sitios virtuales sobre el campo espacial…'
                     spatial = analyze_spatial_topsis_maps(
+                        resource_only=(scope == 'park'),
                         field_bundle=field_bundle,
                         turbines_folder=Config.TURBINES_FOLDER,
                         scope=scope, polygon=polygon, bounds=bounds,
@@ -5761,6 +5828,7 @@ def create_app():
                 else:
                     # Compatibility path for manual/legacy clients.
                     spatial = analyze_spatial_topsis_sites(
+                        resource_only=(scope == 'park'),
                         wind_folder=Config.DATA_FOLDER,
                         turbines_folder=Config.TURBINES_FOLDER,
                         year=year,
@@ -5783,7 +5851,8 @@ def create_app():
                 if scope == 'park':
                     tasks[task_id]['progress'] = 82
                     tasks[task_id]['message'] = 'Optimizando cantidades, separaciones y estelas del parque…'
-                    layout_result = analyze_park_layouts(
+                    layout_builder = generate_park_layouts if generation_only else analyze_park_layouts
+                    layout_result = layout_builder(
                         sites=spatial['sites'], polygon=polygon,
                         turbines_folder=Config.TURBINES_FOLDER,
                         turbine_filenames=turbine_files or [],
@@ -5793,12 +5862,16 @@ def create_app():
                         min_spacing_d=float(body.get('min_spacing_d') or 3.0),
                         s_para_range=tuple(body.get('s_para_range') or (3, 4, 5, 6, 7, 8, 9, 10)),
                         s_perp_range=tuple(body.get('s_perp_range') or (3, 4, 5, 6)),
+                        row_sep_reference_d=(float(body['row_sep_reference_d'])
+                                              if body.get('row_sep_reference_d') is not None else None),
+                        col_sep_reference_d=(float(body['col_sep_reference_d'])
+                                              if body.get('col_sep_reference_d') is not None else None),
                         max_wake_loss_pct=float(body.get('max_wake_loss_pct', 5.0)),
                         wake_model=body.get('wake_model') or 'gaussian',
                         k_wake=float(body.get('k_wake') or 0.04),
                         ct=float(body.get('ct') or 0.8),
-                        availability=float(body.get('availability') or 0.97),
-                        electrical_losses=float(body.get('electrical_losses') or 0.03),
+                        availability=float(body.get('availability', 0.97)),
+                        electrical_losses=float(body.get('electrical_losses', 0.03)),
                         curtailment_loss=float(body.get('curtailment_loss') or 0.0),
                         environmental_loss=float(body.get('environmental_loss') or 0.0),
                         discount_rate=tasa,
@@ -5813,17 +5886,31 @@ def create_app():
                             'request' if requested_cost_model
                             else 'irena_onshore_2024_global_weighted_average'),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
-                        weights=body.get('layout_weights'),
+                        **({} if generation_only else {'weights': body.get('layout_weights')}),
                         historical_wind=historical_wind,
                         price_hourly_usd_kwh=price_hourly_usd_kwh,
+                        n_range=(tuple(body['n_range']) if body.get('n_range') else None),
+                        n_range_by_turbine=(
+                            {key: tuple(value) for key, value in body['n_range_by_turbine'].items()}
+                            if body.get('n_range_by_turbine') else None),
+                        candidate_limit_per_n=int(body.get('candidate_limit_per_n') or 0),
+                        receptor_points=body.get('receptor_points'),
+                        noise_limit_dba=body.get('noise_limit_dba'),
+                        shadow_flicker_limit_hours_year=(
+                            float(body['shadow_flicker_limit_hours_year'])
+                            if body.get('shadow_flicker_limit_hours_year') is not None else None),
+                        include_environmental=bool(body.get('include_environmental')),
+                        max_slope_deg=(
+                            float(body['max_slope_deg']) if body.get('max_slope_deg') is not None else None),
                     )
                     for alternative in layout_result.get('alternatives', []):
                         alternative['spatial_sources'] = spatial.get('spatial_sources', [])
                         alternative['temporal_source'] = source_info
-                    ranking = layout_result['ranking']
-                    ranking['mode'] = 'layout_alternatives'
-                    if ahp_assessment:
-                        ranking['ahp_assessment'] = ahp_assessment
+                    ranking = layout_result.get('ranking')
+                    if ranking is not None:
+                        ranking['mode'] = 'layout_alternatives'
+                        if ahp_assessment:
+                            ranking['ahp_assessment'] = ahp_assessment
                 else:
                     layout_result = None
                     ranking = rank_sites_turbines(spatial['sites'], weights=weights, mode=mode)
@@ -5850,7 +5937,8 @@ def create_app():
                 tasks[task_id]['progress'] = 100
                 tasks[task_id]['message'] = (
                     f"{spatial['n_virtual_sites']} sitios virtuales · "
-                    f"{len(ranking.get('ranking') or [])} alternativas TOPSIS"
+                    + (f"{len(layout_result['alternatives'])} layouts preparados para TOPSIS"
+                     if generation_only else f"{len((ranking or {}).get('ranking') or [])} alternativas TOPSIS")
                 )
             except Exception as e:
                 tasks[task_id]['status'] = 'error'

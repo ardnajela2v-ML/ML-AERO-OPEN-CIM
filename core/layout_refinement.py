@@ -4,6 +4,7 @@ from copy import deepcopy
 import numpy as np
 
 from core.farm import simulate_wind_farm
+from core.layout_generation import _local_wake_refinement, receptor_exclusion_buffers
 
 
 def build_energy_context(sites, turbine, *, wake_model, k_wake, ct,
@@ -86,73 +87,10 @@ def energy_evaluator(context, turbine):
     return evaluate, ws, wd, mean_speed, rho
 
 
-def _local_wake_refinement(points, evaluate, valid_geometry, *, wake_limit,
-                            max_radius_m, passes=2, n_angles=8, n_radii=3,
-                            max_evals=250):
-    """Bounded coordinate-descent around a fixed layout.
-
-    Nudges the most wake-affected turbines a short distance (<= max_radius_m,
-    roughly 0.5-1 rotor diameter) from their current position to cut estela
-    and, once compliant, lift AEP — without the row/column spacing rule that
-    only ever stood in as a proxy for limiting wake. Each accepted move keeps
-    every other turbine fixed, so the seed pattern (aligned/tresbolillo/
-    TOPSIS) stays recognisable; it is refined, not replaced by a free search.
-    Accept-if-better against a single objective that prioritises meeting
-    wake_limit and only then rewards extra AEP, so it usefully serves both
-    "rescue an infeasible family" and "improve an already-feasible layout".
-    """
-    points = [list(map(float, p)) for p in points]
-    current_sim = evaluate(points)
-    if current_sim.get('error'):
-        return points, current_sim
-
-    def score(sim):
-        return float(sim['aep_mwh']) - 1e6 * max(0.0, float(sim['wake_loss_pct']) - wake_limit)
-
-    best_score = score(current_sim)
-    radii = [max_radius_m * f for f in np.linspace(1.0 / n_radii, 1.0, n_radii)]
-    angles = np.linspace(0.0, 2 * np.pi, n_angles, endpoint=False)
-    n = len(points)
-    evals = 0
-    for _ in range(passes):
-        if evals >= max_evals:
-            break
-        moved = False
-        order_idx = sorted(range(n), key=lambda i: -current_sim['turbines'][i]['wake_loss_pct'])
-        budget = max(1, int(np.ceil(n * 0.6)))
-        for i in order_idx[:budget]:
-            if evals >= max_evals:
-                break
-            origin = points[i]
-            local_best = None
-            for r in radii:
-                if evals >= max_evals:
-                    break
-                for a in angles:
-                    if evals >= max_evals:
-                        break
-                    trial_point = [origin[0] + r * float(np.cos(a)), origin[1] + r * float(np.sin(a))]
-                    trial_points = points[:i] + [trial_point] + points[i + 1:]
-                    if not valid_geometry(trial_points):
-                        continue
-                    sim = evaluate(trial_points)
-                    evals += 1
-                    if sim.get('error'):
-                        continue
-                    s = score(sim)
-                    if s > best_score + 1e-6 and (local_best is None or s > local_best[2]):
-                        local_best = (trial_point, sim, s)
-            if local_best is not None:
-                points[i] = local_best[0]
-                current_sim = local_best[1]
-                best_score = local_best[2]
-                moved = True
-        if not moved:
-            break
-    return points, current_sim
-
-
-def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines=0):
+def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines=0,
+                         receptor_points=None, noise_limit_dba=None,
+                         shadow_flicker_limit_hours_year=None,
+                         include_environmental=False):
     """Compare shortlisted configurations at a fixed count on TOPSIS's basis.
 
     The raw TOPSIS layout is always shown as-is ('Referencia TOPSIS'), plus a
@@ -163,6 +101,14 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
     least-wake finalist is rescued with the same bounded local refinement
     instead of discarding the whole family. None of this is a global-optimum
     claim, only a bounded search around recognisable seed patterns.
+
+    `include_environmental=True` con `receptor_points` resta del área
+    buscable un círculo de resguardo por receptor (ver
+    receptor_exclusion_buffers) ANTES de generar candidatos -- la búsqueda
+    evita la zona restringida desde el inicio, no la detecta después. Sin
+    `include_environmental` (default), el comportamiento es idéntico al de
+    antes de este parámetro: ruido/sombra no entran a la geometría de
+    búsqueda, solo se evalúan como auditoría del paso 6.
     """
     from core.farm import _latlon_to_xy, _xy_to_latlon, optimize_layout_structured
     from shapely.geometry import Point, Polygon
@@ -194,6 +140,13 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
     allowed = land.buffer(-setback)
     for exclusion in constraints.get('exclusions', []):
         allowed = allowed.difference(xy_shape(exclusion).buffer(setback))
+    receptor_buffers = []
+    if include_environmental and receptor_points:
+        receptor_buffers = receptor_exclusion_buffers(
+            receptor_points, turbine, noise_limit_dba, shadow_flicker_limit_hours_year)
+        for buf in receptor_buffers:
+            bx, by = _latlon_to_xy([buf['lat']], [buf['lon']], lat0, lon0)
+            allowed = allowed.difference(Point(bx[0], by[0]).buffer(buf['radius_m']))
     minimum = float(constraints['min_spacing_d']) * turbine.rotor_diameter_m
     wake_limit = float(constraints['max_wake_loss_pct'])
     evaluate, ws, wd, mean, rho = energy_evaluator(context, turbine)
@@ -257,6 +210,16 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
                        wind_at_turbines=[mean] * original_n,
                        layout_config=alternative.get('layout_config', {})),
                   'topsis', 'Referencia TOPSIS', baseline_sim, baseline_eligible)
+    if include_environmental and receptor_points and not candidates:
+        # valid_geometry ya descarta cualquier candidato dentro de un círculo
+        # de resguardo -- si eso vació hasta la Referencia TOPSIS, no hay
+        # nada que comparar más abajo (candidates ya no es garantizado
+        # no-vacío como asumía el resto de la función antes de este cambio).
+        raise ValueError(
+            'El layout TOPSIS queda dentro de la zona de resguardo de ruido/sombra de '
+            'algún receptor. Desactiva "Incluir ruido y sombra" para ver el layout sin '
+            'esa restricción, reduce el N objetivo, o ejecuta TOPSIS nuevamente con estos '
+            'receptores ya incluidos en el paso 6.')
 
     # 'TOPSIS mejorado (auto)': same layout, bounded local refinement to raise
     # AEP / cut estela — only meaningful at the exact TOPSIS count (a local
@@ -366,6 +329,10 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
         'origin_lat': lat0, 'origin_lon': lon0, 'area_km2': land.area / 1e6,
         'n_requested': target_n, 'n_candidates': len(candidates),
         'energy_context': context, 'layout_constraints': constraints,
+        'environmental_search': {
+            'included': bool(include_environmental and receptor_points),
+            'receptor_buffers': receptor_buffers,
+        },
         'comparison': {
             'baseline_aep_mwh': baseline_aep, 'baseline_n': original_n,
             'same_count': target_n == original_n, 'max_wake_loss_pct': wake_limit,

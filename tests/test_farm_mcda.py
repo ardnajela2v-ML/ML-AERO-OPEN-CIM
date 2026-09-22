@@ -544,18 +544,21 @@ class LayoutTopsisTests(unittest.TestCase):
         self.assertEqual(row['economic_assumptions']['price_usd_kwh'], 0.083)
         self.assertEqual(len(row['cashflow_table']), 31)
 
-    def test_park_topsis_rejects_spacing_below_three_diameters(self):
+    def test_park_topsis_rejects_spacing_below_technical_floor(self):
+        # Piso técnico = 2.5D (core.farm.TECHNICAL_MIN_SPACING_D); 2.5D en sí
+        # es válido (límite inclusive), así que la prueba usa un valor por
+        # debajo de ese piso.
         sites = [{
             'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
             'sectorial': {'frequency_pct': [6.25] * 16},
         }]
-        with self.assertRaisesRegex(ValueError, 'menor que 3D'):
+        with self.assertRaisesRegex(ValueError, 'menor que 2.5D'):
             analyze_park_layouts(
                 sites, [
                     {'lat': 16.500, 'lon': -95.000}, {'lat': 16.500, 'lon': -94.990},
                     {'lat': 16.510, 'lon': -94.990}, {'lat': 16.510, 'lon': -95.000},
                 ], 'aerogeneradores',
-                ['gamesa21_p2000_r45.csv'], min_spacing_d=2.5,
+                ['gamesa21_p2000_r45.csv'], min_spacing_d=2.0,
                 project_years=25, price_usd_kwh=0.07,
             )
 

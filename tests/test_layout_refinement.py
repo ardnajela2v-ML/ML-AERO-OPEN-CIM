@@ -49,7 +49,14 @@ class EnergyBasisTests(unittest.TestCase):
             if kwargs.get('layout_evaluator'):
                 result['constraint_evaluation'] = kwargs['layout_evaluator'](points)
             return result
-        with patch('core.farm_mcda.optimize_layout_structured', side_effect=optimize):
+        # La tercera familia (greedy-vértice) corre en paralelo a las dos
+        # estructuradas dentro de generate_feasible_layouts_grid -- sin
+        # patchearla también competiría con geometría real (no controlada
+        # por el fixture) por el campeonato de la tecnología, rompiendo la
+        # reproducibilidad exacta de `points` que esta prueba verifica.
+        with patch('core.layout_generation.optimize_layout_structured', side_effect=optimize), patch(
+                'core.layout_generation.optimize_layout_greedy_vertex',
+                side_effect=ValueError('sin candidatos en este fixture')):
             result = analyze_park_layouts(self.sites, polygon, 'aerogeneradores',
                 ['gamesa21_p2000_r45.csv'], project_years=20, price_usd_kwh=.08,
                 max_wake_loss_pct=99, wake_model='jensen', curtailment_loss=.04,

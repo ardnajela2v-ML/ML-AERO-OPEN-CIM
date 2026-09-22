@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -11,11 +11,18 @@ from core.project_economics import (project_cashflows, irr_bisection as _irr, DE
                                     DEFAULT_DECOMMISSIONING_PCT)
 from core.cost_model import CostModel
 from core.layout_refinement import build_energy_context
+from core.layout_generation import (
+    FAMILY_STAGGER,
+    GREEDY_FAMILY,
+    LayoutConstraints,
+    generate_feasible_layouts_grid,
+    select_technology_champion,
+)
 from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellmann
 from core.farm import (
+    TECHNICAL_MIN_SPACING_D,
     _latlon_to_xy,
     gaussian_min_valid_distance_d,
-    optimize_layout_structured,
     simulate_wind_farm,
 )
 from core.multicriteria import rank_layout_alternatives
@@ -191,7 +198,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     }
 
 
-def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder: str,
+def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder: str,
                          turbine_filenames: List[str], wind_grid=None,
                          exclusions=None, boundary_setback_m: float = 0.0,
                          min_spacing_d: float = 3.0,
@@ -211,19 +218,42 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                          cost_model: Optional[CostModel] = None,
                          cost_model_origin: Optional[str] = None,
                          uncertainty_components_pct: Optional[Dict[str, float]] = None,
-                         weights: Optional[Dict[str, float]] = None,
+                         n_range: Optional[Tuple[int, int]] = None,
+                         n_range_by_turbine: Optional[Dict[str, Tuple[int, int]]] = None,
+                         candidate_limit_per_n: int = 0,
                          historical_wind: Optional[Dict] = None,
-                         price_hourly_usd_kwh: Optional[List[float]] = None):
+                         price_hourly_usd_kwh: Optional[List[float]] = None,
+                         receptor_points: Optional[List[Dict]] = None,
+                         noise_limit_dba: Optional[Dict[str, float]] = None,
+                         shadow_flicker_limit_hours_year: Optional[float] = None,
+                         max_slope_deg: Optional[float] = None,
+                         row_sep_reference_d: Optional[float] = None,
+                         col_sep_reference_d: Optional[float] = None,
+                         include_environmental: bool = False,
+                         local_refinement_max_evals: int = 60):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
         raise ValueError('El parque requiere un polígono con al menos tres vértices.')
     if wake_model not in {'gaussian', 'jensen'}:
         raise ValueError('wake_model debe ser gaussian o jensen.')
-    if min_spacing_d < 3.0:
-        raise ValueError('La separación mínima no puede ser menor que 3D.')
+    if min_spacing_d < TECHNICAL_MIN_SPACING_D:
+        raise ValueError(
+            f'La separación mínima no puede ser menor que {TECHNICAL_MIN_SPACING_D}D '
+            '(piso técnico: validez de Jensen en campo cercano y cargas por '
+            'turbulencia IEC 61400-1).')
     if not 0.0 <= float(max_wake_loss_pct) < 100.0:
         raise ValueError('El límite de pérdida por estela debe estar en [0, 100).')
+    # s_para_range/s_perp_range ahora incluyen valores por debajo de la
+    # referencia del usuario (hasta TECHNICAL_MIN_SPACING_D), así que
+    # s_para_range[0]/s_perp_range[0] ya no son la referencia que el usuario
+    # escribió -- se guarda aparte para que la UI pueda mostrarla/compararla
+    # sin tener que reconstruirla del rango explorado. Sin valor explícito,
+    # se asume el mínimo del rango (compatibilidad con llamadores directos).
+    row_sep_reference_d = (float(row_sep_reference_d) if row_sep_reference_d is not None
+                            else float(min(s_para_range)))
+    col_sep_reference_d = (float(col_sep_reference_d) if col_sep_reference_d is not None
+                            else float(min(s_perp_range)))
     if project_years is None or price_usd_kwh is None:
         raise ValueError(
             'project_years y price_usd_kwh deben venir de la configuración del proyecto.')
@@ -271,28 +301,6 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                         rho = float(np.mean(densities[good_density]))
                 resource['provenance']['rho_used_kg_m3'] = rho
             setback = max(float(boundary_setback_m), turbine.rotor_diameter_m / 2.0)
-            capacity = optimize_layout_structured(
-                polygon, turbine, 0, ws=ws, wd=wd, wind_grid=wind_grid,
-                fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
-                min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
-                s_perp_range=tuple(s_perp_range), rho=rho,
-                exclusion_polygons=exclusions, boundary_setback_m=setback,
-                wake_model=wake_model,
-            )
-            physical_max_n = int(capacity.get('max_n_fit') or capacity.get('n_placed') or 0)
-            max_n = physical_max_n
-            if grid_limit_mw and grid_limit_mw > 0:
-                max_n = min(max_n, int(math.floor(grid_limit_mw * 1000.0 / turbine.rated_power_kw)))
-            if max_n <= 0:
-                errors.append({'turbine': filename, 'reason': 'sin_layout_factible'})
-                continue
-            # Select the largest exact-count layout whose whole-farm wake loss
-            # satisfies the configured limit. Every decrement is reoptimised;
-            # a subset of the denser layout is not assumed to be optimal.
-            layout = None
-            sim = None
-            selected_n = 0
-            wake_trials = []
             def evaluate_layout(points):
                 options = dict(k_wake=k_wake, ct=ct, n_sectors=36,
                     availability=availability, electrical_losses=electrical_losses,
@@ -304,51 +312,168 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 result = simulate_wind_farm(points, turbine, ws, wd, **options)
                 result['production_source'] = {'method': 'synthetic_weibull', 'source_id': None}
                 return result
-            for candidate_n in range(max_n, 0, -1):
-                candidate_layout = optimize_layout_structured(
-                    polygon, turbine, candidate_n, ws=ws, wd=wd, wind_grid=wind_grid,
-                    fallback_wind_ms=mean_speed, k_wake=k_wake, ct=ct,
-                    min_spacing_d=min_spacing_d, s_para_range=tuple(s_para_range),
-                    s_perp_range=tuple(s_perp_range), rho=rho,
-                    exclusion_polygons=exclusions, boundary_setback_m=setback,
-                    wake_model=wake_model,
-                    layout_evaluator=evaluate_layout,
+            # Paso 6 del framework de tesis (generación de layouts factibles)
+            # separado del paso 7 (AHP+TOPSIS): se genera el pool completo de
+            # candidatos (variando N, y dentro de cada N el patrón geométrico)
+            # y select_technology_champion elige, con una regla explícita, un
+            # único representante por tecnología -- en vez de detenerse en el
+            # primer N decreciente que cumple el límite de estela.
+            generation = generate_feasible_layouts_grid(
+                polygon, turbine, ws=ws, wd=wd, wind_grid=wind_grid,
+                fallback_wind_ms=mean_speed, rho=rho, exclusions=exclusions,
+                boundary_setback_m=setback, min_spacing_d=min_spacing_d,
+                s_para_range=s_para_range, s_perp_range=s_perp_range,
+                wake_model=wake_model, k_wake=k_wake, ct=ct,
+                evaluate_layout=evaluate_layout,
+                constraints=LayoutConstraints(
                     max_wake_loss_pct=float(max_wake_loss_pct),
+                    receptor_points=receptor_points,
+                    noise_limit_dba=noise_limit_dba,
+                    shadow_flicker_limit_hours_year=shadow_flicker_limit_hours_year,
+                    max_slope_deg=(float(max_slope_deg) if max_slope_deg is not None else None),
+                    include_environmental=include_environmental,
+                ),
+                grid_limit_mw=grid_limit_mw,
+                # n_range_by_turbine tiene prioridad sobre n_range global --
+                # lo usa el botón "usar esta alternativa" del diagnóstico
+                # ambiental para forzar el N de la mitigación en ESTA
+                # tecnología, sin restringir a las demás de la misma corrida.
+                n_range=(n_range_by_turbine or {}).get(filename, n_range),
+                # candidate_limit_per_n=0 por defecto: en esta fase solo se
+                # varía N (la causa raíz del acoplamiento generación/TOPSIS).
+                # Explorar además varios patrones geométricos por N
+                # multiplica el costo (una simulación real de estela por
+                # patrón); expuesto como parámetro para análisis puntuales o
+                # para cuando el GA (Fase 5) alimente el mismo pool con
+                # geometrías genuinamente distintas.
+                candidate_limit_per_n=candidate_limit_per_n,
+                local_refinement_max_evals=local_refinement_max_evals,
+            )
+            physical_max_n = generation['max_n_fit']
+            max_n = generation['max_n_technical']
+            if max_n <= 0:
+                errors.append({'turbine': filename, 'reason': 'sin_layout_factible'})
+                continue
+            # El campeón se elige por VAN neto, no por AEP: entre las
+            # configuraciones factibles de ESTA tecnología, la que más
+            # dinero neto genera (ver select_technology_champion). Eso
+            # exige economía completa (CAPEX/OPEX/cashflow) por candidato,
+            # no solo para el ganador -- barato frente al costo ya pagado
+            # en la simulación de estela de cada candidato.
+            other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
+            for candidate in generation['pool']:
+                # Economía calculada para todo candidato que cumple estela,
+                # sin exigir además ruido/flicker -- necesario para poder
+                # elegir el campeón "estela + VAN" (ver más abajo) y, si no
+                # es ambientalmente viable, seguir teniendo VAN disponible
+                # para buscar una alternativa que sí lo sea, del mismo pool.
+                if not candidate['feasibility']['wake_loss_ok']:
+                    continue
+                candidate_sim = candidate['sim']
+                candidate_aep_p50 = float(candidate_sim['aep_mwh']) * other_survival
+                candidate_chron = candidate_sim.get('chronological_revenue')
+                candidate_revenue_override = (
+                    candidate_chron['revenue_usd_year1'] * other_survival
+                    if candidate_chron and candidate_chron.get('revenue_usd_year1') is not None else None)
+                candidate_collection_length = _collection_length_m(candidate['layout_xy_m'])
+                candidate_econ = _economics(
+                    turbine, candidate['n_turbines'], candidate_aep_p50, cost_model,
+                    discount_rate, project_years, price_usd_kwh, candidate_collection_length,
+                    revenue_year1_override=candidate_revenue_override,
                 )
-                if int(candidate_layout['n_placed']) != candidate_n:
-                    continue
-                candidate_sim = candidate_layout.get('constraint_evaluation')
-                if candidate_sim is None:
-                    continue
-                if candidate_sim.get('error'):
-                    continue
-                trial_wake = float(candidate_sim.get('wake_loss_pct') or 0.0)
-                wake_trials.append({'n': candidate_n, 'wake_loss_pct': trial_wake,
-                                    'n_layouts_evaluated': candidate_layout['n_layouts_evaluated']})
-                if trial_wake <= float(max_wake_loss_pct) + 1e-9:
-                    layout = candidate_layout
-                    sim = candidate_sim
-                    selected_n = candidate_n
-                    break
-            if layout is None or sim is None or selected_n <= 0:
+                candidate['van_usd'] = candidate_econ['van_usd']
+                candidate['_precomputed'] = {
+                    'aep_p50': candidate_aep_p50, 'collection_length': candidate_collection_length,
+                    'econ': candidate_econ, 'revenue_year1_override': candidate_revenue_override,
+                }
+            # Flujo de decisión de ruido/shadow flicker (acordado con el
+            # usuario): la selección PRIMARIA es "estela + VAN" -- ignora
+            # ruido/flicker/pendiente a propósito, igual que se generaron
+            # las configuraciones respetando solo el límite de estela. El
+            # resultado ambiental de ESE campeón se reporta después como
+            # información, no como filtro previo -- y si no es viable, se
+            # ofrece (del mismo pool, sin recalcular nada) la mejor
+            # alternativa que sí cumple todo, para que el investigador
+            # decida: mitigar (usar la alternativa) o aceptar el riesgo
+            # (ignorar ruido/sombra para la decisión final).
+            champion_result = select_technology_champion(
+                generation['pool'], require_feasibility_keys=('wake_loss_ok',))
+            champion = champion_result['champion']
+            if champion is None:
                 errors.append({
                     'turbine': filename,
                     'reason': 'sin_layout_que_cumpla_limite_estela',
                     'max_wake_loss_pct': float(max_wake_loss_pct),
-                    'wake_trials': wake_trials,
+                    'pool_size': champion_result['pool_size'],
+                    'rejected_by_reason': champion_result['rejected_by_reason'],
                 })
                 continue
-            other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
-            aep_p50 = float(sim['aep_mwh']) * other_survival
+            # Auditoría por familia (paso 6 ahora corre Alineado, Tresbolillo
+            # y Greedy-vértice explícitamente, no un barrido mezclado -- ver
+            # generate_feasible_layouts_grid): aunque solo una familia gane
+            # el campeonato de esta tecnología, la comparación entre las tres
+            # queda trazable aquí, reusando select_technology_champion sobre
+            # el sub-pool de cada familia -- sin recalcular nada.
+            family_summary = {}
+            for family in list(FAMILY_STAGGER) + [GREEDY_FAMILY]:
+                family_pool = [c for c in generation['pool']
+                              if c['layout_config'].get('family') == family]
+                family_champion = select_technology_champion(
+                    family_pool, require_feasibility_keys=('wake_loss_ok',))['champion']
+                family_summary[family] = {
+                    'max_n_fit': generation.get('max_n_fit_by_family', {}).get(family),
+                    'n_turbines': family_champion['n_turbines'] if family_champion else None,
+                    'van_usd': family_champion.get('van_usd') if family_champion else None,
+                    'wake_loss_pct': family_champion['wake_loss_pct'] if family_champion else None,
+                    'feasible': family_champion is not None,
+                }
+            environmental_ok = (champion['feasibility'].get('noise_ok', True)
+                                and champion['feasibility'].get('shadow_flicker_ok', True))
+            mitigation_alternative = None
+            if not environmental_ok:
+                mitigation_result = select_technology_champion(generation['pool'])
+                mitigation_champion = mitigation_result['champion']
+                if mitigation_champion is not None and mitigation_champion is not champion:
+                    mitigation_alternative = {
+                        'n_turbines': mitigation_champion['n_turbines'],
+                        'van_usd': mitigation_champion.get('van_usd'),
+                        'van_delta_usd': (
+                            (mitigation_champion.get('van_usd') or 0.0) - (champion.get('van_usd') or 0.0)),
+                        'wake_loss_pct': mitigation_champion['wake_loss_pct'],
+                        'noise_evaluation': mitigation_champion.get('noise_evaluation'),
+                        'shadow_flicker_evaluation': mitigation_champion.get('shadow_flicker_evaluation'),
+                        'layout_latlon': mitigation_champion['layout_latlon'],
+                    }
+            selected_n = champion['n_turbines']
+            layout = {
+                'layout_latlon': champion['layout_latlon'],
+                'layout_xy_m': champion['layout_xy_m'],
+                'layout_config': champion['layout_config'],
+                'min_sep_m': champion['min_sep_m'],
+                'area_km2': champion['area_km2'],
+            }
+            sim = champion['sim']
+            # wake_trials conserva la forma histórica (un registro por N,
+            # de mayor a menor, terminando en el N elegido) para diagnóstico
+            # y trazabilidad -- aunque el pool completo explora más allá del
+            # campeón, aquí solo se reporta el tramo relevante a su elección.
+            wake_trials = [
+                {'n': c['n_turbines'], 'wake_loss_pct': c['wake_loss_pct'],
+                 'n_layouts_evaluated': c.get('n_layouts_evaluated')}
+                for c in generation['pool']
+                if c.get('is_primary') and c['n_turbines'] >= selected_n
+            ]
+            precomputed = champion['_precomputed']
+            aep_p50 = precomputed['aep_p50']
+            collection_length = precomputed['collection_length']
+            econ = precomputed['econ']
+            revenue_year1_override = precomputed['revenue_year1_override']
             # Ingreso real (Fase 1/2): cruza generación×precio hora por hora
             # en vez de AEP×precio promedio (ver core.farm.chronological_revenue).
             # Solo activo si hay PML horario cargado en la sesión Y fuente
             # histórica con hora del año — si no, revenue_year1_override queda
             # None y _economics usa aep_p50×precio como siempre.
             chron = sim.get('chronological_revenue')
-            revenue_year1_override = (
-                chron['revenue_usd_year1'] * other_survival
-                if chron and chron.get('revenue_usd_year1') is not None else None)
             uncertainty_components = dict(uncertainty_components_pct or {
                 'resource': 6.0, **({'mcp': 4.0} if historical_wind is None or historical_wind.get('source_kind') == 'mcp' else {}), 'wake': 3.0,
                 'power_curve': 2.0, 'losses': 2.0,
@@ -358,12 +483,6 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             uncertainty_components = {key: float(value) for key, value in uncertainty_components.items()}
             uncertainty_pct = math.sqrt(sum(value ** 2 for value in uncertainty_components.values()))
             aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * uncertainty_pct / 100.0))
-            collection_length = _collection_length_m(layout['layout_xy_m'])
-            econ = _economics(
-                turbine, selected_n, aep_p50, cost_model, discount_rate,
-                project_years, price_usd_kwh, collection_length,
-                revenue_year1_override=revenue_year1_override,
-            )
             installed_mw = selected_n * turbine.rated_power_kw / 1000.0
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
             area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
@@ -409,7 +528,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             cp_fit['site_fit_source'] = cp_source
             alternatives.append({
                 'label': f'layout::{filename}::wake-optimal',
-                'site': f'Parque óptimo por estela ({selected_n}/{physical_max_n} aeros)',
+                'site': f'Layout seleccionado por VAN ({selected_n}/{physical_max_n} aeros)',
                 'turbina': filename,
                 'n_aerogeneradores': selected_n,
                 'n_optimo_estela': selected_n,
@@ -418,6 +537,30 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                 'reducido_por_estela': selected_n < max_n,
                 'max_wake_loss_pct': float(max_wake_loss_pct),
                 'wake_trials': wake_trials,
+                'is_champion': True,
+                'champion_selection': {
+                    'rule': champion_result['rule'],
+                    'pool_size': champion_result['pool_size'],
+                    'n_feasible': champion_result['n_feasible'],
+                    'rejected_by_reason': champion_result['rejected_by_reason'],
+                    'n_range_explored': generation['n_range_explored'],
+                    'family_summary': family_summary,
+                },
+                # Diagnóstico ambiental del campeón "estela + VAN": no filtra
+                # nada por sí solo (ver comentario arriba de
+                # select_technology_champion) -- reporta el efecto real de
+                # ruido/shadow flicker y, si no es viable, la mejor
+                # alternativa del mismo pool que sí cumple, para que el
+                # investigador decida (mitigar vs. aceptar el riesgo
+                # explícitamente).
+                'environmental_feasibility': {
+                    'ok': environmental_ok,
+                    'noise_ok': champion['feasibility'].get('noise_ok', True),
+                    'shadow_flicker_ok': champion['feasibility'].get('shadow_flicker_ok', True),
+                    'noise_evaluation': champion.get('noise_evaluation'),
+                    'shadow_flicker_evaluation': champion.get('shadow_flicker_evaluation'),
+                },
+                'mitigation_alternative': mitigation_alternative,
                 'feasible': True,
                 'layout_latlon': layout['layout_latlon'],
                 'layout_xy_m': layout['layout_xy_m'],
@@ -468,7 +611,14 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
                     'polygon': polygon, 'exclusions': exclusions or [],
                     'boundary_setback_m': setback, 'min_spacing_d': min_spacing_d,
                     's_para_range': list(s_para_range), 's_perp_range': list(s_perp_range),
+                    'row_sep_reference_d': row_sep_reference_d,
+                    'col_sep_reference_d': col_sep_reference_d,
                     'max_wake_loss_pct': float(max_wake_loss_pct),
+                    'max_slope_deg': max_slope_deg,
+                    'grid_limit_mw': grid_limit_mw,
+                    'receptor_points': receptor_points or [],
+                    'noise_limit_dba': noise_limit_dba,
+                    'shadow_flicker_limit_hours_year': shadow_flicker_limit_hours_year,
                 },
                 'aep_per_turbine_mwh': aep_p50 / selected_n,
                 'mean_power_per_turbine_kw': aep_p50 / selected_n * 1000 / 8760,
@@ -502,13 +652,11 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         except Exception as exc:
             errors.append({'turbine': filename, 'reason': str(exc)})
     alternatives = add_effective_area_metrics(alternatives, polygon, exclusions)
-    ranking = rank_layout_alternatives(alternatives, weights=weights)
     return {
-        'analysis_kind': 'farm_layout_mcda_v2',
+        'analysis_kind': 'farm_layout_candidates_v1',
         'comparison_polygon': polygon,
         'comparison_exclusions': exclusions or [],
         'alternatives': alternatives,
-        'ranking': ranking,
         'n_layout_alternatives': len(alternatives),
         'n_requested_models': len(unique_filenames),
         'n_valid_models': len(alternatives),
@@ -532,7 +680,7 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
             's_para_range': list(s_para_range), 's_perp_range': list(s_perp_range),
             'availability': availability, 'electrical_losses': electrical_losses,
             'commercialization_mode': commercialization_mode,
-            'count_policy': 'largest_exact_count_with_wake_loss_at_or_below_limit',
+            'count_policy': 'max_van_feasible_per_technology',
         },
         'methodology_references': [
             {'id': 'IEC-61400-1:2019', 'url': 'https://webstore.iec.ch/en/publication/26423'},
@@ -550,3 +698,15 @@ def analyze_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folder
         ],
         'errors': errors,
     }
+
+
+def analyze_park_layouts(*args, weights=None, **kwargs):
+    """Compatibility adapter for clients of the original combined analysis.
+
+    The application uses generate_park_layouts followed by the independent
+    /api/multicriteria/rank action. Generation never depends on TOPSIS weights.
+    """
+    result = generate_park_layouts(*args, **kwargs)
+    result['analysis_kind'] = 'farm_layout_mcda_v2'
+    result['ranking'] = rank_layout_alternatives(result['alternatives'], weights=weights)
+    return result

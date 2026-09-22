@@ -306,14 +306,24 @@ def rank_layout_alternatives(alternatives: List[Dict],
             passthrough_rows.append(alt)
             continue
         model_key = str(model).casefold()
-        if (n_used is None or n_max is None or n_optimal is None
-                or int(n_used) != int(n_optimal)
-                or int(n_used) > int(n_max)):
-            pre_excluded.append({
-                'label': alt.get('label'), 'missing': [],
-                'reason': 'layout_no_usa_cantidad_optima',
-            })
-            continue
+        # Layouts marked is_champion already went through
+        # core.layout_generation.select_technology_champion: a pool of
+        # candidates (varying N and, within N, geometric pattern) was
+        # generated and filtered by feasibility upstream, and exactly one
+        # champion per technology was chosen there. Re-imposing the old
+        # "exact n_optimo_estela" rule here would reject legitimate
+        # champions that are not the largest physically feasible count.
+        # Analyses saved before this field existed keep using the legacy
+        # check (same retrocompatibility pattern as SITE_FIT_CRITERIA below).
+        if not alt.get('is_champion'):
+            if (n_used is None or n_max is None or n_optimal is None
+                    or int(n_used) != int(n_optimal)
+                    or int(n_used) > int(n_max)):
+                pre_excluded.append({
+                    'label': alt.get('label'), 'missing': [],
+                    'reason': 'layout_no_usa_cantidad_optima',
+                })
+                continue
         if model_key in model_rows:
             pre_excluded.append({
                 'label': alt.get('label'), 'missing': [],
