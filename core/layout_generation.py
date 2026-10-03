@@ -261,7 +261,9 @@ def generate_feasible_layouts_grid(
         n_window: int = 5,
         candidate_limit_per_n: int = 4,
         grid_limit_mw: Optional[float] = None,
-        local_refinement_max_evals: int = 60) -> Dict:
+        local_refinement_max_evals: int = 60,
+        shared_layouts: Optional[List[Dict]] = None,
+        shared_only: bool = False) -> Dict:
     """Genera el pool de layouts factibles de una tecnología, variando N.
 
     A diferencia del comportamiento anterior (romper en el primer N, de
@@ -340,6 +342,9 @@ def generate_feasible_layouts_grid(
         boundary_setback_m=boundary_setback_m, wake_model=wake_model,
         max_slope_deg=constraints.max_slope_deg,
     )
+    # The same orientation/spacing/phase grids are rebuilt for many N values.
+    # This cache is scoped to one technology search and discarded afterwards.
+    structured_grid_cache = {}
 
     # Geometría compartida entre familias (no depende de stagger): polígono/
     # exclusiones (ya con los buffers de receptores si aplica) proyectados
@@ -420,22 +425,33 @@ def generate_feasible_layouts_grid(
         if not any(float(g['sim'].get('wake_loss_pct') or 0.0)
                    <= float(constraints.max_wake_loss_pct) + 1e-9 for g in geometries):
             seed = min(geometries, key=lambda g: float(g['sim'].get('wake_loss_pct') or math.inf))
-            refined_xy, refined_sim = _local_wake_refinement(
-                seed['layout_xy_m'], evaluate_layout, valid_geometry,
-                wake_limit=float(constraints.max_wake_loss_pct),
-                max_radius_m=float(turbine.rotor_diameter_m or 80.0),
-                max_evals=local_refinement_max_evals)
-            if (not refined_sim.get('error')
-                    and float(refined_sim.get('wake_loss_pct') or 0.0)
-                    <= float(constraints.max_wake_loss_pct) + 1e-9):
-                refined_lats, refined_lons = _xy_to_latlon(
-                    [p[0] for p in refined_xy], [p[1] for p in refined_xy], site_lat0, site_lon0)
-                geometries.append({
-                    'layout_xy_m': refined_xy,
-                    'layout_latlon': [[la, lo] for la, lo in zip(refined_lats, refined_lons)],
-                    'layout_config': {**seed['layout_config'], 'refined_locally': True},
-                    'sim': refined_sim, 'is_primary': False, 'n_layouts_evaluated': None,
-                })
+            seed_wake = float(seed['sim'].get('wake_loss_pct') or math.inf)
+            # Rescate condenado al fracaso: un ajuste de <=1D no va a recortar
+            # una estela que ya está muy por encima del límite (N demasiado
+            # denso para el polígono) -- saltarlo evita gastar hasta
+            # local_refinement_max_evals simulaciones reales en una N que,
+            # pase lo que pase, va a seguir infactible. Umbral 2x generoso a
+            # propósito: solo salta casos claramente perdidos, nunca los
+            # casos límite donde el rescate sí puede cambiar el resultado
+            # (perfilado en producción: este rescate en N muy por encima del
+            # límite explicaba 42% del tiempo total de una corrida real).
+            if seed_wake <= 2.0 * float(constraints.max_wake_loss_pct):
+                refined_xy, refined_sim = _local_wake_refinement(
+                    seed['layout_xy_m'], evaluate_layout, valid_geometry,
+                    wake_limit=float(constraints.max_wake_loss_pct),
+                    max_radius_m=float(turbine.rotor_diameter_m or 80.0),
+                    max_evals=local_refinement_max_evals)
+                if (not refined_sim.get('error')
+                        and float(refined_sim.get('wake_loss_pct') or 0.0)
+                        <= float(constraints.max_wake_loss_pct) + 1e-9):
+                    refined_lats, refined_lons = _xy_to_latlon(
+                        [p[0] for p in refined_xy], [p[1] for p in refined_xy], site_lat0, site_lon0)
+                    geometries.append({
+                        'layout_xy_m': refined_xy,
+                        'layout_latlon': [[la, lo] for la, lo in zip(refined_lats, refined_lons)],
+                        'layout_config': {**seed['layout_config'], 'refined_locally': True},
+                        'sim': refined_sim, 'is_primary': False, 'n_layouts_evaluated': None,
+                    })
         n_has_feasible = False
         for geometry in geometries:
             wake_loss_pct = float(geometry['sim'].get('wake_loss_pct') or 0.0)
@@ -559,8 +575,49 @@ def generate_feasible_layouts_grid(
             })
         return n_has_feasible
 
-    for family, stagger in FAMILY_STAGGER.items():
-        family_kwargs = {**common_kwargs, 'stagger_options': (stagger,)}
+    def _binary_search_feasible_n(n_min: int, n_max: int,
+                                   is_feasible: Callable[[int], bool]) -> Optional[int]:
+        """Binary search for the largest N in [n_min, n_max] where
+        `is_feasible(N)` is True -- replaces scanning one-by-one from n_max
+        downward, which is what generate_feasible_layouts_grid used to do:
+        when the wake limit binds far below the polygon's physical capacity
+        (Nmax), that linear descent paid the FULL per-N cost (exhaustive
+        real-pattern search inside optimize_layout_structured, plus a
+        _local_wake_refinement rescue attempt) on a long stretch of N that
+        is often deeply infeasible (perfilado: un parque con Nmax=77 y N
+        elegido=44 tardaba 561s, casi todo explorando N=45..77 una por una).
+
+        Unlike an earlier version of this fix, `is_feasible` here IS the
+        exact same full-rigor per-N evaluation the caller already runs for
+        every N (not a cheap proxy) -- a single fast-score pattern turned
+        out to be a materially more pessimistic estimate of wake_loss(N)
+        than what the real search (many patterns + candidate_limit_per_n
+        alternates) can find, which silently pulled the champion down to a
+        worse N in testing (44 -> 39 turbines, lower VAN) despite looking
+        much faster. Binary-searching the REAL oracle instead costs more
+        per probe but stays exactly as correct as the original linear scan,
+        just visiting O(log range) N instead of O(range) -- assumes only
+        that true feasibility (after the full search) is approximately
+        monotonic in N, which is a much safer assumption than approximating
+        the search itself. The caller must memoize `is_feasible` (a dict
+        keyed by N) so N visited here are never re-evaluated by the
+        subsequent linear window scan.
+        """
+        if n_min > n_max:
+            return None
+        lo, hi, boundary = n_min, n_max, None
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if is_feasible(mid):
+                boundary = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        return boundary
+
+    for family, stagger in ({} if shared_only else FAMILY_STAGGER).items():
+        family_kwargs = {**common_kwargs, 'stagger_options': (stagger,),
+                         'grid_cache': structured_grid_cache}
         try:
             capacity = optimize_layout_structured(polygon, turbine, 0, **family_kwargs)
         except ValueError:
@@ -583,23 +640,32 @@ def generate_feasible_layouts_grid(
         else:
             n_min, n_max = max(1, int(n_range[0])), min(int(n_range[1]), max_n)
 
-        first_feasible_n: Optional[int] = None
-        n_seen: List[int] = []
-        for n in range(n_max, n_min - 1, -1):
-            if auto_stop and first_feasible_n is not None and (first_feasible_n - n) >= n_window:
-                break
+        # Evaluación completa de una N (exactamente lo que antes vivía
+        # inline en el bucle lineal): patrón rápido + candidate_limit_per_n
+        # alternativos, todos con simulación real, más el rescate si ninguno
+        # cumple. Memoizada (`n_feasible_cache`) para que la búsqueda binaria
+        # de abajo y el barrido lineal de la ventana nunca repitan trabajo
+        # sobre la misma N -- cada N real se evalúa como máximo una vez.
+        n_feasible_cache: Dict[int, bool] = {}
+
+        def _visit_n(n: int) -> bool:
+            if n in n_feasible_cache:
+                return n_feasible_cache[n]
             try:
                 result = optimize_layout_structured(
                     polygon, turbine, n, layout_evaluator=evaluate_layout,
                     max_wake_loss_pct=float(constraints.max_wake_loss_pct),
                     candidate_limit=candidate_limit_per_n, **family_kwargs)
             except ValueError:
-                continue
+                n_feasible_cache[n] = False
+                return False
             if int(result.get('n_placed') or 0) != n:
-                continue
+                n_feasible_cache[n] = False
+                return False
             primary_sim = result.get('constraint_evaluation')
             if primary_sim is None or primary_sim.get('error'):
-                continue
+                n_feasible_cache[n] = False
+                return False
             n_seen.append(n)
             geometries = [{
                 'layout_xy_m': result['layout_xy_m'], 'layout_latlon': result['layout_latlon'],
@@ -623,6 +689,26 @@ def generate_feasible_layouts_grid(
                 })
             n_has_feasible = process_geometries_for_n(
                 n, geometries, result['min_sep_m'], result['area_km2'], 'grid_structured')
+            n_feasible_cache[n] = n_has_feasible
+            return n_has_feasible
+
+        n_seen: List[int] = []
+        # Ubicar el límite real de factibilidad con búsqueda binaria (misma
+        # evaluación completa de arriba, no una aproximación) en vez de
+        # bajar uno por uno desde n_max -- solo cuando auto_stop, para no
+        # tocar el barrido 1..Nmax explícito que algún llamador puede pedir
+        # a propósito (n_range). Ver _binary_search_feasible_n.
+        if auto_stop:
+            boundary = _binary_search_feasible_n(n_min, n_max, _visit_n)
+            start_n = n_max if boundary is None else min(n_max, boundary + n_window)
+        else:
+            start_n = n_max
+
+        first_feasible_n: Optional[int] = None
+        for n in range(start_n, n_min - 1, -1):
+            if auto_stop and first_feasible_n is not None and (first_feasible_n - n) >= n_window:
+                break
+            n_has_feasible = _visit_n(n)
             if n_has_feasible and first_feasible_n is None:
                 first_feasible_n = n
         n_range_explored_by_family[family] = [min(n_seen), max_n] if n_seen else [max_n, max_n]
@@ -635,6 +721,8 @@ def generate_feasible_layouts_grid(
     # optimize_layout_greedy_vertex), así que esta familia es más barata que
     # las otras dos pese a agregar una tercera vía de comparación.
     try:
+        if shared_only:
+            raise ValueError('Solo se evalúan geometrías compartidas.')
         greedy = optimize_layout_greedy_vertex(
             polygon, turbine, ws=ws, wd=wd, wind_grid=wind_grid,
             fallback_wind_ms=fallback_wind_ms, min_spacing_d=min_spacing_d,
@@ -666,16 +754,23 @@ def generate_feasible_layouts_grid(
             'layout_type': 'greedy',
             'n_configs_tried': 1,
         }
-        first_feasible_n = None
+        # Misma optimización que las familias estructuradas: memoiza la
+        # evaluación completa por N y usa búsqueda binaria (con ese mismo
+        # oráculo completo, no una aproximación) para ubicar el límite real
+        # de factibilidad antes de bajar uno por uno -- ver
+        # _binary_search_feasible_n y el bloque equivalente arriba.
         n_seen = []
-        for n in range(n_max, n_min - 1, -1):
-            if auto_stop and first_feasible_n is not None and (first_feasible_n - n) >= n_window:
-                break
+        n_feasible_cache_greedy: Dict[int, bool] = {}
+
+        def _visit_n_greedy(n: int) -> bool:
+            if n in n_feasible_cache_greedy:
+                return n_feasible_cache_greedy[n]
             layout_xy = greedy['sequence_xy_m'][:n]
             layout_ll = greedy['sequence_latlon'][:n]
             primary_sim = evaluate_layout(layout_xy)
             if primary_sim.get('error'):
-                continue
+                n_feasible_cache_greedy[n] = False
+                return False
             n_seen.append(n)
             geometries = [{
                 'layout_xy_m': layout_xy, 'layout_latlon': layout_ll,
@@ -684,12 +779,64 @@ def generate_feasible_layouts_grid(
             }]
             n_has_feasible = process_geometries_for_n(
                 n, geometries, greedy['min_sep_m'], greedy['area_km2'], 'greedy_vertex')
+            n_feasible_cache_greedy[n] = n_has_feasible
+            return n_has_feasible
+
+        if auto_stop:
+            boundary = _binary_search_feasible_n(n_min, n_max, _visit_n_greedy)
+            start_n = n_max if boundary is None else min(n_max, boundary + n_window)
+        else:
+            start_n = n_max
+
+        first_feasible_n = None
+        for n in range(start_n, n_min - 1, -1):
+            if auto_stop and first_feasible_n is not None and (first_feasible_n - n) >= n_window:
+                break
+            n_has_feasible = _visit_n_greedy(n)
             if n_has_feasible and first_feasible_n is None:
                 first_feasible_n = n
         n_range_explored_by_family[GREEDY_FAMILY] = [min(n_seen), max_n] if n_seen else [max_n, max_n]
 
+    # A grid expressed in one rotor diameter cannot represent every spacing
+    # available to another model. Recheck selected layouts of larger rotors
+    # against this turbine's geometry and wake model before choosing its N.
+    for shared in shared_layouts or []:
+        points = [[float(x), float(y)] for x, y in shared['layout_xy_m']]
+        n = len(points)
+        if not n or not valid_geometry(points):
+            continue
+        if n_range is not None and not (int(n_range[0]) <= n <= int(n_range[1])):
+            continue
+        if grid_limit_mw and n * float(turbine.rated_power_kw) > grid_limit_mw * 1000 + 1e-9:
+            continue
+        sim = evaluate_layout(points)
+        if sim.get('error') or sim.get('wake_loss_pct') is None:
+            continue
+        lats, lons = _xy_to_latlon([p[0] for p in points], [p[1] for p in points],
+                                   site_lat0, site_lon0)
+        geometry = {
+            'layout_xy_m': points,
+            'layout_latlon': [[lat, lon] for lat, lon in zip(lats, lons)],
+            'layout_config': {**shared.get('layout_config', {}),
+                              'family': 'shared_geometry',
+                              'layout_type': 'geometría compartida',
+                              'source_turbine': shared.get('turbina')},
+            'sim': sim, 'is_primary': False, 'n_layouts_evaluated': 1,
+        }
+        area_km2 = abs(sum(
+            poly_xs[i] * poly_ys[(i + 1) % len(poly_xs)]
+            - poly_xs[(i + 1) % len(poly_xs)] * poly_ys[i]
+            for i in range(len(poly_xs)))) / 2e6
+        process_geometries_for_n(n, [geometry], min_spacing_m, area_km2,
+                                  'shared_turbine_layout')
+        max_n_fit_by_family['shared_geometry'] = max(
+            n, max_n_fit_by_family.get('shared_geometry', 0))
+        max_n_technical_by_family['shared_geometry'] = max(
+            n, max_n_technical_by_family.get('shared_geometry', 0))
+        n_range_explored_by_family['shared_geometry'] = [n, n]
+
     physical_max_n = max(max_n_fit_by_family.values(), default=0)
-    if physical_max_n <= 0:
+    if physical_max_n <= 0 and not shared_only:
         # Ninguna familia cupo en absoluto -- no es "esta familia falló, la
         # otra sigue" (eso ya se maneja por familia arriba, sin propagar el
         # ValueError individual): es que el polígono/restricciones no

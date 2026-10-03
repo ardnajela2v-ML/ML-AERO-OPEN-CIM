@@ -76,6 +76,27 @@ class LayoutGenerationTests(unittest.TestCase):
                         distance, min_sep_m - 1e-6,
                         f'turbinas más cerca que la separación mínima en N={candidate["n_turbines"]}')
 
+    def test_shared_layout_is_rechecked_for_target_turbine(self):
+        # A geometry discovered using another rotor diameter may use metre
+        # spacings that this turbine's D-scaled grid never enumerates.
+        shared = {'turbina': 'other.csv', 'layout_xy_m': [[-200., 0.], [200., 0.]],
+                  'layout_config': {'orientation_deg': 90., 'family': 'aligned'}}
+        too_close = {**shared, 'layout_xy_m': [[0., 0.], [100., 0.]]}
+        generation = self._generate(n_range=(2, 2),
+                                    shared_layouts=[shared, too_close],
+                                    max_wake_loss_pct=99.0)
+        reused = [c for c in generation['pool']
+                  if c['layout_config'].get('family') == 'shared_geometry']
+        self.assertEqual(len(reused), 1)
+        self.assertEqual(reused[0]['n_turbines'], 2)
+        self.assertTrue(reused[0]['feasibility']['wake_loss_ok'])
+        self.assertEqual(reused[0]['layout_config']['source_turbine'], 'other.csv')
+        shared_only = self._generate(n_range=(2, 2),
+                                     shared_layouts=[shared, too_close],
+                                     shared_only=True, max_wake_loss_pct=99.0)
+        self.assertEqual(len(shared_only['pool']), 1)
+        self.assertEqual(shared_only['max_n_fit'], 2)
+
     def test_feasibility_flags_match_wake_limit(self):
         generation = self._generate()
         for candidate in generation['pool']:

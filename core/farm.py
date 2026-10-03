@@ -52,12 +52,83 @@ def _rotate_to_wind_axis(layout_xy: np.ndarray, wind_dir_deg: float):
     return layout_xy @ R.T
 
 
+def compute_row_column_spacing_d(layout_xy_m, dom_dir_deg: float, D: float,
+                                  axis_tolerance_deg: float = 20.0) -> Dict[str, Any]:
+    """Separación EMPÍRICA fila/columna (distancia al vecino más cercano, en
+    diámetros de rotor D) a lo largo de los ejes alineados al viento
+    dominante -- no la separación NOMINAL pedida al generar el layout
+    (s_para_d/s_perp_d, que solo describe la rejilla rígida que
+    optimize_layout_structured intentó construir, no lo que realmente quedó
+    tras recorte por polígono/exclusiones/boundary_setback), y aplicable a
+    CUALQUIER familia, incluida Greedy-vértice, que no tiene rejilla fija.
+
+    Misma convención de vecino-por-eje que optimize_layout_greedy_vertex
+    (axis_tolerance_deg): fila = vecino más cercano dentro de esa tolerancia
+    angular del eje downwind (+/-); columna = ídem del eje crosswind (+/-).
+    Una turbina sin ningún vecino dentro de tolerancia en un eje (borde del
+    polígono, o un hueco aislado como el que motivó esta métrica) queda
+    fuera de esa estadística -- 'n_measured' lo reporta explícitamente en
+    vez de forzar un promedio con menos datos de los que N sugeriría.
+    """
+    points = np.asarray(layout_xy_m, dtype=float)
+    n = len(points)
+    empty = {'mean_d': None, 'min_d': None, 'max_d': None, 'n_measured': 0}
+    if n < 2 or not D or not math.isfinite(D) or D <= 0:
+        return {'row': dict(empty), 'column': dict(empty), 'n_turbines': n}
+    pts_rot = _rotate_to_wind_axis(points, dom_dir_deg)
+    tol_rad = math.radians(max(1.0, float(axis_tolerance_deg)))
+    axis_dirs = {'row': ((1.0, 0.0), (-1.0, 0.0)), 'column': ((0.0, 1.0), (0.0, -1.0))}
+    measured = {'row': [], 'column': []}
+    for i in range(n):
+        deltas = pts_rot - pts_rot[i]
+        dist = np.hypot(deltas[:, 0], deltas[:, 1])
+        dist[i] = np.inf
+        for label, dirs in axis_dirs.items():
+            best = math.inf
+            for ax, ay in dirs:
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    cosang = np.clip((deltas[:, 0] * ax + deltas[:, 1] * ay) / dist, -1.0, 1.0)
+                angle_ok = np.arccos(cosang) <= tol_rad
+                candidates = dist[angle_ok & np.isfinite(dist)]
+                if candidates.size:
+                    best = min(best, float(candidates.min()))
+            if math.isfinite(best):
+                measured[label].append(best / D)
+    result: Dict[str, Any] = {'n_turbines': n}
+    for label in ('row', 'column'):
+        values = measured[label]
+        result[label] = ({'mean_d': round(float(np.mean(values)), 3),
+                          'min_d': round(float(np.min(values)), 3),
+                          'max_d': round(float(np.max(values)), 3),
+                          'n_measured': len(values)}
+                         if values else dict(empty))
+    return result
+
+
 def jensen_deficit(distance_x_m: float, lateral_m: float,
                    rotor_d_m: float, k: float = 0.075,  # IEA onshore estándar; Istmo TI alto usar 0.09-0.10
                    ct: float = 0.8) -> float:  # Ct promedio operacional. Para mayor precisión usar curva Ct(v) del fabricante
     """
     Jensen NOJ single-wake velocity deficit at a downwind turbine,
-    including a linear partial-overlap correction (Frandsen-style).
+    including an EXACT circular partial-overlap correction (area of
+    intersection of the wake disc and the downwind rotor disc, as a
+    fraction of the rotor's own area -- Katic et al. 1986 convention, same
+    one PyWake's default AreaOverlapAvgModel uses).
+
+    Corregido 2026-09-22 tras validación cruzada contra PyWake (ver
+    validation/control_case_jensen_pywake.py): la versión anterior usaba
+    una aproximación LINEAL del traslape ((r_wake - dy) / r0) que llegaba a
+    CERO en dy = r_wake en vez de en dy = r_wake + r0 -- el punto
+    geométricamente correcto donde el disco de estela deja de tocar el
+    rotor. Eso subestimaba la estela (hasta ~44% del área del rotor
+    ignorada) en toda la franja dy ∈ (r_wake, r_wake+r0) -- justo la zona
+    donde un patrón tresbolillo/staggered coloca turbinas a propósito para
+    esquivar la estela directa, así que ese patrón podía salir favorecido
+    en VAN por un artefacto del modelo, no por su mérito físico real.
+    Verificado con la fórmula exacta de intersección de dos círculos, en
+    coincidencia perfecta con PyWake (NOJDeficit, ct2a=ct2a_mom1d,
+    superposición Katic) en línea (dy=0, 0.00% de diferencia) y con
+    diferencia explicada solo por el redondeo numérico fuera de ese eje.
 
     distance_x_m: distance downwind from upwind turbine (>0 if downwind, else 0).
     lateral_m:    perpendicular distance to wake centreline.
@@ -76,11 +147,21 @@ def jensen_deficit(distance_x_m: float, lateral_m: float,
     dy = abs(lateral_m)
     if dy >= r_wake + r0:
         return 0.0
-    # Linear overlap between wake disc (radius r_wake) and downwind rotor (radius r0).
+    # Exact overlap area of two circles (rotor r0, wake r_wake, centres dy
+    # apart), as a fraction of the rotor's own area. r_wake > r0 always
+    # here (r_wake = r0 + k*distance_x_m, distance_x_m > 0), so "one disc
+    # fully inside the other" always means the ROTOR is inside the wake,
+    # i.e. overlap = 1.0 -- never the reverse.
     if dy <= r_wake - r0:
         overlap = 1.0
     else:
-        overlap = max(0.0, (r_wake - dy) / r0)
+        cos_alpha = max(-1.0, min(1.0, (dy ** 2 + r0 ** 2 - r_wake ** 2) / (2.0 * dy * r0)))
+        cos_beta = max(-1.0, min(1.0, (dy ** 2 + r_wake ** 2 - r0 ** 2) / (2.0 * dy * r_wake)))
+        alpha = math.acos(cos_alpha)
+        beta = math.acos(cos_beta)
+        area = (r0 ** 2 * (alpha - math.sin(2.0 * alpha) / 2.0)
+                + r_wake ** 2 * (beta - math.sin(2.0 * beta) / 2.0))
+        overlap = max(0.0, min(1.0, area / (math.pi * r0 ** 2)))
     a = 0.5 * (1.0 - math.sqrt(max(0.0, 1.0 - ct)))
     deficit = 2.0 * a * (r0 / r_wake) ** 2 * overlap
     return max(0.0, min(1.0, deficit))
@@ -145,7 +226,10 @@ def gaussian_deficit(distance_x_m: float, lateral_m: float,
 
 def _jensen_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
                            rotor_d_m: float, k: float, ct: float) -> np.ndarray:
-    """Vectorized Jensen deficits with the same branches as ``jensen_deficit``."""
+    """Vectorized Jensen deficits with the same branches as ``jensen_deficit``
+    -- exact circular overlap area (see that function's docstring for the
+    2026-09-22 fix and why the previous linear approximation understated
+    wake exposure for offset/staggered turbines)."""
     deficits = np.zeros_like(dx, dtype=float)
     upstream = dx > 0.0
     if not np.any(upstream):
@@ -159,8 +243,16 @@ def _jensen_deficit_matrix(dx: np.ndarray, dy: np.ndarray,
     partial = (~full) & (dy_valid < r_wake + r0)
     overlap[full] = 1.0
     if np.any(partial):
-        overlap[partial] = np.maximum(
-            0.0, (r_wake[partial] - dy_valid[partial]) / r0)
+        d = dy_valid[partial]
+        rw = r_wake[partial]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            cos_alpha = np.clip((d ** 2 + r0 ** 2 - rw ** 2) / (2.0 * d * r0), -1.0, 1.0)
+            cos_beta = np.clip((d ** 2 + rw ** 2 - r0 ** 2) / (2.0 * d * rw), -1.0, 1.0)
+        alpha = np.arccos(cos_alpha)
+        beta = np.arccos(cos_beta)
+        area = (r0 ** 2 * (alpha - np.sin(2.0 * alpha) / 2.0)
+                + rw ** 2 * (beta - np.sin(2.0 * beta) / 2.0))
+        overlap[partial] = np.clip(area / (math.pi * r0 ** 2), 0.0, 1.0)
     ct_safe = max(0.0, 1.0 - float(ct))
     induction = 0.5 * (1.0 - math.sqrt(ct_safe))
     values = 2.0 * induction * np.square(r0 / r_wake) * overlap
@@ -351,7 +443,9 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
                        local_wind_multipliers: Optional[np.ndarray] = None,
                        wake_model: str = 'jensen',
                        rho_override: Optional[float] = None,
-                       sample_duration_hours: Optional[float] = None) -> dict:
+                       sample_duration_hours: Optional[float] = None,
+                       wind_bins=None,
+                       wind_summary=None) -> dict:
     """
     Compute farm AEP per turbine with wake effects.
 
@@ -435,7 +529,8 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     total_hours = n_samples * dt_h
     annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
 
-    sector_centres, ws_centres, freq = bin_wind_to_sectors(ws, wd, n_sectors)
+    sector_centres, ws_centres, freq = (
+        wind_bins if wind_bins is not None else bin_wind_to_sectors(ws, wd, n_sectors))
 
     if freq.sum() == 0 or (len(ws_centres) == 1 and ws_centres[0] == 0.0):
         warnings.warn(
@@ -489,15 +584,24 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
         if sector_freq[s] <= 0:
             continue
         wind_dir = sector_centres[s]
+        # Ct is constant in this model, so the wake multiplier depends on
+        # geometry and direction, not on the speed bin. Reuse it for all bins.
+        wake_factor = effective_wind_per_turbine(
+            layout, np.ones(n), wind_dir, rotor_d, k=k_wake, ct=ct,
+            wake_model=wake_model)
+        # Interpolate the power curve once for every speed bin in this
+        # direction; retain the original per-bin accumulation order below.
+        if local_wind_multipliers is not None:
+            v_eff_bins = ((ws_centres[:, None] * local_wind_multipliers[None, :])
+                          * wake_factor[None, :])
+        else:
+            v_eff_bins = ws_centres[:, None] * wake_factor[None, :]
+        p_kw_bins = turbine.power_kw_density_corrected(v_eff_bins, rho_mean)
         for b, v_free in enumerate(ws_centres):
             p_join = freq[s, b]
             if p_join <= 0 or v_free <= 0:
                 continue
-            v_free_arr = v_free * local_wind_multipliers if local_wind_multipliers is not None else v_free
-            v_eff = effective_wind_per_turbine(
-                layout, v_free_arr, wind_dir, rotor_d, k=k_wake, ct=ct,
-                wake_model=wake_model)
-            p_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # con corrección de densidad
+            p_kw = p_kw_bins[b]
             e_per_turbine_kwh += p_kw * p_join * total_hours
 
     # wake_loss aislado: comparar ANTES de aplicar losses operacionales
@@ -514,9 +618,12 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     rated_kw = float(turbine.rated_power_kw)
     installed_kw = rated_kw * n
     cf = e_total_annual_kwh / (installed_kw * 8760.0) if installed_kw > 0 else 0.0
-    dom_dir = dominant_direction(wd, n_sectors)
-    energy_dir, rose_dirs, rose_energy = energy_weighted_dominant_direction(
-        ws, wd, turbine, n_sectors=16, rho=rho_mean)
+    if wind_summary is None:
+        dom_dir = dominant_direction(wd, n_sectors)
+        energy_dir, rose_dirs, rose_energy = energy_weighted_dominant_direction(
+            ws, wd, turbine, n_sectors=16, rho=rho_mean)
+    else:
+        dom_dir, energy_dir, rose_dirs, rose_energy = wind_summary
 
     # Per-turbine free-stream comparison:
     #   aep_gross_mwh  → BRUTO (sin estela, sin pérdidas operativas)
@@ -1414,13 +1521,20 @@ def _score_layout_fast(
         return 0.0
     arr = np.array(layout_xy, dtype=float)
     score = 0.0
+    active_weights = []
+    effective_speeds = []
     for s_dir, s_w in zip(sector_dirs.tolist(), sector_weights.tolist()):
         if s_w <= 0.0:
             continue
         v_eff = effective_wind_per_turbine(arr, v_mean, float(s_dir), D,
                                            k=k_wake, ct=ct,
                                            wake_model=wake_model)
-        p_kw  = turbine.power_kw_density_corrected(v_eff, rho)
+        effective_speeds.append(v_eff)
+        active_weights.append(s_w)
+    # One curve interpolation for the 16 directions instead of one per
+    # direction, while summing their contributions in the same order.
+    powers_kw = turbine.power_kw_density_corrected(np.asarray(effective_speeds), rho)
+    for p_kw, s_w in zip(powers_kw, active_weights):
         score += float(np.sum(p_kw)) * s_w
     return score
 
@@ -1473,6 +1587,7 @@ def optimize_layout_structured(
         layout_evaluator=None,
         max_wake_loss_pct: Optional[float] = None,
         max_slope_deg: Optional[float] = None,
+        grid_cache: Optional[dict] = None,
 ) -> dict:
     """
     Wind-rose-aligned structured layout optimisation.
@@ -1586,6 +1701,20 @@ def optimize_layout_structured(
     setback_m = max(0.0, float(boundary_setback_m))
     capacity_seeds: List[Dict[str, Any]] = []
 
+    def build_grid(orientation, para, perp, stagger, along, cross):
+        args = (poly_xs, poly_ys, lat0, lon0, D, orientation, para, perp,
+                stagger, wind_grid, v_mean, exclusion_polys_xy, setback_m,
+                along, cross, slope_mask_fn)
+        if grid_cache is None:
+            return _build_structured_grid(*args)
+        key = (tuple(poly_xs), tuple(poly_ys), lat0, lon0, D,
+               orientation, para, perp, stagger, id(wind_grid), v_mean,
+               tuple((tuple(xs), tuple(ys)) for xs, ys in exclusion_polys_xy),
+               setback_m, along, cross, slope_mask_fn)
+        if key not in grid_cache:
+            grid_cache[key] = _build_structured_grid(*args)
+        return grid_cache[key]
+
     for orientation_deg in orientations:
         for along_offset in offset_values:
             for cross_offset in offset_values:
@@ -1594,12 +1723,8 @@ def optimize_layout_structured(
                                   if stagger > 0 else min_para_d)
                     if min(min_perp_d, min_diag_d) < min_spacing_d:
                         continue
-                    cands = _build_structured_grid(
-                        poly_xs, poly_ys, lat0, lon0, D,
-                        orientation_deg, min_para_d, min_perp_d, stagger,
-                        wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                        along_offset, cross_offset, slope_mask_fn,
-                    )
+                    cands = build_grid(orientation_deg, min_para_d, min_perp_d,
+                                       stagger, along_offset, cross_offset)
                     if cands:
                         capacity_seeds.append({
                             'orientation_deg': orientation_deg,
@@ -1649,13 +1774,9 @@ def optimize_layout_structured(
                               if stagger > 0 else s_para_d)
                 if min(s_perp_d, min_diag_d) < min_spacing_d:
                     continue
-                cands = _build_structured_grid(
-                    poly_xs, poly_ys, lat0, lon0, D,
-                    seed['orientation_deg'], s_para_d, s_perp_d, stagger,
-                    wind_grid, v_mean, exclusion_polys_xy, setback_m,
-                    seed['along_offset_fraction'], seed['cross_offset_fraction'],
-                    slope_mask_fn,
-                )
+                cands = build_grid(seed['orientation_deg'], s_para_d, s_perp_d,
+                                   stagger, seed['along_offset_fraction'],
+                                   seed['cross_offset_fraction'])
                 if len(cands) < target_n:
                     continue
                 # When evaluating fewer turbines than available grid points,

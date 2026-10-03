@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -22,6 +23,10 @@ from core.energy import PowerCurve, compute_site_cp_fit, extrapolate_wind_hellma
 from core.farm import (
     TECHNICAL_MIN_SPACING_D,
     _latlon_to_xy,
+    bin_wind_to_sectors,
+    chronological_revenue,
+    dominant_direction,
+    energy_weighted_dominant_direction,
     gaussian_min_valid_distance_d,
     simulate_wind_farm,
 )
@@ -284,7 +289,27 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
         if model_key not in seen_models:
             seen_models.add(model_key)
             unique_filenames.append(filename)
-    for filename in unique_filenames:
+    def _process_turbine(filename: str, shared_layouts=None, prior_generation=None,
+                         ws=ws, wd=wd, mean_speed=mean_speed, rho=rho) -> Dict:
+        """Pipeline completo (paso 6 + economía) para UNA tecnología.
+
+        Aislado en su propio scope a propósito: todas las variables que
+        antes vivían reasignadas en el cuerpo del for (ws/wd/mean_speed/rho
+        cuando hay historical_wind, turbine, resource, setback,
+        evaluate_layout...) quedan locales a esta función en vez de
+        pisar las del generate_park_layouts que la encierra -- eso es lo
+        que hace seguro correr tecnologías en paralelo (ThreadPoolExecutor
+        más abajo): sin este aislamiento, dos tecnologías concurrentes se
+        pisarían el ws/wd/rho una a la otra silenciosamente. ws/wd/
+        mean_speed/rho entran como default args (capturados una vez, al
+        definir esta función) en vez de leerse por closure: al reasignarse
+        condicionalmente más abajo (rama historical_wind), Python los
+        trataría como locales en TODA la función por esa sola asignación
+        -- vía closure eso rompería con UnboundLocalError en la rama
+        historical_wind=None (nunca llegan a asignarse); como default arg
+        ya son parámetros locales desde el inicio, así que ambas ramas
+        funcionan.
+        """
         try:
             turbine = PowerCurve.from_file(os.path.join(turbines_folder, os.path.basename(filename)))
             if target_height_m:
@@ -293,12 +318,17 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             if historical_wind is not None:
                 resource = prepare_historical_wind(historical_wind, turbine.hub_height_m)
                 ws, wd, mean_speed = resource['ws'], resource['wd'], resource['mean']
+                resource['_wind_bins'] = bin_wind_to_sectors(ws, wd, 36)
                 rho = float(np.mean([s.get('rho_mean') or 1.225 for s in sites]))
                 if resource.get('temperature_c') is not None and resource.get('pressure_pa') is not None:
                     densities = air_density(resource['temperature_c'], resource['pressure_pa'])
                     good_density = np.isfinite(densities) & (densities > 0)
                     if good_density.any():
                         rho = float(np.mean(densities[good_density]))
+                energy_dir, rose_dirs, rose_energy = energy_weighted_dominant_direction(
+                    ws, wd, turbine, n_sectors=16, rho=rho)
+                resource['_wind_summary'] = (
+                    dominant_direction(wd, 36), energy_dir, rose_dirs, rose_energy)
                 resource['provenance']['rho_used_kg_m3'] = rho
             setback = max(float(boundary_setback_m), turbine.rotor_diameter_m / 2.0)
             def evaluate_layout(points):
@@ -307,7 +337,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     wake_model=wake_model, rho_override=rho)
                 if resource is not None:
                     return historical_layout_simulation(points, turbine, resource,
-                        wind_grid, (lat0, lon0), price_hourly_usd_kwh=price_hourly_usd_kwh,
+                        wind_grid, (lat0, lon0), price_hourly_usd_kwh=None,
                         **options)
                 result = simulate_wind_farm(points, turbine, ws, wd, **options)
                 result['production_source'] = {'method': 'synthetic_weibull', 'source_id': None}
@@ -348,12 +378,37 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 # geometrías genuinamente distintas.
                 candidate_limit_per_n=candidate_limit_per_n,
                 local_refinement_max_evals=local_refinement_max_evals,
+                shared_layouts=shared_layouts,
+                shared_only=prior_generation is not None,
             )
+            if prior_generation is not None:
+                shared_generation = generation
+                generation = {
+                    **prior_generation,
+                    'pool': prior_generation['pool'] + shared_generation['pool'],
+                    'max_n_fit_by_family': {
+                        **prior_generation['max_n_fit_by_family'],
+                        **{k: v for k, v in shared_generation['max_n_fit_by_family'].items()
+                           if k == 'shared_geometry'}},
+                    'max_n_technical_by_family': {
+                        **prior_generation['max_n_technical_by_family'],
+                        **{k: v for k, v in shared_generation['max_n_technical_by_family'].items()
+                           if k == 'shared_geometry'}},
+                    'n_range_explored_by_family': {
+                        **prior_generation['n_range_explored_by_family'],
+                        **{k: v for k, v in shared_generation['n_range_explored_by_family'].items()
+                           if k == 'shared_geometry'}},
+                    'max_n_fit': max(prior_generation['max_n_fit'],
+                                     shared_generation['max_n_fit']),
+                    'max_n_technical': max(prior_generation['max_n_technical'],
+                                           shared_generation['max_n_technical']),
+                }
+                counts = [c['n_turbines'] for c in generation['pool']]
+                generation['n_range_explored'] = [min(counts), max(counts)] if counts else [0, 0]
             physical_max_n = generation['max_n_fit']
             max_n = generation['max_n_technical']
             if max_n <= 0:
-                errors.append({'turbine': filename, 'reason': 'sin_layout_factible'})
-                continue
+                return {'error': {'turbine': filename, 'reason': 'sin_layout_factible'}}
             # El campeón se elige por VAN neto, no por AEP: entre las
             # configuraciones factibles de ESTA tecnología, la que más
             # dinero neto genera (ver select_technology_champion). Eso
@@ -369,7 +424,23 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 # para buscar una alternativa que sí lo sea, del mismo pool.
                 if not candidate['feasibility']['wake_loss_ok']:
                     continue
+                if candidate.get('_precomputed') is not None:
+                    continue
                 candidate_sim = candidate['sim']
+                if (resource is not None and price_hourly_usd_kwh is not None
+                        and resource.get('hour_of_year') is not None):
+                    candidate_sim['chronological_revenue'] = chronological_revenue(
+                        candidate['layout_xy_m'], turbine,
+                        np.asarray(resource['ws']), np.asarray(resource['wd']),
+                        resource['hour_of_year'], price_hourly_usd_kwh,
+                        sample_duration_hours=resource['dt_hours'],
+                        temperature_c=resource.get('temperature_c'),
+                        pressure_pa=resource.get('pressure_pa'),
+                        local_wind_multipliers=(
+                            candidate_sim['production_source']['local_speed_multipliers']),
+                        k_wake=k_wake, ct=ct, n_sectors=36,
+                        availability=availability, electrical_losses=electrical_losses,
+                        wake_model=wake_model, rho_override=rho)
                 candidate_aep_p50 = float(candidate_sim['aep_mwh']) * other_survival
                 candidate_chron = candidate_sim.get('chronological_revenue')
                 candidate_revenue_override = (
@@ -400,14 +471,13 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 generation['pool'], require_feasibility_keys=('wake_loss_ok',))
             champion = champion_result['champion']
             if champion is None:
-                errors.append({
+                return {'error': {
                     'turbine': filename,
                     'reason': 'sin_layout_que_cumpla_limite_estela',
                     'max_wake_loss_pct': float(max_wake_loss_pct),
                     'pool_size': champion_result['pool_size'],
                     'rejected_by_reason': champion_result['rejected_by_reason'],
-                })
-                continue
+                }}
             # Auditoría por familia (paso 6 ahora corre Alineado, Tresbolillo
             # y Greedy-vértice explícitamente, no un barrido mezclado -- ver
             # generate_feasible_layouts_grid): aunque solo una familia gane
@@ -415,7 +485,9 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             # queda trazable aquí, reusando select_technology_champion sobre
             # el sub-pool de cada familia -- sin recalcular nada.
             family_summary = {}
-            for family in list(FAMILY_STAGGER) + [GREEDY_FAMILY]:
+            for family in list(FAMILY_STAGGER) + [GREEDY_FAMILY, 'shared_geometry']:
+                if family == 'shared_geometry' and not shared_layouts:
+                    continue
                 family_pool = [c for c in generation['pool']
                               if c['layout_config'].get('family') == family]
                 family_champion = select_technology_champion(
@@ -453,16 +525,45 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 'area_km2': champion['area_km2'],
             }
             sim = champion['sim']
-            # wake_trials conserva la forma histórica (un registro por N,
-            # de mayor a menor, terminando en el N elegido) para diagnóstico
-            # y trazabilidad -- aunque el pool completo explora más allá del
-            # campeón, aquí solo se reporta el tramo relevante a su elección.
-            wake_trials = [
-                {'n': c['n_turbines'], 'wake_loss_pct': c['wake_loss_pct'],
-                 'n_layouts_evaluated': c.get('n_layouts_evaluated')}
-                for c in generation['pool']
-                if c.get('is_primary') and c['n_turbines'] >= selected_n
-            ]
+            # wake_trials: un registro por (familia, N) >= al N elegido, para
+            # mostrar cómo sube la estela al agregar turbinas más allá del
+            # campeón. Reescrito porque la versión anterior (un solo filtro
+            # `is_primary`, sin distinguir familia) mezclaba Alineado,
+            # Tresbolillo y Greedy en una sola lista plana -- de ahí que el
+            # mismo N apareciera repetido con valores de estela distintos
+            # sin ninguna etiqueta que explicara por qué. Además `is_primary`
+            # es solo el patrón de score rápido: si candidate_limit_per_n>0
+            # encontró una variante (orientación/fase) de mayor VAN para ese
+            # N, esa es la que gana como campeón/family_summary, pero
+            # is_primary seguía reportando la estela del patrón rápido
+            # descartado -- por eso el N del propio campeón podía mostrar
+            # aquí un % de estela distinto al de los paneles de arriba.
+            # Representante por (familia, N): el candidato de mayor VAN entre
+            # los factibles (mismo criterio que select_technology_champion),
+            # o si ninguno cumple el límite de estela, el de menor estela --
+            # así el N del campeón de cada familia siempre coincide con lo
+            # que ya se reportó en family_summary/champion_selection.
+            def _wake_trial_representative(entries):
+                feasible = [c for c in entries
+                           if c['feasibility']['wake_loss_ok'] and c.get('van_usd') is not None]
+                if feasible:
+                    return max(feasible, key=lambda c: float(c['van_usd']))
+                return min(entries, key=lambda c: float(c['wake_loss_pct']))
+
+            wake_trials = []
+            for family in list(FAMILY_STAGGER) + [GREEDY_FAMILY, 'shared_geometry']:
+                by_n: Dict[int, List[Dict]] = {}
+                for c in generation['pool']:
+                    if (c['layout_config'].get('family') == family
+                            and c['n_turbines'] >= selected_n):
+                        by_n.setdefault(c['n_turbines'], []).append(c)
+                for n in sorted(by_n, reverse=True):
+                    rep = _wake_trial_representative(by_n[n])
+                    wake_trials.append({
+                        'n': n, 'family': family, 'wake_loss_pct': rep['wake_loss_pct'],
+                        'n_layouts_evaluated': rep.get('n_layouts_evaluated'),
+                        'feasible': bool(rep['feasibility']['wake_loss_ok']),
+                    })
             precomputed = champion['_precomputed']
             aep_p50 = precomputed['aep_p50']
             collection_length = precomputed['collection_length']
@@ -526,7 +627,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 near_cp_fraction=0.95,
             )
             cp_fit['site_fit_source'] = cp_source
-            alternatives.append({
+            return {'_generation': generation, 'alternative': {
                 'label': f'layout::{filename}::wake-optimal',
                 'site': f'Layout seleccionado por VAN ({selected_n}/{physical_max_n} aeros)',
                 'turbina': filename,
@@ -648,12 +749,55 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     'cost_model_origin': cost_model_origin,
                 },
                 **econ,
-            })
+            }}
         except Exception as exc:
-            errors.append({'turbine': filename, 'reason': str(exc)})
+            return {'error': {'turbine': filename, 'reason': str(exc)}}
+
+    # Tecnologías independientes entre sí (cada una lee/escribe solo sus
+    # propias variables locales -- ver docstring de _process_turbine) así
+    # que corren concurrentes en vez de una por una: con varias tecnologías
+    # marcadas, cada una paga el costo completo de las 3 familias del paso 6
+    # (búsqueda binaria + ventana lineal + refinamiento local, todas con
+    # simulación real de estela), y antes se pagaban en serie en un solo
+    # hilo. executor.map conserva el orden de unique_filenames, así que
+    # alternatives/errors quedan deterministas igual que con el for original.
+    with ThreadPoolExecutor(max_workers=min(4, len(unique_filenames)) or 1) as executor:
+        outcomes = list(executor.map(_process_turbine, unique_filenames))
+    for outcome in outcomes:
+        if 'alternative' in outcome:
+            alternatives.append(outcome['alternative'])
+        else:
+            errors.append(outcome['error'])
+    # A larger rotor's selected coordinates can be feasible for a smaller
+    # rotor even when the smaller rotor's own D-scaled grids missed them.
+    # Re-run only affected technologies; the shared geometry is independently
+    # checked against their spacing, exclusions, wake limit and economics.
+    initial_alternatives = list(alternatives)
+    generation_by_turbine = {
+        outcome['alternative']['turbina']: outcome['_generation']
+        for outcome in outcomes if 'alternative' in outcome
+    }
+    for index, row in enumerate(initial_alternatives):
+        diameter = row['turbine_specification']['rotor_diameter_m']
+        shared = [
+            {'turbina': other['turbina'], 'layout_xy_m': other['layout_xy_m'],
+             'layout_config': other['layout_config']}
+            for other in initial_alternatives
+            if other['turbine_specification']['rotor_diameter_m'] > diameter
+            and other['n_aerogeneradores'] > row['n_aerogeneradores']
+        ]
+        if not shared:
+            continue
+        revised = _process_turbine(
+            row['turbina'], shared_layouts=shared,
+            prior_generation=generation_by_turbine[row['turbina']])
+        if ('alternative' in revised
+                and revised['alternative']['van_usd'] > row['van_usd'] + 1e-6):
+            alternatives[index] = revised['alternative']
     alternatives = add_effective_area_metrics(alternatives, polygon, exclusions)
     return {
         'analysis_kind': 'farm_layout_candidates_v1',
+        'layout_search_revision': 'shared_geometry_v1',
         'comparison_polygon': polygon,
         'comparison_exclusions': exclusions or [],
         'alternatives': alternatives,

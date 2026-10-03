@@ -1,0 +1,75 @@
+{
+  "project": "/Users/ale/Downloads/nuevoeste.aeroproj",
+  "wind_resource": {
+    "selected_year": 2018,
+    "period_start": "2018-01-01T06:00:00+00:00",
+    "period_end": "2019-01-01T05:50:00+00:00",
+    "timezone": "Etc/GMT+6",
+    "ten_minute_rows": 52461,
+    "annual_interannual_uncertainty_estimable_from_project": false
+  },
+  "pml": {
+    "observed_calendar_years": [
+      2018
+    ],
+    "n_observed_annual_means": 1,
+    "hourly_values": 8760,
+    "hourly_source_values": 8759,
+    "filled_hours": 1,
+    "node": null,
+    "pml_timezone_documented": false,
+    "sale_scheme": "spot_pml",
+    "projection_policy": {
+      "mode": "fixed_replication",
+      "base_year": 2018,
+      "price_escalation_pct": 0.0,
+      "leap_day_policy": "interpolate_feb28_mar01"
+    },
+    "future_annual_values": 25,
+    "future_annual_distinct_values": 1,
+    "observed_mean_usd_kwh": 0.11034351519579862,
+    "observed_monthly_means_usd_kwh": [
+      0.09663385806451613,
+      0.0934929761904762,
+      0.10395530322580646,
+      0.1360676888888889,
+      0.1503412430107527,
+      0.12251012222222223,
+      0.14338507741935486,
+      0.13061250967741936,
+      0.11555862444444445,
+      0.07997399569892473,
+      0.07402458,
+      0.0761544402085965
+    ],
+    "observed_hourly_min_usd_kwh": 0.00023040000000000002,
+    "observed_hourly_max_usd_kwh": 0.3085088,
+    "annual_volatility_estimable_from_project": false,
+    "reason": "One annual PML observation; within-year hourly spread is not year-to-year forecast error."
+  },
+  "wake": {
+    "model": "gaussian",
+    "base_k": 0.04,
+    "base_ct": 0.8,
+    "ct_curve_available": false,
+    "assumed_uncertainty_components_pct": {
+      "resource": 6.0,
+      "wake": 3.0,
+      "power_curve": 2.0,
+      "losses": 2.0
+    },
+    "layout_wake_loss_pct_range": [
+      3.89,
+      4.99
+    ],
+    "observed_wake_model_errors": 0,
+    "calibrated_wake_error_estimable_from_project": false,
+    "reason": "Differences among layouts and deterministic PyWake agreement do not measure model error."
+  },
+  "decision": {
+    "price_20pct_aep_10pct_wake_3pct_statistically_calibrated": false,
+    "required_for_pml": "NodeP and time-aligned multi-year hourly PML; use rolling-year out-of-sample validation for price trajectories.",
+    "required_for_aep": "Multi-year colocated wind or validated long-term reanalysis, including interannual variability and MCP uncertainty.",
+    "required_for_wake": "SCADA or equivalent observed wake deficits by speed, direction and turbulence; evaluate held-out periods and spatial layout effects."
+  }
+}

@@ -69,7 +69,9 @@ def historical_layout_simulation(points, turbine, resource, wind_grid, origin,
     result = simulate_wind_farm(points, turbine,
         np.asarray(resource['ws']), np.asarray(resource['wd']),
         local_wind_multipliers=multipliers,
-        sample_duration_hours=resource['dt_hours'], **options)
+        sample_duration_hours=resource['dt_hours'],
+        wind_bins=resource.get('_wind_bins'),
+        wind_summary=resource.get('_wind_summary'), **options)
     result['production_source'] = {**resource['provenance'],
         'local_speed_multipliers': multipliers.tolist()}
     # Fase 1/2 de robustez de ingresos: si hay PML horario cargado y la fuente

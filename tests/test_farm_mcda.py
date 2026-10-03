@@ -145,6 +145,29 @@ class FarmScientificModelTests(unittest.TestCase):
                 k=0.075, ct=0.8, wake_model='jensen')
             np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=1e-13)
 
+    def test_jensen_partial_overlap_uses_exact_circle_area_not_linear_cutoff(self):
+        # Regresión contra el bug corregido 2026-09-22 (ver core.farm.jensen_
+        # deficit y validation/control_case_jensen_pywake.py): una versión
+        # anterior usaba una aproximación LINEAL del traslape que llegaba a
+        # cero en dy=r_wake en vez del punto geométricamente correcto,
+        # dy=r_wake+r0 -- subestimando la estela hasta ~44% del área del
+        # rotor en esa franja intermedia. Validado contra PyWake (NOJDeficit,
+        # ct2a=ct2a_mom1d, superposición Katic): coincidencia exacta en todo
+        # el barrido lateral tras el fix.
+        D, k, x = 90.0, 0.075, 450.0
+        r0 = D / 2.0
+        r_wake = r0 + k * x
+        # dy=r_wake exactamente: el bug lineal daba deficit=0 aqui; el area
+        # real de interseccion de circulos todavia cubre ~44% del rotor.
+        deficit_at_r_wake = jensen_deficit(x, r_wake, D, k=k, ct=0.8)
+        self.assertGreater(deficit_at_r_wake, 0.0)
+        # El deficit debe seguir siendo positivo hasta justo antes del borde
+        # geometrico real (r_wake + r0), y caer exactamente a 0 en/despues de el.
+        just_inside = (r_wake + r0) - 1.0
+        self.assertGreater(jensen_deficit(x, just_inside, D, k=k, ct=0.8), 0.0)
+        self.assertEqual(jensen_deficit(x, r_wake + r0, D, k=k, ct=0.8), 0.0)
+        self.assertEqual(jensen_deficit(x, r_wake + r0 + 1.0, D, k=k, ct=0.8), 0.0)
+
     def test_vectorized_gaussian_matches_scalar_reference(self):
         # A 500 m grid avoids material near-wake pairs for both tested axes.
         layout = np.array([

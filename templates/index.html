@@ -1200,10 +1200,34 @@
           </div>
           <div>
             <label class="form-label" for="park-pml-node">NodoP / zona de carga</label>
-            <input class="form-input" id="park-pml-node" type="text" placeholder="Pendiente de seleccionar nodo CENACE">
+            <div style="display:flex;gap:6px;align-items:center">
+              <input class="form-input" id="park-pml-node" type="text" placeholder="Ej. JUD o 02JUD-115" style="flex:1">
+              <button class="btn-secondary" id="btn-pml-cenace-search" type="button" title="Buscar NodoP en CENACE">Buscar</button>
+            </div>
+            <div id="park-pml-cenace-results" class="text-muted mt-1" style="font-size:.75rem"></div>
           </div>
         </div>
-        <div id="park-commercial-note" class="features-summary mt-2"></div>
+        <div class="form-grid-4 mt-2" id="park-pml-cenace-fetch-row" style="display:none;align-items:end">
+          <div>
+            <label class="form-label" for="park-pml-cenace-nodo">NodoP elegido</label>
+            <select class="form-select" id="park-pml-cenace-nodo"></select>
+          </div>
+          <div>
+            <label class="form-label" for="park-pml-cenace-year-start">Año inicio</label>
+            <input class="form-input" id="park-pml-cenace-year-start" type="number" value="2018" min="2016" max="2030">
+          </div>
+          <div>
+            <label class="form-label" for="park-pml-cenace-year-end">Año fin</label>
+            <input class="form-input" id="park-pml-cenace-year-end" type="number" value="2018" min="2016" max="2030">
+          </div>
+          <div>
+            <button class="btn-primary" id="btn-pml-cenace-fetch" type="button">Descargar PML USD/kWh</button>
+          </div>
+        </div>
+        <p class="text-muted mt-1" style="font-size:.72rem">
+          El archivo se guarda en <code>mercado_pml/</code> como
+          <code>fecha,hora,compra,venta</code> (USD/kWh, con fechas CENACE).
+        </p>
       </div>
     </div>
 
@@ -2126,7 +2150,7 @@
           <thead><tr>
             <th>#</th><th>Sitio</th><th>Turbina</th>
             <th>Score</th><th>Cp efectivo ↑</th><th>Horas ≥95% Cp máx. ↑ (h/año)</th>
-            <th>FC neto ↑ (%)</th><th>AEP P90 ↑ (MWh)</th>
+            <th>FC neto ↑ (%)</th><th title="P90 provisional: componentes de incertidumbre aún sin calibración con datos multianuales">AEP P90 supuesto ↑ (MWh)</th>
             <th>VAN ↑ (USD)</th><th>LCOE ↓ (USD/kWh)</th>
             <th>CAPEX / kW instalado ↓ (USD/kW)</th>
           </tr></thead>
@@ -2138,23 +2162,26 @@
     </div>
   </div>
 
-  <!-- ═══ ROBUSTEZ TÉCNICO-ECONÓMICA COMPARADA — TODAS LAS TURBINAS DEL RANKING ═══ -->
+  <!-- ═══ ESCENARIOS TÉCNICO-ECONÓMICOS COMUNES A LOS LAYOUTS DEL RANKING ═══ -->
   <div class="card mt-3" id="gsens-batch-card" style="display:none">
     <div class="card-header">
-      <span class="card-title">Robustez técnico-económica comparada — todas las turbinas del ranking</span>
+      <span class="card-title">Escenarios técnico-económicos — layouts del ranking</span>
       <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Corre el mismo Monte Carlo económico (precio, tasa, OPEX, recurso eólico, inflación y estela)
-        para cada turbina del ranking, sin entrenar Random Forest — solo mide qué tan seguido cada
-        una se mantiene viable ante la incertidumbre, y hasta qué % de estela adicional aguanta antes
-        de dejar de serlo. Complementa al ranking TOPSIS: éste te dice quién gana en el escenario base,
-        esto te dice quién es más confiable si el escenario cambia. Además agrupa esas mismas muestras
-        Monte Carlo de cada alternativa en clústeres de riesgo financiero reales (K-means, k elegido por
-        silhouette) — perfiles de incertidumbre económica, no solo percentiles agregados.
+        Compara los layouts con el mismo flujo de caja del parque y verifica que cada VAN base
+        coincida con el ranking. Aplica a todos los mismos cambios hipotéticos: precio −20%,
+        AEP −10%, CAPEX y OPEX +15%, tasa de descuento +2 puntos porcentuales y su combinación.
+        Muestra VAN, umbrales de equilibrio y pérdida frente al mejor layout de cada escenario.
+        Son pruebas de sensibilidad, no probabilidades ni intervalos de confianza calibrados.
       </p>
-      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar robustez de todas las turbinas</button>
+      <p class="text-muted" style="font-size:.78rem;margin-bottom:.8rem"><b>Calibración pendiente:</b>
+        los rangos de precio, AEP y estelas todavía no se estiman con series multianuales
+        ni con errores observados del modelo. Si se usa el perfil PML de 2018,
+        repetirlo no predice por sí solo los precios futuros. Usa esta comparación
+        como prueba de estrés.</p>
+      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar escenarios de todos los layouts</button>
       <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
       <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
       <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>

@@ -2860,56 +2860,19 @@ const GSENS_BATCH = { result: null };
 async function runGlobalSensitivityBatch() {
   const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
   if (!ranking.length) { toast('Corre TOPSIS primero — no hay ranking disponible.', 'warn'); return; }
-  // Una fila por modelo de turbina único (evita evaluar la misma turbina 2 veces).
-  const seen = new Set();
-  const turbines = [];
-  ranking.forEach(row => {
-    const key = row.turbina || row.label;
-    const aep = Number(row.aep_mwh ?? row.aep_p50_mwh);
-    const n = Number(row.n_aerogeneradores);
-    if (!key || seen.has(key) || !Number.isFinite(aep) || aep <= 0 || !(n > 0)) return;
-    seen.add(key);
-    turbines.push({
-      label: key, builtin_model: key, n_turbines: Math.round(n),
-      annual_energy_kwh: aep * 1000,
-      wake_loss_pct: Number.isFinite(Number(row.wake_loss_pct)) ? Number(row.wake_loss_pct) : null,
-    });
-  });
-  if (!turbines.length) { toast('El ranking no trae AEP/n_aerogeneradores válidos.', 'warn'); return; }
-
-  // No depende de haber corrido Tecnoeconómico: toma precio/demanda de la config
-  // del parque, igual que ya hace mcdaRunAnalysis() para TOPSIS.
-  const marketInputs = parkEquivalentDesignInputs();
-  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
-  if (marketInputs.price_usd_kwh == null) {
-    toast('Carga el precio de energía en Configuración del parque antes de comparar robustez.', 'warn');
-    return;
-  }
-  const body = {
-    turbines,
-    n_samples: 300,
-    financial: {
-      energy_price_usd_kwh: marketInputs.price_usd_kwh,
-      discount_rate_pct:    WP.parkConfiguration?.base_interest_rate_pct ?? 8,
-      project_years:        Number.isFinite(projectYears) ? projectYears : 20,
-      annual_inflation_pct: 0,
-      cost_model:           technoCollectCostModel(),
-    },
-  };
   const btn = document.getElementById('btn-gsens-batch-run');
   if (btn) btn.disabled = true;
   document.getElementById('gsens-batch-card').style.display = '';
-  document.getElementById('gsens-batch-status').textContent = `Comparando ${turbines.length} turbinas…`;
-  document.getElementById('gsens-batch-progress-text').textContent =
-    `Corriendo Monte Carlo económico por turbina (sin Random Forest)…`;
+  document.getElementById('gsens-batch-status').textContent = `Comparando ${ranking.length} layouts…`;
+  document.getElementById('gsens-batch-progress-text').textContent = 'Verificando VAN base y calculando escenarios comunes…';
   try {
-    const data = await api('/api/energy/global_sensitivity_batch', 'POST', body);
+    const data = await api('/api/energy/layout_scenarios', 'POST', { alternatives: ranking });
     GSENS_BATCH.result = data;
-    document.getElementById('gsens-batch-status').textContent = `${data.turbines.length} turbinas · ${data.n_samples} muestras c/u`;
+    document.getElementById('gsens-batch-status').textContent = `${data.rows.length} layouts · 6 escenarios`;
     document.getElementById('gsens-batch-progress-text').textContent = '';
     renderGlobalSensitivityBatchTable(data);
     renderGlobalSensitivityBatchInterpretation(data, ranking[0]?.turbina || ranking[0]?.label);
-    toast('Comparación de robustez completada', 'success');
+    toast('Comparación de escenarios completada', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
     document.getElementById('gsens-batch-status').textContent = 'Error';
@@ -2922,45 +2885,28 @@ async function runGlobalSensitivityBatch() {
 function renderGlobalSensitivityBatchTable(data) {
   const el = document.getElementById('gsens-batch-table');
   if (!el) return;
-  const names = data.turbines.map(t => _topsisRobustName(t.label));
-  const fmtPct = (v) => v != null ? v.toFixed(1) + '%' : '—';
-  const fmtNum = (v) => v != null ? v.toFixed(3) : '—';
-  const fmtWake = (w) => {
-    if (!w) return '—';
-    if (w.status === 'already_unviable') return 'inviable ya al 0% extra';
-    if (w.status === 'robust_beyond_99pct') return '>99% (muy robusto)';
-    return `${w.wake_breakeven_pct}% (margen ${w.wake_margin_pct > 0 ? '+' : ''}${w.wake_margin_pct} pp)`;
-  };
-  const fmtRiskClusters = (rc) => {
-    if (!rc) return '<span class="text-muted">Muestras insuficientes</span>';
-    const parts = rc.clusters.map(c =>
-      `${c.label} ${c.share_pct}%<br><span class="text-muted">VAN&lt;0 en ${c.prob_van_negative_pct}%</span>`
-    ).join(' · ');
-    return `<span title="k=${rc.k} elegido por silhouette (${rc.silhouette_score}) sobre ${rc.n_valid_samples} muestras válidas">${parts}</span>`;
-  };
-  const rows = data.turbines.map((t, i) => {
-    if (t.error) return `<tr><td>${names[i]}</td><td colspan="9" class="text-muted">${t.error}</td></tr>`;
-    const bc = t.robustness?.b_c_ratio;
-    const van = t.robustness?.van_capex_ratio;
+  const money = v => v == null ? '—' : (v / 1e6).toFixed(2);
+  const factor = v => v == null ? '—' : (v * 100).toFixed(1) + '%';
+  const rows = data.rows.map(t => {
     return `<tr>
-      <td>${names[i]}</td>
-      <td>${fmtPct(bc?.prob_gt_1)}</td>
-      <td>${fmtNum(bc?.p10)}</td><td>${fmtNum(bc?.p50)}</td><td>${fmtNum(bc?.p90)}</td>
-      <td>${fmtPct(van?.prob_gt_0)}</td>
-      <td>${fmtNum(van?.p10)}</td><td>${fmtNum(van?.p50)}</td><td>${fmtNum(van?.p90)}</td>
-      <td>${fmtWake(t.wake_breakeven)}</td>
-      <td style="min-width:180px">${fmtRiskClusters(t.risk_clusters)}</td>
+      <td>${_topsisRobustName(t.turbina)}</td>
+      <td>${money(t.van_usd.base)}</td><td>${money(t.van_usd.precio_menos_20)}</td>
+      <td>${money(t.van_usd.aep_menos_10)}</td><td>${money(t.van_usd.capex_mas_15)}</td>
+      <td>${money(t.van_usd.tasa_mas_2pp)}</td><td>${money(t.van_usd.estres_combinado)}</td>
+      <td>${money(t.peor_van_usd)}</td><td>${money(t.mayor_arrepentimiento_usd)}</td>
+      <td>${factor(t.umbral_precio_factor)}</td><td>${factor(t.umbral_aep_factor)}</td>
+      <td>${factor(t.umbral_capex_factor)}</td><td>${t.van_por_capex_base.toFixed(2)}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `<table class="data-table" style="font-size:.72rem">
     <thead><tr>
-      <th>Turbina</th><th>P(B/C&gt;1)</th><th>B/C P10</th><th>B/C P50</th><th>B/C P90</th>
-      <th>P(VAN/CAPEX&gt;0)</th><th>VAN/CAPEX P10</th><th>VAN/CAPEX P50</th><th>VAN/CAPEX P90</th>
-      <th>Estela límite (viabilidad)</th>
-      <th>Clústeres de riesgo financiero (K-means real sobre Monte Carlo)</th>
+      <th>Layout</th><th>VAN base</th><th>Precio −20%</th><th>AEP −10%</th>
+      <th>CAPEX +15%</th><th>Tasa +2 pp</th><th>Estrés combinado</th>
+      <th>Peor VAN</th><th>Máx. pérdida frente al mejor</th>
+      <th>Precio equilibrio</th><th>AEP equilibrio</th><th>CAPEX equilibrio</th><th>VAN/CAPEX</th>
     </tr></thead>
     <tbody>${rows}</tbody>
-  </table>`;
+  </table><p class="text-muted" style="font-size:.72rem">VAN y pérdidas en millones USD. Los umbrales son porcentajes del valor base; CAPEX incluye OPEX proporcional. No son intervalos de confianza.</p>`;
 }
 
 /** Interpretación en texto plano de la tabla comparativa — contrasta la ganadora
@@ -2969,35 +2915,14 @@ function renderGlobalSensitivityBatchTable(data) {
 function renderGlobalSensitivityBatchInterpretation(data, topsisWinnerLabel) {
   const el = document.getElementById('gsens-batch-interpretation');
   if (!el) return;
-  const valid = data.turbines.filter(t => !t.error && t.robustness?.b_c_ratio);
-  if (!valid.length) { el.innerHTML = ''; return; }
-  const mostRobust = valid[0]; // ya viene ordenado por prob_gt_1 desc del backend
-  const mostRobustName = _topsisRobustName(mostRobust.label);
-  const winnerName = _topsisRobustName(topsisWinnerLabel);
-  const bc = mostRobust.robustness.b_c_ratio;
-  const wake = mostRobust.wake_breakeven;
-  const parts = [];
-  parts.push(`<b>${mostRobustName}</b> es la alternativa más robusta: mantiene B/C&gt;1 en el <b>${bc.prob_gt_1}%</b> de los escenarios simulados (rango P10-P90: ${bc.p10}–${bc.p90}).`);
-  if (mostRobust.label === topsisWinnerLabel) {
-    parts.push(`Coincide con la ganadora actual del ranking TOPSIS (<b>${winnerName}</b>) — la elección está reforzada tanto en el escenario base como ante incertidumbre.`);
-  } else {
-    const winnerRow = valid.find(t => t.label === topsisWinnerLabel);
-    const winnerBc = winnerRow?.robustness?.b_c_ratio;
-    parts.push(`Difiere de la ganadora actual del ranking TOPSIS (<b>${winnerName}</b>), que en el escenario base tiene mejor score puntual` +
-      (winnerBc ? ` pero se mantiene viable solo en el ${winnerBc.prob_gt_1}% de los escenarios` : '') +
-      ` — vale la pena revisar si conviene priorizar robustez sobre desempeño puntual.`);
-  }
-  if (wake?.status === 'ok') {
-    parts.push(`Su diseño actual tolera hasta <b>${wake.wake_breakeven_pct}%</b> de pérdida por estela antes de dejar de ser viable (margen de ${wake.wake_margin_pct} puntos porcentuales sobre el valor de diseño).`);
-  } else if (wake?.status === 'already_unviable') {
-    parts.push(`⚠ Con la estela de diseño actual ya está al límite: cualquier estela adicional la vuelve inviable (B/C&lt;1).`);
-  }
-  const rc = mostRobust.risk_clusters;
-  if (rc) {
-    const worst = rc.clusters[0];
-    parts.push(`Sus escenarios Monte Carlo se agrupan en <b>${rc.k} perfiles de riesgo financiero</b> reales (k elegido por silhouette=${rc.silhouette_score}): el más riesgoso concentra ${worst.share_pct}% de los escenarios con VAN negativo en el ${worst.prob_van_negative_pct}% de ellos — probabilidad global de VAN negativo: <b>${rc.overall_prob_van_negative_pct}%</b>.`);
-  }
-  el.innerHTML = `<p style="margin:0">${parts.join(' ')}</p>`;
+  const baseBest = [...data.rows].sort((a, b) => b.van_usd.base - a.van_usd.base)[0];
+  const stressBest = [...data.rows].sort((a, b) => b.van_usd.estres_combinado - a.van_usd.estres_combinado)[0];
+  const minRegret = [...data.rows].sort((a, b) => a.mayor_arrepentimiento_usd - b.mayor_arrepentimiento_usd)[0];
+  const top = _topsisRobustName(topsisWinnerLabel);
+  el.textContent = `TOPSIS: ${top}. Mayor VAN base: ${_topsisRobustName(baseBest.turbina)}. ` +
+    `Mayor VAN bajo estrés combinado: ${_topsisRobustName(stressBest.turbina)}. ` +
+    `Menor pérdida máxima frente al mejor de cada escenario: ${_topsisRobustName(minRegret.turbina)}. ` +
+    'Son pruebas de sensibilidad con hipótesis comunes, no probabilidades de ocurrencia.';
 }
 
 function renderRiskSection(data) {
@@ -8235,20 +8160,26 @@ function mcdaHasLayoutCandidates() {
   return ['farm_layout_candidates_v1', 'farm_layout_mcda_v2'].includes(MCDA.lastSpatial?.analysis_kind);
 }
 
+function mcdaNeedsLayoutRegeneration() {
+  return mcdaHasLayoutCandidates()
+    && MCDA.lastSpatial.layout_search_revision !== 'shared_geometry_v1';
+}
+
 function mcdaRenderCandidates() {
   const el = document.getElementById('layout-candidates');
   if (!el) return;
   const rows = mcdaHasLayoutCandidates() ? (MCDA.lastSpatial.alternatives || []) : [];
   const errors = MCDA.lastSpatial?.errors || [];
   el.innerHTML = rows.map((a, i) => `<details class="card mt-2"><summary style="padding:.7rem">
-    ${mcdaAuditEscape(a.turbina)} · ${a.n_aerogeneradores} turbinas ·
+    ${mcdaAuditEscape(a.turbina)} · ${mcdaAuditNumber(a.turbine_specification?.rotor_diameter_m, 0)} m rotor ·
+    ${a.n_aerogeneradores} seleccionadas${a.max_n_fisico != null ? ` / ${a.max_n_fisico} caben físicamente` : ''} ·
     P50 ${mcdaAuditNumber(a.aep_p50_mwh)} MWh/año · VAN ${mcdaAuditMoney(a.van_usd)} ·
     estela ${mcdaAuditNumber(a.wake_loss_pct)}%
     ${a.environmental_feasibility?.ok === false ? ' · Revisar ruido/sombra' : ''}
     </summary><div class="card-body"><button class="btn-secondary" type="button"
     onclick="mcdaPreviewCandidate(${i})">Ver layout en el mapa</button>${mcdaLayoutAuditHtml(a)}</div></details>`).join('')
     + errors.map(e => `<p>${mcdaAuditEscape(e.turbine)}: ${mcdaAuditEscape(e.reason)}</p>`).join('')
-    + (!rows.length ? '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>' : '');
+    + (rows.length ? '<p class="text-muted" style="font-size:.78rem;margin:.6rem 0">La cantidad seleccionada maximiza VAN entre layouts que cumplen el límite de estela; la capacidad física se muestra por separado. Dos modelos pueden tener cantidades seleccionadas distintas aunque el rotor mayor ocupe más espacio.</p>' : '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>');
 }
 
 function mcdaPreviewCandidate(index) {
@@ -8326,6 +8257,15 @@ async function mcdaResetWeights() {
 
 async function mcdaRunAnalysis() {
   if (MCDA.taskId) { toast('La generación sigue en curso.', 'info'); return; }
+  if (MCDA.scope === 'area') {
+    try {
+      const revision = await api('/api/farm/layouts/revision');
+      if (revision.layout_search_revision !== 'shared_geometry_v1') throw new Error('versión anterior');
+    } catch (_) {
+      toast('El servidor aún ejecuta la búsqueda anterior. Guarda el proyecto, reinicia AERO OPEN CIM y vuelve a generar layouts.', 'error');
+      return;
+    }
+  }
   krig3InitMap();
   if (!KRIG.sites.length) await krig3LoadSites();
   mcdaUpdateScopeUi();
@@ -8511,6 +8451,10 @@ async function mcdaPollStatus() {
 
 async function mcdaRankNow() {
   if (MCDA.taskId) { toast('Espera a que termine la generación de layouts.', 'warning'); return; }
+  if (mcdaNeedsLayoutRegeneration()) {
+    toast('Este proyecto conserva layouts de una búsqueda anterior. Genera layouts de nuevo en Parque antes de ejecutar TOPSIS.', 'warning');
+    return;
+  }
   if (MCDA.scope === 'area' && !mcdaHasLayoutCandidates()) {
     toast('Primero genera los layouts en ③ Parque.', 'warning'); return;
   }
@@ -8745,7 +8689,7 @@ function mcdaLayoutAuditHtml(a, readOnly = false) {
   const cards = [
     mcdaAuditCard('Capacidad y geometría', [
       ['Modelo', mcdaAuditEscape(a.turbina)],
-      ['Cantidad final / Nmax', `<b>${mcdaAuditNumber(a.n_aerogeneradores, 0)} / ${mcdaAuditNumber(a.max_n_fisico, 0)}</b>`],
+      ['Seleccionadas / caben físicamente', `<b>${mcdaAuditNumber(a.n_aerogeneradores, 0)} / ${mcdaAuditNumber(a.max_n_fisico, 0)}</b>`],
       ['Potencia unitaria', `${mcdaAuditNumber(spec.rated_power_kw, 0)} kW`],
       ['Potencia instalada', `${mcdaAuditNumber(installedKw / 1000, 3)} MW`],
       ['Diámetro / buje', `${mcdaAuditNumber(spec.rotor_diameter_m, 1)} / ${mcdaAuditNumber(spec.hub_height_m, 1)} m`],
@@ -8848,10 +8792,14 @@ function mcdaLayoutAuditHtml(a, readOnly = false) {
       ['Origen modelo', mcdaAuditEscape(econ.cost_model_origin)],
     ]),
   ].join('');
-  const wakeRows = (a.wake_trials || []).map(trial =>
-    `<tr><td>${mcdaAuditNumber(trial.n, 0)}</td><td>${mcdaAuditNumber(trial.wake_loss_pct, 3)}%</td></tr>`).join('');
+  const familyLabels = { aligned: '▦ Alineado', staggered: '⬡ Tresbolillo', greedy: '⚡ Greedy (vértice)', shared_geometry: '↔ Geometría compartida' };
+  const wakeRows = (a.wake_trials || []).map(trial => `
+        <tr${trial.feasible === false ? ' class="text-red"' : ''}>
+          <td>${familyLabels[trial.family] || trial.family || '—'}</td>
+          <td>${mcdaAuditNumber(trial.n, 0)}</td>
+          <td>${mcdaAuditNumber(trial.wake_loss_pct, 3)}%${trial.feasible === false ? ' (excede límite)' : ''}</td>
+        </tr>`).join('');
   const champion = a.champion_selection;
-  const familyLabels = { aligned: '▦ Alineado', staggered: '⬡ Tresbolillo', greedy: '⚡ Greedy (vértice)' };
   const familyRows = Object.entries(champion?.family_summary || {}).map(([family, s]) => `
         <tr><td>${familyLabels[family] || family}</td><td>${
           s.feasible
@@ -8926,7 +8874,8 @@ function mcdaLayoutAuditHtml(a, readOnly = false) {
     ${championPanel}
     ${environmentalPanel}
     <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Pruebas de cantidad y estela</summary>
-      <table class="tbl"><thead><tr><th>Turbinas</th><th>Pérdida estela</th></tr></thead><tbody>${wakeRows}</tbody></table>
+      <div style="font-size:.72rem;color:var(--text-secondary);margin:.3rem 0">Por familia, desde la cantidad elegida (${mcdaAuditNumber(a.n_aerogeneradores, 0)}) hacia arriba — el candidato de mayor VAN factible en cada (familia, N), o el de menor estela si ninguno cumple el límite.</div>
+      <table class="tbl"><thead><tr><th>Familia</th><th>Turbinas</th><th>Pérdida estela</th></tr></thead><tbody>${wakeRows}</tbody></table>
     </details>
     <details style="margin-top:.7rem"><summary style="cursor:pointer;font-weight:600">Flujo de caja anual completo</summary>
       <div style="overflow:auto"><table class="tbl"><thead><tr><th>Año</th><th>Energía MWh</th><th>Ingreso</th><th>OPEX</th><th>Desmant.</th><th>Flujo neto</th><th>VP flujo</th><th>Acumulado</th></tr></thead><tbody>${cashRows}</tbody></table></div>
@@ -8978,12 +8927,15 @@ function mcdaRenderRanking(r) {
     }).join('') + '</tr>'
     : '<tr><th>#</th><th>Sitio</th><th>Turbina</th><th>Score</th><th>CF</th><th>AEP (MWh)</th><th>VAN (USD)</th><th>LCOE</th><th>ROI</th><th>CAPEX (USD)</th></tr>';
   const columnCount = parkMode ? 4 + columns.length : 10;
+  const staleLayouts = parkMode && mcdaNeedsLayoutRegeneration();
   const top = ranking.slice(0, 100);
   if (!top.length) {
     body.innerHTML = `<tr><td colspan="${columnCount}" class="text-muted">Sin resultados. ${mcdaAuditEscape(r?.note || '')}</td></tr>`;
     return;
   }
-  body.innerHTML = top.map((a, index) => {
+  body.innerHTML = (staleLayouts
+    ? `<tr><td colspan="${columnCount}" style="background:var(--yellow-dim);padding:.8rem"><strong>Resultados guardados anteriores a la corrección de búsqueda.</strong> Las cantidades y el ranking no se han recalculado. Genera los layouts y después ejecuta TOPSIS. <button class="btn-secondary" type="button" onclick="mcdaRunAnalysis()">Regenerar layouts ahora</button></td></tr>`
+    : '') + top.map((a, index) => {
     const medal = a.rank === 1 ? '🥇' : a.rank === 2 ? '🥈' : a.rank === 3 ? '🥉' : a.rank;
     const highlight = a.rank === 1 ? 'style="background:var(--green-dim)"' : '';
     const siteText = a.best_site
@@ -9017,7 +8969,7 @@ function mcdaRenderRanking(r) {
     </tr><tr id="mcda-audit-${index}" style="display:none"><td colspan="${columnCount}">${mcdaLayoutAuditHtml(a, true)}</td></tr>`;
   }).join('');
   // Propagate winner to Parque and Tecnoeconómico
-  syncTopsisWinnerToModules();
+  if (!staleLayouts) syncTopsisWinnerToModules();
   // Revela las tarjetas de robustez (batch técnico-económico y SMAA de pesos)
   // apenas hay un ranking usable — cubre tanto correr TOPSIS en vivo como
   // restaurar un ranking guardado al importar un proyecto.
@@ -10060,19 +10012,29 @@ function parqueRenderComparison() {
     <div class="card-body"><p class="text-muted">Misma curva, altura, viento, densidad y pérdidas que TOPSIS. Se maximiza P50 dentro de ${parqueFmt(comparison.max_wake_loss_pct, 2)}% de estela.
     ${comparison.same_count ? 'Misma cantidad de turbinas.' : 'Cantidad reducida: el cambio de energía también incluye este efecto.'}</p>
     <div style="overflow-x:auto"><table class="data-table" style="width:100%"><thead><tr>
-    <th>Configuración</th><th>N</th><th>Separación / giro</th><th>P50 parque<br>MWh/año</th><th>Media/turbina<br>MWh/año</th><th>Estela %</th><th>Δ energía<br>MWh/año</th><th>Resultado</th>
+    <th>Configuración</th><th>N</th><th>Separación / giro</th>
+    <th>Fila real (D)<br>prom (mín–máx)</th><th>Columna real (D)<br>prom (mín–máx)</th>
+    <th>P50 parque<br>MWh/año</th><th>Media/turbina<br>MWh/año</th><th>Estela %</th><th>Δ energía<br>MWh/año</th><th>Resultado</th>
     </tr></thead><tbody>${comparison.winners.map(row => {
       const cfg = row.layout_config || {};
       const tags = [row.id === comparison.max_energy_id ? 'Mayor energía' : '',
         row.id === comparison.min_wake_id ? 'Menor estela' : '', row.pareto ? 'Pareto' : ''].filter(Boolean).join(' · ');
       const active = row.id === comparison.selected_id;
+      const spacingCell = axis => {
+        const s = row.row_column_spacing_d?.[axis];
+        if (!s || s.n_measured === 0) return '—';
+        const note = s.n_measured < row.n_placed ? ` <span class="text-muted">(${s.n_measured}/${row.n_placed})</span>` : '';
+        return `${parqueFmt(s.mean_d, 1)}D (${parqueFmt(s.min_d, 1)}–${parqueFmt(s.max_d, 1)})${note}`;
+      };
       return `<tr><td>${esc(row.label)}</td><td>${row.n_placed}</td>
         <td>${parqueFmt(cfg.s_para_d, 1)}D × ${parqueFmt(cfg.s_perp_d, 1)}D / ${parqueFmt(cfg.orientation_deg, 0)}°</td>
+        <td>${spacingCell('row')}</td><td>${spacingCell('column')}</td>
         <td>${parqueFmt(row.aep_p50_mwh, 1)}</td><td>${parqueFmt(row.aep_per_turbine_mwh, 1)}</td>
         <td>${parqueFmt(row.wake_loss_pct, 2)}</td><td>${parqueFmt(row.aep_gain_mwh, 1)}</td>
         <td>${esc(tags)} ${active ? '<strong>Aplicada</strong>' : row.feasible
           ? `<button class="btn-secondary" onclick="parqueApplyConfiguration('${esc(row.id)}')">Aplicar</button>` : 'Solo referencia'}</td></tr>`;
     }).join('')}</tbody></table></div>
+    <p class="text-muted" style="margin-top:.3rem">Fila/columna real: distancia al vecino más cercano en cada eje del viento dominante, medida en las posiciones que realmente quedaron (no la separación nominal pedida a la rejilla) -- aplica igual a Greedy-vértice. "(n/N)" indica que algunas turbinas no tuvieron vecino en ese eje dentro de tolerancia (borde del polígono o huecos aislados) y no entraron al promedio.</p>
     <p class="text-muted">${comparison.evaluated_count} layouts evaluados. ${esc(comparison.search_method)}. La búsqueda es aproximada; no certifica un óptimo global. Pareto identifica opciones sin otra evaluada que mejore energía o estela sin empeorar la otra.</p>
     ${comparison.errors.map(e => `<p class="text-muted">${esc(e.family)}: ${esc(e.reason)}</p>`).join('')}</div>`;
 }
@@ -13943,4 +13905,3 @@ async function renderSavedProjectResults() {
   updateResumenVerdict();
   if (failures.length) toast(`Resultados guardados; no se pudieron mostrar: ${failures.join(', ')}`, 'warning');
 }
-

@@ -1,9 +1,11 @@
 """Reproducible energy basis and layout refinement after park TOPSIS."""
+import base64
+import io
 from copy import deepcopy
 
 import numpy as np
 
-from core.farm import simulate_wind_farm
+from core.farm import compute_row_column_spacing_d, simulate_wind_farm
 from core.layout_generation import _local_wake_refinement, receptor_exclusion_buffers
 
 
@@ -30,8 +32,24 @@ def build_energy_context(sites, turbine, *, wake_model, k_wake, ct,
     }
 
     if historical_resource is not None:
-        resource = {key: (value.tolist() if isinstance(value, np.ndarray) else deepcopy(value))
-                    for key, value in historical_resource.items()}
+        # Wind bins and rose summaries are calculation caches, not project
+        # data. In particular, their NumPy arrays must never enter a JSON
+        # response through a tuple. Keep the original series in a portable
+        # compressed form for large MCP histories sent to the browser.
+        series_keys = ('ws', 'wd', 'temperature_c', 'pressure_pa', 'hour_of_year')
+        large_series = len(historical_resource['ws']) > 10_000
+        resource = {
+            key: (value.tolist() if isinstance(value, np.ndarray) else deepcopy(value))
+            for key, value in historical_resource.items()
+            if not key.startswith('_') and not (large_series and key in series_keys)
+        }
+        if large_series:
+            series = {key: np.asarray(historical_resource[key])
+                      for key in series_keys if historical_resource.get(key) is not None}
+            stream = io.BytesIO()
+            np.savez_compressed(stream, **series)
+            resource['_series_encoding'] = 'npz_base64_v1'
+            resource['_series_npz_b64'] = base64.b64encode(stream.getvalue()).decode('ascii')
         context.update(wind_method='historical_series_spatial_scaling',
             historical_resource=resource, wind_grid=deepcopy(wind_grid),
             origin=list(origin), rho=rho, local_wind_policy='per_turbine_map_mean_scaling')
@@ -49,8 +67,19 @@ def energy_evaluator(context, turbine):
     if context.get('wind_method') == 'historical_series_spatial_scaling' and historical is None:
         raise ValueError('Falta la base histórica; ejecuta TOPSIS nuevamente.')
     if historical is not None:
+        if historical.get('_series_encoding') == 'npz_base64_v1':
+            payload = base64.b64decode(historical['_series_npz_b64'], validate=True)
+            with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+                historical = {**historical,
+                              **{key: archive[key] for key in archive.files}}
         ws, wd, mean_speed, rho = (np.asarray(historical['ws']), np.asarray(historical['wd']),
                                    historical['mean'], context['rho'])
+        from core.farm import bin_wind_to_sectors, dominant_direction, energy_weighted_dominant_direction
+        historical['_wind_bins'] = bin_wind_to_sectors(ws, wd, 36)
+        energy_dir, rose_dirs, rose_energy = energy_weighted_dominant_direction(
+            ws, wd, turbine, n_sectors=16, rho=rho)
+        historical['_wind_summary'] = (
+            dominant_direction(wd, 36), energy_dir, rose_dirs, rose_energy)
     else:
         ws, wd, mean_speed, _, rho = _joint_synthetic_wind(context['sites'])
     survival = ((1.0 - float(context.get('curtailment_loss', 0.0))) *
@@ -197,12 +226,21 @@ def refine_topsis_layout(alternative, turbine, *, layout_type='auto', n_turbines
             return
         aep = float(simulation['aep_mwh'])
         loss = float(simulation['wake_loss_pct'])
+        # Separación real fila/columna (en D, ejes del viento dominante) --
+        # distinta de s_para_d/s_perp_d (lo pedido a la rejilla, no lo que
+        # quedó tras recortar por polígono/exclusiones), y calculada igual
+        # para las 4 filas de esta tabla incluyendo Referencia TOPSIS y
+        # TOPSIS mejorado, no solo Alineado/Tresbolillo. Ver
+        # core.farm.compute_row_column_spacing_d.
+        dom_dir = float((candidate.get('layout_config') or {}).get('dominant_dir_deg', 270.0))
+        row_column_spacing_d = compute_row_column_spacing_d(points, dom_dir, turbine.rotor_diameter_m)
         candidates.append({
             **candidate, 'id': f'layout-{len(candidates)}', 'family': family, 'label': label,
             'simulation': simulation, 'n_placed': len(points),
             'aep_p50_mwh': aep, 'aep_per_turbine_mwh': aep / len(points),
             'wake_loss_pct': loss, 'aep_gain_mwh': aep - baseline_aep,
             'wake_reduction_pp': float(baseline_sim['wake_loss_pct']) - loss,
+            'row_column_spacing_d': row_column_spacing_d,
             'feasible': bool(eligible and np.isfinite(aep) and np.isfinite(loss) and loss <= wake_limit + 1e-9),
         })
 

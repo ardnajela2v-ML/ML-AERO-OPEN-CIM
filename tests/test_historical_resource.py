@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 from unittest.mock import patch
 
@@ -6,7 +7,7 @@ import numpy as np
 from core.energy import PowerCurve
 from core.historical_resource import prepare_historical_wind, historical_layout_simulation
 from core.farm_mcda import analyze_park_layouts
-from core.layout_refinement import energy_evaluator
+from core.layout_refinement import build_energy_context, energy_evaluator
 
 
 class HistoricalProductionTests(unittest.TestCase):
@@ -92,6 +93,31 @@ class HistoricalProductionTests(unittest.TestCase):
         # rows 3 (ws NaN) y 4 (wd NaN) se excluyen — hour_of_year debe seguir
         # exactamente esa misma máscara, no un recorte independiente.
         np.testing.assert_array_equal(prepared['hour_of_year'], [10, 20, 30])
+
+    def test_large_history_context_is_portable_and_reproduces_energy(self):
+        ws = np.tile(np.array([4., 8., 12., 10.]), 2501)
+        wd = np.tile(np.array([270., 90., 270., 180.]), 2501)
+        prepared = prepare_historical_wind({
+            'ws': ws, 'wd': wd, 'measurement_height_m': 80, 'dt_hours': 1,
+        }, 80)
+        prepared['_wind_summary'] = (270., np.array([1., 2.]))
+        context = build_energy_context(
+            self.sites, self.turbine, wake_model='jensen', k_wake=.075, ct=.8,
+            availability=.97, electrical_losses=.03, historical_resource=prepared,
+            origin=(16.505, -94.995), rho=1.2)
+        stored = context['historical_resource']
+        self.assertNotIn('ws', stored)
+        self.assertNotIn('_wind_summary', stored)
+        json.dumps(context)
+        evaluate, *_ = energy_evaluator(context, self.turbine)
+        points = [[0., 0.], [0., -600.]]
+        expected = historical_layout_simulation(
+            points, self.turbine,
+            {key: value for key, value in prepared.items() if not key.startswith('_')},
+            None, (16.505, -94.995),
+            wake_model='jensen', k_wake=.075, ct=.8, availability=.97,
+            electrical_losses=.03, rho_override=1.2)
+        self.assertEqual(evaluate(points)['aep_mwh'], expected['aep_mwh'])
 
     def test_chronological_revenue_present_only_with_pml_and_hour_of_year(self):
         options = dict(wake_model='jensen', rho_override=1.2)

@@ -4,6 +4,8 @@ import time
 import unittest
 from unittest.mock import patch
 
+import numpy as np
+
 from api import create_app
 from core.farm_mcda import generate_park_layouts
 from core.multicriteria import rank_layout_alternatives
@@ -52,8 +54,11 @@ class LayoutPipelineTests(unittest.TestCase):
 
     def test_generation_endpoint_ignores_weights_and_does_not_rank(self):
         spatial = {'sites': self.sites, 'n_virtual_sites': 1, 'spatial_sources': []}
+        prepared = copy.deepcopy(self.prepared)
+        prepared['alternatives'][0]['energy_context']['_wind_summary'] = (
+            np.array([1.0, 2.0]),)
         with patch('api.analyze_spatial_topsis_sites', return_value=spatial) as sample, patch(
-                'api.generate_park_layouts', return_value=copy.deepcopy(self.prepared)) as generate, patch(
+                'api.generate_park_layouts', return_value=prepared) as generate, patch(
                 'api.analyze_park_layouts', side_effect=AssertionError('Combined legacy pipeline used')), patch(
                 'api.rank_sites_turbines', side_effect=AssertionError('Site ranking used')):
             response = self.client.post('/api/farm/layouts/generate', json={
@@ -70,6 +75,8 @@ class LayoutPipelineTests(unittest.TestCase):
                 time.sleep(.01)
             self.assertEqual(task['status'], 'done', task)
             self.assertIsNone(task['result'].get('ranking'))
+            self.assertEqual(task['result']['alternatives'][0]['energy_context']['_wind_summary'],
+                             [[1.0, 2.0]])
             self.assertNotIn('weights', generate.call_args.kwargs)
             self.assertEqual(generate.call_args.kwargs['max_slope_deg'], 0)
             self.assertEqual(generate.call_args.kwargs['electrical_losses'], 0)

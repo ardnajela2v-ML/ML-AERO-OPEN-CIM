@@ -1,0 +1,99 @@
+{
+  "status": "passed",
+  "pywake_version": "2.6.19",
+  "numpy_version": "2.0.2",
+  "speed_atol_ms": 1e-10,
+  "power_atol_kw": 1e-07,
+  "results": [
+    {
+      "case": "aligned",
+      "dy_m": 0.0,
+      "max_speed_error_ms": 8.881784197001252e-16,
+      "max_power_error_kw": 2.2737367544323206e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": -34.75,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 4.547473508864641e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": -78.75,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 6.821210263296962e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": -101.25,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": -122.75,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 6.821210263296962e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": 34.75,
+      "max_speed_error_ms": 8.881784197001252e-16,
+      "max_power_error_kw": 3.410605131648481e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": 78.75,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 6.821210263296962e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": 101.25,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 6.821210263296962e-13
+    },
+    {
+      "case": "partial_overlap",
+      "dy_m": 122.75,
+      "max_speed_error_ms": 1.7763568394002505e-15,
+      "max_power_error_kw": 6.821210263296962e-13
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": -123.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": -124.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": -168.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": 123.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": 124.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    },
+    {
+      "case": "outside_wake",
+      "dy_m": 168.75,
+      "max_speed_error_ms": 0.0,
+      "max_power_error_kw": 0.0
+    }
+  ]
+}

@@ -61,6 +61,14 @@ test('comparison dispatches selected ranked model rather than an unrelated wind 
   assert.equal(run('window.dispatched'), 'selected.csv');
 });
 
+test('saved layouts from the old search require regeneration before ranking', () => {
+  const {run} = context();
+  run("MCDA.scope='area'; MCDA.lastSpatial={analysis_kind:'farm_layout_candidates_v1', alternatives:[]};");
+  assert.equal(run('mcdaNeedsLayoutRegeneration()'), true);
+  run("MCDA.lastSpatial.layout_search_revision='shared_geometry_v1';");
+  assert.equal(run('mcdaNeedsLayoutRegeneration()'), false);
+});
+
 test('map synchronization uses energetic NNW, preserves north zero and ignores grid rotation', () => {
   const {run, element} = context();
   element('parque-wake-dir').value = '270';

@@ -18,7 +18,7 @@ import pandas as pd
 from scipy.cluster.hierarchy import linkage as scipy_linkage
 from scipy.spatial.distance import squareform
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date as date_cls
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify, send_file, render_template, g
@@ -62,7 +62,7 @@ def _cached_list_files(folder):
 
 from config import Config
 from core.resource_period import period_options, select_period
-from core.sensitivity import wake_loss_range
+from core.sensitivity import wake_loss_range, compare_layout_scenarios
 from core.ahp import calculate_ahp
 from core.ml_validation import rf_cv_feature_importance
 from core.cache import bytes_hash, file_signature, get_or_compute, stable_hash, timed
@@ -346,7 +346,7 @@ def create_app():
                 return None
             return obj
         if isinstance(obj, dict): return {k: numpy_to_python(v) for k, v in obj.items()}
-        if isinstance(obj, list): return [numpy_to_python(i) for i in obj]
+        if isinstance(obj, (list, tuple)): return [numpy_to_python(i) for i in obj]
         return obj
 
     PROJECT_FORMAT = 'aero-open-cim-project'
@@ -1906,12 +1906,24 @@ def create_app():
         return v
 
     def _store_fixed_pml_profile(sess, *, source_key, meta, profile,
-                                 normalization, base_year=2018):
-        """Publica el PML observado de 2018 como perfil fijo, sin modelos."""
+                                 normalization, base_year=2018,
+                                 timestamps=None):
+        """Publica el PML observado como perfil fijo, sin modelos.
+
+        Si hay ``timestamps``, se guardan junto al perfil para alinear con
+        viento/despacho (archivos CENACE con fecha,hora).
+        """
         park = sess.setdefault('park_configuration', _default_park_configuration())
         horizon = int(park.get('project_horizon_years', 25))
         start_year = datetime.now(timezone.utc).year
         mean_price = float(np.mean(profile))
+        ts_list = None
+        if timestamps is not None and len(timestamps) == len(profile):
+            ts_list = [str(pd.Timestamp(t)) for t in timestamps]
+            try:
+                base_year = int(pd.Timestamp(timestamps[0]).year)
+            except Exception:
+                pass
         park.setdefault('market_models', {})['pml'] = {
             'category': 'pml',
             'mode': 'fixed_2018_profile',
@@ -1925,6 +1937,7 @@ def create_app():
             'ci_low': [],
             'ci_high': [],
             'hourly_profile_2018': [float(value) for value in profile],
+            'hourly_timestamps': ts_list,
             'n_hours': int(len(profile)),
             'normalization': normalization,
             'validation': None,
@@ -1942,6 +1955,7 @@ def create_app():
                 'base_year': int(base_year),
                 'side': 'venta',
                 'modeling': 'none',
+                'has_timestamps': bool(ts_list),
             },
             'published_at': datetime.now(timezone.utc).isoformat(),
         }
@@ -4040,6 +4054,15 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/energy/layout_scenarios', methods=['POST'])
+    def energy_layout_scenarios():
+        """Compare the actual ranked layouts under common, non-probabilistic shocks."""
+        body = request.get_json(silent=True) or {}
+        try:
+            return jsonify(numpy_to_python(compare_layout_scenarios(body.get('alternatives'))))
+        except (ValueError, TypeError) as exc:
+            return _err(str(exc))
+
     @app.route('/api/energy/global_sensitivity_batch', methods=['POST'])
     def energy_global_sensitivity_batch():
         """
@@ -5592,6 +5615,10 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/farm/layouts/revision', methods=['GET'])
+    def farm_layouts_revision():
+        return jsonify({'layout_search_revision': 'shared_geometry_v1'})
+
     @app.route('/api/farm/layouts/generate', methods=['POST'])
     @app.route('/api/multicriteria/spatial', methods=['POST'])
     @limiter.limit('5 per minute')
@@ -6008,20 +6035,33 @@ def create_app():
         except Exception:
             pass
 
-        # Intentar PML (dos columnas: compra, venta)
+        # Intentar PML (compra/venta; con o sin fecha,hora)
         if category == 'pml':
             try:
                 data = read_pml(fpath)
+                has_ts = data.get('timestamps') is not None
                 meta = {
-                    'format': 'pml_two_col',
+                    'format': 'pml_dated' if has_ts else 'pml_two_col',
                     'filename': fname,
                     'category': 'pml',
-                    'unit': '$/kWh',
+                    'unit': 'USD/kWh' if has_ts else '$/kWh',
                     'label': 'PML (compra/venta)',
                     'n_rows': len(data['compra']),
+                    'has_timestamps': has_ts,
                 }
-                return {'compra': data['compra'].tolist(),
-                        'venta': data['venta'].tolist()}, meta
+                if has_ts and len(data['timestamps']):
+                    meta['date_range'] = [
+                        str(pd.Timestamp(data['timestamps'][0])),
+                        str(pd.Timestamp(data['timestamps'][-1])),
+                    ]
+                payload = {
+                    'compra': data['compra'].tolist(),
+                    'venta': data['venta'].tolist(),
+                }
+                if has_ts:
+                    payload['timestamps'] = [
+                        str(pd.Timestamp(t)) for t in data['timestamps']]
+                return payload, meta
             except Exception:
                 pass
 
@@ -6359,45 +6399,73 @@ def create_app():
                 return jsonify({'error': f'Archivo no encontrado: {meta["file"]}'}), 404
             data = read_pml(fpath)
             sess.setdefault('pml', {})
-            sess['pml'][key] = {'compra': data['compra'].tolist(),
-                                 'venta':  data['venta'].tolist(),
-                                 'meta':   meta}
+            entry = {
+                'compra': data['compra'].tolist(),
+                'venta':  data['venta'].tolist(),
+                'meta':   meta,
+            }
+            if data.get('timestamps') is not None:
+                entry['timestamps'] = [
+                    str(pd.Timestamp(t)) for t in data['timestamps']]
+            sess['pml'][key] = entry
             pml_data = sess['pml'][key]
 
         try:
+            ts_raw = None
             if isinstance(pml_data, dict) and 'compra' in pml_data:
                 compra_raw = np.asarray(pml_data['compra'], dtype=float)
                 venta_raw  = np.asarray(pml_data['venta'], dtype=float)
+                if pml_data.get('timestamps'):
+                    ts_raw = np.asarray(
+                        pd.to_datetime(pml_data['timestamps']),
+                        dtype='datetime64[ns]')
             else:
                 # Single-column fallback — treat as venta
                 vals = np.asarray(pml_data if isinstance(pml_data, np.ndarray) else pml_data, dtype=float)
                 compra_raw = venta_raw = vals
 
-            compra, compra_norm = normalize_fixed_hourly_profile(compra_raw)
-            venta, venta_norm = normalize_fixed_hourly_profile(venta_raw)
+            compra, ts_compra, compra_norm = normalize_fixed_hourly_profile(
+                compra_raw, timestamps=ts_raw)
+            venta, ts_venta, venta_norm = normalize_fixed_hourly_profile(
+                venta_raw, timestamps=ts_raw)
+            ts_used = ts_venta if ts_venta is not None else ts_compra
 
             stats_compra, hit_compra = get_or_compute(
                 'market_stats',
-                ('base-year-stats-v2-2018', _array_cache_signature(compra, {'category': 'pml', 'key': key, 'side': 'compra'})),
-                lambda: base_year_stats(compra),
+                ('base-year-stats-v3', _array_cache_signature(compra, {'category': 'pml', 'key': key, 'side': 'compra', 'ts': bool(ts_used is not None)})),
+                lambda: base_year_stats(compra, timestamps=ts_compra),
             )
             stats_venta, hit_venta = get_or_compute(
                 'market_stats',
-                ('base-year-stats-v2-2018', _array_cache_signature(venta, {'category': 'pml', 'key': key, 'side': 'venta'})),
-                lambda: base_year_stats(venta),
+                ('base-year-stats-v3', _array_cache_signature(venta, {'category': 'pml', 'key': key, 'side': 'venta', 'ts': bool(ts_used is not None)})),
+                lambda: base_year_stats(venta, timestamps=ts_venta),
             )
             stats_compra = dict(stats_compra)
             stats_venta = dict(stats_venta)
             stats_compra['cache_hit'] = bool(hit_compra)
             stats_venta['cache_hit'] = bool(hit_venta)
+            base_year = 2018
+            if ts_used is not None and len(ts_used):
+                base_year = int(pd.Timestamp(ts_used[0]).year)
+            if meta is None:
+                meta = {}
+            if ts_used is not None:
+                meta = dict(meta)
+                meta['unit'] = meta.get('unit') or 'USD/kWh'
+                meta['has_timestamps'] = True
             _store_fixed_pml_profile(
                 sess, source_key=key, meta=meta, profile=venta,
-                normalization=venta_norm, base_year=2018)
-            daily_venta = venta.reshape(365, 24).mean(axis=1)
+                normalization=venta_norm, base_year=base_year,
+                timestamps=ts_used)
+            n_days = max(1, len(venta) // 24)
+            daily_venta = venta[:n_days * 24].reshape(n_days, 24).mean(axis=1)
+            sample_ts = None
+            if ts_used is not None:
+                sample_ts = [str(pd.Timestamp(t)) for t in ts_used[:24]]
             return jsonify(numpy_to_python({
                 'preset': key, 'meta': meta,
                 'mode': 'fixed_2018_profile',
-                'base_year': 2018,
+                'base_year': base_year,
                 'side_used_in_project': 'venta',
                 'stats_compra': stats_compra,
                 'stats_venta':  stats_venta,
@@ -6406,6 +6474,8 @@ def create_app():
                     'venta': venta_norm,
                 },
                 'profile_2018': venta.tolist(),
+                'timestamps_sample': sample_ts,
+                'has_timestamps': ts_used is not None,
                 'daily_mean_venta': daily_venta.tolist(),
                 'replication': {
                     'horizon_years': int((sess.get('park_configuration') or {}).get('project_horizon_years', 25)),
@@ -6415,10 +6485,139 @@ def create_app():
                 'sample_first_24h': {
                     'compra': compra[:24].tolist(),
                     'venta':  venta[:24].tolist(),
+                    'timestamps': sample_ts,
                 },
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
             return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/pml/cenace/search', methods=['POST'])
+    def pml_cenace_search():
+        """Busca variantes de NodoP/subestación en el SW-PML del CENACE."""
+        from core.cenace_pml import buscar_variantes_nodo, WINDPRO_PML_FORMAT_NOTE
+        body = request.get_json(silent=True) or {}
+        base = str(body.get('query') or body.get('base') or '').strip()
+        if not base:
+            return jsonify({'error': 'Indica query (ej. JUD o Juchitán → JUD)'}), 400
+        # Si el usuario pegó una clave completa, también la probamos tal cual
+        sistema = str(body.get('sistema') or 'SIN')
+        voltaje = str(body.get('voltaje') or '115')
+        try:
+            encontrados = buscar_variantes_nodo(base, sistema=sistema, voltaje=voltaje)
+            # También aceptar claves ya completas tipo 02JUD-115
+            raw = base.upper().replace(' ', '')
+            if raw not in encontrados and ('-' in raw or raw[:2].isdigit()):
+                from core.cenace_pml import consultar_bloque, extraer_filas
+                from datetime import timedelta
+                probe = date_cls.today() - timedelta(days=7)
+                data = consultar_bloque(sistema, 'MDA', raw, probe, probe, intentos=1)
+                if extraer_filas(data, raw):
+                    encontrados.insert(0, raw)
+            return jsonify({
+                'query': base,
+                'nodos': encontrados,
+                'format_note': WINDPRO_PML_FORMAT_NOTE,
+                'hint': (
+                    'Elige un NodoP y llama /api/pml/cenace/fetch para generar '
+                    'el archivo fecha,hora,compra,venta en USD/kWh.'
+                ),
+            })
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/pml/cenace/fetch', methods=['POST'])
+    def pml_cenace_fetch():
+        """Descarga PML de un NodoP, convierte a USD/kWh y guarda en mercado_pml
+        con fechas (formato fecha,hora,compra,venta)."""
+        from core.cenace_pml import exportar_nodo_a_mercado_pml, WINDPRO_PML_FORMAT_NOTE
+        body = request.get_json(silent=True) or {}
+        sid = body.get('session_id')
+        nodo = str(body.get('nodo') or '').strip()
+        if not nodo:
+            return jsonify({'error': 'Indica nodo (ej. 02JUD-115)'}), 400
+        try:
+            anio_ini = int(body.get('anio_inicio') or body.get('year') or 2018)
+            anio_fin = int(body.get('anio_fin') or anio_ini)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'anio_inicio/anio_fin inválidos'}), 400
+        if body.get('fecha_inicio') and body.get('fecha_fin'):
+            fecha_ini = date_cls.fromisoformat(str(body['fecha_inicio'])[:10])
+            fecha_fin = date_cls.fromisoformat(str(body['fecha_fin'])[:10])
+        else:
+            fecha_ini = date_cls(anio_ini, 1, 1)
+            fecha_fin = date_cls(anio_fin, 12, 31)
+
+        fx_path = body.get('fx_path') or os.path.join(
+            Config.FX_FOLDER, 'USDMXN_HISTORICO.txt')
+        if not os.path.isfile(fx_path):
+            return jsonify({
+                'error': f'No se encontró tipo de cambio en {fx_path}. '
+                         'Deposita USDMXN_HISTORICO.txt en mercado_fx/.',
+            }), 400
+
+        out_dir = Config.PML_FOLDER
+        os.makedirs(out_dir, exist_ok=True)
+        try:
+            result = exportar_nodo_a_mercado_pml(
+                nodo, fecha_ini, fecha_fin,
+                carpeta_salida=out_dir,
+                fx_path=fx_path,
+                banxico_token=body.get('banxico_token') or os.environ.get('BANXICO_TOKEN'),
+                sistema=str(body.get('sistema') or 'SIN'),
+                proceso=str(body.get('proceso') or 'MDA'),
+                espera=float(body.get('espera') or 0.8),
+            )
+        except Exception as e:
+            logger.exception('Error descargando PML CENACE')
+            return jsonify({'error': str(e)}), 502
+
+        # Registrar como preset conocido y, si hay sesión, cargarlo
+        preset_key = _slugify_preset_key(os.path.splitext(result['file'])[0])
+        result['preset'] = preset_key
+        result['format'] = WINDPRO_PML_FORMAT_NOTE
+
+        if sid:
+            try:
+                sess = get_session(sid)
+                meta = {
+                    'file': result['file'],
+                    'path': result['path'],
+                    'label': f"PML {nodo} {result['fecha_inicio'][:4]} (USD/kWh)",
+                    'unit': 'USD/kWh',
+                    'kind': 'pml',
+                }
+                data = read_pml(result['path'])
+                sess.setdefault('pml', {})
+                entry = {
+                    'compra': data['compra'].tolist(),
+                    'venta': data['venta'].tolist(),
+                    'meta': meta,
+                }
+                if data.get('timestamps') is not None:
+                    entry['timestamps'] = [
+                        str(pd.Timestamp(t)) for t in data['timestamps']]
+                sess['pml'][preset_key] = entry
+                # Publicar en park configuration
+                compra, ts_c, _ = normalize_fixed_hourly_profile(
+                    data['compra'], timestamps=data.get('timestamps'))
+                venta, ts_v, venta_norm = normalize_fixed_hourly_profile(
+                    data['venta'], timestamps=data.get('timestamps'))
+                ts_used = ts_v if ts_v is not None else ts_c
+                by = int(pd.Timestamp(ts_used[0]).year) if ts_used is not None else anio_ini
+                _store_fixed_pml_profile(
+                    sess, source_key=preset_key, meta=meta, profile=venta,
+                    normalization=venta_norm, base_year=by, timestamps=ts_used)
+                park = sess.get('park_configuration') or {}
+                park['pml_node'] = nodo
+                sess['park_configuration'] = park
+                result['loaded_in_session'] = True
+            except Exception as e:
+                logger.exception('PML descargado pero no se pudo cargar en sesión')
+                result['loaded_in_session'] = False
+                result['load_warning'] = str(e)
+
+        return jsonify(numpy_to_python(result))
 
     return app
