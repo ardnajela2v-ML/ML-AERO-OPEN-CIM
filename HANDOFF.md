@@ -145,7 +145,25 @@ Rutas clave de los datos utilizados:
 
 ## 7. Aspectos sin verificar
 
-* **[sin verificar]:** La convención exacta de etiquetado del remuestreo de WindMCP de 10 min a 1 h: ¿cada hora rotula el inicio $[h, h+1)$ o el final $(h−1, h]$? Esto queda pendiente y es lo primero que se debe auditar en `windmcp/data.py::resample_hourly` al iniciar la Fase 2 antes de alinear con el PML.
+* **[resuelto parcialmente, ver sección 8]:** La convención exacta de etiquetado del remuestreo de WindMCP de 10 min a 1 h se auditó con `tools/audit_timing.py`. No se encontró evidencia suficiente de un desfase de hora entera; sí se documentó un desfase menor y específico de ERA5 que queda como limitación conocida, no como corrección aplicada.
+
+---
+
+## 8. Auditoría de tiempos
+
+Auditoría de solo lectura ejecutada con `tools/audit_timing.py` (no modifica `windmcp/` ni `core/`). Compara la velocidad observada a 80 m (CERTE M04, reloj UTC−6 fijo) contra MERRA-2 (`UnionWindnavigator_MERRA2_N16,500_W95,000.txt`) y ERA5 (`Dosarbolitos_ERA5_N16,500_W95,000.txt`) — verificado programáticamente que son los mismos dos archivos de referencia del run MCP activo `20260926T185148Z_f23fc01b`. Salidas completas en `tools/audit_timing_output/` (`lag_sweep.csv`, `subhour_sweep.csv`, `solar_peak_by_month.csv`, `direction_lag_sweep.csv`, `bootstrap_lag_diff.csv`, `summary.txt`).
+
+**Resultados por prueba:**
+
+1. **Barrido de lag entero (−3h a +3h), por año × fuente × filtro de completitud × temporada.** ERA5 da mejor ajuste en lag=−1h de forma consistente (2019: r=0.8865 vs r=0.8836 en lag=0; 2020: r=0.6867 vs r=0.6842), en ambas temporadas (abr–oct y nov–mar) y en las 4 variantes de completitud (sin filtro, ≥4/6, ≥5/6, ==6/6 — el umbral no cambia la conclusión). MERRA-2 **no** replica el patrón: mejor lag=0h en 2019, mejor lag=+1h en 2020. Si el problema fuera el reloj del logger CERTE, debería afectar a ambas referencias por igual; que solo ERA5 lo muestre apunta a algo específico de esa fuente, no a la torre.
+2. **Fracciones de hora (interpolación fina ±60 min, solo ERA5).** El pico de ajuste cae en +30 a +40 min, no en +60 min — consistente con el efecto esperable de comparar un promedio horario (caja) contra una serie instantánea (el punto medio del intervalo es la mejor aproximación puntual de un promedio de caja de una señal suave). El promedio trapezoidal `(ERA5(T)+ERA5(T+1h))/2` — la comparación correcta caja-vs-instantáneo — sigue preferiendo lag=−1h (r=0.8874) sobre lag=0 (r=0.8802): el efecto de promediado no explica todo el desfase, pero tampoco hay una hora entera "perdida" de forma limpia.
+3. **Hora local del pico de radiación solar, por mes.** Pico a las 12:00 local en los 12 meses del año sin excepción — **descarta que el reloj de la torre siguiera horario de verano**; se confirma reloj UTC−6 fijo todo el año.
+4. **Dirección (78 m obs vs dirección de referencia, estadística circular).** La señal es mucho más débil que en velocidad: ERA5 2019 agreement=0.8173 (lag=−1) vs 0.8151 (lag=0), diferencia de 0.002 sobre una escala de ruido circular con RMSE de 40–52°. MERRA-2 2020 no se mueve entre lags (0.7169 en ambos). Solo ERA5 arrastra el patrón a dirección; MERRA-2 no.
+5. **Significancia (bootstrap por bloques de día, n=1000, seed=12345).** ERA5 2019: diff observado r(−1h)−r(0h)=+0.0029, IC95%=[+0.0003, +0.0056] → **significativo**. ERA5 2020: diff=+0.0026, IC95%=[−0.0005, +0.0057] → no significativo (potencia estadística menor: 215 días completos vs 291 en 2019, coherente con la completitud horaria más baja de 2020: 58.3% vs 79.0% de horas 6/6). MERRA-2 no significativo en ningún año y con signo de diff negativo en ambos (buen control negativo).
+
+**Conclusión:** Sin evidencia suficiente para corregir ERA5: mejora de r ≈ 0.003, significativa solo en 2019, el ajuste fino no apunta a 1 h entera, y ERA5 solo afecta la dirección. Queda como limitación documentada. Reloj de torre UTC−6 fijo confirmado.
+
+No se modificó ningún archivo de `windmcp/` ni `core/` como resultado de esta auditoría.
 
 ---
 
