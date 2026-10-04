@@ -48,3 +48,6 @@ logs/
 
 # Claude Code (worktrees y estado local)
 .claude/
+
+# Carpetas temporales
+Sin título/

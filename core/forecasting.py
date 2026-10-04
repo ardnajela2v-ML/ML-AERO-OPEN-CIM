@@ -6,6 +6,21 @@ modelado ni escalamiento.
 
 Formatos PML admitidos
 ----------------------
+0) CENACE tabulado con fechas (formato nuevo, separador tabulador):
+
+    nodo    fecha       hora  pml     tipo_cambio_fix  pml_usd_mwh  pml_usd_kwh
+    02JUD-115  01/01/17  1  1077.03  20.6194  52.2338  0.052234
+
+   ``fecha`` es DD/MM/YY (o DD/MM/YYYY). ``hora`` es 1–24; en domingos de
+   octubre (2017–2022, México) aparece ``hora=25`` (hora extra por regreso del
+   horario de verano). Los timestamps se construyen como::
+
+       naive_local = date(fecha) + timedelta(hours=hora - 1)
+       ts_utc = tz_localize('America/Mexico_City', ambiguous=…).tz_convert('UTC')
+
+   La fila de resumen final (sin fecha válida o ``nodo`` vacío) se ignora.
+   La columna ``pml_usd_kwh`` se mapea a compra = venta.
+
 1) Con fechas (preferido, export CENACE → WindPro)::
 
     fecha,hora,compra,venta
@@ -20,11 +35,15 @@ Formatos PML admitidos
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers for legacy (comma-separated) formats
+# ──────────────────────────────────────────────────────────────────────────────
 
 def read_one_column(path):
     """Lee un archivo de texto con un valor numérico por línea."""
@@ -56,12 +75,156 @@ def _cenace_hora_to_timestamp(day: datetime, hora: int) -> datetime:
     return day + timedelta(hours=max(0, int(hora) - 1))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Format 0: CENACE tabulated (tab-sep, DD/MM/YY dates, pml_usd_kwh column)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_CENACE_TAB_REQUIRED = {'fecha', 'hora', 'pml_usd_kwh'}
+
+
+def _is_cenace_tabulated(path: str) -> bool:
+    """Return True if the file looks like the CENACE tabulado export.
+
+    Detection: first non-empty line must be tab-separated and contain the
+    mandatory column names ``fecha``, ``hora`` and ``pml_usd_kwh``.
+    """
+    with open(path, 'r', encoding='utf-8', errors='ignore') as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = [p.strip().lower() for p in line.split('\t')]
+            return _CENACE_TAB_REQUIRED.issubset(set(parts))
+    return False
+
+
+def _read_cenace_tabulated(path: str) -> dict:
+    """Parse a CENACE tabulated PML export and return the standard dict.
+
+    Timestamp construction
+    ~~~~~~~~~~~~~~~~~~~~~~
+    The file stores local *Mexico City* time (UTC−6 in winter, UTC−5 in
+    summer with DST applied 2017–2022; no DST 2023+).
+
+    For each row:
+        naive_local = date(fecha) + timedelta(hours=hora - 1)
+
+    Spring-forward (23-hour day): hora skips from 2 to 4, so no gap is
+    introduced by this function — the source simply has no row for that hour.
+
+    Autumn fallback (25-hour day): hora=25 maps to naive_local = date + 24h,
+    i.e. 00:00 of the *next* civil day.  pandas ``tz_localize`` with
+    ``ambiguous=True`` forces that hour to be treated as the DST-off (standard
+    time) occurrence, which is the correct CENACE interpretation.
+
+    All resulting timestamps are converted to UTC and stored as
+    ``datetime64[ns, UTC]``.
+    """
+    # ------------------------------------------------------------------
+    # 1. Read raw table; skip summary footer (missing fecha or nodo)
+    # ------------------------------------------------------------------
+    try:
+        raw = pd.read_csv(
+            path,
+            sep='\t',
+            encoding='utf-8',
+            dtype=str,   # keep everything as str first
+        )
+    except Exception:
+        raw = pd.read_csv(
+            path,
+            sep='\t',
+            encoding='latin-1',
+            dtype=str,
+        )
+    raw.columns = [c.strip().lower() for c in raw.columns]
+
+    # Drop the summary footer: rows where fecha is blank or not parseable
+    fecha_series = raw['fecha'].astype(str).str.strip()
+    hora_series = raw['hora'].astype(str).str.strip()
+    valid_rows = (
+        fecha_series.str.match(r'\d{2}/\d{2}/\d{2,4}') &
+        hora_series.str.match(r'^\d+$')
+    )
+    raw = raw.loc[valid_rows].copy()
+
+    if raw.empty:
+        return {
+            'compra': np.array([], dtype=float),
+            'venta': np.array([], dtype=float),
+            'timestamps': None,
+            'timestamps_utc': None,
+        }
+
+    # ------------------------------------------------------------------
+    # 2. Parse fecha + hora -> UTC timestamps
+    # ------------------------------------------------------------------
+    # Regla: construir timestamps UTC como medianoche local
+    # (America/Mexico_City) convertida a UTC más (hora - 1) horas.
+    # No se trata la hora 25 como hora 24 del día siguiente.
+    dates = pd.to_datetime(raw['fecha'].str.strip(), format='%d/%m/%y', errors='coerce')
+    mask_bad = dates.isna()
+    if mask_bad.any():
+        dates[mask_bad] = pd.to_datetime(
+            raw.loc[mask_bad, 'fecha'].str.strip(), format='%d/%m/%Y', errors='coerce'
+        )
+
+    horas = pd.to_numeric(raw['hora'].str.strip(), errors='coerce').astype(int)
+
+    # Local midnight (America/Mexico_City) convertida a UTC
+    unique_dates = pd.DatetimeIndex(dates.dropna().unique())
+    try:
+        mid_local = unique_dates.tz_localize(
+            'America/Mexico_City',
+            ambiguous='infer',
+            nonexistent='shift_forward',
+        )
+    except Exception:
+        mid_local = unique_dates.tz_localize('Etc/GMT+6')
+    mid_utc = mid_local.tz_convert('UTC')
+    date_to_utc_mid = dict(zip(unique_dates, mid_utc))
+
+    mid_utc_series = dates.map(date_to_utc_mid)
+    ts_utc = mid_utc_series + pd.to_timedelta(horas - 1, unit='h')
+
+    # ------------------------------------------------------------------
+    # 3. Extract price; map pml_usd_kwh -> compra = venta
+    # ------------------------------------------------------------------
+    if 'pml_usd_kwh' in raw.columns:
+        price = pd.to_numeric(raw['pml_usd_kwh'].str.strip(), errors='coerce')
+    elif 'pml_usd_mwh' in raw.columns:
+        price = pd.to_numeric(raw['pml_usd_mwh'].str.strip(), errors='coerce') / 1000.0
+    elif 'pml' in raw.columns and 'tipo_cambio_fix' in raw.columns:
+        pml_mxn = pd.to_numeric(raw['pml'].str.strip(), errors='coerce')
+        fx = pd.to_numeric(raw['tipo_cambio_fix'].str.strip(), errors='coerce')
+        price = (pml_mxn / fx) / 1000.0
+    else:
+        price = pd.to_numeric(raw.iloc[:, -1].str.strip(), errors='coerce')
+
+    keep = price.notna() & ts_utc.notna()
+    price_clean = price[keep].values.astype(float)
+    ts_utc_clean = pd.DatetimeIndex(ts_utc[keep])
+
+    # Array compatible con numpy datetime64[ns] (sin tz pero en tiempo UTC)
+    ts_naive = ts_utc_clean.tz_localize(None)
+
+    return {
+        'compra': price_clean,
+        'venta': price_clean,
+        'timestamps': np.array(ts_naive, dtype='datetime64[ns]'),
+        'timestamps_utc': ts_utc_clean,
+    }
+
+
 def read_pml(path):
     """Lee un archivo PML con columnas compra, venta.
 
     Si el archivo trae ``fecha`` y ``hora`` (cabecera o detectadas), también
     devuelve ``timestamps`` (array datetime64) alineado fila a fila.
     """
+    if _is_cenace_tabulated(path):
+        return _read_cenace_tabulated(path)
+
     compra, venta, timestamps = [], [], []
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
         lines = [ln.strip() for ln in f if ln.strip()]
