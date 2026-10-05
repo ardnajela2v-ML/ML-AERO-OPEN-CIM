@@ -1,0 +1,20 @@
+VALIDACION DE CAPTURA 2020 -- CORRIGIENDO EL SENSOR WS_80mB_mean TRABADO
+========================================================================
+
+-- i_excluye_horas_trabadas -- meses=1,2,6,7,8,9, n_hours=2313
+  observado        -> precio capturado=0.027505 USD/kWh, capture_ratio=0.8571, aep=5345.0 MWh/año(anualizado)
+  predicho (MERRA-2) -> precio capturado=0.027358 USD/kWh, capture_ratio=0.8526, aep=5978.7 MWh/año(anualizado)
+  diferencia precio capturado (predicho - observado): -0.53%
+  diferencia AEP (predicho - observado): +11.86%
+
+-- ii_sustituye_80mA_en_ventana -- meses=1,2,3,4,5,6,7,8,9, n_hours=5105
+  observado        -> precio capturado=0.025865 USD/kWh, capture_ratio=0.806, aep=7372.1 MWh/año(anualizado)
+  predicho (MERRA-2) -> precio capturado=0.025935 USD/kWh, capture_ratio=0.8082, aep=7787.1 MWh/año(anualizado)
+  diferencia precio capturado (predicho - observado): +0.27%
+  diferencia AEP (predicho - observado): +5.63%
+
+-- Bootstrap por bloques de día --
+  i_excluye_horas_trabadas     | correlation_ws_obs_pred                  -> observado=+0.68084, IC95%=[+0.62427, +0.72816], significativo: SI (n_dias=104)
+  i_excluye_horas_trabadas     | capture_price_diff_pred_minus_obs_usd_kwh -> observado=-0.00015, IC95%=[-0.00076, +0.00047], significativo: no (n_dias=104)
+  ii_sustituye_80mA_en_ventana | correlation_ws_obs_pred                  -> observado=+0.86435, IC95%=[+0.83761, +0.88854], significativo: SI (n_dias=215)
+  ii_sustituye_80mA_en_ventana | capture_price_diff_pred_minus_obs_usd_kwh -> observado=+0.00007, IC95%=[-0.00024, +0.00038], significativo: no (n_dias=215)

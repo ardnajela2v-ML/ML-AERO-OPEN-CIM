@@ -136,7 +136,7 @@ Rutas clave de los datos utilizados:
 
 ## 6. Lo que NO se ha hecho
 
-* **Fase 2 no iniciada:** No se ha calculado el precio capturado horario ni se ha realizado el cruce con las series de viento observado o predicho.
+* **Validación de captura (antes "Fase 2"), primer corte hecho:** ver sección 9 — precio capturado 2019/2020 calculado y cruzado, con el hallazgo del sensor WS_80mB_mean. Pendiente: 2018 como referencia dentro de muestra, y decidir si el bootstrap/razón de captura final usa la versión (i) o (ii) de 2020.
 * **Economía intacta:** No se modificó `core/project_economics.py` ni `core/farm.py`.
 * **API sin modificar:** No se alteraron endpoints de `api.py`.
 * **Caso de estudio no modificado:** No se ha alterado la configuración guardada dentro de `PARQEU1.aeroproj`.
@@ -164,6 +164,28 @@ Auditoría de solo lectura ejecutada con `tools/audit_timing.py` (no modifica `w
 **Conclusión:** Sin evidencia suficiente para corregir ERA5: mejora de r ≈ 0.003, significativa solo en 2019, el ajuste fino no apunta a 1 h entera, y ERA5 solo afecta la dirección. Queda como limitación documentada. Reloj de torre UTC−6 fijo confirmado.
 
 No se modificó ningún archivo de `windmcp/` ni `core/` como resultado de esta auditoría.
+
+---
+
+## 9. Sensor WS_80mB_mean trabado en 2020 y validación de captura
+
+Al intentar validar el precio capturado (ver sección "Decisiones del usuario" más abajo) con `tools/capture_validation.py` — observado vs predicho MERRA-2, reutilizando `core/farm.py::chronological_revenue`, solo horas CERTE 6/6, modelo real de producción `ml_random_forest` (verificado contra `result.json::speed_model_selection`, no confundir con el archivo `_ml_forward.csv`, que es de una comparación ML-only distinta que elige `ml_gradient_boosting` y no se usa para reconstrucción) — 2020 mostró un AEP predicho más del doble del observado (7787 vs 3802 MWh/año) y una correlación mucho más baja que 2019 (0.673 vs 0.874).
+
+**Causa encontrada:** `WS_80mB_mean` (uno de los dos sensores redundantes a 80 m) quedó trabado en ~0.21 m/s desde 2020-01-03 18:40 UTC hasta 2020-05-01 06:00 UTC (se recupera en junio). `WS_80mA_mean`, `WS_60m_mean`, `WS_40m_mean` y `WS_20m_mean` están sanos durante toda la ventana. `windmcp/data.py::_combine_height_sensors` promedia A y B asumiendo que ambos son mediciones válidas — su único filtro es "no NaN, no negativo" — y un sensor trabado pero numéricamente "válido" (0.21 no es NaN) pasa ese filtro y se promedia con el bueno, contaminando `WS_80m_mean` (el target real de entrenamiento/validación del MCP) a aproximadamente la mitad del valor real durante esos meses. **No se modificó `windmcp/data.py`** — esto queda señalado como una limitación de `_combine_height_sensors` (no detecta sensores "pegados", solo NaN/negativos), no corregido.
+
+Se verificó con datos, no se asumió, que `WS_80mA_mean` sigue siendo confiable: el exponente de cizalladura (ley de potencia, ajustado sobre 20/40/60/80mA) es estable entre años — 2018: α=0.183, 2019: α=0.192, 2020: α=0.183 (n=8746, 6925 y 5120 horas respectivamente) — sin distorsión en 2020 a pesar del sensor B trabado.
+
+**Dos validaciones de captura para 2020, reutilizando `chronological_revenue` y el PML JUD (`tools/capture_validation_2020_sensor_fix.py`):**
+
+| Versión | Meses cubiertos | n horas | r(ws obs,pred) | Δ precio capturado | Δ AEP |
+|---|---|---|---|---|---|
+| Sin corregir (contaminado) | ene-sep | 5105 | 0.673 | -1.13% | **+105%** |
+| (i) excluye horas con 80mB trabado | ene,feb,jun-sep (**sin mar-abr-may**) | 2313 | 0.681 | -0.53% | +11.9% |
+| (ii) sustituye por 80mA solo en la ventana trabada | ene-sep completo | 5105 | **0.864** | +0.27% | **+5.6%** |
+
+La versión (ii) recupera una correlación casi igual a la de 2019 (0.874) y reduce el sesgo de AEP de +105% a +5.6% — confirma que el problema era mayormente de calidad de dato en la referencia observada, no una falla real de generalización del modelo MCP a 2020. El bootstrap por bloques de día (n=1000) no encuentra diferencia significativa en el precio capturado en ninguna de las dos versiones corregidas (IC95% incluye 0).
+
+No se modificó `windmcp/`, `core/` ni `runs/mcp/` (el run oficial) en esta sección; todo vive en `tools/capture_validation.py`, `tools/capture_validation_2020_sensor_fix.py` y sus carpetas `_output/`.
 
 ---
 

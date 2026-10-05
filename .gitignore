@@ -33,6 +33,10 @@ saved_models/*
 !uploads/.gitkeep
 !saved_models/.gitkeep
 
+# Corridas MCP completas generadas por tools/ (reproducibles con el script;
+# historical_reconstruction.csv/historical_turbulence.csv pesan ~200MB)
+tools/capture_validation_output/mcp_run_test_year_2020/
+
 # IDE
 .vscode/
 .idea/

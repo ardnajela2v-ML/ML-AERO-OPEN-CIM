@@ -1,0 +1,27 @@
+VALIDACION DE CAPTURA: OBSERVADO vs PREDICHO (MERRA-2, sin lag, 6/6)
+======================================================================
+
+Turbina: Clipper 2.5 MW / 89 m (aerogeneradores/clipper25_p2500_r44.5.csv),
+elegida solo para tener una comparacion relativa consistente -- la
+magnitud absoluta de MWh/USD no es el objetivo de esta validacion.
+PML: nodo JUD, UTC (mercado_pml/PML_2017-2024 02JUD115.txt).
+
+-- Precio capturado e ingreso: observado vs predicho MERRA-2 --
+Año 2019 (n_hours=6870):
+  observado        -> precio capturado=0.059347 USD/kWh, capture_ratio=0.763, aep=9171.3 MWh/año(anualizado)
+  predicho (MERRA-2) -> precio capturado=0.059356 USD/kWh, capture_ratio=0.7631, aep=9331.7 MWh/año(anualizado)
+  diferencia precio capturado (predicho - observado): +0.02%
+Año 2020 (n_hours=5105):
+  observado        -> precio capturado=0.026231 USD/kWh, capture_ratio=0.8174, aep=3802.4 MWh/año(anualizado)
+  predicho (MERRA-2) -> precio capturado=0.025935 USD/kWh, capture_ratio=0.8082, aep=7787.1 MWh/año(anualizado)
+  diferencia precio capturado (predicho - observado): -1.13%
+
+-- Sesgo (pred - obs) y correlación de ws por hora local (UTC-6) --
+Año 2019: hora local con mayor sesgo absoluto = 09:00 (bias=+0.358 m/s, n=285). Detalle en hourly_bias_by_local_hour.csv
+Año 2020: hora local con mayor sesgo absoluto = 08:00 (bias=+3.306 m/s, n=213). Detalle en hourly_bias_by_local_hour.csv
+
+-- Bootstrap por bloques de día (n_boot=1000, seed=20261004) --
+  2019 | correlation_ws_obs_pred                  -> observado=+0.87395, IC95%=[+0.85351, +0.89278], significativo: SI (n_dias=290)
+  2019 | capture_price_diff_pred_minus_obs_usd_kwh -> observado=+0.00001, IC95%=[-0.00107, +0.00113], significativo: no (n_dias=290)
+  2020 | correlation_ws_obs_pred                  -> observado=+0.67303, IC95%=[+0.63140, +0.71611], significativo: SI (n_dias=215)
+  2020 | capture_price_diff_pred_minus_obs_usd_kwh -> observado=-0.00030, IC95%=[-0.00096, +0.00038], significativo: no (n_dias=215)
