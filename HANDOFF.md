@@ -245,8 +245,8 @@ Sección de solo lectura/análisis (no se tocó código): mapeo del flujo real d
 > Las siguientes son propuestas para discutir, **no decisiones tomadas**:
 
 * Escenario de mercado como un año de PML común a todos los layouts de una corrida (formalizar lo que `price_hourly_usd_kwh` ya hace implícitamente, pero como parámetro explícito de la corrida en vez de "lo último cargado en la sesión").
-* Precio capturado emparejado por año, 2017–2023.
-* Energía de largo plazo usando los 44 años de la serie reconstruida.
+* Precio capturado emparejado por año, 2017–2023: **calculado, ver sección 11.b/c** (sigue siendo una propuesta no aplicada en `core`/`api.py`, el método en producción sigue siendo `hour_of_year` con un solo perfil).
+* Energía de largo plazo usando los 44 años de la serie reconstruida: **calculado, ver sección 11.d** (AEP anual, P50/P75/P90 empíricos y prueba de tendencia; tampoco aplicado todavía en el flujo de TOPSIS, que sigue usando el P90 paramétrico de un año).
 * P50, P75 y P90 separando dos fuentes de riesgo distintas: variabilidad interanual real (entre los 44 años) e incertidumbre de modelo/medición (la que ya calcula el P90 paramétrico actual) — hoy están fusionadas en un solo número.
 * Año 0 = 2024, operación 2025–2049.
 
@@ -262,6 +262,62 @@ Sección de solo lectura/análisis (no se tocó código): mapeo del flujo real d
 * ¿Las dos tablas de pesos paralelas (`DEFAULT_WEIGHTS` vs `LAYOUT_WEIGHTS`) deben unificarse, o se documenta explícitamente que son independientes por diseño (sitios-turbinas vs parques)?
 * ¿`iec_suitability_score` se retira de `LAYOUT_AUDIT_ONLY` mientras no haya datos reales del fabricante, o se deja como placeholder declarado?
 * ¿El caché del pool de `generate_feasible_layouts_grid` (hoy inexistente entre corridas con distinto precio) vale la pena implementarlo antes de correr varios escenarios de mercado, dado el costo de repetir la búsqueda de estela solo para recalcular economía?
+
+---
+
+## 11. Comparación de métodos AEP, precio capturado 2017-2023 y tendencia de 44 años
+
+Análisis de solo lectura, no se modificó `windmcp/`, `core/` ni `runs/mcp/` (el run oficial): scripts nuevos en `tools/` (`corrected_reconstruction.py`, `aep_method_comparison.py`, `capture_dated_vs_hourofyear.py`, `longterm_trend_aep.py`). Todos parten de la serie reconstruida del run activo (`20260926T185148Z_f23fc01b`) con `WS_80mA_mean` sustituido en los días marcados por el detector diario de la sección 9 (umbral 15%) — no de la `WS_80m_mean` contaminada que sigue viva sin corregir en `windmcp/`. Días sustituidos sobre todo el período CERTE: **124** (123 en 2020 + 2019-12-25), **2,946 horas** `CERTE_observed` de 391,560 totales. Verificación cruzada: la energía 2020 que da esta sustitución para la turbina de referencia (8,242.4 MWh) coincide exacto con la cifra ya reportada en la sección 9.
+
+**Nota de método para b/c/d:** donde se cita "layout de referencia", es una **turbina única en (0,0), sin estela** (Clipper 2.5 MW/89 m, altura de buje 80 m) — la misma convención que ya usaba la validación de captura de la sección 9, no uno de los 8 layouts reales de parque de PARQEU1.
+
+### a. `aep_mwh`: `simulate_wind_farm` vs `chronological_revenue`, 8 campeones de PARQEU1
+
+Geometría, curva de turbina, alturas, densidad y multiplicadores espaciales (Kriging) de cada campeón tomados tal cual del `manifest.json` de `PARQEU1.aeroproj` (`client_state.mcda.lastSpatial.alternatives`), sobre la serie corregida completa (~384,600 h válidas de 44.67 años, "all").
+
+| tecnología | `aep_mwh` simulate_wind_farm | `aep_mwh` chronological_revenue | diferencia | diferencia % |
+|---|---|---|---|---|
+| acciona15_p1500_r35 | 108,646.24 | 108,749.57 | +103.33 MWh | +0.095% |
+| acciona16_p1500_r38.5 | 106,183.62 | 106,212.67 | +29.05 MWh | +0.027% |
+| alstom30_p3000_r55 | 114,287.12 | 114,301.38 | +14.26 MWh | +0.012% |
+| clipper25_p2500_r44.5 | 111,337.02 | 111,187.42 | −149.60 MWh | **−0.134%** |
+| gamesa20_p2000_r40 | 130,397.19 | 130,450.12 | +52.93 MWh | +0.041% |
+| gamesa21_p2000_r45 | 122,716.75 | 122,705.42 | −11.33 MWh | −0.009% |
+| vestas20_p2000_r40 | 130,548.60 | 130,613.02 | +64.42 MWh | +0.049% |
+| vestas30_p3000_r45 | 135,644.95 | 135,561.09 | −83.86 MWh | −0.062% |
+
+Diferencia pequeña y sin signo consistente entre tecnologías (−0.134% a +0.095%): son dos implementaciones de estela distintas (tabla binned sector×1 m/s vs hora exacta) sobre la misma serie, no una cifra reconciliada entre sí.
+
+### b. Precio capturado 2017-2023: emparejado por fecha vs `hour_of_year` (perfil fijo 2018)
+
+Compara, para cada año, la misma energía horaria (mismo viento, misma turbina) contra dos formas de emparejar precio: (1) PML real del mismo año por timestamp UTC exacto ("fecha"), (2) el perfil fijo de 2018 del nodo 02JUD115 aplicado vía `hour_of_year(t) % 8760` a los timestamps de ese año — el método hoy vigente en `api.py`/`core/farm_mcda.py`.
+
+| año | captura (fecha) | captura (hour_of_year, perfil 2018) | Δ (puntos %) | correlación diaria energía-precio (fecha) | correlación diaria energía-precio (hour_of_year) |
+|---|---|---|---|---|---|
+| 2017 | 0.8413 | 0.9232 | +8.19 | −0.506 | −0.315 |
+| 2018 | 0.8780 | 0.8780 | 0.00 (control: mismo año) | −0.442 | −0.442 |
+| 2019 | 0.7883 | 0.9542 | +16.59 | −0.560 | −0.185 |
+| 2020 | 0.8734 | 0.9340 | +6.06 | −0.315 | −0.263 |
+| 2021 | 0.8688 | 0.9424 | +7.36 | −0.318 | −0.231 |
+| 2022 | 0.8520 | 0.9489 | +9.69 | −0.570 | −0.218 |
+| 2023 | 0.8185 | 0.9875 | +16.90 | −0.493 | −0.099 |
+
+El método `hour_of_year` con un solo perfil sobreestima la razón de captura en todos los años salvo 2018 (el propio año del perfil, que sirve de control exacto) entre +6.06 y +16.90 puntos porcentuales — pierde la correlación día-a-día real (siempre negativa en este nodo: más viento, menor precio) al imponerle la forma de 2018 al viento de otro año.
+
+### c. Razón de captura por año del layout de referencia: rango y desviación (2017-2023, n=7)
+
+| método | mín | máx | rango | media | desviación (std) |
+|---|---|---|---|---|---|
+| fecha real | 0.7883 (2019) | 0.8780 (2018) | 0.0897 | 0.8458 | 0.0328 |
+| hour_of_year (perfil 2018) | 0.8780 (2018) | 0.9875 (2023) | 0.1095 | 0.9383 | 0.0334 |
+
+### d. Tendencia de 44 años (1980-2023), velocidad y AEP anual
+
+Prueba de Mann-Kendall sobre la velocidad media anual a 80 m (no existía una implementación en el repo; se escribió en `tools/longterm_trend_aep.py` siguiendo la fórmula clásica con corrección por empates, sin dependencias nuevas): **S=−158, Var(S)=9,775.33, Z=−1.588, p=0.112 → sin tendencia significativa** (p>0.05). Pendiente de Sen: −0.0082 m/s/año.
+
+Energía 2017-2023 vs promedio 1980-2023 (turbina de referencia, 44 años completos, 2024 excluido por cobertura parcial 66.7%): media 1980-2023 = **9,204.6 MWh**; media 2017-2023 = **8,467.1 MWh** → **−8.01%** por debajo del promedio de 44 años.
+
+AEP anual y percentiles empíricos vía `core/energy.py::AEPCalculator.compute_from_timeseries` (reutilizado tal cual, sin reimplementar el cálculo de percentiles; n=44 años completos, 2024 excluido automáticamente por cobertura <90%): **P50=9,299.8 MWh, P75=8,787.8 MWh, P90=8,289.8 MWh**, media=9,204.6 MWh, desviación=588.4 MWh.
 
 ---
 

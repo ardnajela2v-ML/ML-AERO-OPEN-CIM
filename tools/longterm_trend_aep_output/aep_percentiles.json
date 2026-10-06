@@ -1,0 +1,373 @@
+{
+  "aep_p50_mwh": 9299.8,
+  "aep_p75_mwh": 8787.8,
+  "aep_p90_mwh": 8289.8,
+  "aep_p10_mwh": 9894.8,
+  "aep_mean_mwh": 9204.6,
+  "aep_std_mwh": 588.4,
+  "n_years": 44,
+  "annual_values_mwh": [
+    9345.6,
+    9342.9,
+    9318.5,
+    8071.8,
+    9502.3,
+    9602.6,
+    9905.3,
+    9719.0,
+    9639.6,
+    9193.4,
+    10046.3,
+    8811.0,
+    9870.1,
+    9712.8,
+    9500.0,
+    8496.9,
+    8841.7,
+    9261.7,
+    8334.9,
+    9142.3,
+    9625.9,
+    9953.4,
+    9577.2,
+    8904.9,
+    9847.9,
+    9217.2,
+    9853.4,
+    9489.0,
+    8619.8,
+    9053.1,
+    8718.1,
+    8449.7,
+    9728.1,
+    9281.2,
+    10062.5,
+    10099.1,
+    9595.5,
+    8878.9,
+    8956.3,
+    8032.2,
+    8242.4,
+    8181.3,
+    8708.0,
+    8270.6
+  ],
+  "annual": [
+    {
+      "year": 1980,
+      "aep_mwh": 9345.6,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1981,
+      "aep_mwh": 9342.9,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1982,
+      "aep_mwh": 9318.5,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1983,
+      "aep_mwh": 8071.8,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1984,
+      "aep_mwh": 9502.3,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1985,
+      "aep_mwh": 9602.6,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1986,
+      "aep_mwh": 9905.3,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1987,
+      "aep_mwh": 9719.0,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1988,
+      "aep_mwh": 9639.6,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1989,
+      "aep_mwh": 9193.4,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1990,
+      "aep_mwh": 10046.3,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1991,
+      "aep_mwh": 8811.0,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1992,
+      "aep_mwh": 9870.1,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1993,
+      "aep_mwh": 9712.8,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1994,
+      "aep_mwh": 9500.0,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1995,
+      "aep_mwh": 8496.9,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1996,
+      "aep_mwh": 8841.7,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1997,
+      "aep_mwh": 9261.7,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1998,
+      "aep_mwh": 8334.9,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 1999,
+      "aep_mwh": 9142.3,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2000,
+      "aep_mwh": 9625.9,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2001,
+      "aep_mwh": 9953.4,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2002,
+      "aep_mwh": 9577.2,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2003,
+      "aep_mwh": 8904.9,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2004,
+      "aep_mwh": 9847.9,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2005,
+      "aep_mwh": 9217.2,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2006,
+      "aep_mwh": 9853.4,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2007,
+      "aep_mwh": 9489.0,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2008,
+      "aep_mwh": 8619.8,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2009,
+      "aep_mwh": 9053.1,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2010,
+      "aep_mwh": 8718.1,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2011,
+      "aep_mwh": 8449.7,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2012,
+      "aep_mwh": 9728.1,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2013,
+      "aep_mwh": 9281.2,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2014,
+      "aep_mwh": 10062.5,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2015,
+      "aep_mwh": 10099.1,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2016,
+      "aep_mwh": 9595.5,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2017,
+      "aep_mwh": 8878.9,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2018,
+      "aep_mwh": 8956.3,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2019,
+      "aep_mwh": 8032.2,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2020,
+      "aep_mwh": 8242.4,
+      "hours": 8784,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2021,
+      "aep_mwh": 8181.3,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2022,
+      "aep_mwh": 8708.0,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2023,
+      "aep_mwh": 8270.6,
+      "hours": 8760,
+      "coverage_pct": 100.0,
+      "used_for_percentiles": true
+    },
+    {
+      "year": 2024,
+      "aep_mwh": 4415.5,
+      "hours": 5856,
+      "coverage_pct": 66.67,
+      "used_for_percentiles": false
+    }
+  ],
+  "percentile_definition": "P50=percentil 50; P75=percentil 25; P90=percentil 10"
+}

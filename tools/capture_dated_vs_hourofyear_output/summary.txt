@@ -1,0 +1,18 @@
+PRECIO CAPTURADO 2017-2023 -- emparejado por fecha vs hour_of_year (perfil 2018)
+Layout de referencia: turbina unica Clipper 2.5MW/89m @ 80 m, sin estela
+Serie de viento corregida (80mA en dias marcados)
+==============================================================================
+
+ year  n_hours_wind  n_hours_missing_price  n_hours_common  capture_ratio_dated  capture_ratio_hour_of_year_2018profile  diff_capture_ratio_pct_points  avg_realized_price_dated_usd_kwh  avg_realized_price_hour_of_year_usd_kwh  avg_flat_price_dated_usd_kwh  avg_flat_price_hour_of_year_usd_kwh  daily_corr_energy_price_dated  daily_corr_energy_price_hour_of_year
+ 2017          8760                      6            8754               0.8413                                  0.9232                           8.19                          0.055165                                 0.075802                      0.065569                             0.082109                        -0.5063                               -0.3149
+ 2018          8760                      0            8760               0.8780                                  0.8780                           0.00                          0.072070                                 0.072070                      0.082081                             0.082081                        -0.4420                               -0.4420
+ 2019          8760                      0            8760               0.7883                                  0.9542                          16.59                          0.061317                                 0.078325                      0.077787                             0.082081                        -0.5598                               -0.1853
+ 2020          8784                      0            8784               0.8734                                  0.9340                           6.06                          0.028010                                 0.076619                      0.032071                             0.082034                        -0.3153                               -0.2634
+ 2021          8760                      0            8760               0.8688                                  0.9424                           7.36                          0.038931                                 0.077355                      0.044809                             0.082081                        -0.3181                               -0.2314
+ 2022          8760                      0            8760               0.8520                                  0.9489                           9.69                          0.050964                                 0.077889                      0.059814                             0.082081                        -0.5702                               -0.2180
+ 2023          8760                      0            8760               0.8185                                  0.9875                          16.90                          0.038056                                 0.081055                      0.046496                             0.082081                        -0.4932                               -0.0991
+
+-- Rango y desviacion de razon de captura por anio (2017-2023) --
+                  method  n_years    min    max  range   mean    std
+              fecha_real        7 0.7883 0.8780 0.0897 0.8458 0.0328
+hour_of_year_perfil_2018        7 0.8780 0.9875 0.1095 0.9383 0.0334
