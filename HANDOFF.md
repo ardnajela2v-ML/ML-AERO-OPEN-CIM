@@ -208,6 +208,55 @@ No se modificó `windmcp/`, `core/` ni `runs/mcp/` (el run oficial) en esta secc
 
 ---
 
+## 10. Diseño del caso de estudio (en definición)
+
+Sección de solo lectura/análisis (no se tocó código): mapeo del flujo real de recurso→layouts→TOPSIS→economía en `core/farm_mcda.py`, `core/layout_generation.py`, `core/layout_refinement.py`, `core/multicriteria.py`, `core/ahp.py` y los endpoints de `api.py`, hecho para preparar el diseño del motor de precio capturado. Ningún archivo de `windmcp/`, `core/`, `runs/mcp/` ni `api.py` se modificó.
+
+### Mapa del flujo real
+
+* **Recurso de viento por layout:** sin histórico, `_joint_synthetic_wind()` (`core/farm_mcda.py`) genera un Weibull sintético (v̄, k, ρ promedio de los sitios interpolados) común a todas las tecnologías. Con histórico (MCP/CERTE/reanálisis cargado en sesión), `prepare_historical_wind()` (`core/historical_resource.py`), llamado dentro del closure `_process_turbine` de `generate_park_layouts`.
+* **`price_hourly_usd_kwh`:** se construye una sola vez por corrida en el endpoint `mcda_spatial`/`farm_layouts_generate` (`api.py`, función `_run`/handler, bloque que lee `market_models.pml.hourly_profile_2018` de la sesión) y se pasa igual a todas las tecnologías de esa misma llamada a `generate_park_layouts`.
+* **`chronological_revenue`:** se invoca dentro de `_process_turbine` (`core/farm_mcda.py`) para **cada candidato factible del pool** (no solo el campeón final) — pero solo si hay recurso histórico con `hour_of_year` **y** `price_hourly_usd_kwh` no es `None`. Si falta cualquiera de las dos condiciones, no se calcula ingreso real y `_economics()` cae al escalar `aep_p50_mwh × 1000 × price_usd_kwh`.
+* **`_economics()`:** recibe `revenue_year1_override` (el ingreso real cruzado hora por hora, cuando existe) y lo usa **solo para el año 1** del flujo de caja (`project_cashflows`); los años 2 en adelante siguen degradando/escalando desde ese punto de partida, no vuelven a cruzar contra PML horario de otros años.
+* **7 criterios de TOPSIS activos (`LAYOUT_WEIGHTS`, `core/multicriteria.py`):** `hours_near_cpmax` 0.2311, `van_usd` 0.2047, `aep_p90_mwh` 0.1881, `capex_usd_per_installed_kw` 0.1516, `factor_capacidad` 0.1073, `cp_effective_full_series` 0.0813, `lcoe_usd_kwh` 0.0360. De estos, **solo `van_usd` depende del precio de energía** — `lcoe_usd_kwh` es PV(costos)/PV(energía) y no se mueve con el precio; `capex_usd_per_installed_kw`, `factor_capacidad`, `aep_p90_mwh`, `hours_near_cpmax` y `cp_effective_full_series` son puramente físicos.
+* **Selección de campeón por tecnología:** `select_technology_champion()` (`core/layout_generation.py`) elige, dentro de cada tecnología, el candidato de **máximo VAN** entre los factibles — un argmax de una sola variable, no un mini-TOPSIS. El TOPSIS real (`rank_layout_alternatives`) solo compara después los campeones ya elegidos de cada tecnología.
+* **P90:** paramétrico, no empírico — `aep_p90 = max(0.0, aep_p50 × (1 − 1.28155 × incertidumbre_pct/100))` (`core/farm_mcda.py`), con `incertidumbre_pct` = raíz de suma de cuadrados de componentes (`resource`, `mcp`, `wake`, `power_curve`, `losses`). Es incertidumbre de medición/modelo alrededor de un año/promedio climatológico, no variabilidad interanual real.
+* **PML guardado como `hourly_profile_2018`:** perfil horario fijo de 8,760 horas (`_store_fixed_pml_profile`, `api.py`), replicado igual todos los años del horizonte del proyecto — no hay hoy un PML por año distinto dentro de un mismo escenario.
+* **Tres puntos de ingesta de `read_pml`** (`core/forecasting.py::read_pml`) en `api.py`: carga normal de mercado, un segundo endpoint de mercado, y un tercer punto adicional — los tres leen el mismo formato (`compra`/`venta`, con o sin `timestamps`).
+* **Qué cachea cada paso hoy:** `optimize_layout_structured` cachea orientaciones/fases entre N (`grid_cache`); `generate_feasible_layouts_grid` cachea factibilidad por N (`n_feasible_cache`, evita revisitar la misma N); el campo espacial Kriging tiene caché explícito por sesión (`sess['_topsis_field_cache']`, con firma que excluye pesos TOPSIS y turbinas pero incluye precio/tasa/horizonte). **No cacheado:** el pool completo de candidatos de `generate_feasible_layouts_grid` no se persiste aparte del campeón final — cambiar solo el escenario de precio y volver a llamar `generate_park_layouts` repite toda la búsqueda de estela aunque la geometría no cambiaría.
+
+### Inconsistencias encontradas (sin corregir)
+
+* **Conteo de criterios:** el docstring de `core/multicriteria.py` y el objetivo de `docs/ahp-topsis.md` dicen "ocho criterios", pero `LAYOUT_WEIGHTS` tiene **7** entradas desde el retiro de `discounted_payback_years` (2026-09-17). Ningún archivo actualizó ese número.
+* **Dos tablas de pesos paralelas:** `DEFAULT_WEIGHTS` (para `topsis()`/ranking de sitios-turbinas) y `LAYOUT_WEIGHTS` (para `rank_layout_alternatives()`, ranking de parques) usan nombres de criterio parcialmente distintos para conceptos relacionados (`cp_max` vs `hours_near_cpmax`, `aep_mwh` vs `aep_p90_mwh`) — fácil confundir cuál aplica a qué endpoint.
+* **`iec_suitability_score` fijo en 0.5** para toda alternativa (`core/farm_mcda.py`) — nunca discrimina entre layouts, documentado como dato faltante del fabricante (`bankable_missing`) pero sigue expuesto en `LAYOUT_AUDIT_ONLY` como si fuera un valor calculado.
+* **Ingreso real cruzado con precio solo en el año 1:** `chronological_revenue`/`revenue_year1_override` no cubre el resto del horizonte del proyecto — es una limitación de datos (no hay PML horario de 25 años), no de diseño, pero no está declarada explícitamente donde se cita "ingreso real".
+
+### Propuestas sin confirmar
+
+> Las siguientes son propuestas para discutir, **no decisiones tomadas**:
+
+* Escenario de mercado como un año de PML común a todos los layouts de una corrida (formalizar lo que `price_hourly_usd_kwh` ya hace implícitamente, pero como parámetro explícito de la corrida en vez de "lo último cargado en la sesión").
+* Precio capturado emparejado por año, 2017–2023.
+* Energía de largo plazo usando los 44 años de la serie reconstruida.
+* P50, P75 y P90 separando dos fuentes de riesgo distintas: variabilidad interanual real (entre los 44 años) e incertidumbre de modelo/medición (la que ya calcula el P90 paramétrico actual) — hoy están fusionadas en un solo número.
+* Año 0 = 2024, operación 2025–2049.
+
+### Decisiones abiertas del usuario
+
+* Qué horizonte de P90 debe alimentar a TOPSIS: el paramétrico actual, el empírico interanual, o ambos reportados por separado.
+* Definición final de los escenarios de mercado (bajo/base/alto): confirmar si siguen siendo min/mediana/max de precios capturados anuales o cambia el criterio.
+* Cobertura mínima de un año completo y calendario: qué cuenta como "año completo" para entrar al cálculo (p. ej. umbral de completitud horaria) y cómo se alinea el calendario de 8,760 horas fijas con años bisiestos.
+
+### Preguntas de lectura pendientes
+
+* ¿El conteo "ocho criterios" en `core/multicriteria.py` y `docs/ahp-topsis.md` se corrige para decir siete, o se vuelve a promover un octavo criterio (p. ej. `capex_usd` bruto, IEC, u otro de `LAYOUT_AUDIT_ONLY`) antes de corregir el número?
+* ¿Las dos tablas de pesos paralelas (`DEFAULT_WEIGHTS` vs `LAYOUT_WEIGHTS`) deben unificarse, o se documenta explícitamente que son independientes por diseño (sitios-turbinas vs parques)?
+* ¿`iec_suitability_score` se retira de `LAYOUT_AUDIT_ONLY` mientras no haya datos reales del fabricante, o se deja como placeholder declarado?
+* ¿El caché del pool de `generate_feasible_layouts_grid` (hoy inexistente entre corridas con distinto precio) vale la pena implementarlo antes de correr varios escenarios de mercado, dado el costo de repetir la búsqueda de estela solo para recalcular economía?
+
+---
+
 ## Decisiones del usuario:
 
 Nodo base para pruebas: 02JUD115 (mercado_pml/PML_2017-2024 02JUD115.txt). El PML oficial de IPO (PML_2017-2024_02IPO115.txt) queda para sensibilidad. PML_usd.txt es IPO 2022 escalado con dólar fijo y ya no se usa.
