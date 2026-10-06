@@ -136,7 +136,7 @@ Rutas clave de los datos utilizados:
 
 ## 6. Lo que NO se ha hecho
 
-* **Validación de captura (antes "Fase 2"), primer corte hecho:** ver sección 9 — precio capturado 2019/2020 calculado y cruzado, con el hallazgo del sensor WS_80mB_mean. Pendiente: 2018 como referencia dentro de muestra, y decidir si el bootstrap/razón de captura final usa la versión (i) o (ii) de 2020.
+* **Validación de captura (antes "Fase 2"): completada.** Ver sección 9 — precio capturado 2019 y 2020 calculado y cruzado contra viento predicho, con r, razón de captura, AEP y bootstrap por bloques de día para ambos años; incluye el hallazgo y la corrección (versión "(ii)") del sensor WS_80mB_mean en 2020. 2018 es el año de entrenamiento (dentro de muestra), no se valida fuera de muestra.
 * **Economía intacta:** No se modificó `core/project_economics.py` ni `core/farm.py`.
 * **API sin modificar:** No se alteraron endpoints de `api.py`.
 * **Caso de estudio no modificado:** No se ha alterado la configuración guardada dentro de `PARQEU1.aeroproj`.
@@ -199,6 +199,14 @@ Se verificó con datos, no se asumió, que `WS_80mA_mean` sigue siendo confiable
 (La versión "(i) excluir horas trabadas" de la primera versión de esta sección se descarta — sus números estaban calculados sobre un filtro que, como se explicó arriba, no excluía todo lo contaminado.)
 
 La versión corregida recupera una correlación casi igual a la de 2019 (0.874) y reduce el sesgo de AEP de +105% a prácticamente nada (AEP observado corregido y predicho quedan a 4.5% uno del otro) — confirma que el problema era de calidad de dato en la referencia observada, no una falla real de generalización del modelo MCP a 2020. Bootstrap por bloques de día (n=1000): la diferencia de precio capturado sigue sin ser significativa (IC95%=[-0.00022, +0.00040]); la correlación ws_obs-ws_pred sí lo es (IC95%=[+0.851, +0.899]).
+
+**Validación de captura 2019 (año de referencia, sensor sano — no requiere corrección salvo el día aislado 2019-12-25, impacto despreciable en el año completo)** (`tools/capture_validation.py`, salida en `tools/capture_validation_output/`): usa las mismas horas CERTE 6/6 y el mismo PML JUD que la versión 2020.
+
+| | n horas | r(ws obs,pred) | Δ precio capturado | AEP obs (MWh) | AEP pred (MWh) | razón de captura obs | razón de captura pred |
+|---|---|---|---|---|---|---|---|
+| 2019 | 6870 | 0.8739 | +0.015% | 9171.3 | 9331.7 | 0.763 | 0.7631 |
+
+Precio promedio realizado: observado 0.059347 USD/kWh vs predicho 0.059356 USD/kWh (precio plano de referencia 0.077787 USD/kWh). Bootstrap por bloques de día (`tools/capture_validation_output/bootstrap_capture_diff.csv`, n=1000, n_days=290): diferencia de precio capturado (pred−obs) = +0.000009 USD/kWh, IC95%=[−0.001072, +0.001125] → **no significativa**. Correlación ws_obs-ws_pred = 0.8739, boot_mean=0.8735, IC95%=[+0.8535, +0.8928] → significativamente distinta de cero. 2019 no se recalculó con el detector de sensor porque solo tiene 1/291 días marcados (2019-12-25) y su efecto en las métricas anuales es despreciable (ver sección "Hallazgo adicional" arriba).
 
 **Aclaración sobre los R² de 2019 que aparecían en la sección 3 de este documento:** "R² 0.792" no es de `ml_random_forest` (el modelo real de producción) — es de `ml_gradient_boosting`, el ganador de una comparación ML-only interna (`ml_method_selection`) que **no** es la que se usa para reconstrucción. El R² de `ml_random_forest` (el modelo realmente activo, seleccionado por `speed_model_selection` con un criterio distinto — penalización de distribución, no solo RMSE) en 2019 completo es **0.7625** (recalculado y verificado directamente desde `<ref>_forward.csv`, no desde `<ref>_ml_forward.csv`). El 0.717 de la sección 3 sí es de `ml_random_forest`, pero es la métrica de un holdout cronológico *dentro* de 2018 (N=2187), no la validación externa en 2019 — son dos números de `ml_random_forest`, ninguno es "0.792".
 
@@ -266,4 +274,5 @@ El viento reconstruido de PARQEU1 termina el 31-ago-2024, así que 2024 queda fu
 Periodo de estudio: 2017–2023 completos.
 Escenarios bajo/base/alto: min, mediana y max de los precios capturados anuales (por confirmar).
 Sin decidir: tipo de cambio histórico vs fijo, y qué hacer después de 2024.
-Siguiente paso, Fase 2: validar el precio capturado con viento observado vs predicho en 2019 y 2020. El modelo (entrenado con 2018) debe predecir esas horas desde el reanálisis, sin usar historical_reconstruction.csv, porque conserva las observaciones. Usar solo horas comunes con el PML en UTC; revisar si el remuestreo del MCP rotula cada hora con el inicio [h, h+1) o el final (h−1, h]; reportar precio capturado, razón de captura, correlación y sesgo por hora del día, con bootstrap por bloques de días. 2018 solo como referencia dentro de muestra.
+Validación de captura (2019 y 2020): completada, ver sección 9 (r, razón de captura, AEP y bootstrap para ambos años, corrección de sensor aplicada en 2020).
+Siguiente paso: cerrar la especificación del caso de estudio (lectura de código y decisiones) antes de implementar.
