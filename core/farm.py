@@ -689,117 +689,340 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
 
 
 def chronological_revenue(layout_xy: np.ndarray, turbine: 'PowerCurve',
-                          ws: np.ndarray, wd: np.ndarray, hour_of_year: np.ndarray,
-                          price_hourly_usd_kwh: np.ndarray, *,
+                          ws: np.ndarray, wd: np.ndarray,
+                          hour_of_year: Optional[np.ndarray] = None,
+                          price_hourly_usd_kwh: Optional[np.ndarray] = None, *,
+                          timestamps_utc: Optional[np.ndarray] = None,
+                          pml_series_values: Optional[np.ndarray] = None,
+                          pml_series_timestamps_utc=None,
+                          ratio_by_sector: Optional[np.ndarray] = None,
+                          min_coverage: float = 0.90,
                           sample_duration_hours: float = 1.0,
                           k_wake: float = 0.075, ct: float = 0.8, n_sectors: int = 36,
                           availability: float = 1.0, electrical_losses: float = 0.0,
-                          temperature_c=None, pressure_pa=None, humidity_pct=0.0,
+                          temperature_c=None, pressure_pa=None, humidity_pct: float = 0.0,
                           local_wind_multipliers: Optional[np.ndarray] = None,
                           wake_model: str = 'jensen',
                           rho_override: Optional[float] = None) -> dict:
     """
-    Cross each hour's wake-derated generation against that SAME hour's real
-    price, instead of AEP anual × precio promedio. Complementa a
-    simulate_wind_farm (que colapsa la serie a una tabla de frecuencias
-    sector×velocidad) — aquí se conserva la identidad de cada hora para poder
-    emparejarla con el PML de esa hora.
+    Cruza la generación horaria con estela contra el precio real de ESA MISMA
+    hora, en vez de AEP × precio promedio.
 
-    hour_of_year: índice 0-8759 de cada muestra de ws/wd, asumiendo que
-    price_hourly_usd_kwh[0] es la hora 0 del 1 de enero en el mismo huso
-    horario que la serie de viento (CERTE: UTC-6 fijo) — un supuesto
-    explícito, no verificado contra una fecha real del archivo PML (que no
-    trae fecha, ver core/forecasting.py::read_pml). 29 de febrero se
-    reasigna a la hora equivalente del 28 (price_hourly_usd_kwh tiene 8760
-    horas fijas, sin año bisiesto).
+    DOS CAMINOS (automático según parámetros):
 
-    La dirección se sigue discretizando en `n_sectors` sectores para el
-    cálculo de estela (misma aproximación de simulate_wind_farm, calculada
-    una sola vez por sector — no por hora), pero la velocidad y el precio de
-    cada hora se conservan sin agrupar.
+    CAMINO DATED (nuevos: timestamps_utc + pml_series_values + pml_series_timestamps_utc)
+      · timestamps_utc: UTC naive (datetime64[ns] sin tz) = inicio de intervalo.
+        Si viene tz-aware se convierte a UTC antes del emparejamiento.
+      · Empareja contra pml_series_timestamps_utc con floor(ts, "1h").
+      · Horas sin precio se excluyen ANTES del cálculo de estela y potencia.
+      · Requiere sample_duration_hours=1.0 (cobertura y anualización asumen 1h/muestra).
+      · ValueError si ts_floored del viento tiene duplicados.
+      · Devuelve by_year con métricas por año calendario.
+      · Claves de totales: revenue_usd_mean_complete_years y aep_mwh_overlap_mean.
+        NO son insumos de la economía. El §7 paso 4 usa
+        by_year[y]['avg_realized_price_usd_kwh'] (2017-2023) y aep_p50.
+      · min_coverage (default 0.90): cobertura = horas_viento+precio / horas_esperadas.
+      · ratio_by_sector (n_sectors × n_turbinas) opcional: omite el bucle de estela.
+
+    CAMINO HOUR_OF_YEAR (legado, retorno idéntico al previo a este cambio)
+      · hour_of_year: índice 0-8759, price_hourly_usd_kwh[0] = 1 ene hora 0.
+        29 de febrero reasignado al 28. price_hourly_usd_kwh requiere len==8760.
     """
+    import calendar as _cal
+
+    # ── Validar combinación de parámetros ─────────────────────────────────
+    _n_dated = sum(p is not None
+                   for p in (timestamps_utc, pml_series_values, pml_series_timestamps_utc))
+    if 0 < _n_dated < 3:
+        raise ValueError(
+            'timestamps_utc, pml_series_values y pml_series_timestamps_utc '
+            'deben proporcionarse todos o ninguno.')
+    use_dated = (_n_dated == 3)
+
+    if use_dated and price_hourly_usd_kwh is not None:
+        raise ValueError(
+            'En el camino dated (timestamps_utc activos), '
+            'price_hourly_usd_kwh debe ser None.')
+    if use_dated and hour_of_year is not None:
+        raise ValueError(
+            'En el camino dated (timestamps_utc activos), '
+            'hour_of_year debe ser None.')
+
+    # ── Parseo de arrays ──────────────────────────────────────────────────
     layout = np.asarray(layout_xy, dtype=float)
     n = len(layout)
     ws = np.asarray(ws, dtype=float).reshape(-1)
     wd = np.asarray(wd, dtype=float).reshape(-1) % 360.0
-    hour_of_year = np.asarray(hour_of_year, dtype=int).reshape(-1) % 8760
-    price_hourly_usd_kwh = np.asarray(price_hourly_usd_kwh, dtype=float).reshape(-1)
-    if len(price_hourly_usd_kwh) != 8760:
-        raise ValueError('price_hourly_usd_kwh debe tener exactamente 8760 valores.')
-    T = len(ws)
-    if len(wd) != T or len(hour_of_year) != T:
-        raise ValueError('ws, wd y hour_of_year deben compartir la misma longitud.')
-    if n == 0 or T == 0:
+    T_orig = len(ws)
+
+    dt_h = float(sample_duration_hours) if sample_duration_hours else 1.0
+
+    if use_dated:
+        if dt_h != 1.0:
+            raise ValueError(
+                f'El camino dated requiere sample_duration_hours=1.0 '
+                f'(recibido {dt_h}). '
+                'Cobertura y anualización asumen exactamente 1 muestra = 1 hora.')
+        if len(wd) != T_orig:
+            raise ValueError('ws y wd deben compartir la misma longitud.')
+        _ts_in = np.asarray(timestamps_utc).reshape(-1)
+        if len(_ts_in) != T_orig:
+            raise ValueError('timestamps_utc debe tener la misma longitud que ws.')
+    else:
+        if hour_of_year is None:
+            raise ValueError('hour_of_year es obligatorio en el camino hour_of_year.')
+        if price_hourly_usd_kwh is None:
+            raise ValueError('price_hourly_usd_kwh es obligatorio en el camino hour_of_year.')
+        price_hourly_usd_kwh = np.asarray(price_hourly_usd_kwh, dtype=float).reshape(-1)
+        if len(price_hourly_usd_kwh) != 8760:
+            raise ValueError('price_hourly_usd_kwh debe tener exactamente 8760 valores.')
+        _hoy = np.asarray(hour_of_year, dtype=int).reshape(-1) % 8760
+        if len(wd) != T_orig or len(_hoy) != T_orig:
+            raise ValueError('ws, wd y hour_of_year deben compartir la misma longitud.')
+
+    if n == 0 or T_orig == 0:
+        if use_dated:
+            raise ValueError('Layout o serie de viento vacíos.')
         return {'revenue_usd_year1': 0.0, 'aep_mwh': 0.0,
                 'avg_realized_price_usd_kwh': None, 'capture_ratio': None, 'n_hours': 0}
 
+    # ── Máscara de muestras válidas ────────────────────────────────────────
     valid = np.isfinite(ws) & np.isfinite(wd) & (ws >= 0)
     if not valid.any():
+        if use_dated:
+            raise ValueError('Ninguna muestra de viento es válida (ws/wd finito, ws≥0).')
         return {'revenue_usd_year1': 0.0, 'aep_mwh': 0.0,
                 'avg_realized_price_usd_kwh': None, 'capture_ratio': None, 'n_hours': 0}
-    ws, wd, hour_of_year = ws[valid], wd[valid], hour_of_year[valid]
-    T = len(ws)
+    ws_v = ws[valid]
+    wd_v = wd[valid]
 
+    # ── Camino dated: índice PML y filtro a horas con precio ──────────────
+    if use_dated:
+        ts_v = _ts_in[valid]
+
+        # Normalizar PML a UTC naive; verificar duplicados con valores distintos
+        _pml_idx_raw = pd.DatetimeIndex(pml_series_timestamps_utc)
+        if _pml_idx_raw.tz is not None:
+            _pml_idx_raw = _pml_idx_raw.tz_convert('UTC').tz_localize(None)
+        _pml_ser_raw = pd.Series(
+            np.asarray(pml_series_values, dtype=float), index=_pml_idx_raw)
+
+        _pml_dup_any = _pml_ser_raw.index.duplicated(keep=False)
+        _n_pml_dup = int(_pml_ser_raw.index.duplicated(keep='first').sum())
+        if _n_pml_dup > 0:
+            for _ts_d, _grp in _pml_ser_raw[_pml_dup_any].groupby(level=0):
+                if not np.allclose(_grp.values, _grp.values[0]):
+                    raise ValueError(
+                        f'PML tiene duplicados con valores distintos en {_ts_d}: '
+                        f'{_grp.values}. Deduplica manualmente antes de llamar.')
+        _pml_ser = _pml_ser_raw[~_pml_ser_raw.index.duplicated(keep='first')]
+
+        # Normalizar timestamps de viento a UTC naive; floor al inicio de hora
+        _ts_pd = pd.DatetimeIndex(ts_v)
+        if _ts_pd.tz is not None:
+            _ts_pd = _ts_pd.tz_convert('UTC').tz_localize(None)
+        _ts_floored = _ts_pd.floor('h')
+
+        # Rechazar duplicados en serie de viento post-floor
+        _n_wind_dup = int(_ts_floored.duplicated().sum())
+        if _n_wind_dup > 0:
+            raise ValueError(
+                f'{_n_wind_dup} timestamp(s) de viento caen en la misma hora UTC '
+                'después de floor("h"). Deduplica la serie de viento.')
+
+        _prices_all = _pml_ser.reindex(_ts_floored).values
+        has_price = np.isfinite(_prices_all)
+        if not has_price.any():
+            raise ValueError(
+                'Ninguna muestra de viento coincide con una hora PML. '
+                'Verifica que ambas series estén en UTC y en el mismo rango temporal.')
+
+        ws_f         = ws_v[has_price]
+        wd_f         = wd_v[has_price]
+        ts_floored_f = _ts_floored[has_price]
+        prices_f     = _prices_all[has_price]
+        T            = len(ws_f)
+        _valid_hp    = valid.copy()
+        _valid_hp[valid] = has_price
+    else:
+        ws_f  = ws_v
+        wd_f  = wd_v
+        _hoy  = _hoy[valid]
+        T     = len(ws_f)
+        _valid_hp  = None
+        _n_pml_dup = 0
+
+    # ── Densidad del aire ─────────────────────────────────────────────────
     if rho_override is not None and math.isfinite(float(rho_override)) and float(rho_override) > 0:
         rho_mean = float(rho_override)
     elif temperature_c is not None and pressure_pa is not None:
-        temperature_c = np.asarray(temperature_c, dtype=float).reshape(-1)[valid]
-        pressure_pa = np.asarray(pressure_pa, dtype=float).reshape(-1)[valid]
-        rho_mean = float(np.mean(air_density(temperature_c, pressure_pa, humidity_pct)))
+        _tc = np.asarray(temperature_c, dtype=float).reshape(-1)
+        _pp = np.asarray(pressure_pa, dtype=float).reshape(-1)
+        _mask = _valid_hp if use_dated else valid
+        rho_mean = float(np.mean(air_density(_tc[_mask], _pp[_mask], humidity_pct)))
     else:
         rho_mean = 1.225
 
+    # ── Multiplicadores espaciales ────────────────────────────────────────
     if local_wind_multipliers is not None:
-        local_wind_multipliers = np.asarray(local_wind_multipliers, dtype=float).reshape(-1)
-        if local_wind_multipliers.shape[0] != n:
-            local_wind_multipliers = np.ones(n)
-        ws_free = ws[:, None] * local_wind_multipliers[None, :]  # (T, n)
+        _lm = np.asarray(local_wind_multipliers, dtype=float).reshape(-1)
+        if _lm.shape[0] != n:
+            _lm = np.ones(n)
+        ws_free = ws_f[:, None] * _lm[None, :]
     else:
-        ws_free = np.repeat(ws[:, None], n, axis=1)
+        ws_free = np.repeat(ws_f[:, None], n, axis=1)
 
-    # Razón de velocidad por estela, calculada UNA VEZ por sector (misma
-    # discretización direccional que simulate_wind_farm), aplicada luego a
-    # la velocidad real (no agrupada) de cada hora.
+    # ── Razón de estela por sector ────────────────────────────────────────
     sector_deg = 360.0 / n_sectors
-    sector_idx = np.floor(wd / sector_deg).astype(int) % n_sectors
-    rotor_d = float(turbine.rotor_diameter_m or 80.0)
-    ratio_by_sector = np.ones((n_sectors, n), dtype=float)
-    if n > 1:
-        for s in range(n_sectors):
-            center = (s + 0.5) * sector_deg
-            ratio_by_sector[s] = effective_wind_per_turbine(
-                layout, np.ones(n), center, rotor_d, k=k_wake, ct=ct, wake_model=wake_model)
-    v_eff = ws_free * ratio_by_sector[sector_idx]  # (T, n)
+    sector_idx = np.floor(wd_f / sector_deg).astype(int) % n_sectors
+    rotor_d    = float(turbine.rotor_diameter_m or 80.0)
+    _rbs_precomputed = ratio_by_sector is not None
+    if _rbs_precomputed:
+        _rbs = np.asarray(ratio_by_sector, dtype=float)
+        if _rbs.shape != (n_sectors, n):
+            raise ValueError(
+                f'ratio_by_sector debe tener forma ({n_sectors}, {n}); '
+                f'recibido {_rbs.shape}.')
+    else:
+        _rbs = np.ones((n_sectors, n), dtype=float)
+        if n > 1:
+            for s in range(n_sectors):
+                center = (s + 0.5) * sector_deg
+                _rbs[s] = effective_wind_per_turbine(
+                    layout, np.ones(n), center, rotor_d,
+                    k=k_wake, ct=ct, wake_model=wake_model)
 
-    power_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)  # (T, n)
+    # ── Potencia y energía ────────────────────────────────────────────────
+    v_eff    = ws_free * _rbs[sector_idx]
+    power_kw = turbine.power_kw_density_corrected(v_eff, rho_mean)
     survival = float(availability) * (1.0 - float(electrical_losses))
     power_kw = power_kw * survival
-    park_power_kw = power_kw.sum(axis=1)  # (T,)
-    dt_h = float(sample_duration_hours) if sample_duration_hours else 1.0
-    energy_kwh = park_power_kw * dt_h
+    energy_kwh = power_kw.sum(axis=1) * dt_h
 
-    price_at_hour = price_hourly_usd_kwh[hour_of_year]
-    total_revenue_usd = float(np.sum(energy_kwh * price_at_hour))
-    total_energy_kwh = float(np.sum(energy_kwh))
-    total_hours = T * dt_h
-    annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
+    # ── CAMINO LEGADO (hour_of_year) — retorno idéntico al original ───────
+    if not use_dated:
+        price_at_hour    = price_hourly_usd_kwh[_hoy]
+        total_revenue_usd = float(np.sum(energy_kwh * price_at_hour))
+        total_energy_kwh  = float(np.sum(energy_kwh))
+        total_hours       = T * dt_h
+        annualization_factor = 8760.0 / total_hours if total_hours > 0 else 1.0
+        aep_mwh      = total_energy_kwh * annualization_factor / 1000.0
+        revenue_year1 = total_revenue_usd * annualization_factor
+        avg_price    = total_revenue_usd / total_energy_kwh if total_energy_kwh > 0 else None
+        naive_revenue = total_energy_kwh * float(np.mean(price_hourly_usd_kwh))
+        capture_ratio = (total_revenue_usd / naive_revenue) if naive_revenue > 0 else None
+        return {
+            'revenue_usd_year1': round(revenue_year1, 2),
+            'aep_mwh': round(aep_mwh, 2),
+            'avg_realized_price_usd_kwh': round(avg_price, 6) if avg_price is not None else None,
+            'avg_flat_price_usd_kwh': round(float(np.mean(price_hourly_usd_kwh)), 6),
+            'capture_ratio': round(capture_ratio, 4) if capture_ratio is not None else None,
+            'n_hours': T,
+            'rho_mean': round(rho_mean, 4),
+            'method': 'chronological_hourly_generation_times_hourly_price',
+            'calendar_assumption': 'price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento',
+        }
 
-    aep_mwh = total_energy_kwh * annualization_factor / 1000.0
-    revenue_year1 = total_revenue_usd * annualization_factor
-    avg_price = total_revenue_usd / total_energy_kwh if total_energy_kwh > 0 else None
-    naive_revenue = total_energy_kwh * float(np.mean(price_hourly_usd_kwh))
-    capture_ratio = (total_revenue_usd / naive_revenue) if naive_revenue > 0 else None
+    # ── CAMINO DATED: métricas por año calendario ─────────────────────────
+    years_arr    = ts_floored_f.year.to_numpy()
+    unique_years = sorted(int(y) for y in np.unique(years_arr))
+
+    by_year: Dict[int, dict] = {}
+    rev_ann_complete:        List[float] = []
+    ann_energies_complete:   List[float] = []
+    capture_ratios_complete: List[float] = []
+    realized_vals_complete:  List[float] = []
+    flat_vals_complete:      List[float] = []
+
+    for y in unique_years:
+        mask_y     = years_arr == y
+        energy_y   = energy_kwh[mask_y]
+        price_y    = prices_f[mask_y]
+        n_h        = int(mask_y.sum())
+        expected_h = 8784 if _cal.isleap(y) else 8760
+        coverage   = n_h / expected_h
+
+        rev_y          = float(np.sum(energy_y * price_y))
+        energy_y_kwh   = float(np.sum(energy_y))
+        avg_realized_y = rev_y / energy_y_kwh if energy_y_kwh > 0 else None
+        avg_flat_y     = float(np.mean(price_y)) if n_h > 0 else None
+        capture_y      = (avg_realized_y / avg_flat_y
+                          if avg_realized_y is not None
+                          and avg_flat_y is not None and avg_flat_y > 0
+                          else None)
+        ann_y          = 8760.0 / n_h if n_h > 0 else 1.0
+        energy_mwh_ann = energy_y_kwh * ann_y / 1000.0
+        rev_y_ann      = rev_y * ann_y
+
+        complete = coverage >= float(min_coverage)
+        by_year[y] = {
+            'revenue_usd':            round(rev_y, 2),
+            'revenue_usd_annualized': round(rev_y_ann, 2),
+            'energy_mwh':             round(energy_y_kwh / 1000.0, 4),
+            'energy_mwh_annualized':  round(energy_mwh_ann, 4),
+            'n_hours':                n_h,
+            'expected_hours':         expected_h,
+            'coverage':               round(coverage, 4),
+            'complete':               complete,
+            'avg_realized_price_usd_kwh': (round(avg_realized_y, 6)
+                                           if avg_realized_y is not None else None),
+            'avg_flat_price_usd_kwh':     (round(avg_flat_y, 6)
+                                           if avg_flat_y is not None else None),
+            'capture_ratio': round(capture_y, 4) if capture_y is not None else None,
+        }
+        if complete:
+            rev_ann_complete.append(rev_y_ann)
+            ann_energies_complete.append(energy_mwh_ann)
+            if capture_y is not None:
+                capture_ratios_complete.append(capture_y)
+            if avg_realized_y is not None:
+                realized_vals_complete.append(avg_realized_y)
+            if avg_flat_y is not None:
+                flat_vals_complete.append(avg_flat_y)
+
+    if not rev_ann_complete:
+        raise ValueError(
+            f'Ningún año alcanza la cobertura mínima de {min_coverage:.0%}. '
+            f'Años disponibles: {sorted(by_year)}. '
+            'Usa min_coverage=0 para incluir años parciales.')
+
+    n_complete        = len(rev_ann_complete)
+    mean_rev_ann      = float(np.mean(rev_ann_complete))
+    mean_aep_mwh      = float(np.mean(ann_energies_complete))
+    mean_capture      = float(np.mean(capture_ratios_complete)) if capture_ratios_complete else None
+    mean_avg_realized = float(np.mean(realized_vals_complete)) if realized_vals_complete else None
+    mean_avg_flat     = float(np.mean(flat_vals_complete))     if flat_vals_complete     else None
 
     return {
-        'revenue_usd_year1': round(revenue_year1, 2),
-        'aep_mwh': round(aep_mwh, 2),
-        'avg_realized_price_usd_kwh': round(avg_price, 6) if avg_price is not None else None,
-        'avg_flat_price_usd_kwh': round(float(np.mean(price_hourly_usd_kwh)), 6),
-        'capture_ratio': round(capture_ratio, 4) if capture_ratio is not None else None,
-        'n_hours': T,
-        'rho_mean': round(rho_mean, 4),
-        'method': 'chronological_hourly_generation_times_hourly_price',
-        'calendar_assumption': 'price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento',
+        # Medias de años completos, anual. a 8760 h/año. NO son insumos de la economía.
+        # §7 paso 4 usa by_year[y]['avg_realized_price_usd_kwh'] (2017-2023) y aep_p50.
+        'revenue_usd_mean_complete_years': round(mean_rev_ann, 2),
+        'aep_mwh_overlap_mean':            round(mean_aep_mwh, 2),
+        'avg_realized_price_usd_kwh': (round(mean_avg_realized, 6)
+                                       if mean_avg_realized is not None else None),
+        'avg_flat_price_usd_kwh':     (round(mean_avg_flat, 6)
+                                       if mean_avg_flat is not None else None),
+        'capture_ratio': round(mean_capture, 4) if mean_capture is not None else None,
+        'n_hours':       T,
+        'rho_mean':      round(rho_mean, 4),
+        'pml_duplicates_dropped': _n_pml_dup,
+        'method':               'chronological_dated_generation_times_dated_price',
+        'calendar_assumption':  (
+            'timestamps_utc = inicio de intervalo, UTC naive (datetime64[ns]); '
+            'emparejado por floor(ts, "1h"); '
+            'avg_flat = media del PML sobre horas de viento del mismo año'
+        ),
+        'by_year':        by_year,
+        'years_complete': sorted(y for y, d in by_year.items() if d['complete']),
+        'n_years_complete': n_complete,
+        'ratio_by_sector': _rbs.tolist(),
+        'ratio_by_sector_params': {
+            'n_sectors': n_sectors,
+            'k_wake':    k_wake    if not _rbs_precomputed else None,
+            'ct':        ct        if not _rbs_precomputed else None,
+            'wake_model': wake_model if not _rbs_precomputed else None,
+            'precomputed': _rbs_precomputed,
+        },
     }
 
 
