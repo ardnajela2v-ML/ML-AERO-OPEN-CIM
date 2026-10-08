@@ -328,7 +328,8 @@ Zona horaria: CERTE está en UTC−6 fijo y el MCP lo convierte a UTC. El PML se
 CERTE existe solo de nov-2017 a ago-2020. 2018 es el único año completo y es el año de entrenamiento del MCP activo. Todo lo posterior a sep-2020 es reconstrucción del Random Forest.
 El viento reconstruido de PARQEU1 termina el 31-ago-2024, así que 2024 queda fuera de los escenarios (solo parcial).
 Periodo de estudio: 2017–2023 completos.
-Escenarios bajo/base/alto: min, mediana y max de los precios capturados anuales (por confirmar).
+Escenarios bajo/base/alto: mín y máx observados (no percentiles) y base = **media** de los 7 años emparejados 2017-2023 (confirmado; antes decía "mediana", ver especificación del caso de estudio PARQEU1 §1).
+Cobertura mínima para "año completo": **90%**, alineado al umbral ya implementado en `core/energy.py::AEPCalculator.compute_from_timeseries` (línea 615) — confirmado que no cambia nada en los 44 años usados en la sección 11 (los 44 años de 1980-2023 tienen 100% de cobertura en la serie reconstruida; solo 2024, con 66.67%, queda excluido con cualquier umbral razonable).
 Sin decidir: tipo de cambio histórico vs fijo, y qué hacer después de 2024.
 Validación de captura (2019 y 2020): completada, ver sección 9 (r, razón de captura, AEP y bootstrap para ambos años, corrección de sensor aplicada en 2020).
 Siguiente paso: cerrar la especificación del caso de estudio (lectura de código y decisiones) antes de implementar.
