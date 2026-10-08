@@ -5663,6 +5663,13 @@ def create_app():
             pml_model = ((source_session.get('park_configuration') or {})
                         .get('market_models', {}).get('pml', {}))
             pml_hourly = pml_model.get('hourly_profile_2018')
+            if pml_model.get('pml_series') is not None:
+                return _err('PML multi-año aún no soportado en esta ruta')
+            if isinstance(pml_hourly, list) and len(pml_hourly) > 0 and len(pml_hourly) != 8760:
+                return _err(
+                    f'hourly_profile_2018 tiene {len(pml_hourly)} valores; '
+                    'se esperan exactamente 8 760'
+                )
             if isinstance(pml_hourly, list) and len(pml_hourly) == 8760:
                 fx_rate = (source_session.get('park_configuration') or {}).get('base_fx_mxn_usd')
                 try:
@@ -6620,4 +6627,5 @@ def create_app():
 
         return jsonify(numpy_to_python(result))
 
+    app._get_session = get_session  # test hook
     return app
