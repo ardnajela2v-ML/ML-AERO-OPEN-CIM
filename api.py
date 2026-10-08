@@ -5719,6 +5719,33 @@ def create_app():
                         historical_wind['hour_of_year'] = (
                             day_of_year * 24 + source_frame.index.hour
                         ).to_numpy(dtype=int) % 8760
+                        _ts = source_frame.index.values
+                        historical_wind['timestamps_utc'] = _ts
+                        if len(_ts) > 1:
+                            _diffs_ns = np.diff(_ts.astype(np.int64))
+                            _expected_ns = int(historical_wind['dt_hours'] * 3600 * 1e9)
+                            _n_dup = int(np.sum(_diffs_ns <= 0))
+                            _n_gaps = int(np.sum(_diffs_ns > int(_expected_ns * 1.5)))
+                            _max_gap_h = float(np.max(_diffs_ns) / 3600e9)
+                            historical_wind['_ts_integrity'] = {
+                                'is_strictly_increasing': _n_dup == 0,
+                                'n_duplicates': _n_dup,
+                                'n_gaps': _n_gaps,
+                                'max_gap_hours': _max_gap_h,
+                            }
+                            if _n_dup > 0:
+                                logger.warning(
+                                    'historical_wind: %d timestamps duplicados o '
+                                    'invertidos en la serie activa', _n_dup,
+                                )
+                            if _n_gaps > 0:
+                                logger.warning(
+                                    'historical_wind: %d huecos > %.1f h '
+                                    '(máximo %.1f h) en la serie activa',
+                                    _n_gaps,
+                                    historical_wind['dt_hours'] * 1.5,
+                                    _max_gap_h,
+                                )
         source_selection_token = source_session.get('_source_selection_token') if source_info else None
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None

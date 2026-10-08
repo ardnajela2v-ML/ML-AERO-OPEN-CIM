@@ -52,6 +52,10 @@ def prepare_historical_wind(resource, target_height_m, require_direction=True):
         hour_of_year = np.asarray(resource['hour_of_year'], dtype=int).reshape(-1)
         if len(hour_of_year) == len(speed):
             result['hour_of_year'] = hour_of_year[valid]
+    if resource.get('timestamps_utc') is not None:
+        ts = np.asarray(resource['timestamps_utc']).reshape(-1)
+        if len(ts) == len(speed):
+            result['timestamps_utc'] = ts[valid]
     return result
 
 
