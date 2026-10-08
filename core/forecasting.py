@@ -35,10 +35,12 @@ Formatos PML admitidos
 """
 from __future__ import annotations
 
+import warnings
 from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
+import pytz.exceptions as _pex
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -179,7 +181,15 @@ def _read_cenace_tabulated(path: str) -> dict:
             ambiguous='infer',
             nonexistent='shift_forward',
         )
-    except Exception:
+    except (TypeError, _pex.AmbiguousTimeError, _pex.NonExistentTimeError) as _e:
+        # TypeError: pandas antiguo sin soporte del kwarg nonexistent/ambiguous.
+        # AmbiguousTimeError/NonExistentTimeError: pytz no pudo resolver el DST;
+        # para medianoche México (transición a 02:00) esto es extremadamente raro.
+        warnings.warn(
+            f'tz_localize(America/Mexico_City) falló ({type(_e).__name__}: {_e}); '
+            'usando Etc/GMT+6 como fallback. '
+            'Los timestamps de horas DST (abr-oct 2017-2022) pueden tener ±1h de error.',
+            RuntimeWarning, stacklevel=2)
         mid_local = unique_dates.tz_localize('Etc/GMT+6')
     mid_utc = mid_local.tz_convert('UTC')
     date_to_utc_mid = dict(zip(unique_dates, mid_utc))

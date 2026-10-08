@@ -152,3 +152,30 @@ class TestProfileNormalizationWithNewPml:
         assert len(ts) == 70128
         assert meta['method'] == 'multi_year_keep_all_with_timestamps'
         assert meta['has_timestamps'] is True
+
+
+class TestTzLocalizeFallbackWarning:
+    """Verifica que el except específico emite RuntimeWarning cuando tz_localize falla."""
+
+    def test_fallback_warns_on_type_error(self, monkeypatch, tmp_path):
+        """TypeError (pandas viejo) → RuntimeWarning con 'Etc/GMT+6' en el mensaje."""
+        original_localize = pd.DatetimeIndex.tz_localize
+
+        def _mock_localize(self, tz, **kwargs):
+            if tz == 'America/Mexico_City':
+                raise TypeError('mocked old pandas: unexpected keyword argument')
+            return original_localize(self, tz, **kwargs)
+
+        monkeypatch.setattr(pd.DatetimeIndex, 'tz_localize', _mock_localize)
+
+        f = tmp_path / 'pml_test.txt'
+        f.write_text(
+            'nodo\tfecha\thora\tpml\ttipo_cambio_fix\tpml_usd_mwh\tpml_usd_kwh\n'
+            '02JUD-115\t01/01/18\t1\t500.0\t20.0\t25.0\t0.025000\n',
+            encoding='utf-8',
+        )
+        with pytest.warns(RuntimeWarning, match='Etc/GMT'):
+            result = _read_cenace_tabulated(str(f))
+        # El fallback no debe romper el parsing: debe devolver 1 timestamp válido
+        assert len(result['compra']) == 1
+        assert result['timestamps_utc'] is not None
