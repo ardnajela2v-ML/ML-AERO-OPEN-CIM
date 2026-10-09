@@ -86,6 +86,231 @@ def extract_candidate_pool(generation: dict, turbine_filename: str,
     return pool_cache
 
 
+def rerun_economics_from_pool(
+    pool_caches: Dict[str, List[Dict]],
+    turbines_folder: str,
+    scenario: str,
+    cost_model: CostModel,
+    discount_rate: float,
+    project_years: int,
+    annual_inflation_pct: Optional[float] = None,
+    price_escalation_pct: Optional[float] = None,
+    uncertainty_components_pct: Optional[Dict[str, float]] = None,
+    interannual_variability_pct: float = 6.4,
+) -> dict:
+    """Re-run economics from cached pool with a different price scenario.
+
+    Returns {'alternatives': [...], 'warnings': [...]}. If all candidates
+    lack scenarios, returns empty alternatives + warning SCE001.
+    """
+    import os
+    warnings_out: List[str] = []
+    alternatives: List[Dict] = []
+
+    any_has_scenarios = False
+    for turbine_fn, candidates in pool_caches.items():
+        turbine = PowerCurve.from_file(
+            os.path.join(turbines_folder, os.path.basename(turbine_fn)))
+        feasible = []
+        for c in candidates:
+            if c.get('scenarios') is None:
+                continue
+            any_has_scenarios = True
+            price = c['scenarios'].get(scenario)
+            if price is None:
+                continue
+            econ = _economics(
+                turbine, c['n_turbines'], c['aep_p50_mwh'], cost_model,
+                discount_rate, project_years, price, c['collection_length_m'],
+                revenue_year1_override=None,
+                annual_inflation_pct=annual_inflation_pct,
+                price_escalation_pct=price_escalation_pct,
+                discount_rate_basis='nominal',
+            )
+            feasible.append({**c, 'van_usd': econ['van_usd'], '_econ': econ})
+        if not feasible:
+            continue
+        champion = max(feasible, key=lambda x: x['van_usd'])
+        econ = champion['_econ']
+
+        uncertainty_components = dict(uncertainty_components_pct or {
+            'resource': 6.0,
+            'mcp': 4.0,
+            'wake': 3.0,
+            'power_curve': 2.0,
+            'losses': 2.0,
+        })
+        uncertainty_model_pct = math.sqrt(
+            sum(v ** 2 for v in uncertainty_components.values()))
+        _iav_1yr = float(interannual_variability_pct)
+        _n_yrs = max(project_years or 25, 1)
+        _combined_1yr = math.sqrt(uncertainty_model_pct ** 2 + _iav_1yr ** 2)
+        _combined_nyrs = math.sqrt(
+            uncertainty_model_pct ** 2 + (_iav_1yr / math.sqrt(_n_yrs)) ** 2)
+        aep_p50 = champion['aep_p50_mwh']
+        aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * _combined_1yr / 100.0))
+        installed_mw = champion['n_turbines'] * turbine.rated_power_kw / 1000.0
+        factor_cap = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
+
+        alt = {
+            'label': f'layout::{turbine_fn}::wake-optimal',
+            'turbina': turbine_fn,
+            'is_champion': True,
+            'n_aerogeneradores': champion['n_turbines'],
+            'n_optimo_estela': champion['n_turbines'],
+            'max_n_fisico': champion['n_turbines'],
+            'aep_p50_mwh': aep_p50,
+            'aep_p90_mwh': aep_p90,
+            'aep_p90_mwh_1yr': aep_p90,
+            'aep_p90_mwh_25yr': max(0.0, aep_p50 * (1.0 - 1.28155 * _combined_nyrs / 100.0)),
+            'aep_uncertainty_pct': uncertainty_model_pct,
+            'aep_uncertainty_pct_1yr': _combined_1yr,
+            'aep_uncertainty_pct_25yr': _combined_nyrs,
+            'interannual_variability_pct': _iav_1yr,
+            'factor_capacidad': factor_cap,
+            'installed_mw': installed_mw,
+            'capex_usd_per_installed_kw': (
+                econ['capex_usd'] / (installed_mw * 1000) if installed_mw > 0 else None),
+            'scenario': scenario,
+            'scenario_price_usd_kwh': champion['scenarios'][scenario],
+            **{k: econ[k] for k in (
+                'van_usd', 'van_real_usd', 'irr', 'lcoe_usd_kwh',
+                'lcoe_nom_usd_kwh', 'lcoe_real_usd_kwh',
+                'benefit_cost_ratio', 'roi', 'payback_years',
+                'annual_revenue_year1_flat_usd', 'economics_warnings',
+            ) if k in econ},
+        }
+        alternatives.append(alt)
+
+    if not any_has_scenarios:
+        warnings_out.append('SCE001: Pool sin escenarios de precio; se requiere pml_series.')
+    return {'alternatives': alternatives, 'warnings': warnings_out}
+
+
+def compute_annual_energy_breakdown(
+    layout_xy_m, turbine, resource, ratio_by_sector,
+    availability=0.97, electrical_losses=0.03,
+    curtailment_loss=0.0, environmental_loss=0.0,
+    rho_override=None,
+):
+    """Thin wrapper: hourly energy with pre-computed wake, then AEPCalculator."""
+    import pandas as pd
+    from core.energy import AEPCalculator, air_density
+
+    layout = np.asarray(layout_xy_m, dtype=float)
+    n = len(layout)
+    ws = np.asarray(resource['ws'], dtype=float).reshape(-1)
+    wd = np.asarray(resource['wd'], dtype=float).reshape(-1) % 360.0
+    valid = np.isfinite(ws) & np.isfinite(wd) & (ws >= 0)
+    ws_v = ws[valid]
+    wd_v = wd[valid]
+    ts_full = np.asarray(resource['timestamps_utc']).reshape(-1)
+    ts_v = ts_full[valid]
+    dt_h = float(resource.get('dt_hours', 1.0))
+
+    if rho_override is not None and np.isfinite(float(rho_override)) and float(rho_override) > 0:
+        rho = float(rho_override)
+    elif resource.get('temperature_c') is not None and resource.get('pressure_pa') is not None:
+        tc = np.asarray(resource['temperature_c'], dtype=float).reshape(-1)
+        pp = np.asarray(resource['pressure_pa'], dtype=float).reshape(-1)
+        rho = float(np.mean(air_density(tc[valid], pp[valid])))
+    else:
+        rho = 1.225
+
+    lm = np.ones(n)
+    _rbs = np.asarray(ratio_by_sector, dtype=float)
+    n_sectors = _rbs.shape[0]
+    sector_deg = 360.0 / n_sectors
+    sector_idx = np.floor(wd_v / sector_deg).astype(int) % n_sectors
+
+    ws_free = ws_v[:, None] * lm[None, :]
+    v_eff = ws_free * _rbs[sector_idx]
+    power_kw = turbine.power_kw_density_corrected(v_eff, rho)
+    survival = (float(availability) * (1.0 - float(electrical_losses))
+                * (1.0 - float(curtailment_loss)) * (1.0 - float(environmental_loss)))
+    energy_kwh = power_kw.sum(axis=1) * dt_h * survival
+
+    ts_idx = pd.DatetimeIndex(ts_v)
+    df = pd.DataFrame({'energy_net_kwh': energy_kwh}, index=ts_idx)
+    calc = AEPCalculator(turbine)
+    return calc.compute_from_timeseries(df, energy_col='energy_net_kwh')
+
+
+def robustness_matrix(
+    finalists: List[Dict],
+    turbines_folder: str,
+    resources_by_height: Dict[float, Dict],
+    cost_model: CostModel,
+    discount_rate: float,
+    project_years: int,
+    annual_inflation_pct: Optional[float] = None,
+    price_escalation_pct: Optional[float] = None,
+    discount_rate_basis: str = 'nominal',
+    availability: float = 0.97,
+    electrical_losses: float = 0.03,
+    curtailment_loss: float = 0.0,
+    environmental_loss: float = 0.0,
+) -> dict:
+    """Energy (P50/P75/P90 empirical) x price (bajo/base/alto) matrix."""
+    import os
+    results = []
+    for f in finalists:
+        h = f.get('hub_height_m')
+        resource = resources_by_height.get(h)
+        if resource is None or resource.get('timestamps_utc') is None:
+            continue
+        rbs = f.get('ratio_by_sector')
+        if rbs is None:
+            continue
+        turbine = PowerCurve.from_file(
+            os.path.join(turbines_folder, os.path.basename(f['turbine_filename'])))
+        breakdown = compute_annual_energy_breakdown(
+            f['layout_xy_m'], turbine, resource, rbs,
+            availability=availability, electrical_losses=electrical_losses,
+            curtailment_loss=curtailment_loss, environmental_loss=environmental_loss)
+        p50_mwh = breakdown.get('p50_mwh', breakdown.get('aep_p50_mwh', f['aep_p50_mwh']))
+        p75_mwh = breakdown.get('p75_mwh', breakdown.get('aep_p75_mwh', p50_mwh * 0.95))
+        p90_mwh = breakdown.get('p90_mwh', breakdown.get('aep_p90_mwh', p50_mwh * 0.90))
+        mean_mwh = breakdown.get('mean_mwh', breakdown.get('aep_mean_mwh', p50_mwh))
+        std_mwh = breakdown.get('std_mwh', breakdown.get('aep_std_mwh', 0.0))
+        iav_real = (std_mwh / mean_mwh * 100.0) if mean_mwh > 0 else 0.0
+
+        scenarios = f.get('scenarios', {})
+        energy_levels = {'p50': p50_mwh, 'p75': p75_mwh, 'p90': p90_mwh}
+        price_levels = {k: scenarios[k] for k in ('bajo', 'base', 'alto') if k in scenarios}
+        matrix_cells = []
+        for e_label, e_val in energy_levels.items():
+            for p_label, p_val in price_levels.items():
+                econ = _economics(
+                    turbine, f['n_turbines'], e_val, cost_model,
+                    discount_rate, project_years, p_val, f['collection_length_m'],
+                    revenue_year1_override=None,
+                    annual_inflation_pct=annual_inflation_pct,
+                    price_escalation_pct=price_escalation_pct,
+                    discount_rate_basis=discount_rate_basis,
+                )
+                matrix_cells.append({
+                    'energy': e_label, 'price': p_label,
+                    'van_usd': econ.get('van_usd'),
+                    'irr': econ.get('irr'),
+                    'lcoe_usd_kwh': econ.get('lcoe_usd_kwh'),
+                })
+        results.append({
+            'label': f.get('label', f.get('turbine_filename')),
+            'turbine': f.get('turbine_filename'),
+            'energy_empirical': {
+                'p50_mwh': p50_mwh, 'p75_mwh': p75_mwh,
+                'p90_mwh_empirical': p90_mwh, 'mean_mwh': mean_mwh,
+                'std_mwh': std_mwh,
+                'interannual_variability_pct': round(iav_real, 4),
+                'n_years': breakdown.get('n_years', 0),
+            },
+            'scenarios': {k: scenarios.get(k) for k in ('bajo', 'base', 'alto')},
+            'matrix': matrix_cells,
+        })
+    return {'finalists': results}
+
+
 def effective_park_area(polygon, exclusions=None):
     """Common land area: polygon minus union of permanent exclusions.
 

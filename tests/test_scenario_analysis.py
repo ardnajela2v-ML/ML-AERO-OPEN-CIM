@@ -6,7 +6,8 @@ import unittest
 
 import numpy as np
 
-from core.farm_mcda import derive_price_scenarios, extract_candidate_pool, SCENARIO_YEARS
+from core.farm_mcda import (derive_price_scenarios, extract_candidate_pool,
+                            rerun_economics_from_pool, SCENARIO_YEARS)
 from core.multicriteria import smaa_weight_robustness, rank_layout_alternatives, LAYOUT_WEIGHTS
 
 
@@ -167,6 +168,65 @@ class TestCombinedP90(unittest.TestCase):
         p90 = max(0.0, aep_p50 * (1 - z * combined / 100))
         self.assertGreater(p90, 0.0)
         self.assertLess(p90, aep_p50)
+
+
+class TestRerunEconomicsFromPool(unittest.TestCase):
+    """5.3 — rerun_economics_from_pool."""
+
+    def _pool_caches(self, n_candidates=2, has_scenarios=True):
+        cands = []
+        for i in range(n_candidates):
+            cands.append({
+                'layout_xy_m': [[100 * i, 0], [100 * i + 50, 0]],
+                'n_turbines': 2,
+                'turbine_filename': 'clipper25_p2500_r44.5.csv',
+                'hub_height_m': 80.0,
+                'aep_p50_mwh': 10000.0 + i * 500,
+                'collection_length_m': 200.0,
+                'ratio_by_sector': None,
+                'scenarios': {
+                    'bajo': 0.04, 'base': 0.06, 'alto': 0.10,
+                    'by_year_detail': {y: 0.06 for y in range(2017, 2024)},
+                } if has_scenarios else None,
+                'van_usd': 1e6,
+            })
+        return {'clipper25_p2500_r44.5.csv': cands}
+
+    def test_different_van_per_scenario(self):
+        from core.cost_model import CostModel
+        pool = self._pool_caches()
+        cm = CostModel()
+        r_bajo = rerun_economics_from_pool(
+            pool, 'aerogeneradores', 'bajo', cm, 0.095, 25,
+            annual_inflation_pct=3.65, price_escalation_pct=3.65)
+        r_alto = rerun_economics_from_pool(
+            pool, 'aerogeneradores', 'alto', cm, 0.095, 25,
+            annual_inflation_pct=3.65, price_escalation_pct=3.65)
+        self.assertEqual(len(r_bajo['alternatives']), 1)
+        self.assertEqual(len(r_alto['alternatives']), 1)
+        self.assertLess(r_bajo['alternatives'][0]['van_usd'],
+                        r_alto['alternatives'][0]['van_usd'])
+
+    def test_lcoe_same_across_scenarios(self):
+        from core.cost_model import CostModel
+        pool = self._pool_caches(1)
+        cm = CostModel()
+        r_bajo = rerun_economics_from_pool(
+            pool, 'aerogeneradores', 'bajo', cm, 0.095, 25)
+        r_alto = rerun_economics_from_pool(
+            pool, 'aerogeneradores', 'alto', cm, 0.095, 25)
+        self.assertAlmostEqual(
+            r_bajo['alternatives'][0]['lcoe_usd_kwh'],
+            r_alto['alternatives'][0]['lcoe_usd_kwh'], places=6)
+
+    def test_no_scenarios_warning(self):
+        from core.cost_model import CostModel
+        pool = self._pool_caches(has_scenarios=False)
+        cm = CostModel()
+        result = rerun_economics_from_pool(
+            pool, 'aerogeneradores', 'base', cm, 0.095, 25)
+        self.assertEqual(len(result['alternatives']), 0)
+        self.assertTrue(any('SCE001' in w for w in result['warnings']))
 
 
 class TestSmaaWeightRobustness(unittest.TestCase):
