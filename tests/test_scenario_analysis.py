@@ -119,3 +119,50 @@ class TestExtractCandidatePool(unittest.TestCase):
         gen['pool'][0]['_precomputed'] = None
         result = extract_candidate_pool(gen, 'test.csv', 80.0)
         self.assertEqual(len(result), 1)
+
+
+class TestCombinedP90(unittest.TestCase):
+    """5.4 — P90 combinado con variabilidad interanual."""
+
+    def test_combined_1yr_exact(self):
+        model_pct = math.sqrt(6.0**2 + 4.0**2 + 3.0**2 + 2.0**2 + 2.0**2)
+        iav_1yr = 6.4
+        combined_1yr = math.sqrt(model_pct**2 + iav_1yr**2)
+        # model_pct = sqrt(69)
+        self.assertAlmostEqual(model_pct, math.sqrt(69), places=15)
+        # combined_1yr = sqrt(69 + 40.96) = sqrt(109.96)
+        self.assertAlmostEqual(combined_1yr, math.sqrt(109.96), places=15)
+
+    def test_combined_25yr_exact(self):
+        model_pct = math.sqrt(6.0**2 + 4.0**2 + 3.0**2 + 2.0**2 + 2.0**2)
+        iav_25yr = 6.4 / math.sqrt(25)
+        combined_25yr = math.sqrt(model_pct**2 + iav_25yr**2)
+        self.assertAlmostEqual(iav_25yr, 1.28, places=15)
+        # combined_25yr = sqrt(69 + 1.6384) = sqrt(70.6384)
+        self.assertAlmostEqual(combined_25yr, math.sqrt(70.6384), places=15)
+
+    def test_p90_1yr_less_than_p90_25yr(self):
+        aep_p50 = 10000.0
+        model_pct = math.sqrt(6.0**2 + 4.0**2 + 3.0**2 + 2.0**2 + 2.0**2)
+        iav = 6.4
+        combined_1yr = math.sqrt(model_pct**2 + iav**2)
+        combined_25yr = math.sqrt(model_pct**2 + (iav / math.sqrt(25))**2)
+        z = 1.28155
+        p90_1yr = aep_p50 * (1 - z * combined_1yr / 100)
+        p90_25yr = aep_p50 * (1 - z * combined_25yr / 100)
+        self.assertLess(p90_1yr, p90_25yr)
+
+    def test_iav_zero_equals_model_only(self):
+        model_pct = math.sqrt(6.0**2 + 4.0**2 + 3.0**2 + 2.0**2 + 2.0**2)
+        combined = math.sqrt(model_pct**2 + 0.0**2)
+        self.assertAlmostEqual(combined, model_pct, places=15)
+
+    def test_z_factor_exact(self):
+        z = 1.28155
+        aep_p50 = 9205.0
+        model_pct = math.sqrt(69.0)
+        iav = 6.4
+        combined = math.sqrt(model_pct**2 + iav**2)
+        p90 = max(0.0, aep_p50 * (1 - z * combined / 100))
+        self.assertGreater(p90, 0.0)
+        self.assertLess(p90, aep_p50)

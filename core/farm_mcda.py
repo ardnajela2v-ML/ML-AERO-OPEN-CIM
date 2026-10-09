@@ -745,8 +745,15 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             if any(float(value) < 0 for value in uncertainty_components.values()):
                 raise ValueError('Las incertidumbres no pueden ser negativas.')
             uncertainty_components = {key: float(value) for key, value in uncertainty_components.items()}
-            uncertainty_pct = math.sqrt(sum(value ** 2 for value in uncertainty_components.values()))
-            aep_p90 = max(0.0, aep_p50 * (1.0 - 1.28155 * uncertainty_pct / 100.0))
+            uncertainty_model_pct = math.sqrt(sum(value ** 2 for value in uncertainty_components.values()))
+            _iav_1yr = float(interannual_variability_pct)
+            _n_yrs = max(project_years or 25, 1)
+            _iav_nyrs = _iav_1yr / math.sqrt(_n_yrs)
+            _combined_1yr = math.sqrt(uncertainty_model_pct ** 2 + _iav_1yr ** 2)
+            _combined_nyrs = math.sqrt(uncertainty_model_pct ** 2 + _iav_nyrs ** 2)
+            aep_p90_1yr = max(0.0, aep_p50 * (1.0 - 1.28155 * _combined_1yr / 100.0))
+            aep_p90_nyrs = max(0.0, aep_p50 * (1.0 - 1.28155 * _combined_nyrs / 100.0))
+            aep_p90 = aep_p90_1yr
             installed_mw = selected_n * turbine.rated_power_kw / 1000.0
             factor_capacity = aep_p50 / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
             area_km2 = max(float(layout.get('area_km2') or 0.0), 1e-9)
@@ -840,10 +847,15 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 'record_energy_mwh_before_additional_losses': sim.get('record_energy_mwh'),
                 'aep_p50_mwh': aep_p50,
                 'aep_p90_mwh': aep_p90,
+                'aep_p90_mwh_1yr': aep_p90_1yr,
+                'aep_p90_mwh_25yr': aep_p90_nyrs,
                 'aep_p90_mwh_per_installed_mw': (
                     aep_p90 / installed_mw if installed_mw > 0 else None
                 ),
-                'aep_uncertainty_pct': uncertainty_pct,
+                'aep_uncertainty_pct': uncertainty_model_pct,
+                'aep_uncertainty_pct_1yr': _combined_1yr,
+                'aep_uncertainty_pct_25yr': _combined_nyrs,
+                'interannual_variability_pct': _iav_1yr,
                 'uncertainty_components_pct': uncertainty_components,
                 'wake_loss_pct': sim['wake_loss_pct'],
                 'curtailment_loss_pct': curtailment_loss * 100.0,
