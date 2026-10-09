@@ -98,11 +98,13 @@ from core.spatial_calibration import (METHOD as SPATIAL_CALIBRATION_METHOD,
 from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
                        recommend_n_turbines, TECHNICAL_MIN_SPACING_D,
                        optimize_layout_structured, energy_weighted_dominant_direction)
-from core.farm_mcda import analyze_park_layouts, generate_park_layouts
+from core.farm_mcda import (analyze_park_layouts, generate_park_layouts,
+                            rerun_economics_from_pool, robustness_matrix)
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
-                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION)
+                                 LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION,
+                                 smaa_weight_robustness)
 from core.forecasting import (read_one_column, read_pml, base_year_stats,
                               normalize_fixed_hourly_profile)
 from windmcp.data import read_certe_files, read_reference_files, resample_hourly, observation_height_summary
@@ -5650,6 +5652,124 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/multicriteria/scenario_analysis', methods=['POST'])
+    def mcda_scenario_analysis():
+        """Escenarios bajo/base/alto + robustez + SMAA×3 desde pool cacheado."""
+        body = request.get_json(silent=True) or {}
+        sid = body.get('session_id')
+        if not sid:
+            return _err('session_id requerido.')
+        sess = get_session(str(sid))
+        pool_caches = sess.get('_candidate_pool')
+        if not pool_caches:
+            return _err('No hay pool de candidatos en la sesión. '
+                        'Ejecuta primero /api/multicriteria/spatial.', 400)
+        try:
+            park_cfg = sess.get('park_configuration') or {}
+            fin_cfg = park_cfg.get('financial_config') or {}
+            discount_rate = float(fin_cfg.get('discount_rate', 0.095))
+            project_years = int(park_cfg.get('project_horizon_years', 25))
+            annual_inflation_pct = fin_cfg.get('annual_inflation_pct')
+            price_escalation_pct = fin_cfg.get('price_escalation_pct')
+            turbines_folder = Config.TURBINES_FOLDER
+            cost_model_raw = CostModel()
+
+            n_samples = int(body.get('n_samples', 500))
+            concentration = float(body.get('concentration', 30.0))
+
+            import json, sys
+            pool_bytes = sys.getsizeof(
+                json.dumps(pool_caches, default=str).encode())
+
+            scenario_results = {}
+            all_finalists_set = set()
+            for scenario in ('bajo', 'base', 'alto'):
+                r = rerun_economics_from_pool(
+                    pool_caches, turbines_folder, scenario, cost_model_raw,
+                    discount_rate, project_years,
+                    annual_inflation_pct=annual_inflation_pct,
+                    price_escalation_pct=price_escalation_pct)
+                alts = r['alternatives']
+                ranking = rank_layout_alternatives(alts) if alts else {'ranking': []}
+                winner = ranking['ranking'][0]['label'] if ranking.get('ranking') else None
+                scenario_results[scenario] = {
+                    'price_usd_kwh': (alts[0].get('scenario_price_usd_kwh')
+                                      if alts else None),
+                    'alternatives': alts,
+                    'ranking': ranking,
+                    'winner': winner,
+                    'warnings': r.get('warnings', []),
+                }
+                for alt in alts:
+                    all_finalists_set.add(alt['turbina'])
+                if winner:
+                    all_finalists_set.add(winner)
+
+            base_winner = scenario_results.get('base', {}).get('winner')
+            winner_stable = all(
+                scenario_results[s].get('winner') == base_winner
+                for s in ('bajo', 'alto')
+            )
+
+            finalists_for_matrix = []
+            for fn, cands in pool_caches.items():
+                if fn not in all_finalists_set:
+                    continue
+                champion = max(
+                    (c for c in cands if c.get('scenarios')),
+                    key=lambda c: c.get('van_usd', 0),
+                    default=None)
+                if champion:
+                    finalists_for_matrix.append(champion)
+
+            matrix_result = {'finalists': []}
+            hist_wind = sess.get('historical_wind')
+            if hist_wind and finalists_for_matrix:
+                from core.historical_resource import prepare_historical_wind
+                unique_heights = {c['hub_height_m'] for c in finalists_for_matrix}
+                resources_by_height = {}
+                for h in unique_heights:
+                    try:
+                        resources_by_height[h] = prepare_historical_wind(hist_wind, h)
+                    except Exception:
+                        pass
+                if resources_by_height:
+                    matrix_result = robustness_matrix(
+                        finalists_for_matrix, turbines_folder, resources_by_height,
+                        cost_model_raw, discount_rate, project_years,
+                        annual_inflation_pct=annual_inflation_pct,
+                        price_escalation_pct=price_escalation_pct,
+                        availability=float(body.get('availability', 0.97)),
+                        electrical_losses=float(body.get('electrical_losses', 0.03)),
+                    )
+
+            smaa_results = {}
+            keys = list(LAYOUT_WEIGHTS.keys())
+            base_w = LAYOUT_WEIGHTS
+            for scenario in ('bajo', 'base', 'alto'):
+                alts = scenario_results[scenario].get('alternatives', [])
+                if len(alts) >= 2:
+                    smaa_results[scenario] = smaa_weight_robustness(
+                        alts, rank_layout_alternatives, keys, base_w,
+                        n_samples=n_samples, concentration=concentration)
+                else:
+                    smaa_results[scenario] = {
+                        'n_samples': 0, 'alternatives': [],
+                        'criteria_importance': None,
+                        'classifier_validation': None,
+                    }
+
+            return jsonify(numpy_to_python({
+                'scenarios': scenario_results,
+                'winner_stable': winner_stable,
+                'robustness_matrix': matrix_result,
+                'smaa': smaa_results,
+                'pool_size_bytes': pool_bytes,
+            }))
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
     @app.route('/api/farm/layouts/revision', methods=['GET'])
     def farm_layouts_revision():
         return jsonify({'layout_search_revision': 'shared_geometry_v1'})
@@ -5687,8 +5807,10 @@ def create_app():
         except (TypeError, ValueError) as exc:
             return _err(str(exc))
         source_info = None
+        source_session = None
         historical_wind = None
         price_hourly_usd_kwh = None
+        pml_series_dict = None
         if body.get('session_id'):
             source_session = get_session(str(body['session_id']))
             # PML horario (Fase 1/2 de ingreso real): si ya se cargó un PML
@@ -5734,6 +5856,7 @@ def create_app():
                         price_hourly_usd_kwh = None
                 except (TypeError, ValueError):
                     price_hourly_usd_kwh = None
+            pml_series_dict = pml_model.get('pml_series')
             source_info = _analysis_source_info(source_session, body)
             source_frame = _analysis_df(source_session, body)
             if source_frame is not None and len(source_frame):
@@ -5965,6 +6088,14 @@ def create_app():
                 if scope == 'park':
                     tasks[task_id]['progress'] = 82
                     tasks[task_id]['message'] = 'Optimizando cantidades, separaciones y estelas del parque…'
+                    _pml_vals = None
+                    _pml_ts = None
+                    _pml_sd = pml_series_dict
+                    if _pml_sd and _pml_sd.get('start_utc') and _pml_sd.get('n_hours'):
+                        _pml_vals = np.asarray(_pml_sd['values'], dtype=float)
+                        _pml_ts = pd.date_range(
+                            _pml_sd['start_utc'], periods=_pml_sd['n_hours'],
+                            freq='h', tz='UTC')
                     layout_builder = generate_park_layouts if generation_only else analyze_park_layouts
                     layout_result = layout_builder(
                         sites=spatial['sites'], polygon=polygon,
@@ -6003,6 +6134,8 @@ def create_app():
                         **({} if generation_only else {'weights': body.get('layout_weights')}),
                         historical_wind=historical_wind,
                         price_hourly_usd_kwh=price_hourly_usd_kwh,
+                        pml_series_values=_pml_vals,
+                        pml_series_timestamps_utc=_pml_ts,
                         n_range=(tuple(body['n_range']) if body.get('n_range') else None),
                         n_range_by_turbine=(
                             {key: tuple(value) for key, value in body['n_range_by_turbine'].items()}
@@ -6017,6 +6150,8 @@ def create_app():
                         max_slope_deg=(
                             float(body['max_slope_deg']) if body.get('max_slope_deg') is not None else None),
                     )
+                    if layout_result.get('_pool_caches') and source_session is not None:
+                        source_session['_candidate_pool'] = layout_result['_pool_caches']
                     for alternative in layout_result.get('alternatives', []):
                         alternative['spatial_sources'] = spatial.get('spatial_sources', [])
                         alternative['temporal_source'] = source_info
