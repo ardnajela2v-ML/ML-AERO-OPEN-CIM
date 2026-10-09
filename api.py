@@ -6301,38 +6301,48 @@ def create_app():
 
     @app.route('/api/market/list_files', methods=['GET'])
     def market_list_files():
-        """Lista todos los archivos en MARKET_DATA_FOLDER, agrupados por categoría."""
-        folder = Config.MARKET_DATA_FOLDER
-        if not os.path.isdir(folder):
-            return jsonify({'files': [], 'folder': folder,
-                            'error': 'MARKET_DATA_FOLDER not found'})
+        """Lista archivos de mercado de carpetas dedicadas + legada."""
+        folders = []
+        for cat_folder in MARKET_FOLDERS.values():
+            if cat_folder and os.path.isdir(cat_folder) and cat_folder not in folders:
+                folders.append(cat_folder)
+        legacy = Config.MARKET_DATA_FOLDER
+        if legacy and os.path.isdir(legacy) and legacy not in folders:
+            folders.append(legacy)
+        if not folders:
+            return jsonify({'files': [], 'folder': legacy,
+                            'error': 'No se encontró ninguna carpeta de mercado'})
         files = []
-        for fname in sorted(os.listdir(folder)):
-            if fname.startswith('.') or fname.startswith('~'):
-                continue
-            ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
-            if ext not in ('txt', 'csv', 'tsv', 'dat', 'xlsx'):
-                continue
-            fpath = os.path.join(folder, fname)
-            if not os.path.isfile(fpath):
-                continue
-            size_kb = round(os.path.getsize(fpath) / 1024, 1)
-            category = _detect_market_category(fname)
-            cat_info = MARKET_CATEGORIES.get(category, {})
-            files.append({
-                'filename':  fname,
-                'size_kb':   size_kb,
-                'category':  category,
-                'label':     cat_info.get('label', fname),
-                'unit':      cat_info.get('unit', ''),
-            })
-        # Agrupar
+        seen = set()
+        for folder in folders:
+            for fname in sorted(os.listdir(folder)):
+                if fname.startswith('.') or fname.startswith('~'):
+                    continue
+                if fname in seen:
+                    continue
+                ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+                if ext not in ('txt', 'csv', 'tsv', 'dat', 'xlsx'):
+                    continue
+                fpath = os.path.join(folder, fname)
+                if not os.path.isfile(fpath):
+                    continue
+                seen.add(fname)
+                size_kb = round(os.path.getsize(fpath) / 1024, 1)
+                category = _detect_market_category(fname)
+                cat_info = MARKET_CATEGORIES.get(category, {})
+                files.append({
+                    'filename':  fname,
+                    'size_kb':   size_kb,
+                    'category':  category,
+                    'label':     cat_info.get('label', fname),
+                    'unit':      cat_info.get('unit', ''),
+                })
         grouped = {cat: [] for cat in MARKET_CATEGORIES}
         grouped['other'] = []
         for f in files:
             grouped.setdefault(f['category'], []).append(f)
         return jsonify({'files': files, 'grouped': grouped,
-                        'folder': folder, 'count': len(files)})
+                        'folder': legacy, 'count': len(files)})
 
     @app.route('/api/market/load_file', methods=['POST'])
     def market_load_file():
@@ -6346,8 +6356,12 @@ def create_app():
             return jsonify({'error': 'filename required'}), 400
 
         safe_name = os.path.basename(filename)
-        fpath = os.path.join(Config.MARKET_DATA_FOLDER, safe_name)
-        if not os.path.isfile(fpath):
+        fpath = None
+        for _mf in list(MARKET_FOLDERS.values()) + [Config.MARKET_DATA_FOLDER]:
+            if _mf and os.path.isfile(os.path.join(_mf, safe_name)):
+                fpath = os.path.join(_mf, safe_name)
+                break
+        if fpath is None:
             return jsonify({'error': f'Archivo no encontrado: {safe_name}'}), 404
 
         if category == 'auto':
