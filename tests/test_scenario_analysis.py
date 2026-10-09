@@ -7,6 +7,7 @@ import unittest
 import numpy as np
 
 from core.farm_mcda import derive_price_scenarios, extract_candidate_pool, SCENARIO_YEARS
+from core.multicriteria import smaa_weight_robustness, rank_layout_alternatives, LAYOUT_WEIGHTS
 
 
 class TestDerivePriceScenarios(unittest.TestCase):
@@ -166,3 +167,53 @@ class TestCombinedP90(unittest.TestCase):
         p90 = max(0.0, aep_p50 * (1 - z * combined / 100))
         self.assertGreater(p90, 0.0)
         self.assertLess(p90, aep_p50)
+
+
+class TestSmaaWeightRobustness(unittest.TestCase):
+    """5.6 — smaa_weight_robustness function pura."""
+
+    def _alternatives(self):
+        return [
+            {'label': 'A', 'turbina': 'a.csv', 'is_champion': True,
+             'n_aerogeneradores': 5, 'n_optimo_estela': 5, 'max_n_fisico': 5,
+             'van_usd': 2e6, 'aep_p90_mwh': 8000, 'factor_capacidad': 0.35,
+             'capex_usd_per_installed_kw': 1200, 'lcoe_usd_kwh': 0.05,
+             'hours_near_cpmax': 3000, 'cp_effective_full_series': 0.28},
+            {'label': 'B', 'turbina': 'b.csv', 'is_champion': True,
+             'n_aerogeneradores': 4, 'n_optimo_estela': 4, 'max_n_fisico': 4,
+             'van_usd': 1.8e6, 'aep_p90_mwh': 7500, 'factor_capacidad': 0.33,
+             'capex_usd_per_installed_kw': 1100, 'lcoe_usd_kwh': 0.048,
+             'hours_near_cpmax': 3200, 'cp_effective_full_series': 0.30},
+        ]
+
+    def test_returns_expected_structure(self):
+        alts = self._alternatives()
+        keys = list(LAYOUT_WEIGHTS.keys())
+        result = smaa_weight_robustness(alts, rank_layout_alternatives, keys,
+                                        LAYOUT_WEIGHTS, n_samples=100)
+        self.assertIn('n_samples', result)
+        self.assertIn('alternatives', result)
+        self.assertIn('criteria', result)
+        self.assertIn('base_weights', result)
+        self.assertIsNone(result['criteria_importance'])
+        self.assertIsNone(result['classifier_validation'])
+        self.assertGreater(result['n_samples'], 0)
+        self.assertEqual(len(result['alternatives']), 2)
+
+    def test_seed_reproducible(self):
+        alts = self._alternatives()
+        keys = list(LAYOUT_WEIGHTS.keys())
+        r1 = smaa_weight_robustness(alts, rank_layout_alternatives, keys,
+                                     LAYOUT_WEIGHTS, n_samples=100, seed=42)
+        r2 = smaa_weight_robustness(alts, rank_layout_alternatives, keys,
+                                     LAYOUT_WEIGHTS, n_samples=100, seed=42)
+        self.assertEqual(r1['alternatives'][0]['win_rate_pct'],
+                         r2['alternatives'][0]['win_rate_pct'])
+
+    def test_win_rates_sum_to_100(self):
+        alts = self._alternatives()
+        keys = list(LAYOUT_WEIGHTS.keys())
+        result = smaa_weight_robustness(alts, rank_layout_alternatives, keys,
+                                        LAYOUT_WEIGHTS, n_samples=200)
+        total = sum(a['win_rate_pct'] for a in result['alternatives'])
+        self.assertAlmostEqual(total, 100.0, places=1)

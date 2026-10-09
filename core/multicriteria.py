@@ -677,3 +677,88 @@ def rank_sites_turbines(sites_analysis: List[Dict],
         return topsis(best, weights=weights)
 
     raise ValueError(f"Unknown mode: {mode}")
+
+
+def smaa_weight_robustness(alternatives, rank_fn, keys, base_weights,
+                           n_samples=500, concentration=30.0, seed=42):
+    """Core SMAA: Dirichlet perturbation + re-ranking. No HTTP."""
+    base_w = np.array([float(base_weights.get(k, 1e-4)) if isinstance(base_weights, dict)
+                        else float(base_weights[i])
+                        for i, k in enumerate(keys)], dtype=float)
+    base_w = np.maximum(base_w, 1e-4)
+    base_w = base_w / base_w.sum()
+
+    n_samples = max(50, min(int(n_samples), 2000))
+    concentration = max(1.0, float(concentration))
+
+    rng = np.random.default_rng(seed)
+    alpha = base_w * concentration
+    weight_samples = rng.dirichlet(alpha, size=n_samples)
+
+    base_ranking = rank_fn(alternatives, weights=dict(zip(keys, base_w)))
+    base_by_label = {row.get('label'): row for row in base_ranking.get('ranking', [])}
+
+    labels = None
+    rank_counts = {}
+    score_sum = {}
+    score_sq_sum = {}
+    win_counts = {}
+    winner_per_sample = []
+    for i in range(n_samples):
+        w_i = dict(zip(keys, weight_samples[i]))
+        result = rank_fn(alternatives, weights=w_i)
+        ranking = result.get('ranking', [])
+        if not ranking:
+            continue
+        if labels is None:
+            labels = [row.get('label') for row in ranking]
+            for lb in labels:
+                rank_counts[lb] = {}
+                score_sum[lb] = 0.0
+                score_sq_sum[lb] = 0.0
+                win_counts[lb] = 0
+        for row in ranking:
+            lb = row.get('label')
+            if lb not in rank_counts:
+                continue
+            r = int(row['rank'])
+            rank_counts[lb][r] = rank_counts[lb].get(r, 0) + 1
+            s = float(row['topsis_score'])
+            score_sum[lb] += s
+            score_sq_sum[lb] += s * s
+            if r == 1:
+                win_counts[lb] += 1
+        winner_per_sample.append(ranking[0].get('label'))
+
+    if labels is None:
+        return {'n_samples': 0, 'alternatives': [], 'criteria': keys,
+                'base_weights': dict(zip(keys, base_w)), 'concentration': concentration}
+
+    n_valid = len(winner_per_sample)
+    summary = []
+    for lb in labels:
+        mean_s = score_sum[lb] / n_valid if n_valid else 0.0
+        var_s = max(score_sq_sum[lb] / n_valid - mean_s ** 2, 0.0) if n_valid else 0.0
+        ranks_flat = [r for r, c in rank_counts[lb].items() for _ in range(c)]
+        summary.append({
+            'label': lb,
+            'win_rate_pct': round(100.0 * win_counts[lb] / n_valid, 2) if n_valid else 0.0,
+            'rank_counts': rank_counts[lb],
+            'rank_mean': round(float(np.mean(ranks_flat)), 2) if ranks_flat else None,
+            'rank_std': round(float(np.std(ranks_flat)), 2) if ranks_flat else None,
+            'score_mean': round(mean_s, 4),
+            'score_std': round(float(np.sqrt(var_s)), 4),
+            'base_rank': base_by_label.get(lb, {}).get('rank'),
+            'base_score': base_by_label.get(lb, {}).get('topsis_score'),
+        })
+    summary.sort(key=lambda row: -row['win_rate_pct'])
+
+    return {
+        'n_samples': n_valid,
+        'criteria': keys,
+        'alternatives': summary,
+        'criteria_importance': None,
+        'classifier_validation': None,
+        'base_weights': dict(zip(keys, base_w)),
+        'concentration': concentration,
+    }
