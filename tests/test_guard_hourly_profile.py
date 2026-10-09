@@ -1,11 +1,12 @@
 """Guard de hourly_profile_2018 en /api/multicriteria/spatial — §6 caso-estudio.
 
-Prueba los cinco casos del §6:
-  1. 70,128 valores → 400 con mensaje de longitud
+Prueba los casos del §6:
+  1. 70,128 valores → _store crea pml_series + extrae 8760; spatial acepta (200)
   2. 8,760 valores  → guard no bloquea; price_hourly_usd_kwh tiene 8,760 floats
   3. [] (lista vacía) → tratado como sin perfil, precio escalar, sin 400
   4. Sin perfil (sesión sin PML) → precio escalar, sin 400
-  5. pml_series presente → 400 con el mensaje de §6
+  5. pml_series presente → spatial acepta (200, guard levantado en paso 5)
+  6. Migración en vuelo: sesión vieja con 70128 + hourly_timestamps → 200
 """
 from __future__ import annotations
 
@@ -70,21 +71,22 @@ class GuardHourlyProfileTests(unittest.TestCase):
         return task
 
     # ── Test 1 ────────────────────────────────────────────────────────────────
-    def test_70128_returns_400(self):
-        """hourly_profile_2018 con 70,128 valores → 400 con mensaje de longitud.
-
-        Carga el PML multi-año (PML_2017-2024 02JUD115.txt, mercado_pml/).
-        La clave del preset se obtiene slugificando el nombre del archivo:
-        'PML_2017-2024 02JUD115' → 'pml_2017_2024_02jud115'.
-        El archivo está en el repo, por lo que funciona en cualquier entorno que
-        clone los datos (Config.PML_FOLDER apunta a mercado_pml/ relativo a BASE_DIR).
-        """
+    def test_70128_creates_pml_series_and_extracts_8760(self):
+        """Carga multi-año (70,128 h) → _store crea pml_series + 8760 en
+        hourly_profile_2018. Spatial acepta (200)."""
         self._load_pml('pml_2017_2024_02jud115')
+        sess = self.app._get_session(self.sid)
+        pml = sess['park_configuration']['market_models']['pml']
+        self.assertIsNotNone(pml.get('pml_series'))
+        self.assertEqual(pml['pml_series']['n_hours'], 70128)
+        self.assertEqual(pml['pml_series']['schema_version'], 1)
+        self.assertEqual(len(pml['hourly_profile_2018']), 8760)
+        self.assertIsNone(pml.get('hourly_timestamps'))
+        self.assertIn(2018, pml['pml_series']['years_complete'])
+
         resp = self._spatial()
-        self.assertEqual(resp.status_code, 400)
-        data = resp.get_json()
-        self.assertFalse(data['success'])
-        self.assertIn('8 760', data['error'])
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        self.assertIn('task_id', resp.get_json())
 
     # ── Test 2 ────────────────────────────────────────────────────────────────
     def test_8760_passes_and_price_list_has_8760_values(self):
@@ -140,16 +142,40 @@ class GuardHourlyProfileTests(unittest.TestCase):
         self.assertIn('task_id', resp.get_json())
 
     # ── Test 5 ────────────────────────────────────────────────────────────────
-    def test_pml_series_returns_400(self):
-        """pml_series presente en la sesión → 400 con el mensaje de §6."""
+    def test_pml_series_accepted(self):
+        """pml_series presente → spatial acepta (200, guard levantado)."""
         sess = self.app._get_session(self.sid)
         sess.setdefault('park_configuration', {}).setdefault(
             'market_models', {})['pml'] = {
             'category': 'pml',
-            'pml_series': {'schema_version': 1, 'n_hours': 70128},
+            'hourly_profile_2018': [0.05] * 8760,
+            'pml_series': {
+                'schema_version': 1,
+                'start_utc': '2017-01-01T06:00:00+00:00',
+                'n_hours': 70128,
+                'values': [0.05] * 70128,
+            },
         }
         resp = self._spatial()
-        self.assertEqual(resp.status_code, 400)
-        data = resp.get_json()
-        self.assertFalse(data['success'])
-        self.assertIn('multi-año', data['error'])
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        self.assertIn('task_id', resp.get_json())
+
+    # ── Test 6 ────────────────────────────────────────────────────────────────
+    def test_migration_70128_without_pml_series(self):
+        """Sesión vieja: 70128 en hourly_profile_2018 + hourly_timestamps,
+        sin pml_series → migración en vuelo → spatial acepta (200)."""
+        import numpy as np
+        ts = [str(t) for t in
+              np.arange('2017-01-01T06:00', '2025-01-01T06:00',
+                        dtype='datetime64[h]')]
+        self.assertEqual(len(ts), 70128)
+        sess = self.app._get_session(self.sid)
+        sess.setdefault('park_configuration', {}).setdefault(
+            'market_models', {})['pml'] = {
+            'category': 'pml',
+            'hourly_profile_2018': [0.05] * 70128,
+            'hourly_timestamps': ts,
+        }
+        resp = self._spatial()
+        self.assertEqual(resp.status_code, 200, resp.get_data(as_text=True))
+        self.assertIn('task_id', resp.get_json())

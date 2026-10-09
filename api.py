@@ -1924,7 +1924,39 @@ def create_app():
                 base_year = int(pd.Timestamp(timestamps[0]).year)
             except Exception:
                 pass
-        park.setdefault('market_models', {})['pml'] = {
+
+        hourly_profile = [float(value) for value in profile]
+        hourly_ts_out = ts_list
+        pml_series = None
+
+        if ts_list is not None and len(profile) > 8760:
+            import calendar as _cal
+            ts_pd = pd.DatetimeIndex(timestamps)
+            years_in_data = sorted(set(int(y) for y in ts_pd.year))
+            years_complete = []
+            for _y in years_in_data:
+                _exp = 8784 if _cal.isleap(_y) else 8760
+                if int((ts_pd.year == _y).sum()) >= int(_exp * 0.9):
+                    years_complete.append(_y)
+            pml_series = {
+                'schema_version': 1,
+                'start_utc': str(ts_pd[0]),
+                'n_hours': int(len(profile)),
+                'values': hourly_profile,
+                'years_selected': years_in_data,
+                'years_complete': years_complete,
+            }
+            _extract_year = 2018 if 2018 in years_in_data else base_year
+            _mask_yr = (ts_pd.year == _extract_year)
+            _n_yr = int(_mask_yr.sum())
+            if _n_yr in (8760, 8784):
+                hourly_profile = [hourly_profile[i]
+                                  for i in range(len(hourly_profile)) if _mask_yr[i]]
+                if len(hourly_profile) > 8760:
+                    hourly_profile = hourly_profile[:8760]
+            hourly_ts_out = None
+
+        pml_dict = {
             'category': 'pml',
             'mode': 'fixed_2018_profile',
             'source_key': source_key,
@@ -1936,9 +1968,9 @@ def create_app():
             'annual': [mean_price] * horizon,
             'ci_low': [],
             'ci_high': [],
-            'hourly_profile_2018': [float(value) for value in profile],
-            'hourly_timestamps': ts_list,
-            'n_hours': int(len(profile)),
+            'hourly_profile_2018': hourly_profile,
+            'hourly_timestamps': hourly_ts_out,
+            'n_hours': int(len(hourly_profile)),
             'normalization': normalization,
             'validation': None,
             'validation_method': None,
@@ -1959,6 +1991,9 @@ def create_app():
             },
             'published_at': datetime.now(timezone.utc).isoformat(),
         }
+        if pml_series is not None:
+            pml_dict['pml_series'] = pml_series
+        park.setdefault('market_models', {})['pml'] = pml_dict
         park['configuration_revision'] = int(park.get('configuration_revision', 0)) + 1
         park['updated_at'] = datetime.now(timezone.utc).isoformat()
 
@@ -5663,8 +5698,26 @@ def create_app():
             pml_model = ((source_session.get('park_configuration') or {})
                         .get('market_models', {}).get('pml', {}))
             pml_hourly = pml_model.get('hourly_profile_2018')
-            if pml_model.get('pml_series') is not None:
-                return _err('PML multi-año aún no soportado en esta ruta')
+
+            # Migración en vuelo: sesiones viejas con 70128 valores en
+            # hourly_profile_2018 + hourly_timestamps y sin pml_series.
+            if (pml_model.get('pml_series') is None
+                    and isinstance(pml_hourly, list)
+                    and len(pml_hourly) > 8760
+                    and pml_model.get('hourly_timestamps')):
+                _ts_raw = pml_model['hourly_timestamps']
+                _ts_pd = pd.DatetimeIndex(_ts_raw)
+                _extract_yr = 2018
+                _mask_yr = (_ts_pd.year == _extract_yr)
+                _n_yr = int(_mask_yr.sum())
+                if _n_yr in (8760, 8784):
+                    pml_hourly = [pml_hourly[i]
+                                  for i in range(len(pml_hourly)) if _mask_yr[i]]
+                    if len(pml_hourly) > 8760:
+                        pml_hourly = pml_hourly[:8760]
+                else:
+                    pml_hourly = None
+
             if isinstance(pml_hourly, list) and len(pml_hourly) > 0 and len(pml_hourly) != 8760:
                 return _err(
                     f'hourly_profile_2018 tiene {len(pml_hourly)} valores; '
