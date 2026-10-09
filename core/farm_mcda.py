@@ -35,6 +35,32 @@ from core.historical_resource import prepare_historical_wind, historical_layout_
 from core.energy import air_density
 
 
+SCENARIO_YEARS = list(range(2017, 2024))
+
+
+def derive_price_scenarios(by_year: Dict[int, dict],
+                           years: List[int] = None) -> Dict:
+    """Derive bajo/base/alto price scenarios from chronological_revenue by_year.
+
+    Raises ValueError if any required year is missing or incomplete.
+    """
+    years = years or SCENARIO_YEARS
+    missing = [y for y in years
+               if y not in by_year or not by_year[y].get('complete')]
+    if missing:
+        raise ValueError(
+            f'Año(s) {missing} ausente(s) o incompleto(s) en by_year; '
+            f'se requieren los {len(years)} años {years[0]}-{years[-1]}.')
+    prices = [by_year[y]['avg_realized_price_usd_kwh'] for y in years]
+    return {
+        'bajo': min(prices),
+        'base': float(np.mean(prices)),
+        'alto': max(prices),
+        'by_year_detail': {y: by_year[y]['avg_realized_price_usd_kwh']
+                           for y in years},
+    }
+
+
 def effective_park_area(polygon, exclusions=None):
     """Common land area: polygon minus union of permanent exclusions.
 
@@ -302,7 +328,10 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                          row_sep_reference_d: Optional[float] = None,
                          col_sep_reference_d: Optional[float] = None,
                          include_environmental: bool = False,
-                         local_refinement_max_evals: int = 60):
+                         local_refinement_max_evals: int = 60,
+                         pml_series_values: Optional[np.ndarray] = None,
+                         pml_series_timestamps_utc=None,
+                         interannual_variability_pct: float = 6.4):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -494,7 +523,26 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 if candidate.get('_precomputed') is not None:
                     continue
                 candidate_sim = candidate['sim']
-                if (resource is not None and price_hourly_usd_kwh is not None
+                _use_dated = (resource is not None
+                              and pml_series_values is not None
+                              and pml_series_timestamps_utc is not None
+                              and resource.get('timestamps_utc') is not None)
+                if _use_dated:
+                    candidate_sim['chronological_revenue'] = chronological_revenue(
+                        candidate['layout_xy_m'], turbine,
+                        np.asarray(resource['ws']), np.asarray(resource['wd']),
+                        timestamps_utc=resource['timestamps_utc'],
+                        pml_series_values=pml_series_values,
+                        pml_series_timestamps_utc=pml_series_timestamps_utc,
+                        sample_duration_hours=resource['dt_hours'],
+                        temperature_c=resource.get('temperature_c'),
+                        pressure_pa=resource.get('pressure_pa'),
+                        local_wind_multipliers=(
+                            candidate_sim['production_source']['local_speed_multipliers']),
+                        k_wake=k_wake, ct=ct, n_sectors=36,
+                        availability=availability, electrical_losses=electrical_losses,
+                        wake_model=wake_model, rho_override=rho)
+                elif (resource is not None and price_hourly_usd_kwh is not None
                         and resource.get('hour_of_year') is not None):
                     candidate_sim['chronological_revenue'] = chronological_revenue(
                         candidate['layout_xy_m'], turbine,
@@ -510,13 +558,27 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                         wake_model=wake_model, rho_override=rho)
                 candidate_aep_p50 = float(candidate_sim['aep_mwh']) * other_survival
                 candidate_chron = candidate_sim.get('chronological_revenue')
-                candidate_revenue_override = (
-                    candidate_chron['revenue_usd_year1'] * other_survival
-                    if candidate_chron and candidate_chron.get('revenue_usd_year1') is not None else None)
+
+                candidate_scenarios = None
+                if _use_dated and candidate_chron and candidate_chron.get('by_year'):
+                    candidate_scenarios = derive_price_scenarios(
+                        candidate_chron['by_year'])
+
+                if _use_dated and candidate_scenarios is not None:
+                    candidate_revenue_override = None
+                    _econ_price = candidate_scenarios['base']
+                else:
+                    candidate_revenue_override = (
+                        candidate_chron['revenue_usd_year1'] * other_survival
+                        if candidate_chron
+                        and candidate_chron.get('revenue_usd_year1') is not None
+                        else None)
+                    _econ_price = price_usd_kwh
+
                 candidate_collection_length = _collection_length_m(candidate['layout_xy_m'])
                 candidate_econ = _economics(
                     turbine, candidate['n_turbines'], candidate_aep_p50, cost_model,
-                    discount_rate, project_years, price_usd_kwh, candidate_collection_length,
+                    discount_rate, project_years, _econ_price, candidate_collection_length,
                     revenue_year1_override=candidate_revenue_override,
                     annual_inflation_pct=annual_inflation_pct,
                     price_escalation_pct=price_escalation_pct,
@@ -524,8 +586,11 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 )
                 candidate['van_usd'] = candidate_econ['van_usd']
                 candidate['_precomputed'] = {
-                    'aep_p50': candidate_aep_p50, 'collection_length': candidate_collection_length,
-                    'econ': candidate_econ, 'revenue_year1_override': candidate_revenue_override,
+                    'aep_p50': candidate_aep_p50,
+                    'collection_length': candidate_collection_length,
+                    'econ': candidate_econ,
+                    'revenue_year1_override': candidate_revenue_override,
+                    'scenarios': candidate_scenarios,
                 }
             # Flujo de decisión de ruido/shadow flicker (acordado con el
             # usuario): la selección PRIMARIA es "estela + VAN" -- ignora
