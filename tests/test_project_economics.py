@@ -1,10 +1,11 @@
 """Independent cash-flow identities and parity across economic entry points."""
+import inspect
 import numpy as np
 import pytest
 
 from core.cost_model import CostModel
 from core.energy import PowerCurve, TechnoEconomicAnalyzer
-from core.farm_mcda import _economics
+from core.farm_mcda import _economics, generate_park_layouts
 from core.project_economics import project_cashflows
 
 
@@ -148,3 +149,190 @@ def test_leveraged_endpoint_uses_actual_project_flows():
     assert result['leveraged_npv_usd'] == round(-1000 + sum(cf / 1.08 ** yr for yr, cf in enumerate(flows, 1)))
     body['project_cashflows_usd'] = [400]
     assert client.post('/api/energy/leveraged', json=body).status_code == 400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# §7 Paso 4 — inflación, price_escalation, dos corridas (nominal/real),
+# economics_warnings en _economics() y firma de generate_park_layouts()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _t1_turbine_model():
+    return PowerCurve.from_builtin('V150_4.5'), CostModel.from_defaults()
+
+
+def _t4_model_nofound():
+    """CostModel sin costo de cimentación (foundation=0); usado en T4/T6/T10."""
+    return CostModel(**{**CostModel.from_defaults().to_dict(), 'foundation_usd_per_m3eq': 0.0})
+
+
+def _econ_t4(**kw):
+    """Parámetros compartidos T4/T6/T10: n=1, aep=3500, foundation=0, r=0.095,
+    years=3, price=0.08, coll=0, deg=0, decomm=3.0."""
+    turbine = PowerCurve.from_builtin('V150_4.5')
+    model_nofound = _t4_model_nofound()
+    return _economics(turbine, 1, 3500, model_nofound, 0.095, 3, 0.08, 0.0,
+                      degradation_pct=0.0, decommissioning_pct=3.0, **kw)
+
+
+def test_economics_T1a_regression_no_inflation():
+    """Regresión: valores existentes no cambian + claves nuevas presentes.
+    Sin nuevos parámetros → INF001+BASIS001+INF002 por defecto."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0)
+    assert result['van_usd'] == pytest.approx(-57_321_534.6658887, rel=1e-9)
+    assert result['lcoe_usd_kwh'] == pytest.approx(0.7750339644597397, rel=1e-9)
+    assert result['benefit_cost_ratio'] == pytest.approx(0.12902660345951156, rel=1e-9)
+    assert 'economics_warnings' in result
+    assert any(w.startswith('INF001') for w in result['economics_warnings'])
+    assert any(w.startswith('INF002') for w in result['economics_warnings'])
+    assert 'lcoe_nom_usd_kwh' in result
+    assert 'lcoe_real_usd_kwh' in result
+
+
+def test_economics_T1b_nominal_with_inflation_golden():
+    """Golden: con inf=3.65 y escal=3.65 explícitos y basis='nominal'; warnings=[]."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0,
+                        annual_inflation_pct=3.65, price_escalation_pct=3.65,
+                        discount_rate_basis='nominal')
+    assert result['van_usd'] == pytest.approx(-60_394_640.54437992, rel=1e-9)
+    assert result['lcoe_nom_usd_kwh'] == pytest.approx(0.8458056197820268, rel=1e-9)
+    assert result['economics_warnings'] == []
+
+
+def test_economics_T2_real_and_nominal_lcoe_differ_when_inflating():
+    """Con inflación>0, LCOE nominal ≠ LCOE real (no son equivalentes en valor)."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0,
+                        annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    assert result['lcoe_nom_usd_kwh'] != pytest.approx(result['lcoe_real_usd_kwh'], rel=1e-3)
+
+
+def test_economics_T3_opex_grows_in_nominal_cashflow():
+    """OPEX en la tabla de flujos nominales crece año a año con inflación>0."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0,
+                        annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    table = result['cashflow_table']
+    assert table[1]['opex_usd'] > table[0]['opex_usd']
+
+
+def test_economics_T4_fisher_delta_van_T4_params():
+    """|VAN_nom − VAN_real| con parámetros T4/T6. Valor exacto se pega al revisor."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    assert 'van_real_usd' in result
+    delta = abs(result['van_usd'] - result['van_real_usd'])
+    assert delta < 1e-6
+
+
+def test_economics_T5_warnings_empty_valid_nominal_params():
+    """Sin warnings cuando inf>0, tasa real positiva y basis explícito."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65,
+                      discount_rate_basis='nominal')
+    assert result['economics_warnings'] == []
+
+
+def test_economics_T6_warning_when_real_rate_nonpositive():
+    """BASIS002 cuando inflación supera la tasa nominal (tasa real ≤ 0)."""
+    turbine = PowerCurve.from_builtin('V150_4.5')
+    model = _t4_model_nofound()
+    result = _economics(turbine, 1, 3500, model, 0.05, 3, 0.08, 0.0,
+                        degradation_pct=0.0, decommissioning_pct=3.0,
+                        annual_inflation_pct=6.0, price_escalation_pct=6.0,
+                        discount_rate_basis='nominal')
+    assert any(w.startswith('BASIS002') for w in result['economics_warnings'])
+
+
+def test_economics_T7_new_keys_present():
+    """Claves nuevas obligatorias presentes en el dict de retorno."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    for key in ('lcoe_nom_usd_kwh', 'lcoe_real_usd_kwh', 'van_real_usd',
+                'economics_warnings', 'opex_present_value_ratio'):
+        assert key in result, f'falta la clave {key!r}'
+
+
+def test_economics_T8_price_escalates_in_nominal_cashflow():
+    """El precio en la tabla nominal crece con price_escalation_pct>0."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    table = result['cashflow_table']
+    assert table[1]['price_usd_kwh'] > table[0]['price_usd_kwh']
+
+
+def test_economics_T9a_nominal_lcoe_above_real_lcoe_when_inflating():
+    """Proyecto de capital intensivo: LCOE nominal > LCOE real cuando inf>0."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0,
+                        annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    assert result['lcoe_nom_usd_kwh'] > result['lcoe_real_usd_kwh']
+
+
+def test_economics_T9b_opex_present_value_ratio():
+    """opex_present_value_ratio = PV_real(opex) / PV_nom(opex). Valor se pega al revisor."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    ratio = result['opex_present_value_ratio']
+    assert 0.5 < ratio < 2.0
+
+
+def test_economics_T10_fisher_golden_lcoe_pair():
+    """Golden confirmado: lcoe_nom, lcoe_real y |ΔVAN|<1e-6 con parámetros T4/T6."""
+    result = _econ_t4(annual_inflation_pct=3.65, price_escalation_pct=3.65)
+    assert result['lcoe_nom_usd_kwh'] == pytest.approx(0.774437828525241, rel=1e-9)
+    assert result['lcoe_real_usd_kwh'] == pytest.approx(0.722109693246953, rel=1e-9)
+    assert abs(result['van_usd'] - result['van_real_usd']) < 1e-6
+
+
+def test_economics_T6a_INF001():
+    """INF001 cuando annual_inflation_pct no se proporciona (None)."""
+    result = _econ_t4(annual_inflation_pct=None)
+    assert any(w.startswith('INF001') for w in result['economics_warnings'])
+
+
+def test_economics_T6b_INF002():
+    """INF002 cuando inf=0.0 y basis='nominal' explícitos."""
+    result = _econ_t4(annual_inflation_pct=0.0, discount_rate_basis='nominal')
+    assert any(w.startswith('INF002') for w in result['economics_warnings'])
+
+
+def test_economics_T6c_BASIS001():
+    """BASIS001 cuando discount_rate_basis no se proporciona (None)."""
+    result = _econ_t4(discount_rate_basis=None)
+    assert any(w.startswith('BASIS001') for w in result['economics_warnings'])
+
+
+def test_economics_T11_revenue_year1_override_and_flat():
+    """revenue_year1_override se reporta en annual_revenue_year1_usd;
+    annual_revenue_year1_flat_usd es siempre aep×price."""
+    result = _econ_t4(revenue_year1_override=999_999.0,
+                      annual_inflation_pct=3.65, price_escalation_pct=3.65,
+                      discount_rate_basis='nominal')
+    assert result['annual_revenue_year1_usd'] == pytest.approx(999_999.0)
+    assert result['annual_revenue_year1_flat_usd'] == pytest.approx(280_000.0)
+    # 0.08 * 3500 * 1000 = 280_000
+
+
+def test_economics_T11b_layouts_warnings_surfaced():
+    """generate_park_layouts propaga economics_warnings de alternativas al resultado."""
+    import os
+    polygon = [
+        {'lat': 16.5, 'lon': -95.0}, {'lat': 16.5, 'lon': -94.9973},
+        {'lat': 16.5027, 'lon': -94.9973}, {'lat': 16.5027, 'lon': -95.0},
+    ]
+    sites = [{'v_mean': 8.5, 'weibull_K': 2.1, 'rho_mean': 1.18,
+              'sectorial': {'frequency_pct': [6.25] * 16}}]
+    result = generate_park_layouts(
+        sites=sites, polygon=polygon, turbines_folder='aerogeneradores',
+        turbine_filenames=['acciona15_p1500_r35.csv'],
+        n_range=(1, 1), project_years=20, price_usd_kwh=0.083,
+        annual_inflation_pct=None)
+    assert 'economics_warnings' in result
+    assert any(w.startswith('INF001') for w in result['economics_warnings'])
+
+
+def test_economics_T12_backward_compatible_no_new_params():
+    """La firma original (sin nuevos parámetros) sigue produciendo el VAN correcto.
+    Sin nuevos params → warnings de defecto (INF001/BASIS001/INF002)."""
+    turbine, model = _t1_turbine_model()
+    result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0)
+    assert result['van_usd'] == pytest.approx(-57_321_534.6658887, rel=1e-9)
+    assert 'economics_warnings' in result
+    assert result['lcoe_nom_usd_kwh'] == pytest.approx(result['lcoe_usd_kwh'], rel=1e-12)

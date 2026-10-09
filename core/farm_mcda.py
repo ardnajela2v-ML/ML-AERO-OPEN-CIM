@@ -135,23 +135,77 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
                price_usd_kwh: float, collection_length_m: float,
                cable_usd_per_m: float = 75.0, degradation_pct: float = DEFAULT_DEGRADATION_PCT,
                decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT,
-               revenue_year1_override: Optional[float] = None):
+               revenue_year1_override: Optional[float] = None,
+               annual_inflation_pct: Optional[float] = None,
+               price_escalation_pct: Optional[float] = None,
+               discount_rate_basis: Optional[str] = None):
     cap = cost_model.capex_breakdown(turbine.rated_power_kw, n_turbines)
     cable_cost = max(0.0, collection_length_m * cable_usd_per_m)
     foundation_cost = cost_model.foundation_cost_usd(
         turbine.rotor_diameter_m, turbine.hub_height_m, n_turbines)
     capex = float(cap['total_capex_usd']) + cable_cost + foundation_cost
     annual_opex = cost_model.opex_annual_usd(capex)
-    # revenue_year1_override: ingreso real del año 1 cruzando generación×precio
-    # hora por hora (core.farm.chronological_revenue), en vez de
-    # aep_p50_mwh×1000×price_usd_kwh. Solo el año 1 — los años 2-25 siguen
-    # degradando/escalando desde ese punto de partida real, no desde el
-    # promedio plano (ver project_cashflows.year1_revenue_override).
+
+    economics_warnings: list = []
+
+    if annual_inflation_pct is None:
+        economics_warnings.append(
+            'INF001: annual_inflation_pct no proporcionado; se asume 0.0')
+        annual_inflation_pct = 0.0
+    if discount_rate_basis is None:
+        economics_warnings.append(
+            'BASIS001: discount_rate_basis ausente; se asume nominal')
+        discount_rate_basis = 'nominal'
+    if annual_inflation_pct == 0.0 and discount_rate_basis == 'nominal':
+        economics_warnings.append(
+            'INF002: inflacion 0.0 con base nominal; OPEX no escala')
+    # price_escalation_pct=None → igual a annual_inflation_pct ya resuelto
+    if price_escalation_pct is None:
+        price_escalation_pct = annual_inflation_pct
+
+    r_nom = float(discount_rate)
+    inf_factor = 1.0 + annual_inflation_pct / 100.0
+    r_real = r_nom if annual_inflation_pct == 0.0 else (1.0 + r_nom) / inf_factor - 1.0
+    if r_real <= 0:
+        economics_warnings.append(
+            f'BASIS002: tasa real {r_real:.4f} <= 0')
+
+    # Nominal run: OPEX crece con inflación, precio escala con price_escalation_pct
+    price_series_nom = None
+    if price_escalation_pct != 0.0 or annual_inflation_pct != 0.0:
+        price_series_nom = [
+            price_usd_kwh * (1.0 + price_escalation_pct / 100.0) ** t
+            for t in range(project_years)
+        ]
     lifecycle = project_cashflows(
         capex, annual_opex, aep_p50_mwh * 1000.0, price_usd_kwh,
-        discount_rate, project_years, degradation_pct=degradation_pct,
+        r_nom, project_years, degradation_pct=degradation_pct,
         decommissioning_pct=decommissioning_pct,
+        annual_inflation_pct=annual_inflation_pct, price_series=price_series_nom,
         year1_revenue_override=revenue_year1_override)
+
+    # Real run (Fisher equivalente): deflaciona OPEX y desmantelamiento;
+    # precio real = precio_nominal_año1 / (1+inf). Con escal=inf → escal_real=0.
+    # VAN_real = VAN_nom exactamente (propiedad Fisher); LCOE_real ≠ LCOE_nom.
+    if annual_inflation_pct != 0.0:
+        opex_real = annual_opex / inf_factor
+        decomm_pct_real = decommissioning_pct / (inf_factor ** project_years)
+        price_real = price_usd_kwh / inf_factor
+        escal_real_pct = ((1.0 + price_escalation_pct / 100.0) / inf_factor - 1.0) * 100.0
+        price_series_real = None
+        if abs(escal_real_pct) > 1e-12:
+            price_series_real = [
+                price_real * (1.0 + escal_real_pct / 100.0) ** t
+                for t in range(project_years)
+            ]
+        lifecycle_real = project_cashflows(
+            capex, opex_real, aep_p50_mwh * 1000.0, price_real,
+            r_real, project_years, degradation_pct=degradation_pct,
+            decommissioning_pct=decomm_pct_real,
+            annual_inflation_pct=0.0, price_series=price_series_real)
+    else:
+        lifecycle_real = lifecycle
+
     decommissioning = lifecycle['decommissioning_usd']
     cashflows = lifecycle['cashflows']
     cashflow_table = lifecycle['cashflow_table']
@@ -162,6 +216,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
     pv_decommissioning = lifecycle['decommissioning_present_value_usd']
     payback = lifecycle['payback_years']
     discounted_payback = lifecycle['discounted_payback_years']
+    pv_opex_real = lifecycle_real['opex_present_value_usd']
     installed_kw = float(turbine.rated_power_kw) * int(n_turbines)
     return {
         'capex_usd': capex,
@@ -181,11 +236,21 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'payback_years': payback,
         'discounted_payback_years': discounted_payback,
         'lcoe_usd_kwh': pv_costs / pv_energy if pv_energy > 0 else None,
+        'lcoe_nom_usd_kwh': pv_costs / pv_energy if pv_energy > 0 else None,
+        'lcoe_real_usd_kwh': (lifecycle_real['pv_costs'] / lifecycle_real['pv_energy_kwh']
+                               if lifecycle_real['pv_energy_kwh'] > 0 else None),
+        'van_real_usd': lifecycle_real['van_usd'],
+        'economics_warnings': economics_warnings,
+        'opex_present_value_ratio': (pv_opex_real / pv_opex if pv_opex > 0 else None),
         'collection_cable_cost_usd': cable_cost,
         'foundation_cost_usd': foundation_cost,
         'decommissioning_usd': decommissioning,
         'decommissioning_present_value_usd': pv_decommissioning,
-        'annual_revenue_year1_usd': aep_p50_mwh * 1000.0 * price_usd_kwh,
+        'annual_revenue_year1_usd': (
+            float(revenue_year1_override) if revenue_year1_override is not None
+            else aep_p50_mwh * 1000.0 * price_usd_kwh
+        ),
+        'annual_revenue_year1_flat_usd': aep_p50_mwh * 1000.0 * price_usd_kwh,
         'cashflow_table': cashflow_table,
         'capex_breakdown': cap,
         'economic_formulas': {
@@ -217,6 +282,8 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                          environmental_loss: float = 0.0,
                          discount_rate: float = 0.08, project_years: int = None,
                          price_usd_kwh: float = None, demand_mwh: float = 0.0,
+                         annual_inflation_pct: Optional[float] = None,
+                         price_escalation_pct: Optional[float] = None,
                          commercialization_mode: str = 'total_sale',
                          grid_limit_mw: Optional[float] = None,
                          target_height_m: Optional[float] = None,
@@ -451,6 +518,9 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     turbine, candidate['n_turbines'], candidate_aep_p50, cost_model,
                     discount_rate, project_years, price_usd_kwh, candidate_collection_length,
                     revenue_year1_override=candidate_revenue_override,
+                    annual_inflation_pct=annual_inflation_pct,
+                    price_escalation_pct=price_escalation_pct,
+                    discount_rate_basis='nominal',
                 )
                 candidate['van_usd'] = candidate_econ['van_usd']
                 candidate['_precomputed'] = {
@@ -795,6 +865,11 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 and revised['alternative']['van_usd'] > row['van_usd'] + 1e-6):
             alternatives[index] = revised['alternative']
     alternatives = add_effective_area_metrics(alternatives, polygon, exclusions)
+    all_econ_w = sorted({
+        w
+        for alt in alternatives
+        for w in alt.get('economics_warnings', [])
+    })
     return {
         'analysis_kind': 'farm_layout_candidates_v1',
         'layout_search_revision': 'shared_geometry_v1',
@@ -840,6 +915,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
              'url': ('https://www.irena.org/Publications/2025/Jun/'
                      'Renewable-Power-Generation-Costs-in-2024')},
         ],
+        'economics_warnings': all_econ_w,
         'errors': errors,
     }
 
