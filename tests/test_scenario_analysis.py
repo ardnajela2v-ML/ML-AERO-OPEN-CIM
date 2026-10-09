@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from core.farm_mcda import derive_price_scenarios, SCENARIO_YEARS
+from core.farm_mcda import derive_price_scenarios, extract_candidate_pool, SCENARIO_YEARS
 
 
 class TestDerivePriceScenarios(unittest.TestCase):
@@ -65,3 +65,57 @@ class TestDerivePriceScenarios(unittest.TestCase):
         self.assertAlmostEqual(sc['bajo'], 0.07)
         self.assertAlmostEqual(sc['alto'], 0.07)
         self.assertAlmostEqual(sc['base'], 0.07)
+
+
+class TestExtractCandidatePool(unittest.TestCase):
+    """5.2 — extract_candidate_pool."""
+
+    def _generation(self, n_candidates=3, wake_ok=True, has_scenarios=True):
+        pool = []
+        for i in range(n_candidates):
+            chron = {
+                'ratio_by_sector': [[1.0] * 2] * 36,
+                'by_year': {y: {'complete': True, 'avg_realized_price_usd_kwh': 0.05 + i * 0.01}
+                            for y in range(2017, 2024)},
+            } if has_scenarios else None
+            pool.append({
+                'layout_xy_m': [[100 * i, 0], [100 * i + 50, 0]],
+                'n_turbines': 2,
+                'feasibility': {'wake_loss_ok': wake_ok},
+                'sim': {'chronological_revenue': chron, 'aep_mwh': 100.0},
+                'van_usd': 1e6 + i * 1e5,
+                '_precomputed': {
+                    'aep_p50': 95.0 + i,
+                    'collection_length': 200.0 + i * 10,
+                    'econ': {},
+                    'revenue_year1_override': None,
+                    'scenarios': {'bajo': 0.04, 'base': 0.06, 'alto': 0.08} if has_scenarios else None,
+                },
+            })
+        return {'pool': pool}
+
+    def test_extracts_wake_feasible_only(self):
+        gen = self._generation(3)
+        gen['pool'][1]['feasibility']['wake_loss_ok'] = False
+        result = extract_candidate_pool(gen, 'turbine.csv', 80.0)
+        self.assertEqual(len(result), 2)
+
+    def test_fields_present(self):
+        gen = self._generation(1)
+        result = extract_candidate_pool(gen, 'gamesa.csv', 80.0)
+        self.assertEqual(len(result), 1)
+        c = result[0]
+        self.assertEqual(c['turbine_filename'], 'gamesa.csv')
+        self.assertEqual(c['hub_height_m'], 80.0)
+        self.assertEqual(c['n_turbines'], 2)
+        self.assertIsNotNone(c['ratio_by_sector'])
+        self.assertIsNotNone(c['scenarios'])
+        self.assertIsNotNone(c['van_usd'])
+        self.assertIsNotNone(c['aep_p50_mwh'])
+        self.assertIsNotNone(c['collection_length_m'])
+
+    def test_no_precomputed_skipped(self):
+        gen = self._generation(2)
+        gen['pool'][0]['_precomputed'] = None
+        result = extract_candidate_pool(gen, 'test.csv', 80.0)
+        self.assertEqual(len(result), 1)

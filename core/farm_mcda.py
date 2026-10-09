@@ -61,6 +61,31 @@ def derive_price_scenarios(by_year: Dict[int, dict],
     }
 
 
+def extract_candidate_pool(generation: dict, turbine_filename: str,
+                           hub_height_m: float) -> List[Dict]:
+    """Extract minimal data per wake-feasible candidate for session cache."""
+    pool_cache = []
+    for candidate in generation['pool']:
+        if not candidate['feasibility']['wake_loss_ok']:
+            continue
+        precomputed = candidate.get('_precomputed')
+        if precomputed is None:
+            continue
+        chron = candidate['sim'].get('chronological_revenue')
+        pool_cache.append({
+            'layout_xy_m': candidate['layout_xy_m'],
+            'n_turbines': candidate['n_turbines'],
+            'turbine_filename': turbine_filename,
+            'hub_height_m': float(hub_height_m),
+            'aep_p50_mwh': precomputed['aep_p50'],
+            'collection_length_m': precomputed['collection_length'],
+            'ratio_by_sector': chron.get('ratio_by_sector') if chron else None,
+            'scenarios': precomputed.get('scenarios'),
+            'van_usd': candidate.get('van_usd'),
+        })
+    return pool_cache
+
+
 def effective_park_area(polygon, exclusions=None):
     """Common land area: polygon minus union of permanent exclusions.
 
@@ -592,6 +617,9 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     'revenue_year1_override': candidate_revenue_override,
                     'scenarios': candidate_scenarios,
                 }
+            _pool_cache = extract_candidate_pool(
+                generation, filename, turbine.hub_height_m)
+
             # Flujo de decisión de ruido/shadow flicker (acordado con el
             # usuario): la selección PRIMARIA es "estela + VAN" -- ignora
             # ruido/flicker/pendiente a propósito, igual que se generaron
@@ -762,7 +790,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 near_cp_fraction=0.95,
             )
             cp_fit['site_fit_source'] = cp_source
-            return {'_generation': generation, 'alternative': {
+            return {'_generation': generation, '_pool_cache': _pool_cache, 'alternative': {
                 'label': f'layout::{filename}::wake-optimal',
                 'site': f'Layout seleccionado por VAN ({selected_n}/{physical_max_n} aeros)',
                 'turbina': filename,
@@ -898,9 +926,12 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
     # alternatives/errors quedan deterministas igual que con el for original.
     with ThreadPoolExecutor(max_workers=min(4, len(unique_filenames)) or 1) as executor:
         outcomes = list(executor.map(_process_turbine, unique_filenames))
+    pool_caches: Dict[str, List[Dict]] = {}
     for outcome in outcomes:
         if 'alternative' in outcome:
             alternatives.append(outcome['alternative'])
+            if outcome.get('_pool_cache') is not None:
+                pool_caches[outcome['alternative']['turbina']] = outcome['_pool_cache']
         else:
             errors.append(outcome['error'])
     # A larger rotor's selected coordinates can be feasible for a smaller
@@ -982,6 +1013,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
         ],
         'economics_warnings': all_econ_w,
         'errors': errors,
+        '_pool_caches': pool_caches if pool_caches else None,
     }
 
 
