@@ -174,6 +174,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const restored = await api(`/api/projects/restored/${encodeURIComponent(pending)}`);
       WP.importedProject = true;
       await applyProjectClientState(restored.client_state || {});
+      await loadMarketFiles();
       setStatus(`Proyecto restaurado: ${restored.project_name}`);
       toast(`Proyecto “${restored.project_name}” cargado con sus resultados guardados.`, 'success');
     } catch (error) { toast(error.message, 'error'); }
@@ -10372,8 +10373,8 @@ async function loadMarketFiles() {
     MARKET_CATS.forEach(cat => {
       const sel = document.getElementById(`market-${cat}-select`);
       if (!sel) return;
+      const prevValue = sel.value;
       const files = (r.grouped && r.grouped[cat]) || [];
-      // Preserve the default empty option
       sel.innerHTML = sel.options[0] ? sel.options[0].outerHTML : '';
       files.forEach(f => {
         const opt = document.createElement('option');
@@ -10381,6 +10382,7 @@ async function loadMarketFiles() {
         opt.textContent = `${f.filename}  (${f.size_kb} KB)`;
         sel.appendChild(opt);
       });
+      if (prevValue) sel.value = prevValue;
     });
   } catch (e) {
     const badge = document.getElementById('market-file-count');
