@@ -1143,7 +1143,9 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     **cost_model.to_dict(),
                     'discount_rate': float(discount_rate),
                     'project_years': int(project_years),
-                    'price_usd_kwh': float(price_usd_kwh),
+                    'price_usd_kwh': float(
+                        (precomputed.get('scenarios') or {}).get('base')
+                        or price_usd_kwh),
                     'degradation_pct_per_year': DEFAULT_DEGRADATION_PCT,
                     'decommissioning_pct_capex': DEFAULT_DECOMMISSIONING_PCT,
                     'collection_cable_usd_per_m': 75.0,
