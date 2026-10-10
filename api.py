@@ -1947,6 +1947,7 @@ def create_app():
                 'values': hourly_profile,
                 'years_selected': years_in_data,
                 'years_complete': years_complete,
+                '_timestamps_utc': ts_list,
             }
             _extract_year = 2018 if 2018 in years_in_data else base_year
             _mask_yr = (ts_pd.year == _extract_year)
@@ -6091,11 +6092,17 @@ def create_app():
                     _pml_vals = None
                     _pml_ts = None
                     _pml_sd = pml_series_dict
-                    if _pml_sd and _pml_sd.get('start_utc') and _pml_sd.get('n_hours'):
+                    if _pml_sd and _pml_sd.get('n_hours'):
                         _pml_vals = np.asarray(_pml_sd['values'], dtype=float)
-                        _pml_ts = pd.date_range(
-                            _pml_sd['start_utc'], periods=_pml_sd['n_hours'],
-                            freq='h', tz='UTC')
+                        if _pml_sd.get('_timestamps_utc'):
+                            _pml_ts = pd.DatetimeIndex(
+                                pd.to_datetime(_pml_sd['_timestamps_utc']))
+                            if _pml_ts.tz is None:
+                                _pml_ts = _pml_ts.tz_localize('UTC')
+                        elif _pml_sd.get('start_utc'):
+                            _pml_ts = pd.date_range(
+                                _pml_sd['start_utc'], periods=_pml_sd['n_hours'],
+                                freq='h', tz='UTC')
                     layout_builder = generate_park_layouts if generation_only else analyze_park_layouts
                     layout_result = layout_builder(
                         sites=spatial['sites'], polygon=polygon,
