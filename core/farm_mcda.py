@@ -784,6 +784,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                         timestamps_utc=resource['timestamps_utc'],
                         pml_series_values=pml_series_values,
                         pml_series_timestamps_utc=pml_series_timestamps_utc,
+                        min_coverage=0.85,
                         sample_duration_hours=resource['dt_hours'],
                         temperature_c=resource.get('temperature_c'),
                         pressure_pa=resource.get('pressure_pa'),
