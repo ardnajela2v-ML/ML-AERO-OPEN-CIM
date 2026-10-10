@@ -8181,6 +8181,44 @@ function mcdaRenderCandidates() {
     onclick="mcdaPreviewCandidate(${i})">Ver layout en el mapa</button>${mcdaLayoutAuditHtml(a)}</div></details>`).join('')
     + errors.map(e => `<p>${mcdaAuditEscape(e.turbine)}: ${mcdaAuditEscape(e.reason)}</p>`).join('')
     + (rows.length ? '<p class="text-muted" style="font-size:.78rem;margin:.6rem 0">La cantidad seleccionada maximiza VAN entre layouts que cumplen el límite de estela; la capacidad física se muestra por separado. Dos modelos pueden tener cantidades seleccionadas distintas aunque el rotor mayor ocupe más espacio.</p>' : '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>');
+  renderTechClustering(MCDA.lastSpatial?.tech_clustering);
+}
+
+function renderTechClustering(clustering) {
+  const card = document.getElementById('mcda-tech-cluster-card');
+  if (!card) return;
+  if (!clustering || !Array.isArray(clustering.labels) || clustering.labels.length < 2) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+  const labels   = clustering.labels;
+  const k2       = clustering.cluster_k2 || [];
+  const k3       = clustering.cluster_k3 || [];
+  const COLORS   = [
+    'var(--accent,#4DA3FF)', 'var(--violet,#9F7AEA)', '#22c55e', '#f59e0b',
+  ];
+  const rows = labels.map((lbl, i) => {
+    const name = (lbl || '').replace('.csv', '');
+    const c2 = k2[i] ?? '—';
+    const c3 = k3[i] ?? '—';
+    const col2 = COLORS[(c2 - 1) % COLORS.length] || COLORS[0];
+    const col3 = COLORS[(c3 - 1) % COLORS.length] || COLORS[0];
+    return `<tr>
+      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${name}">${name}</td>
+      <td><span style="background:${col2};color:#fff;padding:.15rem .5rem;
+          border-radius:4px;font-size:.72rem;font-weight:600">G${c2}</span></td>
+      <td><span style="background:${col3};color:#fff;padding:.15rem .5rem;
+          border-radius:4px;font-size:.72rem;font-weight:600">G${c3}</span></td>
+    </tr>`;
+  }).join('');
+  const bodyEl = document.getElementById('mcda-tech-cluster-body');
+  if (bodyEl) bodyEl.innerHTML = rows;
+  const noteEl = document.getElementById('mcda-tech-cluster-note');
+  if (noteEl) noteEl.textContent =
+    `Ward · distancia euclidiana · Z-score previo · ${clustering.n_alternatives} tecnologías · variables: ` +
+    (clustering.variables || []).map(v => v.replace(/_/g, ' ')).join(' · ');
 }
 
 function mcdaPreviewCandidate(index) {

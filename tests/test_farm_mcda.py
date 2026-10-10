@@ -586,5 +586,45 @@ class LayoutTopsisTests(unittest.TestCase):
             )
 
 
+class ClusteringTests(unittest.TestCase):
+
+    @classmethod
+    def _make_alts(cls):
+        return [
+            {'aep_p50_mwh': 1000.0, 'aep_p90_mwh': 820.0, 'van_usd': 500_000.0,
+             'lcoe_usd_kwh': 0.040, 'factor_capacidad': 0.35,
+             'capex_usd_per_installed_kw': 1200.0, 'turbina': 'TurbA.csv'},
+            {'aep_p50_mwh': 1200.0, 'aep_p90_mwh': 960.0, 'van_usd': 700_000.0,
+             'lcoe_usd_kwh': 0.035, 'factor_capacidad': 0.40,
+             'capex_usd_per_installed_kw': 1100.0, 'turbina': 'TurbB.csv'},
+            {'aep_p50_mwh':  800.0, 'aep_p90_mwh': 640.0, 'van_usd': 300_000.0,
+             'lcoe_usd_kwh': 0.050, 'factor_capacidad': 0.28,
+             'capex_usd_per_installed_kw': 1400.0, 'turbina': 'TurbC.csv'},
+        ]
+
+    def test_cluster_basic(self):
+        from core.farm_mcda import cluster_technology_champions
+        result = cluster_technology_champions(self._make_alts())
+        self.assertIsNotNone(result)
+        self.assertEqual(result['n_alternatives'], 3)
+        self.assertEqual(len(result['labels']), 3)
+        self.assertEqual(len(result['cluster_k2']), 3)
+        self.assertEqual(len(result['cluster_k3']), 3)
+        self.assertTrue(all(c in (1, 2) for c in result['cluster_k2']))
+        self.assertTrue(all(c in (1, 2, 3) for c in result['cluster_k3']))
+        self.assertEqual(result['variables'], [
+            'aep_p50_mwh', 'aep_p90_mwh', 'van_usd',
+            'lcoe_usd_kwh', 'factor_capacidad', 'capex_usd_per_installed_kw',
+        ])
+
+    def test_cluster_does_not_mutate_alternatives(self):
+        import copy
+        from core.farm_mcda import cluster_technology_champions
+        alts = self._make_alts()
+        alts_before = copy.deepcopy(alts)
+        cluster_technology_champions(alts)
+        self.assertEqual(alts, alts_before)
+
+
 if __name__ == '__main__':
     unittest.main()

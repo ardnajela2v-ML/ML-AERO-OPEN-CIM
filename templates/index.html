@@ -2144,6 +2144,25 @@
 
       <hr class="mt-3 mb-3" style="border:none;border-top:1px solid var(--border);">
 
+      <!-- ═══ CLUSTERING JERÁRQUICO DE TECNOLOGÍAS ═══ -->
+      <details id="mcda-tech-cluster-card" style="display:none" class="card mt-2">
+        <summary style="padding:.65rem .9rem;cursor:pointer;font-size:.83rem;font-weight:600">
+          Agrupación jerárquica de tecnologías (Ward)
+          <span class="badge badge--info" style="margin-left:.5rem;font-size:.72rem">Informacional</span>
+        </summary>
+        <div class="card-body" style="padding-top:.5rem">
+          <p class="text-muted" id="mcda-tech-cluster-note" style="font-size:.75rem;margin-bottom:.6rem"></p>
+          <table class="sci-table" style="width:100%;font-size:.78rem">
+            <thead><tr><th>Tecnología</th><th>Grupo k=2</th><th>Grupo k=3</th></tr></thead>
+            <tbody id="mcda-tech-cluster-body"></tbody>
+          </table>
+          <p class="text-muted" style="font-size:.73rem;margin-top:.5rem">
+            Agrupación informacional basada en similitud energética y económica.
+            No modifica ni reordena el ranking TOPSIS.
+          </p>
+        </div>
+      </details>
+
       <!-- Ranking table -->
       <div style="max-height:420px;overflow:auto">
         <table class="tbl" id="mcda-rank-tbl">

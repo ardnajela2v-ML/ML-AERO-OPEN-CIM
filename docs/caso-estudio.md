@@ -148,6 +148,12 @@ Consecuencia: la compuerta de `/api/multicriteria/spatial` (`api.py:5666`, `len(
 3. `chronological_revenue` con fechas reales (`core/farm.py:691-803`): energía e ingreso por año calendario, y `ratio_by_sector` opcional como entrada (hoy se recalcula siempre, líneas 766-771). Hoy solo implementa `hour_of_year`; el método con fechas existe únicamente en `tools/capture_dated_vs_hourofyear.py`, sin estela.
 4. Economía: inflación y `price_series` en `farm_mcda._economics()`, y las dos corridas (nominal y real).
 5. Pool en sesión, matriz de robustez, escenarios y las 3 corridas de SMAA.
+6. Clustering jerárquico de campeones: después de construir `alternatives` (1 campeón por
+   tecnología) y antes de `rank_layout_alternatives`, calcular similitud entre tecnologías con
+   linkage Ward sobre 6 variables Z-normalizadas (`aep_p50_mwh`, `aep_p90_mwh`, `van_usd`,
+   `lcoe_usd_kwh`, `factor_capacidad`, `capex_usd_per_installed_kw`). Resultado en
+   `tech_clustering` (dendrograma + asignaciones k=2/k=3). Informacional puro — `alternatives`
+   y `rank_layout_alternatives` sin cambios.
 
 Antes de cada paso: commit, y `python -m pytest -q` completo antes y después.
 

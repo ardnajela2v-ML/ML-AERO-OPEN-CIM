@@ -99,7 +99,8 @@ from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
                        recommend_n_turbines, TECHNICAL_MIN_SPACING_D,
                        optimize_layout_structured, energy_weighted_dominant_direction)
 from core.farm_mcda import (analyze_park_layouts, generate_park_layouts,
-                            rerun_economics_from_pool, robustness_matrix)
+                            rerun_economics_from_pool, robustness_matrix,
+                            cluster_technology_champions)
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
@@ -6157,6 +6158,13 @@ def create_app():
                         max_slope_deg=(
                             float(body['max_slope_deg']) if body.get('max_slope_deg') is not None else None),
                     )
+                    if layout_result.get('alternatives'):
+                        try:
+                            layout_result['tech_clustering'] = (
+                                cluster_technology_champions(
+                                    layout_result['alternatives']))
+                        except Exception:
+                            layout_result['tech_clustering'] = None
                     if layout_result.get('_pool_caches') and source_session is not None:
                         source_session['_candidate_pool'] = layout_result['_pool_caches']
                     for alternative in layout_result.get('alternatives', []):
