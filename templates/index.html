@@ -2228,6 +2228,45 @@
       </div>
     </div>
   </div>
+
+  <!-- ═══ ANÁLISIS DE ESCENARIOS PML ═══ -->
+  <div class="card mt-3" id="mcda-scenario-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Análisis de escenarios PML — robustez económica</span>
+      <span class="badge badge--info" id="mcda-scenario-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Re-evalúa los layouts del pool con tres trayectorias de precio PML (bajo/base/alto)
+        y verifica si el ganador TOPSIS es estable bajo distintos supuestos de mercado.
+        Requiere pool de candidatos construido al ejecutar TOPSIS con aerogeneradores.
+      </p>
+      <button class="btn-primary" id="btn-scenario-run" type="button"
+        onclick="runScenarioAnalysis()">▶ Análisis de escenarios (PML)</button>
+      <p class="text-muted mt-1" id="mcda-scenario-progress-text" style="font-size:.75rem"></p>
+
+      <div id="mcda-scenario-results" style="display:none">
+        <div id="mcda-scenario-winner-badge" style="margin:.9rem 0 .6rem"></div>
+
+        <div style="display:flex;gap:.4rem;margin:.5rem 0" id="mcda-scenario-tabs">
+          <button class="btn-secondary mcda-scen-tab is-active" data-scen="base" type="button"
+            onclick="scenarioSwitchTab('base')">Base</button>
+          <button class="btn-secondary mcda-scen-tab" data-scen="bajo" type="button"
+            onclick="scenarioSwitchTab('bajo')">Bajo</button>
+          <button class="btn-secondary mcda-scen-tab" data-scen="alto" type="button"
+            onclick="scenarioSwitchTab('alto')">Alto</button>
+        </div>
+        <div id="mcda-scenario-panel"></div>
+
+        <div id="mcda-robustness-matrix-wrap" style="margin-top:1.2rem">
+          <p style="font-size:.78rem;font-weight:600;margin-bottom:.5rem">
+            Matriz de robustez VAN (USD) — energía × precio
+          </p>
+          <div id="mcda-robustness-matrix"></div>
+        </div>
+      </div>
+    </div>
+  </div>
   </div>
 
 

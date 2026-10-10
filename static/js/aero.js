@@ -8979,7 +8979,141 @@ function mcdaRenderRanking(r) {
     if (batchCard) batchCard.style.display = '';
     const robustCard = document.getElementById('topsis-robust-card');
     if (robustCard) robustCard.style.display = '';
+    const scenCard = document.getElementById('mcda-scenario-card');
+    if (scenCard) scenCard.style.display = MCDA.lastSpatial?.pool_available ? '' : 'none';
   }
+}
+
+// ── Análisis de escenarios PML ────────────────────────────────────────────────
+
+const SCENARIO_ANALYSIS = { result: null };
+
+async function runScenarioAnalysis() {
+  if (!WP.sessionId) { toast('No hay sesión activa.', 'warning'); return; }
+  const btn = document.getElementById('btn-scenario-run');
+  const progEl = document.getElementById('mcda-scenario-progress-text');
+  const statusEl = document.getElementById('mcda-scenario-status');
+  if (btn) btn.disabled = true;
+  if (progEl) progEl.textContent = 'Recalculando escenarios bajo/base/alto desde el pool…';
+  if (statusEl) statusEl.textContent = 'Calculando…';
+  try {
+    const data = await api('/api/multicriteria/scenario_analysis', 'POST', {
+      session_id: WP.sessionId,
+    });
+    SCENARIO_ANALYSIS.result = data;
+    if (statusEl) statusEl.textContent = 'Completado';
+    if (progEl) progEl.textContent = '';
+    const resultsEl = document.getElementById('mcda-scenario-results');
+    if (resultsEl) resultsEl.style.display = '';
+    renderScenarioAnalysis(data, 'base');
+    toast('Análisis de escenarios PML completado.', 'success');
+  } catch (e) {
+    toast(`Error en escenarios: ${e.message}`, 'error');
+    if (statusEl) statusEl.textContent = 'Error';
+    if (progEl) progEl.textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function scenarioSwitchTab(scen) {
+  document.querySelectorAll('.mcda-scen-tab').forEach(t => {
+    t.classList.toggle('is-active', t.dataset.scen === scen);
+  });
+  if (SCENARIO_ANALYSIS.result) renderScenarioAnalysis(SCENARIO_ANALYSIS.result, scen);
+}
+
+function renderScenarioAnalysis(data, activeScen) {
+  const scenarios = data.scenarios || {};
+  const winnerStable = data.winner_stable;
+
+  // Winner stable badge
+  const badgeEl = document.getElementById('mcda-scenario-winner-badge');
+  if (badgeEl) {
+    if (winnerStable == null) {
+      badgeEl.innerHTML = '';
+    } else if (winnerStable) {
+      badgeEl.innerHTML = '<span class="badge badge--success" style="font-size:.8rem;padding:.35rem .75rem">Ganador estable en los tres escenarios</span>';
+    } else {
+      badgeEl.innerHTML = '<span class="badge badge--warning" style="font-size:.8rem;padding:.35rem .75rem;background:var(--yellow-dim,#3d2d00);color:var(--yellow,#f9c547);border:1px solid var(--yellow,#f9c547)">Advertencia: el ganador cambia entre escenarios de precio</span>';
+    }
+  }
+
+  // Active tab panel
+  const panelEl = document.getElementById('mcda-scenario-panel');
+  if (panelEl) {
+    const scen = scenarios[activeScen];
+    if (!scen) {
+      panelEl.innerHTML = '<p class="text-muted" style="font-size:.82rem">Sin datos para este escenario.</p>';
+    } else {
+      const price = scen.price_usd_kwh != null
+        ? `Precio: ${Number(scen.price_usd_kwh).toFixed(4)} USD/kWh`
+        : '';
+      const ranking = scen.ranking?.ranking || [];
+      panelEl.innerHTML = `<p class="text-muted" style="font-size:.78rem;margin:.3rem 0 .6rem">${price}</p>` +
+        _scenarioRankingTable(ranking);
+    }
+  }
+
+  // Robustness matrix
+  const matrixEl = document.getElementById('mcda-robustness-matrix');
+  if (matrixEl) {
+    const matrixData = data.robustness_matrix;
+    if (!matrixData || !Array.isArray(matrixData.finalists) || !matrixData.finalists.length) {
+      matrixEl.innerHTML = '<p class="text-muted" style="font-size:.82rem">No disponible — se requieren datos históricos de viento para calcular la matriz de robustez.</p>';
+    } else {
+      matrixEl.innerHTML = _renderRobustnessMatrix(matrixData);
+    }
+  }
+}
+
+function _scenarioRankingTable(ranking) {
+  if (!ranking.length) return '<p class="text-muted" style="font-size:.82rem">Sin alternativas.</p>';
+  const rows = ranking.slice(0, 20).map(a => {
+    const medal = a.rank === 1 ? '🥇' : a.rank === 2 ? '🥈' : a.rank === 3 ? '🥉' : a.rank;
+    const hl = a.rank === 1 ? 'style="background:var(--green-dim)"' : '';
+    const van = Number.isFinite(Number(a.van_usd)) ? Math.round(a.van_usd).toLocaleString('es-MX') : '—';
+    const lcoe = Number.isFinite(Number(a.lcoe_usd_kwh)) ? Number(a.lcoe_usd_kwh).toFixed(4) : '—';
+    const score = Number.isFinite(Number(a.topsis_score)) ? Number(a.topsis_score).toFixed(4) : '—';
+    const label = (a.label || a.turbina || '').replace('.csv', '');
+    return `<tr ${hl}><td><strong>${medal}</strong></td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</td><td>${score}</td><td style="font-variant-numeric:tabular-nums">${van}</td><td>${lcoe}</td></tr>`;
+  }).join('');
+  return `<div style="overflow:auto;max-height:280px"><table class="sci-table" style="width:100%;font-size:.78rem">
+    <thead><tr><th>#</th><th>Turbina / layout</th><th>Score TOPSIS</th><th>VAN (USD)</th><th>LCOE</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function _renderRobustnessMatrix(matrixData) {
+  const finalists = matrixData.finalists || [];
+  return finalists.map(f => {
+    const label = (f.label || f.turbine || '').replace('.csv', '');
+    const cells = f.matrix || [];
+    // Build 3×3 grid: rows=energy, cols=price
+    const energyLevels = ['p50', 'p75', 'p90'];
+    const priceLevels = ['bajo', 'base', 'alto'];
+    const cellMap = {};
+    cells.forEach(c => { cellMap[`${c.energy}_${c.price}`] = c; });
+    const tableRows = energyLevels.map(e => {
+      const tds = priceLevels.map(p => {
+        const c = cellMap[`${e}_${p}`];
+        if (!c) return '<td>—</td>';
+        const van = Number.isFinite(Number(c.van_usd)) ? Math.round(c.van_usd).toLocaleString('es-MX') : '—';
+        const positive = Number(c.van_usd) > 0;
+        const color = positive ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)';
+        return `<td style="font-variant-numeric:tabular-nums;color:${color}">${van}</td>`;
+      }).join('');
+      return `<tr><td style="font-weight:600;text-transform:uppercase;font-size:.72rem">${e.toUpperCase()}</td>${tds}</tr>`;
+    }).join('');
+    const iav = f.energy_empirical?.interannual_variability_pct;
+    const iavStr = iav != null ? `IAV: ${Number(iav).toFixed(1)}%` : '';
+    return `<div style="margin-bottom:1rem">
+      <p style="font-size:.78rem;font-weight:600;margin-bottom:.3rem">${label} ${iavStr ? `<span class="text-muted" style="font-weight:400">· ${iavStr}</span>` : ''}</p>
+      <table class="sci-table" style="width:100%;font-size:.77rem">
+        <thead><tr><th style="min-width:50px">Energía↓ Precio→</th><th>Bajo</th><th>Base</th><th>Alto</th></tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>`;
+  }).join('');
 }
 
 function syncTopsisWinnerToModules() {

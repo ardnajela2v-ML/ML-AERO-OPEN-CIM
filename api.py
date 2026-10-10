@@ -6178,6 +6178,7 @@ def create_app():
                     **({'data_source': source_info} if source_info is not None else {}),
                     'ranking': ranking,
                     **(layout_result or {}),
+                    'pool_available': bool(layout_result and layout_result.get('_pool_caches')),
                     'design_cost_benchmark': get_design_cost_benchmark(),
                     'market_configuration': {
                         'trajectories': body.get('market_trajectories') or {},
