@@ -5772,6 +5772,24 @@ def create_app():
             logger.exception('Error en %s', request.path)
             return _err(str(e), 500)
 
+    @app.route('/api/multicriteria/cluster_champions', methods=['POST'])
+    def mcda_cluster_champions():
+        """Clustering jerárquico ligero sobre alternatives ya calculadas.
+
+        Permite que proyectos guardados antes de §7.6 obtengan tech_clustering
+        sin re-ejecutar TOPSIS.
+        """
+        body = request.get_json(silent=True) or {}
+        alternatives = body.get('alternatives')
+        if not isinstance(alternatives, list) or len(alternatives) < 2:
+            return _err('Se necesitan al menos 2 alternativas.', 400)
+        try:
+            result = cluster_technology_champions(alternatives)
+            return jsonify({'tech_clustering': numpy_to_python(result)})
+        except Exception as e:
+            logger.exception('Error en %s', request.path)
+            return _err(str(e), 500)
+
     @app.route('/api/farm/layouts/revision', methods=['GET'])
     def farm_layouts_revision():
         return jsonify({'layout_search_revision': 'shared_geometry_v1'})

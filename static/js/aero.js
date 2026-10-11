@@ -8184,11 +8184,45 @@ function mcdaRenderCandidates() {
   renderTechClustering(MCDA.lastSpatial?.tech_clustering);
 }
 
+async function fetchAndRenderTechClustering() {
+  const alts = MCDA.lastSpatial?.alternatives;
+  if (!Array.isArray(alts) || alts.length < 2) return;
+  const btn = document.getElementById('btn-tech-cluster-calc');
+  if (btn) btn.disabled = true;
+  try {
+    const data = await api('/api/multicriteria/cluster_champions', 'POST',
+      { alternatives: alts });
+    if (MCDA.lastSpatial) MCDA.lastSpatial.tech_clustering = data.tech_clustering;
+    renderTechClustering(data.tech_clustering);
+  } catch (e) {
+    toast(`Error al calcular agrupación: ${e.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function renderTechClustering(clustering) {
   const card = document.getElementById('mcda-tech-cluster-card');
   if (!card) return;
+  // Hay alternatives pero sin clustering (proyecto guardado antes de §7.6)
+  const alts = MCDA.lastSpatial?.alternatives;
+  const hasAlts = Array.isArray(alts) && alts.length >= 2;
   if (!clustering || !Array.isArray(clustering.labels) || clustering.labels.length < 2) {
-    card.style.display = 'none';
+    if (hasAlts) {
+      card.style.display = '';
+      const bodyEl = document.getElementById('mcda-tech-cluster-body');
+      if (bodyEl) bodyEl.innerHTML =
+        `<tr><td colspan="3" style="padding:.6rem">
+          <button class="btn-secondary" id="btn-tech-cluster-calc" type="button"
+            onclick="fetchAndRenderTechClustering()">Calcular agrupación</button>
+          <span class="text-muted" style="font-size:.78rem;margin-left:.6rem">
+            Disponible — datos de proyecto anterior sin agrupación precalculada.</span>
+        </td></tr>`;
+      const noteEl = document.getElementById('mcda-tech-cluster-note');
+      if (noteEl) noteEl.textContent = '';
+    } else {
+      card.style.display = 'none';
+    }
     return;
   }
   card.style.display = '';
