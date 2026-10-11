@@ -9053,6 +9053,8 @@ function mcdaRenderRanking(r) {
     if (robustCard) robustCard.style.display = '';
     const scenCard = document.getElementById('mcda-scenario-card');
     if (scenCard) scenCard.style.display = MCDA.lastSpatial?.pool_available ? '' : 'none';
+    const autoWinner = ranking.find(r => r.rank === 1 && r.energy_context && r.layout_constraints);
+    if (autoWinner) setTimeout(() => parqueOptimizeTopsis(autoWinner, { silent: true }), 150);
   }
 }
 
@@ -9575,14 +9577,76 @@ function parqueInitMap() {
   return PARQUE.map;
 }
 
+function parqueInitOptMap() {
+  const el = document.getElementById('parque-opt-map');
+  if (!el || typeof L === 'undefined') return null;
+  if (PARQUE.optMap) {
+    setTimeout(() => PARQUE.optMap.invalidateSize(), 60);
+    return PARQUE.optMap;
+  }
+  PARQUE.optMap = L.map(el, {
+    center: [23.5, -102], zoom: 5,
+    zoomControl: true, attributionControl: false,
+  });
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 18, crossOrigin: 'anonymous', subdomains: 'abc' }
+  ).addTo(PARQUE.optMap);
+  setTimeout(() => PARQUE.optMap.invalidateSize(), 80);
+  return PARQUE.optMap;
+}
+
+function parqueDrawOptMapLayout() {
+  const map = parqueInitOptMap();
+  if (!map) return;
+  const result = PARQUE.optResult;
+  if (!result) return;
+  const row = result.comparison?.winners?.find(c => c.id === result.comparison?.selected_id);
+  if (!row) return;
+  (PARQUE._optMapLayers || []).forEach(l => { try { map.removeLayer(l); } catch (_) {} });
+  PARQUE._optMapLayers = [];
+  const pts = (typeof KRIG !== 'undefined') ? KRIG.parkPoints : null;
+  if (pts?.length >= 3) {
+    const poly = L.polygon(pts, {
+      color: '#f59e0b', weight: 2.5, fillColor: '#f59e0b', fillOpacity: 0.08,
+    }).addTo(map);
+    PARQUE._optMapLayers.push(poly);
+    map.fitBounds(poly.getBounds(), { padding: [30, 30], maxZoom: 14 });
+  }
+  const latlon = row.layout_latlon || [];
+  const simTurbines = row.simulation?.turbines || [];
+  const simByIndex = new Map(simTurbines.map((t, idx) =>
+    [Number.isFinite(Number(t?.i)) ? Number(t.i) : idx, t]));
+  const aeps = simTurbines.map(t => Number(t?.aep_mwh)).filter(Number.isFinite);
+  const maxA = aeps.length ? Math.max(...aeps, 0.001) : 1;
+  const minA = aeps.length ? Math.min(...aeps, maxA)  : 0;
+  latlon.forEach(([lat, lon], i) => {
+    const sim = simByIndex.get(i) || null;
+    const aep = Number(sim?.aep_mwh);
+    const t = Number.isFinite(aep) ? (aep - minA) / (maxA - minA + 1e-6) : 0.5;
+    const [r_, g_, b_] = krigColor(t);
+    const clr = 'rgb(' + (r_|0) + ',' + (g_|0) + ',' + (b_|0) + ')';
+    const icon = L.divIcon({
+      className: '',
+      html: _parkTurbineIconHtml(i + 1, clr),
+      iconSize: [32, 54], iconAnchor: [16, 40],
+    });
+    const m = L.marker([lat, lon], { icon })
+      .bindPopup(`<b>T${i+1}</b><br>AEP: ${parqueFmt(Number(sim?.aep_mwh), 1)} MWh`);
+    m.addTo(map);
+    PARQUE._optMapLayers.push(m);
+  });
+}
+
 function parqueRenderKrigingLayer(key) {
   const map = parqueInitMap();
   if (!map) return;
   let krigResult = (typeof KRIG !== 'undefined' && KRIG.result) ? KRIG.result : null;
 
   if (!krigResult) {
-    document.getElementById('parque-map-status').textContent = 'Sin Kriging';
-    document.getElementById('parque-map-hint').style.display = '';
+    const _st = document.getElementById('parque-map-status');
+    if (_st) _st.textContent = 'Sin Kriging';
+    const _hi = document.getElementById('parque-map-hint');
+    if (_hi) _hi.style.display = '';
     return;
   }
   const grid = krigResult[key] || krigResult['wind'] || krigResult['speed'];
@@ -9611,10 +9675,14 @@ function parqueRenderKrigingLayer(key) {
     { opacity: 0.72 }
   ).addTo(map);
   const legendEl = document.getElementById('parque-map-legend');
-  legendEl.textContent = `${parqueFmt(z_min, 1, '0.0')} – ${parqueFmt(z_max, 1, '0.0')} ${grid.title?.includes('W/m') ? 'W/m²' : 'm/s'}`;
-  legendEl.style.display = '';
-  document.getElementById('parque-map-status').textContent = `Kriging: ${grid.title || key}`;
-  document.getElementById('parque-map-hint').style.display = 'none';
+  if (legendEl) {
+    legendEl.textContent = `${parqueFmt(z_min, 1, '0.0')} – ${parqueFmt(z_max, 1, '0.0')} ${grid.title?.includes('W/m') ? 'W/m²' : 'm/s'}`;
+    legendEl.style.display = '';
+  }
+  const _st2 = document.getElementById('parque-map-status');
+  if (_st2) _st2.textContent = `Kriging: ${grid.title || key}`;
+  const _hi2 = document.getElementById('parque-map-hint');
+  if (_hi2) _hi2.style.display = 'none';
 }
 
 function parqueRenderPolygon() {
@@ -9635,7 +9703,8 @@ function parqueRenderPolygon() {
   PARQUE.mapLocked = true;
   const lockBtn = document.getElementById('btn-parque-map-lock');
   if (lockBtn) lockBtn.textContent = '🔓 Ver todo';
-  document.getElementById('parque-map-hint').style.display = 'none';
+  const _hi3 = document.getElementById('parque-map-hint');
+  if (_hi3) _hi3.style.display = 'none';
 }
 
 function parqueClearTurbineMarkers() {
@@ -10135,8 +10204,9 @@ async function parqueUpdateRecommendation() {
 }
 
 // ── Optimización y simulación ─────────────────────────────────────────────────
-async function parqueOptimizeTopsis(winner) {
+async function parqueOptimizeTopsis(winner, opts = {}) {
   if (!winner.energy_context || !winner.layout_constraints) {
+    if (opts.silent) return;
     toast('Ejecuta TOPSIS del parque nuevamente para guardar la base de comparación.', 'warning'); return;
   }
   const ctx = winner.energy_context;
@@ -10153,17 +10223,20 @@ async function parqueOptimizeTopsis(winner) {
     .every(([id, value]) => Math.abs(Number(document.getElementById(id).value) - value) < 1e-6)
     && Math.abs(Number(limits.min_spacing_d) - TECHNICAL_FLOOR_D) < 1e-6;
   if (!unchanged) {
+    if (opts.silent) return;
     toast('Los parámetros cambiaron. Ejecuta TOPSIS nuevamente o selecciona otra vez su alternativa para recuperar la base comparable.', 'warning'); return;
   }
   const currentPolygon = KRIG.parkPoints;
   const saved = winner.layout_constraints.polygon;
   if (currentPolygon?.length !== saved.length || currentPolygon.some((p, i) =>
       Math.abs(p[0] - saved[i].lat) > 1e-8 || Math.abs(p[1] - saved[i].lon) > 1e-8)) {
+    if (opts.silent) return;
     toast('El polígono cambió. Ejecuta TOPSIS nuevamente para comparar el mismo terreno.', 'warning'); return;
   }
   let exclusions;
   try { exclusions = mcdaExclusionPolygons(); } catch (e) { toast(e.message, 'warning'); return; }
   if (JSON.stringify(exclusions) !== JSON.stringify(winner.layout_constraints.exclusions || [])) {
+    if (opts.silent) return;
     toast('Las exclusiones cambiaron. Ejecuta TOPSIS nuevamente.', 'warning'); return;
   }
   const progress = document.getElementById('parque-progress-wrap');
@@ -10193,6 +10266,7 @@ async function parqueOptimizeTopsis(winner) {
     }
     PARQUE.optResult = result;
     parqueApplyConfiguration(result.comparison.selected_id);
+    parqueDrawOptMapLayout();
     fill.style.width = '100%';
     toast(`${result.comparison.evaluated_count} layouts evaluados; seleccionada la mayor energía dentro del límite de estela.`, 'success');
     if (WP._qdPipelineReady && QD.active) {
@@ -13535,6 +13609,9 @@ function krigingGoToSubtab(name) {
     requestAnimationFrame(parqueActivate);
   }
   if (name === 'geo') krig3ActivateMapSubtab();
+  if (name === 'topsis') {
+    setTimeout(() => { if (PARQUE.optMap) PARQUE.optMap.invalidateSize(); }, 80);
+  }
 }
 
 // ════════════════════════════════════════════════════════════════════════════

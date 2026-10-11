@@ -1885,207 +1885,6 @@
   <button class="btn-primary" type="button" onclick="krigingGoToSubtab('topsis')">Continuar a ④ AHP / TOPSIS</button>
   </div></div>
 
-  <div class="module-header">
-    <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
-    <p class="module-desc">Layout optimizado con la turbina seleccionada en el ranking TOPSIS sobre el polígono del parque.</p>
-  </div>
-
-  <!-- Panel de control: el mapa (mismo #parque-map) ya se muestra arriba,
-       visible desde la revisión de candidatos -- aquí solo los controles
-       para aplicar/afinar el layout del ganador de TOPSIS. -->
-  <div style="max-width:420px">
-
-    <!-- Panel de control -->
-    <div style="display:flex;flex-direction:column;gap:.6rem">
-
-      <!-- Turbina (lista TOPSIS) -->
-      <div class="card">
-        <div class="card-header">
-          <span class="card-title">Aerogenerador recomendado</span>
-          <span class="badge badge--success" id="parque-topsis-badge">Sin TOPSIS</span>
-        </div>
-        <div class="card-body" style="padding:.6rem">
-          <div id="parque-topsis-list"
-               style="max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;
-                      background:var(--bg-secondary);margin-bottom:.5rem">
-            <div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">
-              Ejecuta TOPSIS en la sección de diseño para ver la lista ranqueada.
-            </div>
-          </div>
-          <label class="form-label">Turbina activa</label>
-          <select class="form-select" id="parque-turbine"></select>
-        </div>
-      </div>
-
-      <!-- Demanda y recomendación -->
-      <div class="card">
-        <div class="card-header"><span class="card-title">Demanda &amp; n° turbinas</span></div>
-        <div class="card-body" style="padding:.6rem">
-          <div style="display:flex;gap:.35rem;align-items:flex-end;margin-bottom:.3rem">
-            <div style="flex:1">
-              <label class="form-label">Demanda a cubrir (MWh/año)</label>
-              <input class="form-input" type="number" id="parque-demand" value="5000" step="500" min="100">
-            </div>
-            <button class="btn-secondary" onclick="parqueLoadDemandFromSession()"
-                    style="white-space:nowrap;font-size:.73rem;padding:.3rem .5rem;flex-shrink:0"
-                    title="Calcular demanda anual desde columna de carga/demanda del archivo en Data Hub">
-              ↙ Sesión
-            </button>
-          </div>
-          <div id="parque-demand-badge"
-               style="display:none;font-size:.69rem;color:var(--text-muted);
-                      background:var(--bg-secondary);border-radius:4px;padding:.2rem .4rem;
-                      margin-bottom:.3rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin:.4rem 0">
-            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
-              <div style="font-size:1.5rem;font-weight:700;color:var(--accent)" id="parque-rec-n">—</div>
-              <div style="font-size:.68rem;color:var(--text-muted)">Turbinas recomendadas</div>
-            </div>
-            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
-              <div style="font-size:1.2rem;font-weight:600;color:var(--accent2,#f6a156)" id="parque-rec-aep">—</div>
-              <div style="font-size:.68rem;color:var(--text-muted)">AEP neta media/turbina (MWh/año)</div>
-            </div>
-          </div>
-          <p id="parque-energy-basis" class="text-muted" style="font-size:.72rem"></p>
-          <div class="form-row">
-            <label class="form-label">N° turbinas a colocar</label>
-            <input class="form-input" type="number" id="parque-n-turbines" value="0"
-                   min="0" max="50" placeholder="0 = automático">
-          </div>
-        </div>
-      </div>
-
-      <!-- Parámetros de optimización -->
-      <div class="card">
-        <div class="card-header"><span class="card-title">Parámetros</span></div>
-        <div class="card-body" style="padding:.6rem">
-<div class="form-grid-2">            <div>
-              <label class="form-label" title="Sectores para simulación AEP con estelas">Sectores AEP</label>
-              <select class="form-select" id="parque-sectors">
-                <option value="12">12</option>
-                <option value="16">16</option>
-                <option value="36" selected>36</option>
-              </select>
-            </div>            <div style="grid-column:1/-1">
-              <label class="form-label" title="Tipo de disposición del parque. 'Auto' compara alineado, tresbolillo y desplazados con la base TOPSIS y el límite de estela.">Tipo layout</label>
-              <select class="form-select" id="parque-layout-type">
-                <option value="auto" selected>🔍 Auto (busca mejor)</option>
-                <option value="aligned">▦ Solo alineado</option>
-                <option value="staggered">⬡ Solo tresbolillo</option>
-              </select>
-            </div>            <div>
-              <label class="form-label">Altura buje/AEP (m)</label>
-              <input class="form-input" type="number" id="parque-ws-h" value="110" step="5">
-            </div>            <div>
-              <label class="form-label" title="Dirección FROM donde viene el viento para visualizar estelas en mapa (0=N, 90=E, 270=O)">Dir. estela (°)</label>
-              <input class="form-input" type="number" id="parque-wake-dir" value="" placeholder="Desde TOPSIS" step="0.5" min="0" max="359.9">
-            </div></div>
-          <p class="text-muted" id="parque-environmental-summary" style="font-size:.72rem;display:none;margin-top:.3rem"></p>
-          <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">
-            <span class="text-muted" id="parque-info" style="font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-            <button class="btn-secondary" id="btn-parque-reset" type="button" style="white-space:nowrap">↺ Reset</button>
-            <button class="btn-primary"   id="btn-parque-optimize" type="button" style="white-space:nowrap">Simular / refinar tecnología</button>
-          </div>
-          <div id="parque-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-top:.5rem">
-            <div id="parque-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
-          </div>
-          <p class="text-muted" style="font-size:.72rem">Con TOPSIS se conservan su modelo de estela, recurso y pérdidas. Para cambiar esos supuestos, vuelve a generar los layouts. La cantidad 0 usa la de TOPSIS; puedes reducirla para comparar.</p>
-          <p id="parque-progress-text" style="font-size:.72rem;color:var(--text-muted);margin:.25rem 0 0"></p>
-        </div>
-      </div>
-
-    </div><!-- /panel -->
-  </div>
-
-  <!-- Quick Design banner (visible only in quick mode) -->
-  <div id="qd-parque-banner" style="display:none;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.5rem .9rem;margin-bottom:.6rem;font-size:.8rem;color:#10b981">
-    &#x26A1; <strong>Modo rápido</strong>: genera los layouts, revísalos y continúa a AHP / TOPSIS.
-  </div>
-
-  <!-- badge estado post-simulación -->
-  <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">
-    <span class="badge badge--info" id="parque-status">Sin simular</span>
-    <span class="text-muted" style="font-size:.75rem" id="parque-layout-meta"></span>
-    <span class="badge" id="parque-layout-badge"
-      style="display:none;background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
-  </div>
-
-  <p id="parque-wake-direction-note" class="text-muted" style="font-size:.75rem">La dirección visual se sincroniza con el resultado del parque.</p>
-
-  <div class="card mt-2" id="parque-config-comparison" style="display:none"></div>
-
-  <!-- KPIs del parque -->
-  <div class="kpi-row mt-2" id="parque-kpis" style="display:none">
-    <div class="kpi-card kpi--green">
-      <div class="kpi-label">AEP parque (con estela)</div>
-      <div class="kpi-value" id="parque-kpi-aep">—</div>
-      <div class="kpi-sub">GWh/año</div>
-    </div>
-    <div class="kpi-card kpi--orange">
-      <div class="kpi-label">Pérdida por estela</div>
-      <div class="kpi-value" id="parque-kpi-wl">—</div>
-      <div class="kpi-sub">% vs. sin estela</div>
-    </div>
-    <div class="kpi-card kpi--blue">
-      <div class="kpi-label">CF parque</div>
-      <div class="kpi-value" id="parque-kpi-cf">—</div>
-      <div class="kpi-sub">%</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Potencia instalada</div>
-      <div class="kpi-value" id="parque-kpi-mw">—</div>
-      <div class="kpi-sub">MW</div>
-    </div>
-    <div class="kpi-card kpi--purple">
-      <div class="kpi-label">FLH</div>
-      <div class="kpi-value" id="parque-kpi-flh">—</div>
-      <div class="kpi-sub">h equivalentes</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Dirección dominante</div>
-      <div class="kpi-value" id="parque-kpi-dir">—</div>
-      <div class="kpi-sub">grados (met)</div>
-    </div>
-  </div>
-
-  <!-- Gráficas: AEP por turbina + Déficit NOJ -->
-  <div class="grid-2 mt-2">
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">AEP por turbina (con vs. sin estela)</span>
-      </div>
-      <div class="card-body">
-        <div style="height:300px"><canvas id="parque-aep-chart"></canvas></div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Déficit NOJ axial — perfil de estela centreline</span>
-      </div>
-      <div class="card-body">
-        <div style="height:300px"><canvas id="parque-wake-chart"></canvas></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Tabla resultados por turbina -->
-  <div class="card mt-2">
-    <div class="card-header"><span class="card-title">Resultados por turbina</span></div>
-    <div class="card-body" style="overflow-x:auto;max-height:320px;overflow-y:auto">
-      <table class="tbl" id="parque-tbl">
-        <thead><tr>
-          <th>#</th><th>Lat</th><th>Lon</th><th>X (m)</th><th>Y (m)</th>
-          <th>v̄ kriging (m/s)</th>
-          <th title="AEP bruto: sin pérdidas, sin estela (referencia teórica)">AEP bruto (MWh)</th>
-          <th title="AEP sin estela, con disponibilidad y pérdidas eléctricas">AEP s/estela (MWh)</th>
-          <th title="AEP neto: con disponibilidad, pérdidas eléctricas y estela">AEP neto (MWh)</th>
-          <th>Pérdida estela %</th><th>CF %</th>
-        </tr></thead>
-        <tbody id="parque-tbl-body"></tbody>
-      </table>
-    </div>
-  </div>
-
   </div>
 
   <div class="subsection" data-subtab="topsis">
@@ -2286,6 +2085,209 @@
       </div>
     </div>
   </div>
+
+  <!-- ═══ DISEÑO OPTIMIZADO DEL PARQUE ═══ -->
+  <div class="module-header">
+    <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
+    <p class="module-desc">Layout optimizado con la turbina seleccionada en el ranking TOPSIS sobre el polígono del parque.</p>
+  </div>
+
+  <div id="parque-opt-map"
+    style="height:380px;border-radius:8px;margin-top:.5rem"></div>
+
+  <div style="max-width:420px">
+
+    <!-- Panel de control -->
+    <div style="display:flex;flex-direction:column;gap:.6rem">
+
+      <!-- Turbina (lista TOPSIS) -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Aerogenerador recomendado</span>
+          <span class="badge badge--success" id="parque-topsis-badge">Sin TOPSIS</span>
+        </div>
+        <div class="card-body" style="padding:.6rem">
+          <div id="parque-topsis-list"
+               style="max-height:190px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;
+                      background:var(--bg-secondary);margin-bottom:.5rem">
+            <div style="padding:.6rem;color:var(--text-muted);font-size:.76rem">
+              Ejecuta TOPSIS en la sección de diseño para ver la lista ranqueada.
+            </div>
+          </div>
+          <label class="form-label">Turbina activa</label>
+          <select class="form-select" id="parque-turbine"></select>
+        </div>
+      </div>
+
+      <!-- Demanda y recomendación -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Demanda &amp; n° turbinas</span></div>
+        <div class="card-body" style="padding:.6rem">
+          <div style="display:flex;gap:.35rem;align-items:flex-end;margin-bottom:.3rem">
+            <div style="flex:1">
+              <label class="form-label">Demanda a cubrir (MWh/año)</label>
+              <input class="form-input" type="number" id="parque-demand" value="5000" step="500" min="100">
+            </div>
+            <button class="btn-secondary" onclick="parqueLoadDemandFromSession()"
+                    style="white-space:nowrap;font-size:.73rem;padding:.3rem .5rem;flex-shrink:0"
+                    title="Calcular demanda anual desde columna de carga/demanda del archivo en Data Hub">
+              ↙ Sesión
+            </button>
+          </div>
+          <div id="parque-demand-badge"
+               style="display:none;font-size:.69rem;color:var(--text-muted);
+                      background:var(--bg-secondary);border-radius:4px;padding:.2rem .4rem;
+                      margin-bottom:.3rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.4rem;margin:.4rem 0">
+            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
+              <div style="font-size:1.5rem;font-weight:700;color:var(--accent)" id="parque-rec-n">—</div>
+              <div style="font-size:.68rem;color:var(--text-muted)">Turbinas recomendadas</div>
+            </div>
+            <div style="background:var(--bg-secondary);border-radius:6px;padding:.4rem .5rem;text-align:center">
+              <div style="font-size:1.2rem;font-weight:600;color:var(--accent2,#f6a156)" id="parque-rec-aep">—</div>
+              <div style="font-size:.68rem;color:var(--text-muted)">AEP neta media/turbina (MWh/año)</div>
+            </div>
+          </div>
+          <p id="parque-energy-basis" class="text-muted" style="font-size:.72rem"></p>
+          <div class="form-row">
+            <label class="form-label">N° turbinas a colocar</label>
+            <input class="form-input" type="number" id="parque-n-turbines" value="0"
+                   min="0" max="50" placeholder="0 = automático">
+          </div>
+        </div>
+      </div>
+
+      <!-- Parámetros de optimización -->
+      <div class="card">
+        <div class="card-header"><span class="card-title">Parámetros</span></div>
+        <div class="card-body" style="padding:.6rem">
+<div class="form-grid-2">            <div>
+              <label class="form-label" title="Sectores para simulación AEP con estelas">Sectores AEP</label>
+              <select class="form-select" id="parque-sectors">
+                <option value="12">12</option>
+                <option value="16">16</option>
+                <option value="36" selected>36</option>
+              </select>
+            </div>            <div style="grid-column:1/-1">
+              <label class="form-label" title="Tipo de disposición del parque. 'Auto' compara alineado, tresbolillo y desplazados con la base TOPSIS y el límite de estela.">Tipo layout</label>
+              <select class="form-select" id="parque-layout-type">
+                <option value="auto" selected>🔍 Auto (busca mejor)</option>
+                <option value="aligned">▦ Solo alineado</option>
+                <option value="staggered">⬡ Solo tresbolillo</option>
+              </select>
+            </div>            <div>
+              <label class="form-label">Altura buje/AEP (m)</label>
+              <input class="form-input" type="number" id="parque-ws-h" value="110" step="5">
+            </div>            <div>
+              <label class="form-label" title="Dirección FROM donde viene el viento para visualizar estelas en mapa (0=N, 90=E, 270=O)">Dir. estela (°)</label>
+              <input class="form-input" type="number" id="parque-wake-dir" value="" placeholder="Desde TOPSIS" step="0.5" min="0" max="359.9">
+            </div></div>
+          <p class="text-muted" id="parque-environmental-summary" style="font-size:.72rem;display:none;margin-top:.3rem"></p>
+          <div style="display:flex;gap:.4rem;margin-top:.6rem;align-items:center">
+            <span class="text-muted" id="parque-info" style="font-size:.72rem;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+            <button class="btn-secondary" id="btn-parque-reset" type="button" style="white-space:nowrap">↺ Reset</button>
+            <button class="btn-primary"   id="btn-parque-optimize" type="button" style="white-space:nowrap">Simular / refinar tecnología</button>
+          </div>
+          <div id="parque-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden;margin-top:.5rem">
+            <div id="parque-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .4s"></div>
+          </div>
+          <p class="text-muted" style="font-size:.72rem">Con TOPSIS se conservan su modelo de estela, recurso y pérdidas. Para cambiar esos supuestos, vuelve a generar los layouts. La cantidad 0 usa la de TOPSIS; puedes reducirla para comparar.</p>
+          <p id="parque-progress-text" style="font-size:.72rem;color:var(--text-muted);margin:.25rem 0 0"></p>
+        </div>
+      </div>
+
+    </div><!-- /panel -->
+  </div>
+
+  <!-- Quick Design banner (visible only in quick mode) -->
+  <div id="qd-parque-banner" style="display:none;background:rgba(16,185,129,.12);border:1px solid rgba(16,185,129,.35);border-radius:8px;padding:.5rem .9rem;margin-bottom:.6rem;font-size:.8rem;color:#10b981">
+    &#x26A1; <strong>Modo rápido</strong>: genera los layouts, revísalos y continúa a AHP / TOPSIS.
+  </div>
+
+  <!-- badge estado post-simulación -->
+  <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin-top:.5rem">
+    <span class="badge badge--info" id="parque-status">Sin simular</span>
+    <span class="text-muted" style="font-size:.75rem" id="parque-layout-meta"></span>
+    <span class="badge" id="parque-layout-badge"
+      style="display:none;background:rgba(34,197,94,.12);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
+  </div>
+
+  <p id="parque-wake-direction-note" class="text-muted" style="font-size:.75rem">La dirección visual se sincroniza con el resultado del parque.</p>
+
+  <div class="card mt-2" id="parque-config-comparison" style="display:none"></div>
+
+  <!-- KPIs del parque -->
+  <div class="kpi-row mt-2" id="parque-kpis" style="display:none">
+    <div class="kpi-card kpi--green">
+      <div class="kpi-label">AEP parque (con estela)</div>
+      <div class="kpi-value" id="parque-kpi-aep">—</div>
+      <div class="kpi-sub">GWh/año</div>
+    </div>
+    <div class="kpi-card kpi--orange">
+      <div class="kpi-label">Pérdida por estela</div>
+      <div class="kpi-value" id="parque-kpi-wl">—</div>
+      <div class="kpi-sub">% vs. sin estela</div>
+    </div>
+    <div class="kpi-card kpi--blue">
+      <div class="kpi-label">CF parque</div>
+      <div class="kpi-value" id="parque-kpi-cf">—</div>
+      <div class="kpi-sub">%</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Potencia instalada</div>
+      <div class="kpi-value" id="parque-kpi-mw">—</div>
+      <div class="kpi-sub">MW</div>
+    </div>
+    <div class="kpi-card kpi--purple">
+      <div class="kpi-label">FLH</div>
+      <div class="kpi-value" id="parque-kpi-flh">—</div>
+      <div class="kpi-sub">h equivalentes</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Dirección dominante</div>
+      <div class="kpi-value" id="parque-kpi-dir">—</div>
+      <div class="kpi-sub">grados (met)</div>
+    </div>
+  </div>
+
+  <!-- Gráficas: AEP por turbina + Déficit NOJ -->
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">AEP por turbina (con vs. sin estela)</span>
+      </div>
+      <div class="card-body">
+        <div style="height:300px"><canvas id="parque-aep-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Déficit NOJ axial — perfil de estela centreline</span>
+      </div>
+      <div class="card-body">
+        <div style="height:300px"><canvas id="parque-wake-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tabla resultados por turbina -->
+  <div class="card mt-2">
+    <div class="card-header"><span class="card-title">Resultados por turbina</span></div>
+    <div class="card-body" style="overflow-x:auto;max-height:320px;overflow-y:auto">
+      <table class="tbl" id="parque-tbl">
+        <thead><tr>
+          <th>#</th><th>Lat</th><th>Lon</th><th>X (m)</th><th>Y (m)</th>
+          <th>v̄ kriging (m/s)</th>
+          <th title="AEP bruto: sin pérdidas, sin estela (referencia teórica)">AEP bruto (MWh)</th>
+          <th title="AEP sin estela, con disponibilidad y pérdidas eléctricas">AEP s/estela (MWh)</th>
+          <th title="AEP neto: con disponibilidad, pérdidas eléctricas y estela">AEP neto (MWh)</th>
+          <th>Pérdida estela %</th><th>CF %</th>
+        </tr></thead>
+        <tbody id="parque-tbl-body"></tbody>
+      </table>
+    </div>
+  </div>
+
   </div>
 
 
