@@ -1063,7 +1063,7 @@ async function topsisComputeEquityBatch() {
         capex_usd:             a.capex_usd,
         annual_revenue_usd:    a.annual_revenue_year1_usd || a.annual_revenue_year1_flat_usd || 0,
         annual_opex_usd:       a.opex_usd_anual,
-        project_cashflows_usd: Array.isArray(a.cashflow_table) ? a.cashflow_table.map(row => row.cashflow ?? row.net_cashflow ?? 0) : null,
+        project_cashflows_usd: Array.isArray(a.cashflow_table) ? a.cashflow_table.map(row => row.cashflow ?? row.net_cashflow_usd ?? row.net_cashflow ?? 0) : null,
         project_years:         a.project_years || cfg.project_horizon_years || 25,
         ...levParams,
       });
