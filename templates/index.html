@@ -2534,48 +2534,48 @@
           </div>
           <div>
             <label class="form-label">N° de aerogeneradores</label>
-            <input type="number" class="form-input" id="te-nturbines" value="10" min="1" disabled>
+            <input type="number" class="form-input" id="te-nturbines" value="10" min="1" disabled style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
             <div class="text-muted" style="font-size:.68rem;margin-top:.2rem">Definido por la alternativa TOPSIS elegida arriba.</div>
           </div>
           <div>
             <label class="form-label">Demanda anual (MWh)</label>
-            <input type="number" class="form-input" id="te-demand" value="0" min="0" placeholder="0 = manual">
+            <input type="number" class="form-input" id="te-demand" value="0" min="0" placeholder="0 = manual" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
           </div>
           <div>
             <label class="form-label">Precio energía (USD/kWh)</label>
             <div style="display:flex;gap:.4rem;align-items:stretch">
-              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem" title="Fijo: usa el valor capturado · 8760: usa el PML publicado en Configuración del parque">
+              <select class="form-input" id="te-price-mode" style="flex:0 0 110px;font-size:.78rem;background:var(--bg-secondary);color:var(--text-secondary);cursor:default;pointer-events:none" disabled>
                 <option value="fixed" selected>Fijo</option>
                 <option value="pml8760">PML 8760</option>
               </select>
-              <input type="number" class="form-input" id="te-price" value="0.07" step="0.01" style="flex:1">
+              <input type="number" class="form-input" id="te-price" value="0.07" step="0.01" style="flex:1;background:var(--bg-secondary);color:var(--text-secondary);cursor:default" readonly>
             </div>
             <small class="text-muted" id="te-price-mode-hint" style="font-size:.7rem"></small>
           </div>
           <div>
             <label class="form-label">Escalamiento exportación (% anual)</label>
-            <input type="number" class="form-input" id="te-price-escalation" value="0" step="0.25" min="0" max="20" placeholder="0">
-            <small class="text-muted" style="font-size:.7rem">Crecimiento anual del precio/ingresos. 0 = constante. Aplica al flujo del proyecto.</small>
+            <input type="number" class="form-input" id="te-price-escalation" value="0" step="0.25" min="0" max="20" placeholder="0" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
+            <small class="text-muted" style="font-size:.7rem">Desde configuración del parque · solo lectura.</small>
           </div>
           <div>
             <label class="form-label">Inflación OPEX (% anual)</label>
-            <input type="number" class="form-input" id="te-inflation" value="0" step="0.25" min="0" max="20" placeholder="0">
-            <small class="text-muted" style="font-size:.7rem">Escala costos operativos anuales en el flujo de caja y LCOE. 0 = OPEX constante.</small>
+            <input type="number" class="form-input" id="te-inflation" value="0" step="0.25" min="0" max="20" placeholder="0" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
+            <small class="text-muted" style="font-size:.7rem">Desde configuración del parque · solo lectura.</small>
           </div>
           <div>
             <label class="form-label">Tasa de descuento (%)</label>
-            <input type="number" class="form-input" id="te-rate" value="8" step="0.5">
-            <small class="text-muted" style="font-size:.7rem">Valor escalar manual para toda la evaluación.</small>
+            <input type="number" class="form-input" id="te-rate" value="8" step="0.5" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
+            <small class="text-muted" style="font-size:.7rem">Desde configuración del parque · solo lectura.</small>
           </div>
           <div>
             <label class="form-label">Vida del proyecto (años)</label>
-            <input type="number" class="form-input" id="te-years" value="25" min="5" max="40">
-            <small class="text-muted" style="font-size:.7rem">Valor base: 25 años; editable para evaluar otro horizonte.</small>
+            <input type="number" class="form-input" id="te-years" value="25" min="5" max="40" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
+            <small class="text-muted" style="font-size:.7rem">Desde configuración del parque · solo lectura.</small>
           </div>
           <div>
             <label class="form-label">Tipo de cambio (MXN/USD)</label>
-            <input type="number" class="form-input" id="te-fx" value="18" step="0.5" placeholder="ej. 18 = $1 USD = $18 MXN">
-            <small class="text-muted" style="font-size:.7rem">Valor escalar manual; el análisis se calcula en USD y muestra su equivalente MXN.</small>
+            <input type="number" class="form-input" id="te-fx" value="18" step="0.5" placeholder="ej. 18 = $1 USD = $18 MXN" readonly style="background:var(--bg-secondary);color:var(--text-secondary);cursor:default">
+            <small class="text-muted" style="font-size:.7rem">Desde configuración del parque · solo lectura.</small>
           </div>
         </div>
 
@@ -2624,10 +2624,7 @@
               style="width:46px;background:transparent;border:none;color:var(--text-primary);font-family:var(--font-mono),monospace;font-size:.78rem;padding:0;text-align:right">
             <span>%</span>
           </label>
-          <button class="btn-secondary" id="btn-lev-from-scenario"
-            style="display:none;font-size:.75rem;padding:.25rem .8rem;white-space:nowrap">
-            + Financiamiento
-          </button>
+          <!-- btn-lev-from-scenario eliminado — el apalancamiento se accede por el toggle ⚡ Equity -->
           <button class="btn-secondary" id="btn-clear-financing"
             style="display:none;font-size:.75rem;padding:.25rem .7rem;white-space:nowrap;color:#f87171;border-color:rgba(248,113,113,.4)">
             × Quitar

@@ -2667,7 +2667,7 @@ function renderTechnoScenarioResult() {
   // La tabla de flujos se construye en renderTechnoLeveraged si hay financiamiento (integrada);
   // si no, se renderiza aquí simple.
   if (!activeLev) renderCashflowTable(adjR.analysis?.cashflow_table);
-  if (levBtn) levBtn.style.display = '';
+  // btn-lev-from-scenario removed — leverage accessed via ⚡ Equity toggle
   renderTechnoLeveraged(WP.finView === 'equity' ? scenario.leveraged : null);
   renderTechnoSummaryCard(adjR.analysis, activeLev);
   renderTechnoEnergyLab(r.energy_lab);
