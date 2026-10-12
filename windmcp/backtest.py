@@ -111,6 +111,10 @@ def select_speed_reconstruction_method(
             row["speed_selection_eligible"] = False
             row["speed_selection_status"] = "directional_diagnostic_only"
             continue
+        if method.startswith("multi_reference_"):
+            row["speed_selection_eligible"] = False
+            row["speed_selection_status"] = "comparative_diagnostic_only"
+            continue
         values = {
             "Bias": row.get("Bias"),
             "delta_weibull_k": row.get("delta_weibull_k"),
