@@ -8732,6 +8732,13 @@ function techClusterSwitchView(viewName, skipTabUpdate) {
 function mcdaPreviewCandidate(index) {
   MCDA.previewIndex = index;
   parqueRenderSiteContext();
+  // Sync turbine icons (parquePlotTurbinesOnMap) with the selected layout.
+  // parqueRenderSiteContext sólo actualiza los circleMarkers de contexto;
+  // los iconos SVG de aerogeneradores se gestionan por separado.
+  const alt = MCDA.lastSpatial?.alternatives?.[index];
+  if (alt?.layout_latlon?.length) {
+    parquePlotTurbinesOnMap(alt.layout_latlon, alt.turbine_production || []);
+  }
 }
 
 function mcdaUpdateScopeUi() {
