@@ -3062,7 +3062,7 @@ function renderGlobalSensitivityMatrix(data) {
 }
 
 // ─── ROBUSTEZ COMPARADA ENTRE TODAS LAS TURBINAS DEL RANKING TOPSIS ─────────
-const GSENS_BATCH = { result: null };
+const GSENS_BATCH = { result: null, activeMetric: 'van_usd' };
 
 async function runGlobalSensitivityBatch() {
   const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
@@ -3075,7 +3075,8 @@ async function runGlobalSensitivityBatch() {
   try {
     const data = await api('/api/energy/layout_scenarios', 'POST', { alternatives: ranking });
     GSENS_BATCH.result = data;
-    document.getElementById('gsens-batch-status').textContent = `${data.rows.length} layouts · 6 escenarios`;
+    const nScen = Object.keys(data.scenario_factors || {}).length;
+    document.getElementById('gsens-batch-status').textContent = `${data.rows.length} layouts · ${nScen} escenarios`;
     document.getElementById('gsens-batch-progress-text').textContent = '';
     renderGlobalSensitivityBatchTable(data);
     renderGlobalSensitivityBatchInterpretation(data, ranking[0]?.turbina || ranking[0]?.label);
@@ -3089,31 +3090,69 @@ async function runGlobalSensitivityBatch() {
   }
 }
 
+// Scenario column definitions: [key, short header label]
+const _GSENS_BATCH_SCENARIOS = [
+  ['base',              'Base'],
+  ['precio_menos_20',   'Precio −20%'],
+  ['aep_menos_10',      'AEP rec. −10%'],
+  ['capex_mas_15',      'CAPEX +15%'],
+  ['tasa_mas_2pp',      'Tasa +2 pp'],
+  ['opex_mas_20',       'OPEX +20%'],
+  ['inflacion_mas_2pp', 'Inflación +2 pp'],
+  ['estela_mas_30pct',  'Estela +30%'],
+  ['estres_combinado',  'Estrés combinado'],
+];
+
+const _GSENS_METRIC_CFG = {
+  van_usd:      { label: 'VAN (MUSD)',      fmt: v => v == null ? '—' : (v / 1e6).toFixed(2),   note: 'Valores en millones USD.' },
+  lcoe_usd_kwh: { label: 'LCOE (USD/kWh)',  fmt: v => v == null ? '—' : v.toFixed(5),           note: 'LCOE = PV(costos) / PV(energía).' },
+  b_c_ratio:    { label: 'B/C',             fmt: v => v == null ? '—' : v.toFixed(3),            note: 'B/C = PV(ingresos) / PV(costos). >1 es viable.' },
+  vae_usd:      { label: 'VAE (MUSD/año)',  fmt: v => v == null ? '—' : (v / 1e6).toFixed(3),   note: 'VAE = VAN × CRF (Factor de Recuperación de Capital).' },
+};
+
+function gsensBatchSwitchMetric(metric) {
+  GSENS_BATCH.activeMetric = metric;
+  document.querySelectorAll('#gsens-batch-metric-tabs button[data-metric]').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.metric === metric);
+  });
+  if (GSENS_BATCH.result) renderGlobalSensitivityBatchTable(GSENS_BATCH.result);
+}
+
 function renderGlobalSensitivityBatchTable(data) {
   const el = document.getElementById('gsens-batch-table');
   if (!el) return;
-  const money = v => v == null ? '—' : (v / 1e6).toFixed(2);
+  const metric = GSENS_BATCH.activeMetric || 'van_usd';
+  const cfg = _GSENS_METRIC_CFG[metric] || _GSENS_METRIC_CFG.van_usd;
   const factor = v => v == null ? '—' : (v * 100).toFixed(1) + '%';
+  const isVan = metric === 'van_usd';
+
+  const scenCols = _GSENS_BATCH_SCENARIOS.filter(([key]) =>
+    data.rows[0]?.[metric]?.[key] !== undefined);
+
+  const headerCells = scenCols.map(([, lbl]) => `<th style="white-space:nowrap">${lbl}</th>`).join('');
+  const extraHeader = isVan
+    ? '<th>Peor VAN</th><th>Δ vs. mejor</th><th>P equilibrio</th><th>AEP equilibrio</th><th>CAPEX equilibrio</th><th>VAN/CAPEX</th>'
+    : '<th>Peor valor</th>';
+
   const rows = data.rows.map(t => {
-    return `<tr>
-      <td>${_topsisRobustName(t.turbina)}</td>
-      <td>${money(t.van_usd.base)}</td><td>${money(t.van_usd.precio_menos_20)}</td>
-      <td>${money(t.van_usd.aep_menos_10)}</td><td>${money(t.van_usd.capex_mas_15)}</td>
-      <td>${money(t.van_usd.tasa_mas_2pp)}</td><td>${money(t.van_usd.estres_combinado)}</td>
-      <td>${money(t.peor_van_usd)}</td><td>${money(t.mayor_arrepentimiento_usd)}</td>
-      <td>${factor(t.umbral_precio_factor)}</td><td>${factor(t.umbral_aep_factor)}</td>
-      <td>${factor(t.umbral_capex_factor)}</td><td>${t.van_por_capex_base.toFixed(2)}</td>
-    </tr>`;
+    const metricVals = t[metric] || {};
+    const scenCells = scenCols.map(([key]) => `<td style="text-align:right;font-variant-numeric:tabular-nums">${cfg.fmt(metricVals[key])}</td>`).join('');
+    const extraCells = isVan
+      ? `<td style="text-align:right">${cfg.fmt(t.peor_van_usd)}</td>
+         <td style="text-align:right">${cfg.fmt(t.mayor_arrepentimiento_usd)}</td>
+         <td style="text-align:right">${factor(t.umbral_precio_factor)}</td>
+         <td style="text-align:right">${factor(t.umbral_aep_factor)}</td>
+         <td style="text-align:right">${factor(t.umbral_capex_factor)}</td>
+         <td style="text-align:right">${(t.van_por_capex_base ?? 0).toFixed(2)}</td>`
+      : `<td style="text-align:right">${cfg.fmt(Math.min(...Object.values(metricVals).filter(Number.isFinite)))}</td>`;
+    return `<tr><td>${_topsisRobustName(t.turbina)}</td>${scenCells}${extraCells}</tr>`;
   }).join('');
-  el.innerHTML = `<table class="data-table" style="font-size:.72rem">
-    <thead><tr>
-      <th>Layout</th><th>VAN base</th><th>Precio −20%</th><th>AEP −10%</th>
-      <th>CAPEX +15%</th><th>Tasa +2 pp</th><th>Estrés combinado</th>
-      <th>Peor VAN</th><th>Máx. pérdida frente al mejor</th>
-      <th>Precio equilibrio</th><th>AEP equilibrio</th><th>CAPEX equilibrio</th><th>VAN/CAPEX</th>
-    </tr></thead>
+
+  el.innerHTML = `<table class="data-table" style="font-size:.71rem;min-width:900px">
+    <thead><tr><th>Layout</th>${headerCells}${extraHeader}</tr></thead>
     <tbody>${rows}</tbody>
-  </table><p class="text-muted" style="font-size:.72rem">VAN y pérdidas en millones USD. Los umbrales son porcentajes del valor base; CAPEX incluye OPEX proporcional. No son intervalos de confianza.</p>`;
+  </table>
+  <p class="text-muted" style="font-size:.71rem;margin-top:.4rem">${cfg.note}${isVan ? ' Umbrales: factor del valor base en que VAN = 0. No son intervalos de confianza.' : ''}</p>`;
 }
 
 /** Interpretación en texto plano de la tabla comparativa — contrasta la ganadora

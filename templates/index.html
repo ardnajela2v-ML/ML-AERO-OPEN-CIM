@@ -2964,20 +2964,34 @@
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Compara los layouts con el mismo flujo de caja del parque y verifica que cada VAN base
-        coincida con el ranking. Aplica a todos los mismos cambios hipotéticos: precio −20%,
-        AEP −10%, CAPEX y OPEX +15%, tasa de descuento +2 puntos porcentuales y su combinación.
-        Muestra VAN, umbrales de equilibrio y pérdida frente al mejor layout de cada escenario.
+        Compara todos los layouts ante 9 perturbaciones hipotéticas independientes: precio −20%,
+        AEP recurso −10%, CAPEX +15%, tasa de descuento +2 pp, OPEX +20%, inflación anual +2 pp,
+        pérdida de estela +30% relativo, y un escenario de estrés combinado.
+        Muestra VAN, LCOE, B/C y VAE (Valor Anual Equivalente) por escenario, además de umbrales
+        de equilibrio y pérdida frente al mejor layout de cada escenario.
         Son pruebas de sensibilidad, no probabilidades ni intervalos de confianza calibrados.
       </p>
       <p class="text-muted" style="font-size:.78rem;margin-bottom:.8rem"><b>Calibración pendiente:</b>
-        los rangos de precio, AEP y estelas todavía no se estiman con series multianuales
-        ni con errores observados del modelo. Si se usa el perfil PML de 2018,
-        repetirlo no predice por sí solo los precios futuros. Usa esta comparación
-        como prueba de estrés.</p>
+        los rangos de precio, AEP y estelas no se estiman aún con series multianuales
+        ni con errores observados del modelo. Usa esta comparación como prueba de estrés.</p>
       <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar escenarios de todos los layouts</button>
       <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
       <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
+      <!-- Selector de métrica -->
+      <div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.5rem" id="gsens-batch-metric-tabs">
+        <button class="btn-secondary is-active" type="button" data-metric="van_usd"
+          onclick="gsensBatchSwitchMetric('van_usd')"
+          style="font-size:.72rem;padding:.2rem .55rem">VAN (USD)</button>
+        <button class="btn-secondary" type="button" data-metric="lcoe_usd_kwh"
+          onclick="gsensBatchSwitchMetric('lcoe_usd_kwh')"
+          style="font-size:.72rem;padding:.2rem .55rem">LCOE (USD/kWh)</button>
+        <button class="btn-secondary" type="button" data-metric="b_c_ratio"
+          onclick="gsensBatchSwitchMetric('b_c_ratio')"
+          style="font-size:.72rem;padding:.2rem .55rem">B/C</button>
+        <button class="btn-secondary" type="button" data-metric="vae_usd"
+          onclick="gsensBatchSwitchMetric('vae_usd')"
+          style="font-size:.72rem;padding:.2rem .55rem">VAE (USD/año)</button>
+      </div>
       <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
     </div>
   </div>
