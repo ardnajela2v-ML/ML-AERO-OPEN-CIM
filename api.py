@@ -880,7 +880,8 @@ def create_app():
             'n_records': int(n_hours),
         }
 
-    def _techno_hourly_dispatch(wind_kw, load_kw, index, dt_h, n_turbines, turbine, source_info):
+    def _techno_hourly_dispatch(wind_kw, load_kw, index, dt_h, n_turbines, turbine, source_info,
+                                price_kwh_series=None):
         n = min(len(wind_kw), len(load_kw))
         wind_kw = np.asarray(wind_kw[:n], dtype=float)
         load_kw = np.asarray(load_kw[:n], dtype=float)
@@ -900,6 +901,35 @@ def create_app():
             idx = None
             labels_src = [str(i) for i in range(n)]
         step = max(1, n // 720)
+
+        # Hourly price traces + capture-ratio metrics
+        price_trace = None
+        capture_ratio_pct = None
+        price_captured_avg = None
+        price_market_avg = None
+        if price_kwh_series is not None:
+            try:
+                p_arr = np.asarray(price_kwh_series, dtype=float)
+                if len(p_arr) >= n:
+                    p_arr = p_arr[:n]
+                elif len(p_arr) > 0:
+                    # pad by repeating last year
+                    reps = -(-n // len(p_arr))
+                    p_arr = np.tile(p_arr, reps)[:n]
+                if len(p_arr) == n and np.all(np.isfinite(p_arr)):
+                    price_trace = [round(float(v), 6) for v in p_arr[::step]]
+                    # Capture ratio: revenue-weighted avg price / simple market avg
+                    w_total = float(wind_kw.sum())
+                    if w_total > 0:
+                        rev_weighted = float((wind_kw * p_arr).sum()) / w_total
+                        market_avg = float(p_arr.mean())
+                        if market_avg > 0:
+                            capture_ratio_pct = round(100.0 * rev_weighted / market_avg, 2)
+                        price_captured_avg = round(rev_weighted, 6)
+                        price_market_avg = round(market_avg, 6)
+            except Exception:
+                pass
+
         traces = {
             'labels': labels_src[::step],
             'load_kw': [round(float(v), 3) for v in load_kw[::step]],
@@ -909,6 +939,8 @@ def create_app():
             'deficit_kw': [round(float(v), 3) for v in deficit_kw[::step]],
             'step': int(step),
         }
+        if price_trace is not None:
+            traces['price_usd_kwh'] = price_trace
         annual = []
         if idx is not None:
             years = sorted(set(idx.year))
@@ -962,6 +994,9 @@ def create_app():
             'capacity_factor_pct': round(100.0 * wind_kwh / (installed_kw * n * dt_h), 2) if installed_kw > 0 and n > 0 else 0.0,
             'annual': annual,
             'traces': traces,
+            'capture_ratio_pct': capture_ratio_pct,
+            'price_captured_avg_usd_kwh': price_captured_avg,
+            'price_market_avg_usd_kwh': price_market_avg,
         }
 
     # ─── MAIN PAGE ────────────────────────────────────────────────────────────
@@ -3254,8 +3289,22 @@ def create_app():
                 demand_mwh=float(fin_cfg.get('demand_mwh', 0)),
                 market_demand=_market_demand_profile(sess),
             )
+            # Hourly price series for venta-total cross (PML × viento)
+            _price_kwh_for_dispatch = None
+            try:
+                _ph = fin_cfg.get('price_hourly_year1_usd_kwh')
+                if isinstance(_ph, list) and len(_ph) >= 8760:
+                    _price_kwh_for_dispatch = [float(v) for v in _ph[:8760]]
+                elif _price_series and len(_price_series) > 0:
+                    # flat per-year price — replicate to 8760
+                    _price_kwh_for_dispatch = [float(_price_series[0])] * 8760
+                elif energy_price_usd_kwh > 0:
+                    _price_kwh_for_dispatch = [float(energy_price_usd_kwh)] * 8760
+            except Exception:
+                pass
             hourly_dispatch = _techno_hourly_dispatch(
-                p_kw_dispatch, load_kw, dispatch_index, dt_h, n_turbines, turbine, load_info
+                p_kw_dispatch, load_kw, dispatch_index, dt_h, n_turbines, turbine, load_info,
+                price_kwh_series=_price_kwh_for_dispatch,
             )
 
             # ── Energy Lab integration ────────────────────────────────────────

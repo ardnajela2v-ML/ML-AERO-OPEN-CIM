@@ -3735,64 +3735,164 @@ function renderTechnoDispatch(d, windSource = null) {
     return;
   }
   const fmt = (v, dec = 0) => Number.isFinite(Number(v)) ? Number(v).toLocaleString('es-MX', { maximumFractionDigits: dec }) : '—';
+  const fmtP = v => Number.isFinite(Number(v)) ? Number(v).toFixed(5) : '—';
+  if (badge) badge.textContent = `${d.n_records || 0} datos · Δt=${d.dt_h || 1} h`;
+
+  // Commercialization mode: total_sale shows viento×PML cross; autoconsumo shows demand dispatch
+  const isAutoconsumo = ['self_consumption', 'self_consumption_surplus'].includes(
+    WP.parkConfiguration?.commercialization_mode);
+  const hasPriceTrace = Array.isArray(d.traces?.price_usd_kwh) && d.traces.price_usd_kwh.length > 0;
+
+  // ── KPI items ──────────────────────────────────────────────────────────────
   const loadSrc = d.load_source?.source === 'session_column'
     ? `Carga real: ${d.load_source.column}`
     : 'Carga sintética escalada';
-  if (badge) badge.textContent = `${d.n_records || 0} datos · Δt=${d.dt_h || 1} h`;
-  const items = [
-    ['Carga total', fmt(d.total_load_mwh, 1) + ' MWh', loadSrc],
-    ['Viento disponible', fmt(d.wind_available_mwh, 1) + ' MWh', windSource?.source || 'serie'],
-    ['Energía servida', fmt(d.served_by_wind_mwh, 1) + ' MWh', 'wind → carga'],
-    ['Déficit/importación', fmt(d.deficit_mwh, 1) + ' MWh', 'demanda no cubierta'],
-    ['Excedente/curtailment', fmt(d.curtailed_mwh, 1) + ' MWh', `${fmt(d.curtailment_pct, 2)}%`],
-    ['Cobertura horaria', fmt(d.coverage_pct, 2) + '%', `${d.years_detected || 1} año(s)`],
-  ];
+  const kpiItems = isAutoconsumo
+    ? [
+        ['Carga total',         fmt(d.total_load_mwh, 1) + ' MWh',   loadSrc],
+        ['Viento disponible',   fmt(d.wind_available_mwh, 1) + ' MWh', windSource?.source || 'serie'],
+        ['Energía servida',     fmt(d.served_by_wind_mwh, 1) + ' MWh', 'wind → carga'],
+        ['Déficit/importación', fmt(d.deficit_mwh, 1) + ' MWh',       'demanda no cubierta'],
+        ['Excedente/curtailment', fmt(d.curtailed_mwh, 1) + ' MWh',   `${fmt(d.curtailment_pct, 2)}%`],
+        ['Cobertura horaria',   fmt(d.coverage_pct, 2) + '%',          `${d.years_detected || 1} año(s)`],
+      ]
+    : [
+        ['AEP viento',          fmt(d.wind_available_mwh, 1) + ' MWh',  windSource?.source || 'serie'],
+        ['CF',                  fmt(d.capacity_factor_pct, 2) + '%',     `${d.years_detected || 1} año(s)`],
+        ...(hasPriceTrace ? [
+          ['Precio de mercado', fmtP(d.price_market_avg_usd_kwh) + ' USD/kWh', 'promedio simple'],
+          ['Precio capturado',  fmtP(d.price_captured_avg_usd_kwh) + ' USD/kWh', 'ponderado × viento'],
+          ['Ratio de captura',  fmt(d.capture_ratio_pct, 2) + '%',
+           d.capture_ratio_pct >= 100 ? '✓ sobre mercado' : d.capture_ratio_pct >= 90 ? 'alta' : 'revisar horario'],
+        ] : []),
+      ];
+
   if (kpiEl) {
-    kpiEl.innerHTML = items.map(([l, v, u]) => `<div class="te-kpi-item">
+    kpiEl.innerHTML = kpiItems.map(([l, v, u]) => `<div class="te-kpi-item">
       <div class="kpi-label">${l}</div>
       <div class="kpi-value">${v}<span style="font-size:.68rem;color:var(--text-muted);margin-left:4px">${u}</span></div>
     </div>`).join('');
   }
+
+  // ── Annual table ───────────────────────────────────────────────────────────
   if (tbody) {
     tbody.innerHTML = (d.annual || []).map(r => `<tr>
       <td>${r.year}</td>
       <td>${fmt(r.hours, 1)}</td>
-      <td>${fmt(r.load_mwh, 2)}</td>
+      <td>${isAutoconsumo ? fmt(r.load_mwh, 2) : '—'}</td>
       <td>${fmt(r.wind_mwh, 2)}</td>
-      <td>${fmt(r.served_mwh, 2)}</td>
+      <td>${isAutoconsumo ? fmt(r.served_mwh, 2) : '—'}</td>
       <td>${fmt(r.curtailed_mwh, 2)}</td>
-      <td>${fmt(r.deficit_mwh, 2)}</td>
-      <td>${fmt(r.coverage_pct, 2)}%</td>
+      <td>${isAutoconsumo ? fmt(r.deficit_mwh, 2) : '—'}</td>
+      <td>${isAutoconsumo ? fmt(r.coverage_pct, 2) + '%' : '—'}</td>
       <td>${fmt(r.curtailment_pct, 2)}%</td>
       <td>${fmt(r.cf_pct, 2)}%</td>
     </tr>`).join('');
   }
+
+  // ── Chart ──────────────────────────────────────────────────────────────────
   const tr = d.traces || {};
   destroyChart('chart-te-dispatch');
   const ctx = document.getElementById('chart-te-dispatch')?.getContext('2d');
-  if (!ctx || !tr.load_kw?.length) return;
-  WP.charts['chart-te-dispatch'] = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels: tr.labels || tr.load_kw.map((_, i) => i),
-      datasets: [
-        { label: 'Carga', data: tr.load_kw, borderColor: ink(), backgroundColor: ink() + '10', fill: false, pointRadius: 0, borderWidth: 1.4 },
-        { label: 'Viento disponible', data: tr.wind_kw, borderColor: acc(), backgroundColor: acc() + '22', fill: true, pointRadius: 0, borderWidth: 1.2 },
-        { label: 'Servida', data: tr.served_kw, borderColor: acc3(), backgroundColor: acc3() + '16', fill: true, pointRadius: 0, borderWidth: 1 },
-        { label: 'Déficit', data: tr.deficit_kw, borderColor: '#ef4444', backgroundColor: '#ef444422', fill: true, pointRadius: 0, borderWidth: 1 },
-        { label: 'Excedente', data: tr.curtailed_kw, borderColor: gold(), backgroundColor: gold() + '20', fill: true, pointRadius: 0, borderWidth: 1 },
-      ],
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false, animation: false,
-      interaction: { intersect: false, mode: 'index' },
-      plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
-      scales: {
-        x: { display: false },
-        y: { title: { display: true, text: 'kW' }, grid: { color: gridColor() } },
+  if (!ctx) return;
+
+  if (!isAutoconsumo && hasPriceTrace) {
+    // Venta total: dual-axis — viento (left) + PML precio (right)
+    if (!tr.wind_kw?.length) return;
+    WP.charts['chart-te-dispatch'] = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: tr.labels || tr.wind_kw.map((_, i) => i),
+        datasets: [
+          {
+            label: 'Producción viento (kW)',
+            data: tr.wind_kw,
+            borderColor: acc(), backgroundColor: acc() + '20',
+            fill: true, pointRadius: 0, borderWidth: 1.4,
+            yAxisID: 'yWind',
+          },
+          {
+            label: 'Precio PML (USD/kWh)',
+            data: tr.price_usd_kwh,
+            borderColor: '#9F7AEA', backgroundColor: '#9F7AEA14',
+            fill: false, pointRadius: 0, borderWidth: 1.2,
+            yAxisID: 'yPrice',
+          },
+        ],
       },
-    },
-  });
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: {
+          legend: { labels: { font: { size: 10 }, boxWidth: 10 } },
+          tooltip: {
+            callbacks: {
+              label: item => item.dataset.yAxisID === 'yPrice'
+                ? `${item.dataset.label}: ${Number(item.raw).toFixed(5)} USD/kWh`
+                : `${item.dataset.label}: ${Math.round(item.raw).toLocaleString()} kW`,
+            },
+          },
+        },
+        scales: {
+          x: { display: false },
+          yWind: {
+            type: 'linear', position: 'left',
+            title: { display: true, text: 'kW producción' },
+            grid: { color: gridColor() },
+          },
+          yPrice: {
+            type: 'linear', position: 'right',
+            title: { display: true, text: 'USD/kWh' },
+            grid: { drawOnChartArea: false },
+            ticks: { callback: v => v.toFixed(4) },
+          },
+        },
+      },
+    });
+  } else if (tr.load_kw?.length) {
+    // Autoconsumo / excedentes: curvas de despacho
+    WP.charts['chart-te-dispatch'] = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: tr.labels || tr.load_kw.map((_, i) => i),
+        datasets: [
+          { label: 'Carga',             data: tr.load_kw,     borderColor: ink(),     backgroundColor: ink() + '10', fill: false, pointRadius: 0, borderWidth: 1.4 },
+          { label: 'Viento disponible', data: tr.wind_kw,     borderColor: acc(),     backgroundColor: acc() + '22', fill: true,  pointRadius: 0, borderWidth: 1.2 },
+          { label: 'Servida',           data: tr.served_kw,   borderColor: acc3(),    backgroundColor: acc3() + '16', fill: true, pointRadius: 0, borderWidth: 1 },
+          { label: 'Déficit',           data: tr.deficit_kw,  borderColor: '#ef4444', backgroundColor: '#ef444422', fill: true, pointRadius: 0, borderWidth: 1 },
+          { label: 'Excedente',         data: tr.curtailed_kw,borderColor: gold(),    backgroundColor: gold() + '20', fill: true, pointRadius: 0, borderWidth: 1 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        interaction: { intersect: false, mode: 'index' },
+        plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
+        scales: {
+          x: { display: false },
+          y: { title: { display: true, text: 'kW' }, grid: { color: gridColor() } },
+        },
+      },
+    });
+  } else if (tr.wind_kw?.length) {
+    // Venta total sin precio: solo producción
+    WP.charts['chart-te-dispatch'] = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: tr.labels || tr.wind_kw.map((_, i) => i),
+        datasets: [
+          { label: 'Producción viento (kW)', data: tr.wind_kw, borderColor: acc(), backgroundColor: acc() + '22', fill: true, pointRadius: 0, borderWidth: 1.4 },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: false,
+        plugins: { legend: { labels: { font: { size: 10 }, boxWidth: 10 } } },
+        scales: {
+          x: { display: false },
+          y: { title: { display: true, text: 'kW' }, grid: { color: gridColor() } },
+        },
+      },
+    });
+  }
 }
 
 // ─── TECHNO ENERGY LAB INTEGRATION ───────────────────────────────────────────
