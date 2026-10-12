@@ -834,7 +834,9 @@ class TechnoEconomicAnalyzer:
                 year1_revenue_override_usd: float = None,
                 annual_inflation_pct: float = 0.0,
                 degradation_pct: float = DEFAULT_DEGRADATION_PCT,
-                decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT) -> dict:
+                decommissioning_pct: float = DEFAULT_DECOMMISSIONING_PCT,
+                capex_usd_override: float = None,
+                opex_usd_annual_override: float = None) -> dict:
         """
         Full techno-economic analysis.
         Returns NPV/VAN, LCOE, VAE, payback, cash flow table.
@@ -846,6 +848,11 @@ class TechnoEconomicAnalyzer:
             in USD, FX-adjusted). Used when revenue is computed via hourly
             weighting (8760 PML × FX × dispatched energy). Bypasses
             energy×price×fx for year 1 only.
+        capex_usd_override: when set, skips capex_breakdown and uses this value
+            directly (e.g. to reproduce TOPSIS economics that include cable +
+            foundation costs).
+        opex_usd_annual_override: when set, skips opex_annual_usd and uses this
+            value directly. Ignored when capex_usd_override is None.
         """
         if energy_price_usd_kwh is None or project_years is None:
             raise ValueError(
@@ -857,13 +864,22 @@ class TechnoEconomicAnalyzer:
         if not 5 <= project_years <= 40:
             raise ValueError('project_years debe estar entre 5 y 40')
 
-        capex = self.capex_breakdown(turbine, n_turbines)
-        total_capex = capex['total_capex_usd']
+        if capex_usd_override is not None and np.isfinite(float(capex_usd_override)) and float(capex_usd_override) > 0:
+            total_capex = float(capex_usd_override)
+            capex = self.capex_breakdown(turbine, n_turbines)
+            capex['total_capex_usd'] = round(total_capex)
+        else:
+            capex = self.capex_breakdown(turbine, n_turbines)
+            total_capex = capex['total_capex_usd']
         investment_cost = total_capex * usd_to_mxn
         annual_inflation_pct = float(annual_inflation_pct or 0.0)
 
-        # OPEX anual = % del CAPEX total (modelo central WindPro)
-        annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
+        # OPEX anual = % del CAPEX total (modelo central WindPro), or override
+        if (capex_usd_override is not None and opex_usd_annual_override is not None
+                and np.isfinite(float(opex_usd_annual_override)) and float(opex_usd_annual_override) >= 0):
+            annual_maintenance = float(opex_usd_annual_override)
+        else:
+            annual_maintenance = self.cost_model.opex_annual_usd(total_capex)
         annual_opex        = annual_maintenance * usd_to_mxn
 
         lifecycle = project_cashflows(

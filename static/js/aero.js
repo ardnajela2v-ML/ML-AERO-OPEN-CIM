@@ -2509,12 +2509,18 @@ function technoParkLayout() {
     if (row && Number.isFinite(rowAep) && rowAep > 0) {
       const meta = (MCDA.turbines || []).find(t => t.filename === overrideKey);
       const wake = Number(row.wake_loss_pct);
+      const capex = Number(row.capex_usd);
+      const opex  = Number(row.opex_usd_anual);
       return {
         turbine_key: overrideKey,
         turbine_name: meta?.name || overrideKey.replace('.csv', ''),
         n_placed: Math.round(Number(row.n_aerogeneradores)),
         aep_mwh: rowAep,
         wake_loss_pct: Number.isFinite(wake) ? wake : null,
+        // TOPSIS-stored financials — used to reproduce VAN exactly in Techno panel
+        capex_usd: Number.isFinite(capex) && capex > 0 ? capex : null,
+        opex_usd_anual: Number.isFinite(opex) && opex >= 0 ? opex : null,
+        economic_assumptions: row.economic_assumptions || null,
       };
     }
   }
@@ -2776,7 +2782,11 @@ async function calcTechnoEconomic() {
         energy_price_series_usd_kwh: builtPrice.series || null,
         price_hourly_year1_usd_kwh:  builtPrice.hourly || null,
         price_mode: inputs.priceMode,
-      }
+      },
+      // Pass TOPSIS-stored CAPEX/OPEX so the panel reproduces the ranking VAN
+      // (TOPSIS _economics adds cable + foundation costs absent from capex_breakdown).
+      ...(layout.capex_usd > 0 ? { capex_usd_override: layout.capex_usd } : {}),
+      ...(layout.opex_usd_anual > 0 ? { opex_usd_annual_override: layout.opex_usd_anual } : {}),
     };
     const r = await api('/api/energy/techno_economic', 'POST', body);
     WP.technoScenarios.integrated.inputs = inputs;
@@ -3394,6 +3404,29 @@ function renderTechnoKPIs(r, leveraged = null) {
   // Badge de modo apalancado
   const levBadge = document.getElementById('te-lev-active-badge');
   if (levBadge) levBadge.style.display = leveraged ? '' : 'none';
+
+  // Badge de referencia TOPSIS — avisa si el VAN calculado difiere del ranking
+  const refBadge = document.getElementById('te-topsis-ref-badge');
+  if (refBadge) {
+    const topsisRanking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
+    const tKey = WP.technoSelectedTopsisTurbine || topsisRanking[0]?.turbina;
+    const tRow = tKey ? topsisRanking.find(r => (r.turbina || r.label) === tKey) : null;
+    const topsisVan = Number(tRow?.van_usd);
+    const technoVan = Number(a.npv_usd);
+    if (tRow && Number.isFinite(topsisVan) && Number.isFinite(technoVan)) {
+      const relDiff = Math.abs(technoVan - topsisVan) / (Math.abs(topsisVan) || 1);
+      if (relDiff > 0.001) {
+        const fmtV = v => (v >= 0 ? '+' : '−') + ' $' + Math.abs(Math.round(v)).toLocaleString('es-MX');
+        refBadge.textContent =
+          `Ref. TOPSIS: ${fmtV(topsisVan)} USD (parámetros del ranking)`;
+        refBadge.style.display = '';
+      } else {
+        refBadge.style.display = 'none';
+      }
+    } else {
+      refBadge.style.display = 'none';
+    }
+  }
 
   const fmt = n => n != null ? Math.abs(n).toLocaleString('es-MX', {maximumFractionDigits: 0}) : '—';
   const fx  = Number(a.fx_mxn_per_usd) || Number(document.getElementById('te-fx')?.value) || 1;
@@ -9772,6 +9805,23 @@ function syncTopsisWinnerToModules() {
     if (teCount && Number.isFinite(activeCount) && activeCount > 0) {
       teCount.value = String(Math.round(activeCount));
     }
+    // Sync economic parameters from TOPSIS alternative so VAN matches ranking
+    const eco = activeRow.economic_assumptions;
+    if (eco) {
+      const setInput = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val != null && Number.isFinite(Number(val))) el.value = val;
+      };
+      if (Number(eco.price_usd_kwh) > 0)
+        setInput('te-price', Number(eco.price_usd_kwh).toFixed(4));
+      if (Number(eco.discount_rate) > 0)
+        setInput('te-rate', (Number(eco.discount_rate) * 100).toFixed(2));
+      if (Number(eco.project_years) >= 5)
+        setInput('te-years', eco.project_years);
+      // annual_inflation_pct may be stored via cost_model.to_dict spread; default 0
+      const inf = Number(eco.annual_inflation_pct ?? 0);
+      if (Number.isFinite(inf)) setInput('te-inflation', inf);
+    }
   }
 
   const renderTopsisBadge = (row) => {
@@ -9800,6 +9850,22 @@ function syncTopsisWinnerToModules() {
     const n = Number(row.n_aerogeneradores);
     const teCount = document.getElementById('te-nturbines');
     if (teCount && Number.isFinite(n) && n > 0) teCount.value = String(Math.round(n));
+    // Sync economic params from the newly selected TOPSIS row
+    const eco = row.economic_assumptions;
+    if (eco && !WP.technoInputsDirty) {
+      const setInput = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val != null && Number.isFinite(Number(val))) el.value = val;
+      };
+      if (Number(eco.price_usd_kwh) > 0)
+        setInput('te-price', Number(eco.price_usd_kwh).toFixed(4));
+      if (Number(eco.discount_rate) > 0)
+        setInput('te-rate', (Number(eco.discount_rate) * 100).toFixed(2));
+      if (Number(eco.project_years) >= 5)
+        setInput('te-years', eco.project_years);
+      const inf = Number(eco.annual_inflation_pct ?? 0);
+      if (Number.isFinite(inf)) setInput('te-inflation', inf);
+    }
     renderTopsisBadge(row);
     if (technoCurrentScenario()?.result) {
       calcTechnoEconomic();

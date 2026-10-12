@@ -3213,6 +3213,17 @@ def create_app():
             except Exception as _e_y1:
                 logger.warning('Year-1 hourly revenue override failed: %s', _e_y1)
 
+            # Optional overrides from TOPSIS layout — reproduce TOPSIS economics
+            # exactly (incl. cable + foundation costs absent from capex_breakdown).
+            _capex_override = body.get('capex_usd_override')
+            _opex_override  = body.get('opex_usd_annual_override')
+            _capex_kw = (float(_capex_override)
+                         if _capex_override is not None and np.isfinite(float(_capex_override))
+                         else None)
+            _opex_kw  = (float(_opex_override)
+                         if _opex_override is not None and np.isfinite(float(_opex_override))
+                         else None)
+
             analysis = tea.analyze(
                 turbine, n_turbines, annual_kwh_per_turbine * n_turbines,
                 energy_price_usd_kwh=energy_price_usd_kwh,
@@ -3222,6 +3233,8 @@ def create_app():
                 energy_price_series_usd_kwh=_price_series,
                 year1_revenue_override_usd=_year1_rev_override,
                 annual_inflation_pct=float(fin_cfg.get('annual_inflation_pct', 0.0)),
+                capex_usd_override=_capex_kw,
+                opex_usd_annual_override=_opex_kw,
             )
             analysis['fx_mxn_per_usd'] = fx_mxn_per_usd
             if _price_series:
