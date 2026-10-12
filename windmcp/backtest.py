@@ -7,6 +7,11 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+
 from .mcp import (
     DEFAULT_METHODS,
     _fit_and_predict,
@@ -15,6 +20,7 @@ from .mcp import (
     validate_direction,
 )
 from .ml import DEFAULT_ML_METHODS, fit_ml_model, validate_ml_direction
+from .multireference import _calendar_and_reference_features, _fit_nnls_sum_one
 
 
 def _available_years(aligned: pd.DataFrame) -> set[int]:
@@ -191,12 +197,14 @@ def select_speed_model_training_holdout(
     mcp_methods: Sequence[str] = DEFAULT_METHODS,
     ml_methods: Sequence[str] = DEFAULT_ML_METHODS,
     validation_fraction: float = 0.25,
+    multi_reference_frame: "pd.DataFrame | None" = None,
+    multi_reference_speed_columns: "list[str] | None" = None,
 ) -> Dict[str, object]:
-    """Select the final MCP/ML speed model without consulting the test year.
+    """Select the final speed model without consulting the test year.
 
-    Every family is evaluated on the same chronological tail of the configured
-    training year. Distribution constraints are applied first and RMSE/MAE
-    break ties; no method receives a preferred or thesis-specific override.
+    Evaluates MCP, single-ref ML, and (when provided) multi-reference
+    candidates on the same chronological 75/25 holdout of the training year.
+    Distribution constraints are applied first; RMSE/MAE break ties.
     """
 
     period = aligned.loc[aligned.index.year == int(training_year)].sort_index()
@@ -236,6 +244,54 @@ def select_speed_model_training_holdout(
             rows.append({"family": "ml", "method": public_method, "status": "ok", **result})
         except Exception as error:
             rows.append({"family": "ml", "method": public_method, "status": "error", "error": str(error)})
+
+    if multi_reference_frame is not None and multi_reference_speed_columns:
+        mr_period = (
+            multi_reference_frame.loc[multi_reference_frame.index.year == int(training_year)]
+            .dropna(subset=["wind_speed_obs", *multi_reference_speed_columns])
+            .sort_index()
+        )
+        if len(mr_period) >= 40:
+            mr_split = min(
+                max(int(np.floor(len(mr_period) * (1.0 - float(validation_fraction)))), 20),
+                len(mr_period) - 20,
+            )
+            mr_train = mr_period.iloc[:mr_split]
+            mr_val = mr_period.iloc[mr_split:]
+            try:
+                weights = _fit_nnls_sum_one(
+                    mr_train[multi_reference_speed_columns].to_numpy(),
+                    mr_train["wind_speed_obs"].to_numpy(),
+                )
+                pred = np.maximum(mr_val[multi_reference_speed_columns].to_numpy().dot(weights), 0.0)
+                result = metrics(mr_val["wind_speed_obs"], pred)
+                rows.append({"family": "multiref", "method": "multi_reference_nnls", "status": "ok", **result})
+            except Exception as error:
+                rows.append({"family": "multiref", "method": "multi_reference_nnls", "status": "error", "error": str(error)})
+            feat_frame = _calendar_and_reference_features(mr_period, multi_reference_speed_columns)
+            feat_frame = feat_frame.copy()
+            feat_frame["wind_speed_obs"] = mr_period["wind_speed_obs"]
+            feat_train = feat_frame.iloc[:mr_split].dropna()
+            feat_val = feat_frame.iloc[mr_split:].dropna()
+            if len(feat_train) >= 20 and len(feat_val) >= 2:
+                x_cols = [c for c in feat_train.columns if c != "wind_speed_obs"]
+                mr_estimators = {
+                    "multi_reference_ridge": Pipeline([("scale", StandardScaler()), ("model", Ridge(alpha=10.0))]),
+                    "multi_reference_random_forest": RandomForestRegressor(
+                        n_estimators=80, max_depth=16, min_samples_leaf=5, n_jobs=-1, random_state=42),
+                    "multi_reference_gradient_boosting": GradientBoostingRegressor(
+                        n_estimators=120, learning_rate=0.04, max_depth=3,
+                        min_samples_leaf=8, loss="huber", random_state=42),
+                }
+                for method, estimator in mr_estimators.items():
+                    try:
+                        estimator.fit(feat_train[x_cols], feat_train["wind_speed_obs"])
+                        predicted = np.maximum(estimator.predict(feat_val[x_cols]), 0.0)
+                        valid = np.isfinite(predicted)
+                        result = metrics(feat_val.loc[valid, "wind_speed_obs"], predicted[valid])
+                        rows.append({"family": "multiref", "method": method, "status": "ok", **result})
+                    except Exception as error:
+                        rows.append({"family": "multiref", "method": method, "status": "error", "error": str(error)})
 
     successful = [row for row in rows if row["status"] == "ok"]
     if not successful:

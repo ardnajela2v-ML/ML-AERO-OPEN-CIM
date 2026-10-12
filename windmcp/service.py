@@ -23,7 +23,7 @@ from .mcp import (EXTENDED_METHODS,
                   fit_weibull_mle, rank_references, select_mcp_method,
                   validate_direction)
 from .ml import compare_ml_methods, fit_ml_model, select_ml_method, validate_ml_direction
-from .multireference import campaign_sensitivity, evaluate_multireference
+from .multireference import build_multireference_frame, campaign_sensitivity, evaluate_multireference
 from .profile import VerticalProfile, fit_vertical_profile, normalize_observation_height, normalize_reference_height
 from .qc import quality_control
 from .readiness import assess_reconstruction_readiness
@@ -879,10 +879,17 @@ def run_mcp_validation(request: Mapping[str, Any]) -> Dict[str, Any]:
         selected_reference + "_ml_model_comparison": str(ml_comparison_path),
         selected_reference + "_ml_model_comparison_2019": str(ml_comparison_path),
     })
+    _mr_frame, _mr_speed_cols = (
+        build_multireference_frame(observation_valid, clean_references_by_name)
+        if len(clean_references_by_name) >= 2
+        else (None, None)
+    )
     speed_model_selection = select_speed_model_training_holdout(
         selected_aligned,
         training_year=train_year,
         mcp_methods=EXTENDED_METHODS,
+        multi_reference_frame=_mr_frame,
+        multi_reference_speed_columns=_mr_speed_cols,
     )
     requested_backtest_folds = [(train_year, test_year)]
     backtesting = run_walk_forward_backtest(
