@@ -17,17 +17,19 @@ const WP = {
   },
   technoInputsInitialized: false,
   technoInputsDirty: false,
-  technoSelectedTopsisTurbine: null,  // turbina elegida manualmente entre las alternativas ya rankeadas por TOPSIS (null = usar la #1)
+  technoSelectedTopsisTurbine: null,
   levParams: { debt_ratio_pct: 70, interest_rate_pct: 8, loan_years: 15, equity_discount_rate_pct: 12 },
-  technoFinalLoss: { enabled: false, pct: 3.0 },  // Pérdidas eléctricas aplicadas al AEP final (post-simulación)
-  referenceHeight: null,   // altura de referencia global (m) — set por modal al cargar estación
-  referenceMethod: 'hellmann', // método de extrapolación seleccionado
+  technoFinalLoss: { enabled: false, pct: 3.0 },
+  referenceHeight: null,
+  referenceMethod: 'hellmann',
   mcpStudy: null,
   reanalysisStudy: null,
   studyMode: null,
   mcpRunId: null,
   activeDataSource: 'observed',
   parkConfiguration: null,
+  // Vista financiera activa en todo el flujo: 'integral' (WACC) | 'equity' (Apalancado)
+  finView: 'integral',
 };
 
 /** Altura de referencia activa para todos los cálculos.
@@ -157,6 +159,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindAdvanced();
   bindResumenUnified();
   bindKrigingSubtabs();
+  bindTechnoSubtabs();
   bindTechno();
   bindExport();
   bindMarketDataHub();
@@ -853,8 +856,14 @@ function populateQualityTable(cols) {
 function bindParkConfiguration() {
   const commercial = document.getElementById('park-commercial-mode');
   commercial?.addEventListener('change', updateParkCommercialControls);
+  document.getElementById('park-sale-scheme')?.addEventListener('change', updateParkCommercialControls);
   ['park-base-fx', 'park-base-interest'].forEach(id => {
     document.getElementById(id)?.addEventListener('input', renderParkConfigurationReadiness);
+  });
+  // Live CAPEX total badge update
+  ['cm-turbine-usd-kw', 'cm-turbines-pct', 'cm-civil-pct', 'cm-elec-pct',
+   'cm-install-pct', 'cm-eng-pct', 'cm-misc-pct', 'cm-opex-pct'].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', updateCapexTotalBadge);
   });
   document.getElementById('btn-save-park-configuration')?.addEventListener('click', () => {
     saveParkConfiguration();
@@ -868,20 +877,39 @@ function bindParkConfiguration() {
     krigingGoToSubtab('geo');
   });
   updateParkCommercialControls();
+  parkFinModeToggle();
   renderParkConfigurationReadiness();
 }
 
 function collectParkConfiguration() {
+  const pf = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+  const pi = v => { const n = parseInt(v); return Number.isFinite(n) ? n : null; };
   return {
     commercialization_mode: document.getElementById('park-commercial-mode')?.value || 'total_sale',
     sale_scheme: document.getElementById('park-sale-scheme')?.value || 'spot_pml',
     pml_node: document.getElementById('park-pml-node')?.value?.trim() || '',
     project_horizon_years: parseInt(document.getElementById('park-project-horizon')?.value || '25'),
-    base_fx_mxn_usd: Number.isFinite(parseFloat(document.getElementById('park-base-fx')?.value))
-      ? parseFloat(document.getElementById('park-base-fx').value) : null,
-    base_interest_rate_pct: Number.isFinite(parseFloat(document.getElementById('park-base-interest')?.value))
-      ? parseFloat(document.getElementById('park-base-interest').value) : null,
+    base_fx_mxn_usd: pf(document.getElementById('park-base-fx')?.value),
+    base_interest_rate_pct: pf(document.getElementById('park-base-interest')?.value),
     reporting_currency: document.getElementById('park-reporting-currency')?.value || 'USD',
+    // Precio, escalamiento e inflación
+    energy_price_usd_kwh: pf(document.getElementById('park-energy-price')?.value) ?? 0.07,
+    price_escalation_pct: pf(document.getElementById('park-price-escalation')?.value) ?? 0,
+    annual_inflation_pct: pf(document.getElementById('park-inflation')?.value) ?? 0,
+    // Modelo CAPEX & OPEX
+    capex_turbine_usd_kw: pf(document.getElementById('cm-turbine-usd-kw')?.value) ?? 1800,
+    capex_turbines_pct: pf(document.getElementById('cm-turbines-pct')?.value) ?? 66,
+    capex_civil_pct: pf(document.getElementById('cm-civil-pct')?.value) ?? 12,
+    capex_elec_pct: pf(document.getElementById('cm-elec-pct')?.value) ?? 8,
+    capex_install_pct: pf(document.getElementById('cm-install-pct')?.value) ?? 5,
+    capex_eng_pct: pf(document.getElementById('cm-eng-pct')?.value) ?? 6,
+    capex_misc_pct: pf(document.getElementById('cm-misc-pct')?.value) ?? 3,
+    capex_opex_pct: pf(document.getElementById('cm-opex-pct')?.value) ?? 3.72,
+    // Parámetros de apalancamiento (análisis siempre dual)
+    lev_debt_ratio_pct: pf(document.getElementById('park-debt-ratio')?.value) ?? 70,
+    lev_interest_rate_pct: pf(document.getElementById('park-interest-rate')?.value) ?? 8,
+    lev_loan_years: pi(document.getElementById('park-loan-years')?.value) ?? 15,
+    lev_equity_rate_pct: pf(document.getElementById('park-equity-rate')?.value) ?? 12,
   };
 }
 
@@ -901,10 +929,29 @@ function applyParkConfiguration(config) {
   set('park-base-fx', config.base_fx_mxn_usd);
   set('park-base-interest', config.base_interest_rate_pct);
   set('park-reporting-currency', config.reporting_currency);
+  // Precio, escalamiento, inflación
+  if (config.energy_price_usd_kwh != null) set('park-energy-price', config.energy_price_usd_kwh);
+  if (config.price_escalation_pct != null) set('park-price-escalation', config.price_escalation_pct);
+  if (config.annual_inflation_pct != null) set('park-inflation', config.annual_inflation_pct);
+  // CAPEX & OPEX
+  if (config.capex_turbine_usd_kw != null) set('cm-turbine-usd-kw', config.capex_turbine_usd_kw);
+  if (config.capex_turbines_pct != null) set('cm-turbines-pct', config.capex_turbines_pct);
+  if (config.capex_civil_pct != null) set('cm-civil-pct', config.capex_civil_pct);
+  if (config.capex_elec_pct != null) set('cm-elec-pct', config.capex_elec_pct);
+  if (config.capex_install_pct != null) set('cm-install-pct', config.capex_install_pct);
+  if (config.capex_eng_pct != null) set('cm-eng-pct', config.capex_eng_pct);
+  if (config.capex_misc_pct != null) set('cm-misc-pct', config.capex_misc_pct);
+  if (config.capex_opex_pct != null) set('cm-opex-pct', config.capex_opex_pct);
+  if (config.lev_debt_ratio_pct != null) set('park-debt-ratio', config.lev_debt_ratio_pct);
+  if (config.lev_interest_rate_pct != null) set('park-interest-rate', config.lev_interest_rate_pct);
+  if (config.lev_loan_years != null) set('park-loan-years', config.lev_loan_years);
+  if (config.lev_equity_rate_pct != null) set('park-equity-rate', config.lev_equity_rate_pct);
+
   const revision = document.getElementById('park-config-revision');
   if (revision) revision.textContent = config.configuration_revision
     ? `Revisión ${config.configuration_revision}` : 'Configuración nueva';
   updateParkCommercialControls();
+  parkFinModeToggle();
   renderParkConfigurationReadiness();
   if (!WP.technoInputsDirty && !WP.technoScenarios.integrated?.result) {
     requestAnimationFrame(() => technoPullProjectInputs({ force: true }));
@@ -941,14 +988,21 @@ async function saveParkConfiguration({ quiet = false } = {}) {
 
 function updateParkCommercialControls() {
   const mode = document.getElementById('park-commercial-mode')?.value || 'total_sale';
+  const scheme = document.getElementById('park-sale-scheme')?.value || 'spot_pml';
   const demandSource = document.getElementById('park-demand-source');
   const demandBlock = document.getElementById('park-demand-series-block');
   const note = document.getElementById('park-commercial-note');
+  const priceBlock = document.getElementById('park-fixed-price-block');
   const totalSale = mode === 'total_sale';
   if (demandSource) demandSource.value = totalSale ? 'none' : 'market_series';
   if (demandBlock) {
     demandBlock.hidden = totalSale;
     demandBlock.style.display = totalSale ? 'none' : 'block';
+  }
+  // Mostrar precio fijo solo cuando el esquema es PPA o Mixto
+  if (priceBlock) {
+    const needsFixedPrice = scheme === 'ppa' || scheme === 'mixed';
+    priceBlock.style.display = needsFixedPrice ? '' : 'none';
   }
   if (note) {
     if (totalSale) {
@@ -961,6 +1015,68 @@ function updateParkCommercialControls() {
     note.classList.remove('hidden');
   }
   renderParkConfigurationReadiness();
+}
+
+function parkFinModeToggle() {
+  const teFinBadge = document.getElementById('te-fin-mode-badge');
+  if (teFinBadge) teFinBadge.textContent = '⚡ Integral + Apalancado';
+}
+
+// ── Vista financiera global: Integral (WACC) ↔ Equity (Apalancado) ─────────────
+
+function setFinView(view) {
+  WP.finView = view === 'equity' ? 'equity' : 'integral';
+  document.querySelectorAll('.fin-view-btn').forEach(btn => {
+    btn.classList.toggle('is-active', btn.dataset.view === WP.finView);
+  });
+  // Refresh all result panels that depend on the view
+  if (typeof mcdaRenderRanking === 'function' && MCDA.lastRanking) {
+    mcdaRenderRanking(MCDA.lastRanking);
+  }
+  if (typeof renderTechnoScenarioResult === 'function') {
+    renderTechnoScenarioResult();
+  }
+  if (typeof renderRiskSection === 'function' && window._lastRiskData) {
+    renderRiskSection(window._lastRiskData);
+  }
+  if (typeof renderScenarioAnalysis === 'function' && SCENARIO_ANALYSIS.result) {
+    renderScenarioAnalysis(SCENARIO_ANALYSIS.result);
+  }
+}
+
+async function topsisComputeEquityBatch() {
+  const ranking = MCDA.lastRanking?.ranking;
+  if (!Array.isArray(ranking) || !ranking.length) return;
+  const cfg = WP.parkConfiguration || {};
+  const levParams = {
+    debt_ratio_pct:           cfg.lev_debt_ratio_pct ?? WP.levParams.debt_ratio_pct,
+    interest_rate_pct:        cfg.lev_interest_rate_pct ?? WP.levParams.interest_rate_pct,
+    loan_years:               cfg.lev_loan_years ?? WP.levParams.loan_years,
+    equity_discount_rate_pct: cfg.lev_equity_rate_pct ?? WP.levParams.equity_discount_rate_pct,
+  };
+  // Batch paralelo — one call per alternative
+  await Promise.all(ranking.map(async a => {
+    if (a.van_equity_usd != null) return; // already computed
+    if (!Number.isFinite(a.capex_usd) || !Number.isFinite(a.opex_usd_anual)) return;
+    try {
+      const r = await api('/api/energy/leveraged', 'POST', {
+        capex_usd:             a.capex_usd,
+        annual_revenue_usd:    a.annual_revenue_year1_usd || a.annual_revenue_year1_flat_usd || 0,
+        annual_opex_usd:       a.opex_usd_anual,
+        project_cashflows_usd: Array.isArray(a.cashflow_table) ? a.cashflow_table.map(row => row.cashflow ?? row.net_cashflow ?? 0) : null,
+        project_years:         a.project_years || cfg.project_horizon_years || 25,
+        ...levParams,
+      });
+      a.van_equity_usd = r.leveraged_npv_usd;
+      a.irr_equity_pct = r.leveraged_irr_pct;
+      a.equity_payback_years = r.equity_payback_years;
+      a._leveraged = r;
+    } catch (_) { /* skip on error */ }
+  }));
+  // Re-render ranking if equity view is active
+  if (WP.finView === 'equity' && MCDA.lastRanking) {
+    mcdaRenderRanking(MCDA.lastRanking);
+  }
 }
 
 function renderParkConfigurationReadiness() {
@@ -2233,6 +2349,23 @@ function technoUpdatePctTotalBadge() {
   badge.style.color = ok ? '' : '#d97706';
 }
 
+function updateCapexTotalBadge() {
+  technoUpdatePctTotalBadge();
+  // Sync park-capex-total-badge (subtab ① header)
+  const parkBadge = document.getElementById('park-capex-total-badge');
+  const mainBadge = document.getElementById('cm-pct-total-badge');
+  if (parkBadge && mainBadge) parkBadge.textContent = mainBadge.textContent;
+  // Update read-only CAPEX summary in mod-techno
+  const summary = document.getElementById('te-capex-summary');
+  if (summary) {
+    const turbUsd = document.getElementById('cm-turbine-usd-kw')?.value || '—';
+    const opexPct = document.getElementById('cm-opex-pct')?.value || '—';
+    const turbPct = document.getElementById('cm-turbines-pct')?.value || '—';
+    summary.textContent =
+      `Turbina: ${turbUsd} USD/kW · % CAPEX: ${turbPct}% · OPEX: ${opexPct}% CAPEX · BOS configurado en ① Parámetros.`;
+  }
+}
+
 function technoCollectInputs() {
   return {
     turbine: document.getElementById('te-turbine')?.value || 'SG_8.0_167',
@@ -2361,17 +2494,26 @@ function technoParkLayout() {
 
 function technoIntegratedDefaults() {
   const base = technoCollectInputs();
-  const projectYears = Number(WP.parkConfiguration?.project_horizon_years);
+  const cfg = WP.parkConfiguration || {};
+  const projectYears = Number(cfg.project_horizon_years);
   if (Number.isFinite(projectYears)) base.years = projectYears;
   const marketInputs = parkEquivalentDesignInputs();
   base.demand = Math.round(marketInputs.demand_mwh || 0);
   if (marketInputs.price_usd_kwh != null) base.price = Number(marketInputs.price_usd_kwh).toFixed(4);
-  if (WP.parkConfiguration?.base_interest_rate_pct != null) base.rate = Number(WP.parkConfiguration.base_interest_rate_pct).toFixed(2);
-  if (WP.parkConfiguration?.base_fx_mxn_usd != null) base.fx = Number(WP.parkConfiguration.base_fx_mxn_usd).toFixed(2);
+  // Precio fijo desde config (PPA/Mixto) si no hay precio de mercado capturado
+  if ((base.price == null || Number(base.price) <= 0) && cfg.energy_price_usd_kwh > 0) {
+    base.price = Number(cfg.energy_price_usd_kwh).toFixed(4);
+  }
+  if (cfg.price_escalation_pct != null) base.priceEscalation = cfg.price_escalation_pct;
+  if (cfg.base_interest_rate_pct != null) base.rate = Number(cfg.base_interest_rate_pct).toFixed(2);
+  if (cfg.base_fx_mxn_usd != null) base.fx = Number(cfg.base_fx_mxn_usd).toFixed(2);
+  if (cfg.annual_inflation_pct != null) base.inflation = cfg.annual_inflation_pct;
   if (parkMarketTrajectory('pml')?.length) base.priceMode = 'pml8760';
   const layout = technoParkLayout();
   if (layout?.turbine_key) base.turbine = layout.turbine_key;
   if (layout?.n_placed > 0) base.nTurbines = layout.n_placed;
+  // Sincronizar CAPEX summary en mod-techno
+  updateCapexTotalBadge();
   return base;
 }
 
@@ -2452,7 +2594,9 @@ function renderTechnoScenarioResult() {
     }
   }
 
-  renderTechnoKPIs(adjR, scenario.leveraged);
+  // Vista financiera: 'integral' muestra métricas WACC, 'equity' muestra métricas apalancadas
+  const activeLev = WP.finView === 'equity' ? scenario.leveraged : null;
+  renderTechnoKPIs(adjR, activeLev);
   renderCapexChart(adjR.analysis?.capex);
   renderCashflowChart(adjR.analysis?.cashflow_table);
   renderTechnoDispatch(r.hourly_dispatch, r.wind_source);
@@ -2474,10 +2618,10 @@ function renderTechnoScenarioResult() {
   }
   // La tabla de flujos se construye en renderTechnoLeveraged si hay financiamiento (integrada);
   // si no, se renderiza aquí simple.
-  if (!scenario.leveraged) renderCashflowTable(adjR.analysis?.cashflow_table);
+  if (!activeLev) renderCashflowTable(adjR.analysis?.cashflow_table);
   if (levBtn) levBtn.style.display = '';
-  renderTechnoLeveraged(scenario.leveraged);
-  renderTechnoSummaryCard(adjR.analysis, scenario.leveraged);
+  renderTechnoLeveraged(WP.finView === 'equity' ? scenario.leveraged : null);
+  renderTechnoSummaryCard(adjR.analysis, activeLev);
   renderTechnoEnergyLab(r.energy_lab);
 
   // Badge de viento de estación cuando la evaluación integral usa esa fuente.
@@ -2603,6 +2747,21 @@ async function calcTechnoEconomic() {
     }
     toast('Análisis completado', 'success');
     setStatus('Análisis tecnoeconómico completado.');
+    // Análisis dual: siempre corre la corrida apalancada después de la integral
+    const cfg = WP.parkConfiguration || {};
+    WP.levParams = {
+      debt_ratio_pct:           cfg.lev_debt_ratio_pct ?? 70,
+      interest_rate_pct:        cfg.lev_interest_rate_pct ?? 8,
+      loan_years:               cfg.lev_loan_years ?? 15,
+      equity_discount_rate_pct: cfg.lev_equity_rate_pct ?? 12,
+    };
+    // Sincronizar modal por si el usuario lo abre manualmente
+    const setM = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+    setM('fin-debt-ratio',    WP.levParams.debt_ratio_pct);
+    setM('fin-interest-rate', WP.levParams.interest_rate_pct);
+    setM('fin-loan-years',    WP.levParams.loan_years);
+    setM('fin-equity-rate',   WP.levParams.equity_discount_rate_pct);
+    setTimeout(() => calcLeveragedForScenario(scenarioKey, WP.levParams), 200);
     // Auto-trigger risk analysis after TE completes
     setTimeout(() => calcSensitivity(), 400);
   } catch (e) {
@@ -2640,9 +2799,14 @@ async function calcSensitivity() {
       cost_model:              stored.costModel || technoCollectCostModel(),
     },
   };
-  // Si hay financiamiento activo, incluir params de apalancamiento para que
-  // el análisis de riesgo use VAN equity en lugar de VAN proyecto.
-  if (sc?.leveraged) body.leveraged = { ...WP.levParams };
+  // Siempre incluir params de apalancamiento (análisis dual — el backend calcula ambos).
+  const cfg = WP.parkConfiguration || {};
+  body.leveraged = {
+    debt_ratio_pct:           cfg.lev_debt_ratio_pct ?? WP.levParams.debt_ratio_pct,
+    interest_rate_pct:        cfg.lev_interest_rate_pct ?? WP.levParams.interest_rate_pct,
+    loan_years:               cfg.lev_loan_years ?? WP.levParams.loan_years,
+    equity_discount_rate_pct: cfg.lev_equity_rate_pct ?? WP.levParams.equity_discount_rate_pct,
+  };
   try {
     setStatus('Calculando análisis de riesgo…');
     const data = await api('/api/energy/sensitivity', 'POST', body);
@@ -2928,15 +3092,17 @@ function renderGlobalSensitivityBatchInterpretation(data, topsisWinnerLabel) {
 
 function renderRiskSection(data) {
   if (!data) return;
+  window._lastRiskData = data; // store for finView re-render
   document.getElementById('te-risk-card').style.display = '';
 
   const metric  = document.querySelector('input[name="risk-metric"]:checked')?.value || 'npv';
   const base    = data.base || {};
   const infoEl  = document.getElementById('risk-base-info');
-  const isLev   = !!WP.technoScenarios[WP.technoActiveScenario]?.leveraged;
+  const isEquity = WP.finView === 'equity';
+  const npvLabel = isEquity ? 'VAN equity' : 'VAN';
   if (infoEl) infoEl.textContent =
     `Precio base: ${(base.energy_price_usd_kwh||0).toFixed(4)} USD/kWh · Tasa: ${(base.discount_rate_pct||0).toFixed(2)}% · ` +
-    `VAN${isLev ? ' equity' : ''}: $${Math.round(base.npv_usd||0).toLocaleString()} · LCOE: ${(base.lcoe_usd_kwh||0).toFixed(4)} · Payback: ${(base.payback_years||0).toFixed(1)} a`;
+    `${npvLabel}: $${Math.round(base.npv_usd||0).toLocaleString()} · LCOE: ${(base.lcoe_usd_kwh||0).toFixed(4)} · Payback: ${(base.payback_years||0).toFixed(1)} a`;
 
   renderTornadoChart(data.tornado || [], metric);
   renderHeatmapCanvas(data.heatmap);
@@ -6798,6 +6964,17 @@ document.addEventListener('DOMContentLoaded', () => {
     applyClusterSelectionToTopsis(filenames);
   });
 
+  // Clustering ML subtab ④ (tcluster)
+  document.getElementById('btn-tcluster-run')?.addEventListener('click', runTurbineTcluster);
+  document.getElementById('btn-tcluster-turbines-all')?.addEventListener('click', () => {
+    document.querySelectorAll('.tcluster-turbine-check').forEach(el => { el.checked = true; });
+    tclusterUpdateTurbineCount();
+  });
+  document.getElementById('btn-tcluster-turbines-none')?.addEventListener('click', () => {
+    document.querySelectorAll('.tcluster-turbine-check').forEach(el => { el.checked = false; });
+    tclusterUpdateTurbineCount();
+  });
+
   // Tabs de capa (Velocidad / Inversión / VAN)
   document.querySelectorAll('.krig3-tab').forEach(b => {
     b.addEventListener('click', () => krig3SetLayer(b.dataset.layer));
@@ -7029,6 +7206,88 @@ function clusterUpdateTurbineCount() {
   const selected = document.querySelectorAll('.cluster-turbine-check:checked').length;
   const el = document.getElementById('cluster-turbine-count');
   if (el) el.textContent = total ? `${selected}/${total} seleccionadas` : 'Sin catálogo';
+}
+
+// ── Clustering ML para subtab ④ (turbinas ya evaluadas en TOPSIS) ─────────────
+
+const TCLUSTER = {
+  result: null,
+  k: 3,
+  linkageMethod: 'complete',
+};
+
+function tclusterUpdateTurbineCount() {
+  const total = document.querySelectorAll('.tcluster-turbine-check').length;
+  const sel = document.querySelectorAll('.tcluster-turbine-check:checked').length;
+  const el = document.getElementById('tcluster-turbine-count');
+  if (el) el.textContent = total ? `${sel}/${total} seleccionadas` : 'Sin ranking';
+}
+
+function tclusterLoadTurbines() {
+  const list = document.getElementById('tcluster-turbine-list');
+  if (!list) return;
+  const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
+  if (!ranking.length) {
+    list.innerHTML = '<span class="text-muted">Ejecuta TOPSIS para ver los aerogeneradores evaluados.</span>';
+    tclusterUpdateTurbineCount();
+    return;
+  }
+  const seen = new Set();
+  const turbines = ranking.filter(r => r.turbina && !seen.has(r.turbina) && seen.add(r.turbina));
+  list.innerHTML = turbines.map(r => {
+    const spec = r.turbine_specification || {};
+    const mw = spec.rated_power_kw ? `${(spec.rated_power_kw / 1000).toFixed(1)} MW` : '—';
+    const rotor = spec.rotor_diameter_m ? `Ø ${spec.rotor_diameter_m} m` : '—';
+    const name = (r.turbina || '').replace('.csv', '');
+    return `<label style="display:flex;align-items:flex-start;gap:.45rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
+      <input type="checkbox" class="tcluster-turbine-check" value="${r.turbina}" checked style="margin-top:.15rem">
+      <span>${name} <span class="text-muted">· ${mw} · ${rotor}</span></span>
+    </label>`;
+  }).join('');
+  document.querySelectorAll('.tcluster-turbine-check').forEach(el =>
+    el.addEventListener('change', tclusterUpdateTurbineCount));
+  tclusterUpdateTurbineCount();
+}
+
+async function runTurbineTcluster() {
+  if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
+  const linkageMethod = document.getElementById('tcluster-linkage')?.value || 'complete';
+  TCLUSTER.linkageMethod = linkageMethod;
+  const turbineFilenames = Array.from(document.querySelectorAll('.tcluster-turbine-check:checked'))
+    .map(el => el.value);
+  if (turbineFilenames.length < 2) {
+    toast('Selecciona al menos 2 turbinas para poder agruparlas.', 'warning');
+    return;
+  }
+  document.getElementById('tcluster-status').textContent = 'Ejecutando…';
+  document.getElementById('tcluster-progress-wrap').style.display = '';
+  document.getElementById('tcluster-progress-text').textContent =
+    'Generando series de potencia por turbina e interpolando contra el viento del sitio…';
+  const btn = document.getElementById('btn-tcluster-run');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api('/api/mcda/turbine_clustering', 'POST', {
+      session_id: WP.sessionId,
+      data_source: WP.activeDataSource,
+      linkage_method: linkageMethod,
+      ws_height_m: wsH(),
+      turbine_filenames: turbineFilenames,
+    });
+    TCLUSTER.result = r;
+    document.getElementById('tcluster-progress-wrap').style.display = 'none';
+    document.getElementById('tcluster-progress-text').textContent = '';
+    document.getElementById('tcluster-status').textContent =
+      `${r.turbines.length} turbinas · ${linkageMethod}`;
+    renderTclusterResult();
+    toast('Clustering completado', 'success');
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('tcluster-status').textContent = 'Error';
+    document.getElementById('tcluster-progress-wrap').style.display = 'none';
+    document.getElementById('tcluster-progress-text').textContent = '';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 /** Catálogo propio del panel de clustering — independiente de la lista de TOPSIS,
@@ -7298,6 +7557,104 @@ function applyClusterSelectionToTopsis(filenames) {
   if (typeof mcdaUpdateTurbineCount === 'function') mcdaUpdateTurbineCount();
   toast(`${wanted.size} turbina(s) seleccionadas para TOPSIS desde el clustering`, 'success');
   document.getElementById('mcda-turbine-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// ── Render del clustering de subtab ④ ────────────────────────────────────────
+
+function renderTclusterResult() {
+  const r = TCLUSTER.result;
+  const wrap = document.getElementById('tcluster-results');
+  if (!r || !wrap) return;
+  wrap.style.display = '';
+  const kInput = document.getElementById('tcluster-k');
+  const k = Math.max(2, Math.min(parseInt(kInput?.value) || TCLUSTER.k, (r.labels?.length - 1) || 2));
+  TCLUSTER.k = k;
+  const clusterOf = cutTreeByK(r.linkage, k);
+  renderDendrogramSvg(document.getElementById('tcluster-dendrogram'), r.linkage, r.labels, clusterOf, r.turbines);
+  renderTclusterDistanceTable(r.distance_matrix, r.labels);
+  renderTclusterSummaryTable(r.turbines, clusterOf);
+  renderTclusterRepresentatives(r.turbines, clusterOf);
+
+  // Ward tecno-económico — ya calculado por TOPSIS, reutilizamos el linkage
+  const techClust = (typeof MCDA !== 'undefined') ? MCDA.lastSpatial?.tech_clustering : null;
+  const wardSection = document.getElementById('tcluster-ward-section');
+  if (techClust?.linkage && Array.isArray(techClust.labels) && techClust.labels.length >= 2 && wardSection) {
+    wardSection.style.display = '';
+    const wardK = Math.max(2, Math.min(k, techClust.labels.length - 1));
+    const wardClusterOf = cutTreeByK(techClust.linkage, wardK);
+    const wardTurbines = techClust.labels.map(name => ({ filename: name, name }));
+    renderDendrogramSvg(
+      document.getElementById('tcluster-ward-dendrogram'),
+      techClust.linkage, techClust.labels, wardClusterOf, wardTurbines
+    );
+  } else if (wardSection) {
+    wardSection.style.display = 'none';
+  }
+
+  if (kInput && !kInput._wiredTc) {
+    kInput._wiredTc = true;
+    kInput.addEventListener('change', renderTclusterResult);
+  }
+}
+
+function renderTclusterRepresentatives(turbines, clusterOf) {
+  const el = document.getElementById('tcluster-reps');
+  if (!el) return;
+  const byCluster = new Map();
+  turbines.forEach((t, i) => {
+    const c = clusterOf[i];
+    if (!byCluster.has(c)) byCluster.set(c, []);
+    byCluster.get(c).push(t);
+  });
+  el.innerHTML = Array.from(byCluster.entries()).sort((a, b) => a[0] - b[0]).map(([c, members]) => {
+    const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
+    const rows = members.map(m => `
+      <label style="display:flex;align-items:center;gap:.4rem;padding:.15rem 0 .15rem 1.1rem;font-size:.78rem">
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0"></span>
+        <span>${m.name}</span>
+        <span class="text-muted" style="font-size:.72rem">CF ${m.capacity_factor_pct != null ? m.capacity_factor_pct.toFixed(1) + '%' : '—'} · AEP ${m.aep_mwh != null ? Math.round(m.aep_mwh).toLocaleString() + ' MWh' : '—'}</span>
+      </label>`).join('');
+    return `<div style="margin-bottom:.5rem">
+      <div style="font-size:.8rem;font-weight:600"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>Clúster ${c + 1} (${members.length})</div>
+      ${rows}
+    </div>`;
+  }).join('');
+}
+
+function renderTclusterDistanceTable(distMatrix, labels) {
+  const el = document.getElementById('tcluster-distance-table');
+  if (!el || !distMatrix) return;
+  const apiTurbines = TCLUSTER.result?.turbines || [];
+  const names = labels.map(f =>
+    apiTurbines.find(t => t.filename === f)?.name || f.replace('.csv', ''));
+  const maxD = Math.max(...distMatrix.flat().filter(v => Number.isFinite(v)), 1e-9);
+  const cellColor = v => {
+    const t = Math.max(0, Math.min(1, v / maxD));
+    return `#4DA3FF${Math.round(t * 200).toString(16).padStart(2, '0')}`;
+  };
+  const header = `<tr><th></th>${names.map(n => `<th style="font-size:.68rem;white-space:nowrap">${n}</th>`).join('')}</tr>`;
+  const rows = distMatrix.map((row, i) =>
+    `<tr><th style="font-size:.68rem;white-space:nowrap;text-align:left">${names[i]}</th>${
+      row.map(v => `<td style="background:${cellColor(v)};text-align:center;font-size:.66rem;padding:.2rem .35rem">${v.toFixed(3)}</td>`).join('')
+    }</tr>`).join('');
+  el.innerHTML = `<table class="data-table" style="border-collapse:collapse">${header}${rows}</table>`;
+}
+
+function renderTclusterSummaryTable(turbines, clusterOf) {
+  const tbody = document.getElementById('tcluster-summary-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = turbines.map((t, i) => {
+    const color = CLUSTER_COLORS[clusterOf[i] % CLUSTER_COLORS.length];
+    const dot = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>`;
+    return `<tr>
+      <td>${dot}${t.name}</td>
+      <td>${t.rated_power_kw ?? '—'}</td>
+      <td>${t.rotor_diameter_m ?? '—'}</td>
+      <td>${t.hub_height_m ?? '—'}</td>
+      <td>${t.capacity_factor_pct != null ? t.capacity_factor_pct.toFixed(1) : '—'}</td>
+      <td>${t.aep_mwh != null ? Math.round(t.aep_mwh).toLocaleString() : '—'}</td>
+    </tr>`;
+  }).join('');
 }
 
 // Piso técnico duro de separación entre turbinas, en diámetros de rotor —
@@ -8981,12 +9338,13 @@ function mcdaRenderRanking(r) {
   const body = document.getElementById('mcda-rank-body');
   const ranking = Array.isArray(r && r.ranking) ? r.ranking : [];
   const parkMode = MCDA.scope === 'area';
+  const equityView = WP.finView === 'equity';
   const columns = [
     ['cp_effective_full_series', 'Cp efectivo', '—', 4, 1],
     ['hours_near_cpmax', 'Horas ≥95% Cp máx.', 'h/año', 1, 1],
     ['factor_capacidad', 'FC neto', '%', 2, 100],
     ['aep_p90_mwh', 'AEP P90', 'MWh', 1, 1],
-    ['van_usd', 'VAN', 'USD', 0, 1],
+    [equityView ? 'van_equity_usd' : 'van_usd', equityView ? 'VAN Equity' : 'VAN', 'USD', 0, 1],
     ['lcoe_usd_kwh', 'LCOE', 'USD/kWh', 5, 1],
     ['capex_usd_per_installed_kw', 'CAPEX / kW instalado', 'USD/kW', 0, 1],
   ];
@@ -9055,6 +9413,11 @@ function mcdaRenderRanking(r) {
     if (scenCard) scenCard.style.display = MCDA.lastSpatial?.pool_available ? '' : 'none';
     const autoWinner = ranking.find(r => r.rank === 1 && r.energy_context && r.layout_constraints);
     if (autoWinner) setTimeout(() => parqueOptimizeTopsis(autoWinner, { silent: true }), 150);
+  }
+  if (typeof tclusterLoadTurbines === 'function') tclusterLoadTurbines();
+  // Compute equity metrics in background for the dual-view toggle
+  if (top.length && !top[0].van_equity_usd) {
+    topsisComputeEquityBatch();
   }
 }
 
@@ -9513,6 +9876,8 @@ const PARQUE = {
   // parqueRenderSiteContext. Arreglo propio para no interferir con
   // turbineMarkers (layout YA aplicado, marcadores arrastrables).
   siteContextLayers: [],
+  // Sub-tab ④ opt-map
+  optMap: null, _optBaseLayer: null, _optMapLayers: null, _optWakeGroup: null,
 };
 
 function parqueClearEnvironmentalLayers() {
@@ -9588,11 +9953,79 @@ function parqueInitOptMap() {
     center: [23.5, -102], zoom: 5,
     zoomControl: true, attributionControl: false,
   });
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    { maxZoom: 18, crossOrigin: 'anonymous', subdomains: 'abc' }
-  ).addTo(PARQUE.optMap);
+  const initialKey = document.getElementById('parque-opt-base-layer')?.value || 'osm';
+  parqueSetOptBaseLayer(initialKey);
   setTimeout(() => PARQUE.optMap.invalidateSize(), 80);
   return PARQUE.optMap;
+}
+
+const _OPT_TILE_URLS = {
+  osm:      ['https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, crossOrigin: 'anonymous', subdomains: 'abc' }],
+  dark:     ['https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }],
+  satellite:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18 }],
+  voyager:  ['https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 19, subdomains: 'abcd' }],
+};
+function parqueSetOptBaseLayer(key) {
+  const map = PARQUE.optMap;
+  if (!map) return;
+  if (PARQUE._optBaseLayer) { map.removeLayer(PARQUE._optBaseLayer); }
+  const [url, opts] = _OPT_TILE_URLS[key] || _OPT_TILE_URLS.osm;
+  PARQUE._optBaseLayer = L.tileLayer(url, opts).addTo(map);
+  PARQUE._optBaseLayer.setZIndex(0);
+}
+
+function parqueSnapOptMapToFarm() {
+  const map = PARQUE.optMap;
+  if (!map) return;
+  if (Array.isArray(KRIG.parkPoints) && KRIG.parkPoints.length >= 3) {
+    map.fitBounds(L.polygon(KRIG.parkPoints).getBounds(), { padding: [30, 30], maxZoom: 14 });
+  }
+}
+
+function parqueToggleOptWakes() {
+  const btn = document.getElementById('btn-opt-wake');
+  const map = PARQUE.optMap;
+  if (!map) return;
+  const layoutLatlon = PARQUE.optResult?.layout_latlon
+    || parqueSelectedTopsis()?.layout_latlon || null;
+  if (!layoutLatlon) {
+    toast('Genera los layouts y ejecuta TOPSIS para ver las estelas.', 'warning'); return;
+  }
+  if (PARQUE._optWakeGroup) {
+    map.removeLayer(PARQUE._optWakeGroup); PARQUE._optWakeGroup = null;
+    if (btn) { btn.textContent = '🌬 Ver estelas'; btn.style.background = ''; btn.style.color = ''; }
+    return;
+  }
+  const requestedDir = parseFloat(document.getElementById('parque-wake-dir')?.value);
+  const windFrom = Number.isFinite(requestedDir)
+    ? ((requestedDir % 360) + 360) % 360 : parqueModelWindDirection();
+  if (windFrom === null) { toast('Establece la dirección de estela (°).', 'warning'); return; }
+  const D  = PARQUE.optResult?.D_m || parqueSelectedTopsis()?.turbine_specification?.rotor_diameter_m || 80;
+  const k  = parseFloat(document.getElementById('parque-kwake')?.value) || 0.075;
+  const r0 = D / 2;
+  const dirTo = (windFrom + 180) % 360, dirToRad = dirTo * Math.PI / 180;
+  const ux = Math.sin(dirToRad), uy = Math.cos(dirToRad);
+  const px =  Math.cos(dirToRad), py = -Math.sin(dirToRad);
+  const latRef = layoutLatlon.reduce((s, p) => s + p[0], 0) / layoutLatlon.length;
+  const mPerLat = 111320, mPerLon = 111320 * Math.cos(latRef * Math.PI / 180);
+  const ll = (lat, lon, dx, dy) => [lat + dy / mPerLat, lon + dx / mPerLon];
+  const maxXD = 15, nSlices = 8, dStep = (maxXD * D) / nSlices;
+  const fills = ['rgba(155,0,15,0.55)','rgba(205,28,0,0.46)','rgba(235,65,0,0.36)',
+    'rgba(255,115,0,0.27)','rgba(255,160,28,0.19)','rgba(255,205,55,0.13)',
+    'rgba(255,240,110,0.08)','rgba(255,255,190,0.04)'];
+  PARQUE._optWakeGroup = L.layerGroup();
+  layoutLatlon.forEach(([lat, lon]) => {
+    for (let s = 0; s < nSlices; s++) {
+      const dN = s * dStep, dF = (s + 1) * dStep;
+      const rwN = r0 + k * dN, rwF = r0 + k * dF;
+      L.polygon([ll(lat,lon,ux*dN-px*rwN,uy*dN-py*rwN),ll(lat,lon,ux*dN+px*rwN,uy*dN+py*rwN),
+        ll(lat,lon,ux*dF+px*rwF,uy*dF+py*rwF),ll(lat,lon,ux*dF-px*rwF,uy*dF-py*rwF)],
+        {color:'none',weight:0,fillColor:fills[s],fillOpacity:1,interactive:false})
+        .addTo(PARQUE._optWakeGroup);
+    }
+  });
+  PARQUE._optWakeGroup.addTo(map);
+  if (btn) { btn.textContent = '🌬 Ocultar estelas'; btn.style.background = 'var(--accent)'; btn.style.color = '#fff'; }
 }
 
 function parqueDrawOptMapLayout() {
@@ -9934,7 +10367,11 @@ function parqueWakeDirectionCaption(windFrom) {
 // ── Wake cone visualization ───────────────────────────────────────────────────
 function parqueRenderWakeCones() {
   const map = parqueInitMap();
-  if (!map || !PARQUE.optResult?.layout_latlon) return;
+  // Use optResult if set; otherwise fall back to the selected TOPSIS winner layout.
+  const layoutLatlon = PARQUE.optResult?.layout_latlon
+    || parqueSelectedTopsis()?.layout_latlon
+    || null;
+  if (!map || !layoutLatlon) return;
 
   if (PARQUE.wakeGroup) { map.removeLayer(PARQUE.wakeGroup); PARQUE.wakeGroup = null; }
 
@@ -9943,12 +10380,13 @@ function parqueRenderWakeCones() {
     ? ((requestedDirection % 360) + 360) % 360 : parqueModelWindDirection();
   if (windFrom === null) {
     const note = document.getElementById('parque-wake-direction-note');
-    if (note) note.textContent = 'Sin dirección calculada. Ejecuta TOPSIS y optimiza el layout.';
+    if (note) note.textContent = 'Sin dirección calculada. Establece la dirección en el campo Dir. estela (°).';
     return;
   }
   parqueWakeDirectionCaption(windFrom);
-  const layoutLatlon = PARQUE.optResult.layout_latlon;
-  const D   = PARQUE.optResult.D_m || 80;
+  const D   = PARQUE.optResult?.D_m
+    || parqueSelectedTopsis()?.turbine_specification?.rotor_diameter_m
+    || 80;
   const k   = parseFloat(document.getElementById('parque-kwake')?.value)  || 0.075;
   const r0  = D / 2;
 
@@ -10014,8 +10452,8 @@ function parqueRenderWakeCones() {
 
 function parqueToggleWakes() {
   const btn = document.getElementById('btn-parque-wake');
-  if (!PARQUE.optResult?.layout_latlon) {
-    toast('Optimiza el parque primero para ver las estelas.', 'warning');
+  if (!PARQUE.optResult?.layout_latlon && !parqueSelectedTopsis()?.layout_latlon) {
+    toast('Genera los layouts del parque primero para ver las estelas.', 'warning');
     return;
   }
   if (PARQUE.wakeVisible) {
@@ -13580,6 +14018,36 @@ function krig3ActivateMapSubtab() {
   });
 }
 
+function bindTechnoSubtabs() {
+  document.querySelectorAll('#mod-techno .subtab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      switchSubTab('mod-techno', tab.dataset.subtab);
+      if (tab.dataset.subtab === 'te-sensibilidad') {
+        const sc = document.getElementById('mcda-scenario-card');
+        if (sc && MCDA.lastSpatial?.pool_available) sc.style.display = '';
+        const rc = document.getElementById('te-risk-card');
+        if (rc && WP.technoScenarios.integrated?.result) rc.style.display = '';
+        const gc = document.getElementById('gsens-batch-card');
+        if (gc && MCDA.lastRanking?.ranking?.length) gc.style.display = '';
+      }
+      if (tab.dataset.subtab === 'te-apalancado') {
+        const levSec = document.getElementById('te-lev-section');
+        if (levSec && WP.technoScenarios.integrated?.leveraged) levSec.style.display = '';
+      }
+    });
+  });
+}
+
+function gsensUsePmlRange() {
+  const result = SCENARIO_ANALYSIS.result;
+  if (!result?.scenarios) return;
+  const bajo = result.scenarios.bajo?.price_usd_kwh;
+  const alto = result.scenarios.alto?.price_usd_kwh;
+  if (bajo != null && alto != null) {
+    toast(`Rango PML: ${bajo.toFixed(4)}–${alto.toFixed(4)} USD/kWh · El Monte Carlo muestrea precio en ese rango.`, 'info');
+  }
+}
+
 function bindKrigingSubtabs() {
   document.querySelectorAll('#mod-kriging .subtab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -13593,6 +14061,15 @@ function bindKrigingSubtabs() {
         requestAnimationFrame(parqueActivate);
       }
       if (tab.dataset.subtab === 'geo') krig3ActivateMapSubtab();
+      if (tab.dataset.subtab === 'topsis') {
+        tclusterLoadTurbines();
+        setTimeout(() => {
+          if (PARQUE.optMap) {
+            PARQUE.optMap.invalidateSize();
+            parqueSnapOptMapToFarm();
+          }
+        }, 80);
+      }
     });
   });
 }
@@ -13610,7 +14087,13 @@ function krigingGoToSubtab(name) {
   }
   if (name === 'geo') krig3ActivateMapSubtab();
   if (name === 'topsis') {
-    setTimeout(() => { if (PARQUE.optMap) PARQUE.optMap.invalidateSize(); }, 80);
+    tclusterLoadTurbines();
+    setTimeout(() => {
+      if (PARQUE.optMap) {
+        PARQUE.optMap.invalidateSize();
+        parqueSnapOptMapToFarm();
+      }
+    }, 80);
   }
 }
 

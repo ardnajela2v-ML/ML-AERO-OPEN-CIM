@@ -1244,7 +1244,7 @@
             <input class="form-input" id="park-base-fx" type="number" min="0.01" step="0.01" placeholder="Ej. 20.00" inputmode="decimal">
           </div>
           <div>
-            <label class="form-label" for="park-base-interest">Tasa de interés anual base (%)</label>
+            <label class="form-label" for="park-base-interest">Tasa de descuento base (%)</label>
             <input class="form-input" id="park-base-interest" type="number" min="0" step="0.01" placeholder="Ej. 10.00" inputmode="decimal">
           </div>
           <div>
@@ -1259,15 +1259,124 @@
             </select>
           </div>
         </div>
+
+        <!-- Precio fijo — visible cuando esquema = PPA o Mixto -->
+        <div id="park-fixed-price-block" style="display:none;margin-top:.9rem">
+          <div class="form-grid-4">
+            <div>
+              <label class="form-label" for="park-energy-price">Precio energía (USD/kWh)</label>
+              <input class="form-input" id="park-energy-price" type="number" value="0.07" step="0.001" min="0" inputmode="decimal" placeholder="Ej. 0.065">
+              <small class="text-muted" style="font-size:.7rem">Precio PPA fijo o precio promedio estimado del contrato bilateral.</small>
+            </div>
+            <div>
+              <label class="form-label" for="park-price-escalation">Escalamiento de precio (% anual)</label>
+              <input class="form-input" id="park-price-escalation" type="number" value="0" step="0.25" min="0" max="20" inputmode="decimal" placeholder="0">
+              <small class="text-muted" style="font-size:.7rem">Crecimiento anual del precio de contrato. 0 = precio constante.</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inflación general — siempre visible -->
+        <div class="form-grid-4 mt-2">
+          <div>
+            <label class="form-label" for="park-inflation">Inflación general (% anual)</label>
+            <input class="form-input" id="park-inflation" type="number" value="0" step="0.25" min="0" max="20" inputmode="decimal" placeholder="0">
+            <small class="text-muted" style="font-size:.7rem">Se aplica a todos los flujos del proyecto: escala costos operativos, ingresos no fijos y LCOE. 0 = flujos constantes.</small>
+          </div>
+        </div>
+
         <div class="mt-2" style="display:flex;justify-content:flex-end">
           <button class="btn-primary" id="btn-save-park-configuration" type="button">Guardar configuración</button>
         </div>
       </div>
     </div>
 
+    <!-- ── Card 3: CAPEX & OPEX ── -->
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">3 · Modelo económico — CAPEX &amp; OPEX</span>
+        <span class="badge badge--info" id="park-capex-total-badge">100.0 %</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted" style="font-size:.72rem;margin:0 0 .7rem">Todos los valores en USD. Defaults del estudio AERO OPEN CIM. Los rangos se usan en análisis de sensibilidad global.</p>
+        <div class="form-grid-2">
+          <div>
+            <label class="form-label">Precio aerogenerador (USD/kW) <span class="text-muted" style="font-size:.7rem">[800–2000]</span></label>
+            <input type="number" class="form-input" id="cm-turbine-usd-kw" value="1800" step="50" min="0">
+          </div>
+          <div>
+            <label class="form-label">% Aerogeneradores del CAPEX <span class="text-muted" style="font-size:.7rem">[60–80]</span></label>
+            <input type="number" class="form-input" id="cm-turbines-pct" value="66" step="0.5" min="0" max="100">
+          </div>
+        </div>
+        <h6 style="margin:.7rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Desglose BOS (% del CAPEX)</h6>
+        <div class="form-grid-2">
+          <div>
+            <label class="form-label">Obras civiles <span class="text-muted" style="font-size:.7rem">[10–15]</span></label>
+            <input type="number" class="form-input" id="cm-civil-pct" value="12" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">Sistema eléctrico + red <span class="text-muted" style="font-size:.7rem">[5–10]</span></label>
+            <input type="number" class="form-input" id="cm-elec-pct" value="8" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">Instalación y puesta en marcha <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
+            <input type="number" class="form-input" id="cm-install-pct" value="5" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">Ingeniería + permisos <span class="text-muted" style="font-size:.7rem">[2–10]</span></label>
+            <input type="number" class="form-input" id="cm-eng-pct" value="6" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">Misceláneos + contingencias <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
+            <input type="number" class="form-input" id="cm-misc-pct" value="3" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">OPEX anual (% del CAPEX) <span class="text-muted" style="font-size:.7rem">[2–4]</span></label>
+            <input type="number" class="form-input" id="cm-opex-pct" value="3.72" step="0.1" min="0" max="100">
+          </div>
+        </div>
+        <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
+      </div>
+    </div>
+
+    <!-- ── Card 4: Análisis financiero dual (WACC + Equity siempre) ── -->
+    <div class="card card--accent mb-3">
+      <div class="card-header">
+        <span class="card-title">4 · Análisis financiero — Dual</span>
+        <span class="badge badge--info">WACC + Equity · Dos corridas paralelas</span>
+      </div>
+      <div class="card-body">
+        <p class="text-muted" style="font-size:.78rem;margin-bottom:.9rem">
+          Cada evaluación corre en paralelo las dos versiones del proyecto:
+          <strong>Sin apalancamiento</strong> (evaluación integral, tasa de descuento WACC) y
+          <strong>Con apalancamiento</strong> (proyecto + equity, estructura deuda/capital). Ambas métricas VAN, TIR y LCOE llegan al ranking TOPSIS y a la evaluación tecnoeconómica.
+        </p>
+        <p style="font-size:.78rem;font-weight:600;margin:0 0 .6rem">Parámetros de financiamiento</p>
+        <div id="park-lev-block" class="form-grid-2">
+          <div>
+            <label class="form-label" for="park-debt-ratio">Razón de deuda (% del CAPEX)</label>
+            <input class="form-input" id="park-debt-ratio" type="number" value="70" step="1" min="10" max="90">
+          </div>
+          <div>
+            <label class="form-label" for="park-interest-rate">Tasa de interés deuda (% anual)</label>
+            <input class="form-input" id="park-interest-rate" type="number" value="8" step="0.25" min="0">
+          </div>
+          <div>
+            <label class="form-label" for="park-loan-years">Plazo del crédito (años)</label>
+            <input class="form-input" id="park-loan-years" type="number" value="15" step="1" min="1" max="30">
+          </div>
+          <div>
+            <label class="form-label" for="park-equity-rate">Tasa de retorno equity (% anual)</label>
+            <input class="form-input" id="park-equity-rate" type="number" value="12" step="0.25" min="0">
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="grid-2">
       <div class="card">
-        <div class="card-header"><span class="card-title">3 · Estado de la configuración</span></div>
+        <div class="card-header"><span class="card-title">5 · Estado de la configuración</span></div>
         <div class="card-body"><div id="park-market-readiness" class="val-metric-list"></div></div>
       </div>
       <div class="card">
@@ -1888,11 +1997,116 @@
   </div>
 
   <div class="subsection" data-subtab="topsis">
+  <!-- ═══════════ CLUSTERING JERÁRQUICO — AEROGENERADORES EVALUADOS EN TOPSIS (ML) ═══════════ -->
+  <div class="card mt-3">
+    <div class="card-header">
+      <span class="card-title">Clustering jerárquico de aerogeneradores evaluados en TOPSIS (ML)</span>
+      <span class="badge badge--info" id="tcluster-status">Sin análisis</span>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Agrupa las turbinas ya evaluadas con simulación de parque completa (estela + AEP)
+        según qué tan correlacionadas están sus series de potencia contra el viento real de este sitio
+        (distancia = 1 − correlación de Pearson). Complementa el ranking TOPSIS con información
+        de similitud de comportamiento energético entre los candidatos finalistas.
+      </p>
+
+      <div style="margin-bottom:.9rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.35rem">
+          <label class="form-label" style="font-size:.78rem;margin:0">Turbinas a incluir en el estudio</label>
+          <span class="text-muted" style="font-size:.72rem" id="tcluster-turbine-count">Sin ranking</span>
+        </div>
+        <div id="tcluster-turbine-list" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:.45rem;background:var(--bg-secondary);font-size:.74rem;line-height:1.45">
+          <span class="text-muted">Ejecuta TOPSIS para ver los aerogeneradores evaluados.</span>
+        </div>
+        <div style="display:flex;gap:.5rem;margin-top:.35rem">
+          <button class="btn-secondary" id="btn-tcluster-turbines-all" type="button" style="font-size:.72rem;padding:.2rem .6rem">Todas</button>
+          <button class="btn-secondary" id="btn-tcluster-turbines-none" type="button" style="font-size:.72rem;padding:.2rem .6rem">Ninguna</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.9rem">
+        <div>
+          <label class="form-label" style="font-size:.78rem">Método de enlace (linkage)</label>
+          <select class="form-select" id="tcluster-linkage" style="min-width:160px">
+            <option value="complete" selected>complete</option>
+            <option value="average">average</option>
+            <option value="single">single</option>
+            <option value="weighted">weighted</option>
+          </select>
+        </div>
+        <div>
+          <label class="form-label" style="font-size:.78rem">Número de clusters (k)</label>
+          <input type="number" class="form-input" id="tcluster-k" value="3" min="2" max="10" style="width:90px">
+        </div>
+        <button class="btn-primary" id="btn-tcluster-run" type="button">▶ Analizar similitud de aerogeneradores</button>
+      </div>
+
+      <div class="progress-bar mt-2" id="tcluster-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
+        <div class="progress-fill" id="tcluster-progress-fill" style="height:100%;width:0%;background:var(--accent);transition:width .3s"></div>
+      </div>
+      <p class="text-muted mt-1" id="tcluster-progress-text" style="font-size:.75rem"></p>
+
+      <div id="tcluster-results" style="display:none">
+        <div style="overflow:auto;margin-bottom:1rem">
+          <svg id="tcluster-dendrogram" width="100%" height="380" style="min-width:520px"></svg>
+        </div>
+
+        <p class="text-muted" style="font-size:.75rem;margin-bottom:.3rem">
+          Agrupación por similitud energética de los candidatos ya evaluados.
+          No modifica ni reordena el ranking TOPSIS.
+        </p>
+        <div id="tcluster-reps" style="font-size:.8rem;margin-bottom:.9rem"></div>
+
+        <div class="grid-2" style="gap:1rem">
+          <div>
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Matriz de distancias (1 − r Pearson)</p>
+            <div style="overflow:auto;max-height:320px" id="tcluster-distance-table"></div>
+          </div>
+          <div>
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Resumen por aerogenerador</p>
+            <div style="overflow:auto;max-height:320px">
+              <table class="data-table" style="font-size:.72rem">
+                <thead><tr>
+                  <th>Turbina</th><th>P. Nominal (kW)</th><th>Diámetro (m)</th>
+                  <th>H. Buje (m)</th><th>CF (%)</th><th>AEP (MWh)</th>
+                </tr></thead>
+                <tbody id="tcluster-summary-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Ward tecno-económico -->
+        <div id="tcluster-ward-section" style="display:none;margin-top:1.2rem">
+          <hr style="border:none;border-top:1px solid var(--border);margin:.8rem 0">
+          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem;flex-wrap:wrap">
+            <p style="font-size:.78rem;font-weight:600;margin:0">Agrupación tecno-económica — Ward</p>
+            <span class="badge badge--info" style="font-size:.68rem">AEP P50/P90 · VAN · LCOE · CF · CAPEX/kW · Z-score · Euclidiana</span>
+          </div>
+          <p class="text-muted" style="font-size:.75rem;margin-bottom:.6rem">
+            Agrupa las mismas turbinas según similitud en sus 6 indicadores calculados por TOPSIS.
+            Usa el mismo k que el panel de correlación de Pearson arriba.
+          </p>
+          <div style="overflow:auto;margin-bottom:.8rem">
+            <svg id="tcluster-ward-dendrogram" width="100%" height="300" style="min-width:520px"></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ═══════════ ANÁLISIS MULTI-SITIO × TURBINA + RANKING MULTICRITERIO ═══════════ -->
   <div class="card mt-3">
     <div class="card-header">
       <span class="card-title">Selección óptima — Análisis multicriterio (TOPSIS)</span>
       <span class="badge badge--info" id="mcda-status">Sin análisis</span>
+      <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:.6rem">
+        <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
+          onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC · Integral</button>
+        <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
+          onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity · Apalancado</button>
+      </div>
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
@@ -1943,25 +2157,6 @@
 
       <hr class="mt-3 mb-3" style="border:none;border-top:1px solid var(--border);">
 
-      <!-- ═══ CLUSTERING JERÁRQUICO DE TECNOLOGÍAS ═══ -->
-      <details id="mcda-tech-cluster-card" style="display:none" class="card mt-2">
-        <summary style="padding:.65rem .9rem;cursor:pointer;font-size:.83rem;font-weight:600">
-          Agrupación jerárquica de tecnologías (Ward)
-          <span class="badge badge--info" style="margin-left:.5rem;font-size:.72rem">Informacional</span>
-        </summary>
-        <div class="card-body" style="padding-top:.5rem">
-          <p class="text-muted" id="mcda-tech-cluster-note" style="font-size:.75rem;margin-bottom:.6rem"></p>
-          <table class="sci-table" style="width:100%;font-size:.78rem">
-            <thead><tr><th>Tecnología</th><th>Grupo k=2</th><th>Grupo k=3</th></tr></thead>
-            <tbody id="mcda-tech-cluster-body"></tbody>
-          </table>
-          <p class="text-muted" style="font-size:.73rem;margin-top:.5rem">
-            Agrupación informacional basada en similitud energética y económica.
-            No modifica ni reordena el ranking TOPSIS.
-          </p>
-        </div>
-      </details>
-
       <!-- Ranking table -->
       <div style="max-height:420px;overflow:auto">
         <table class="tbl" id="mcda-rank-tbl">
@@ -1980,120 +2175,31 @@
     </div>
   </div>
 
-  <!-- ═══ ESCENARIOS TÉCNICO-ECONÓMICOS COMUNES A LOS LAYOUTS DEL RANKING ═══ -->
-  <div class="card mt-3" id="gsens-batch-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Escenarios técnico-económicos — layouts del ranking</span>
-      <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Compara los layouts con el mismo flujo de caja del parque y verifica que cada VAN base
-        coincida con el ranking. Aplica a todos los mismos cambios hipotéticos: precio −20%,
-        AEP −10%, CAPEX y OPEX +15%, tasa de descuento +2 puntos porcentuales y su combinación.
-        Muestra VAN, umbrales de equilibrio y pérdida frente al mejor layout de cada escenario.
-        Son pruebas de sensibilidad, no probabilidades ni intervalos de confianza calibrados.
-      </p>
-      <p class="text-muted" style="font-size:.78rem;margin-bottom:.8rem"><b>Calibración pendiente:</b>
-        los rangos de precio, AEP y estelas todavía no se estiman con series multianuales
-        ni con errores observados del modelo. Si se usa el perfil PML de 2018,
-        repetirlo no predice por sí solo los precios futuros. Usa esta comparación
-        como prueba de estrés.</p>
-      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar escenarios de todos los layouts</button>
-      <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
-      <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
-      <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
-    </div>
-  </div>
-
-  <!-- ═══ ROBUSTEZ DE PESOS — TOPSIS (SMAA) ═══ -->
-  <div class="card mt-3" id="topsis-robust-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Robustez de pesos — TOPSIS (SMAA)</span>
-      <span class="badge badge--info" id="topsis-robust-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Perturba los pesos de los criterios TOPSIS con una distribución de Dirichlet centrada en tus
-        pesos actuales (método SMAA — Stochastic Multicriteria Acceptability Analysis) y re-rankea las
-        alternativas ya calculadas miles de veces, sin volver a simular nada. Responde: ¿qué tan seguido
-        gana cada alternativa ante la incertidumbre real de cómo se ponderan los criterios? Además, un
-        Random Forest entrenado sobre esas mismas muestras dice qué criterio de decisión es el que más
-        determina quién gana.
-      </p>
-      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
-        <div>
-          <label class="form-label" style="font-size:.78rem">N° de muestras (Dirichlet)</label>
-          <input type="number" class="form-input" id="topsis-robust-n-samples" value="500" min="100" max="2000" step="100" style="width:110px">
-        </div>
-        <button class="btn-primary" id="btn-topsis-robust-run" type="button">▶ Analizar robustez de pesos</button>
-      </div>
-      <p class="text-muted mt-1" id="topsis-robust-progress-text" style="font-size:.75rem"></p>
-
-      <div id="topsis-robust-results" style="display:none">
-        <div class="grid-2" style="gap:1rem">
-          <div style="min-width:0">
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Estabilidad del ranking por alternativa</p>
-            <div style="position:relative;height:240px"><canvas id="topsis-robust-rank-chart"></canvas></div>
-          </div>
-          <div style="min-width:0">
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
-            <p id="topsis-robust-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
-            <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
-          </div>
-        </div>
-        <div style="overflow:auto;max-height:260px;margin-top:.9rem" id="topsis-robust-table"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══ ANÁLISIS DE ESCENARIOS PML ═══ -->
-  <div class="card mt-3" id="mcda-scenario-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Análisis de escenarios PML — robustez económica</span>
-      <span class="badge badge--info" id="mcda-scenario-status">Sin análisis</span>
-    </div>
-    <div class="card-body">
-      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Re-evalúa los layouts del pool con tres trayectorias de precio PML (bajo/base/alto)
-        y verifica si el ganador TOPSIS es estable bajo distintos supuestos de mercado.
-        Requiere pool de candidatos construido al ejecutar TOPSIS con aerogeneradores.
-      </p>
-      <button class="btn-primary" id="btn-scenario-run" type="button"
-        onclick="runScenarioAnalysis()">▶ Análisis de escenarios (PML)</button>
-      <p class="text-muted mt-1" id="mcda-scenario-progress-text" style="font-size:.75rem"></p>
-
-      <div id="mcda-scenario-results" style="display:none">
-        <div id="mcda-scenario-winner-badge" style="margin:.9rem 0 .6rem"></div>
-
-        <div style="display:flex;gap:.4rem;margin:.5rem 0" id="mcda-scenario-tabs">
-          <button class="btn-secondary mcda-scen-tab is-active" data-scen="base" type="button"
-            onclick="scenarioSwitchTab('base')">Base</button>
-          <button class="btn-secondary mcda-scen-tab" data-scen="bajo" type="button"
-            onclick="scenarioSwitchTab('bajo')">Bajo</button>
-          <button class="btn-secondary mcda-scen-tab" data-scen="alto" type="button"
-            onclick="scenarioSwitchTab('alto')">Alto</button>
-        </div>
-        <div id="mcda-scenario-panel"></div>
-
-        <div id="mcda-robustness-matrix-wrap" style="margin-top:1.2rem">
-          <p style="font-size:.78rem;font-weight:600;margin-bottom:.5rem">
-            Matriz de robustez VAN (USD) — energía × precio
-          </p>
-          <div id="mcda-robustness-matrix"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- ═══ DISEÑO OPTIMIZADO DEL PARQUE ═══ -->
-  <div class="module-header">
-    <h2 class="module-title" style="font-size:1.2rem">Parque eólico — Diseño optimizado</h2>
-    <p class="module-desc">Layout optimizado con la turbina seleccionada en el ranking TOPSIS sobre el polígono del parque.</p>
+  <div class="card" style="margin-top:.5rem">
+    <div class="card-header" style="flex-wrap:wrap;gap:.3rem">
+      <span class="card-title">Parque eólico — Diseño optimizado</span>
+      <div style="display:flex;gap:.3rem;align-items:center;flex-wrap:wrap">
+        <select class="form-select" id="parque-opt-base-layer"
+                style="font-size:.71rem;padding:.15rem .35rem;width:auto"
+                onchange="parqueSetOptBaseLayer(this.value)" title="Mapa base">
+          <option value="osm">🗺 OSM</option>
+          <option value="dark">🌑 Oscuro</option>
+          <option value="satellite">🛰 Satélite</option>
+          <option value="voyager">🌍 Claro</option>
+        </select>
+        <button class="btn-secondary" id="btn-opt-wake"
+                onclick="parqueToggleOptWakes()"
+                style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🌬 Ver estelas</button>
+        <button class="btn-secondary"
+                onclick="if(PARQUE.optMap){const l=PARQUE._optMapLayers;if(l?.length){const b=l.reduce((b,ly)=>ly.getBounds?b.extend(ly.getBounds()):b,L.latLngBounds([]));if(b.isValid())PARQUE.optMap.fitBounds(b,{padding:[30,30]});}}"
+                style="font-size:.71rem;padding:.15rem .4rem;white-space:nowrap">🔓 Ver todo</button>
+      </div>
+    </div>
+    <div class="card-body" style="padding:0">
+      <div id="parque-opt-map" style="height:380px;border-radius:0 0 8px 8px"></div>
+    </div>
   </div>
-
-  <div id="parque-opt-map"
-    style="height:380px;border-radius:8px;margin-top:.5rem"></div>
 
   <div style="max-width:420px">
 
@@ -2288,6 +2394,53 @@
     </div>
   </div>
 
+  <!-- ═══ ROBUSTEZ DE PESOS — TOPSIS (SMAA) ═══ -->
+  <div class="card mt-3" id="topsis-robust-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Robustez de pesos — TOPSIS (SMAA)</span>
+      <span class="badge badge--info" id="topsis-robust-status">Sin análisis</span>
+      <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:auto">
+        <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
+          onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC</button>
+        <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
+          onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Perturba los pesos de los criterios TOPSIS con una distribución de Dirichlet centrada en tus
+        pesos actuales (método SMAA — Stochastic Multicriteria Acceptability Analysis) y re-rankea las
+        alternativas ya calculadas miles de veces, sin volver a simular nada. Responde: ¿qué tan seguido
+        gana cada alternativa ante la incertidumbre real de cómo se ponderan los criterios? Además, un
+        Random Forest entrenado sobre esas mismas muestras dice qué criterio de decisión es el que más
+        determina quién gana.
+      </p>
+      <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
+        <div>
+          <label class="form-label" style="font-size:.78rem">N° de muestras (Dirichlet)</label>
+          <input type="number" class="form-input" id="topsis-robust-n-samples" value="500" min="100" max="2000" step="100" style="width:110px">
+        </div>
+        <button class="btn-primary" id="btn-topsis-robust-run" type="button">▶ Analizar robustez de pesos</button>
+      </div>
+      <p class="text-muted mt-1" id="topsis-robust-progress-text" style="font-size:.75rem"></p>
+
+      <div id="topsis-robust-results" style="display:none">
+        <div class="grid-2" style="gap:1rem">
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Estabilidad del ranking por alternativa</p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-rank-chart"></canvas></div>
+          </div>
+          <div style="min-width:0">
+            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de criterios (¿qué decide al ganador?)</p>
+            <p id="topsis-robust-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
+            <div style="position:relative;height:240px"><canvas id="topsis-robust-criteria-chart"></canvas></div>
+          </div>
+        </div>
+        <div style="overflow:auto;max-height:260px;margin-top:.9rem" id="topsis-robust-table"></div>
+      </div>
+    </div>
+  </div>
+
   </div>
 
 
@@ -2296,8 +2449,18 @@
 <section class="module" id="mod-techno">
   <div class="module-header">
     <h1 class="module-title">Evaluación Tecnoeconómica</h1>
-    <p class="module-desc">Evaluación integral del proyecto con insumos heredados, casos financieros y análisis de sensibilidad.</p>
+    <p class="module-desc">Configuración → Evaluación integral (WACC + Equity) → Energía → Sensibilidad &amp; robustez → Análisis apalancado.</p>
   </div>
+
+  <div class="subtabs" role="tablist">
+    <button class="subtab is-active" data-subtab="te-base" type="button">① Evaluación base</button>
+    <button class="subtab" data-subtab="te-energia" type="button">② Producción energética</button>
+    <button class="subtab" data-subtab="te-sensibilidad" type="button">③ Sensibilidad &amp; robustez</button>
+    <button class="subtab" data-subtab="te-apalancado" type="button">④ Evaluación apalancada</button>
+  </div>
+
+  <!-- ══════════ ① EVALUACIÓN BASE ══════════ -->
+  <div class="subsection is-active" data-subtab="te-base">
 
   <div class="grid-2 mt-2">
     <div class="card">
@@ -2321,10 +2484,9 @@
     </div>
   </div>
 
-  <div class="grid-2 mt-2">
-    <!-- Config panel -->
-    <div class="card">
-      <div class="card-header"><span class="card-title">Parámetros del proyecto</span></div>
+  <!-- Config panel (standalone) -->
+  <div class="card mt-2">
+    <div class="card-header"><span class="card-title">Parámetros del proyecto</span></div>
       <div class="card-body">
         <div class="form-grid-2">
           <div>
@@ -2387,174 +2549,35 @@
           </div>
         </div>
 
-        <details class="mt-2" open style="border:1px solid var(--border);border-radius:10px;padding:.6rem .8rem">
-          <summary style="cursor:pointer;font-weight:600;font-size:.85rem">Modelo económico (CAPEX & OPEX) — editable</summary>
-          <p class="text-muted" style="font-size:.72rem;margin:.4rem 0 .6rem">Todos los valores en USD. Defaults del estudio AERO OPEN CIM. Los rangos se usarán en análisis de sensibilidad.</p>
-
-          <div class="form-grid-2">
-            <div>
-              <label class="form-label">Precio aerogenerador (USD/kW) <span class="text-muted" style="font-size:.7rem">[800–2000]</span></label>
-              <input type="number" class="form-input" id="cm-turbine-usd-kw" value="1800" step="50" min="0">
-            </div>
-            <div>
-              <label class="form-label">% Aerogeneradores del CAPEX <span class="text-muted" style="font-size:.7rem">[60–80]</span></label>
-              <input type="number" class="form-input" id="cm-turbines-pct" value="66" step="0.5" min="0" max="100">
-            </div>
+        <div class="mt-2" style="border:1px solid var(--border);border-radius:10px;padding:.55rem .8rem;background:var(--bg-secondary)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
+            <span style="font-size:.82rem;font-weight:600">Modelo económico — CAPEX &amp; OPEX</span>
+            <span class="badge badge--info" id="te-capex-inherited-badge">Desde ① Parámetros</span>
           </div>
-
-          <h6 style="margin:.7rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Desglose BOS (% del CAPEX)</h6>
-          <div class="form-grid-2">
-            <div>
-              <label class="form-label">Obras civiles <span class="text-muted" style="font-size:.7rem">[10–15]</span></label>
-              <input type="number" class="form-input" id="cm-civil-pct" value="12" step="0.5" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">Sistema eléctrico + red <span class="text-muted" style="font-size:.7rem">[5–10]</span></label>
-              <input type="number" class="form-input" id="cm-elec-pct" value="8" step="0.5" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">Instalación y puesta en marcha <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
-              <input type="number" class="form-input" id="cm-install-pct" value="5" step="0.5" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">Ingeniería + permisos <span class="text-muted" style="font-size:.7rem">[2–10]</span></label>
-              <input type="number" class="form-input" id="cm-eng-pct" value="6" step="0.5" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">Misceláneos + contingencias <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
-              <input type="number" class="form-input" id="cm-misc-pct" value="3" step="0.5" min="0" max="100">
-            </div>
-            <div>
-              <label class="form-label">OPEX anual (% del CAPEX) <span class="text-muted" style="font-size:.7rem">[2–4]</span></label>
-              <input type="number" class="form-input" id="cm-opex-pct" value="3.72" step="0.1" min="0" max="100">
-            </div>
+          <div id="te-capex-summary" class="text-muted mt-1" style="font-size:.73rem;line-height:1.5">
+            Turbina: — USD/kW · OPEX: — % CAPEX · BOS desglosado en ① Parámetros y configuración.
           </div>
-
-          <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
-        </details>
+        </div>
 
         <button class="btn-primary mt-2" id="btn-calc-techno" style="width:100%">Calcular evaluación integral y sensibilidades</button>
       </div>
     </div>
 
-    <!-- ── ANÁLISIS DE RIESGO ── -->
-    <div class="card" id="te-risk-card" style="display:none">
-      <div class="card-header">
-        <span class="card-title">Casos y sensibilidades de la evaluación integral</span>
-        <button id="btn-calc-sensitivity" class="btn-secondary" style="font-size:.75rem;padding:.25rem .8rem;margin-left:auto">
-          &#x27F3; Recalcular
-        </button>
-      </div>
-      <div class="card-body">
-        <!-- Toggle metric -->
-        <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.85rem;flex-wrap:wrap">
-          <span style="font-size:.72rem;color:var(--text-muted)">Métrica:</span>
-          <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
-            <input type="radio" name="risk-metric" value="npv" checked style="accent-color:var(--accent)"> ΔVAN %
-          </label>
-          <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
-            <input type="radio" name="risk-metric" value="lcoe"> ΔLCOE %
-          </label>
-          <span id="risk-base-info" style="font-size:.72rem;color:var(--text-muted);margin-left:auto"></span>
-        </div>
-
-        <!-- Tornado chart -->
-        <div style="margin-bottom:1.2rem">
-          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
-            Sensibilidad — Tornado ΔVan/ΔLCOE por parámetro
-          </div>
-          <div style="position:relative;height:220px">
-            <canvas id="risk-tornado-chart"></canvas>
-          </div>
-        </div>
-
-        <!-- Heatmap: VAN (M USD) vs precio × tasa -->
-        <div style="margin-bottom:1.2rem">
-          <div id="risk-heatmap-title" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
-            Mapa de correlación — VAN (MUSD) · Precio energía × Tasa de descuento
-          </div>
-          <div id="risk-heatmap-container" style="overflow-x:auto">
-            <canvas id="risk-heatmap-canvas" style="display:block"></canvas>
-          </div>
-          <div style="font-size:.68rem;color:var(--text-muted);margin-top:.3rem">Verde = VAN positivo · Rojo = VAN negativo · Cada celda = un caso precio–tasa de la misma evaluación.</div>
-        </div>
-
-        <!-- ML Regimes (shown only if price data available) -->
-        <div id="risk-regimes-wrap" style="display:none">
-          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
-            Regímenes de precio (K-means ML) — <span id="risk-regime-col"></span>
-          </div>
-          <div style="display:flex;gap:.6rem;margin-bottom:.6rem;flex-wrap:wrap" id="risk-regime-stats"></div>
-          <div style="position:relative;height:120px">
-            <canvas id="risk-regime-chart"></canvas>
-          </div>
-        </div>
-
-        <!-- ═══ SENSIBILIDAD GLOBAL — MONTE CARLO + RANDOM FOREST (ML) ═══ -->
-        <div style="margin-top:1.3rem;border-top:1px solid var(--border);padding-top:1rem">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem">
-            <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">
-              Sensibilidad global — Random Forest (ML)
-            </div>
-            <span class="badge badge--info" id="gsens-status">Sin análisis</span>
-          </div>
-          <p class="text-muted" style="font-size:.8rem;margin-bottom:.7rem">
-            A diferencia del tornado (una variable a la vez), acá se muestrean miles de combinaciones
-            simultáneas de precio, tasa de descuento, OPEX (% del CAPEX, que se mantiene fijo), recurso
-            eólico, inflación y —cuando hay un layout de parque aplicado— pérdida por efecto estela
-            (uniforme ±30% relativo a su valor de diseño, con límite de 100% de pérdida;
-            supuesto de sensibilidad, no intervalo de confianza calibrado) — y un Random Forest entrenado sobre esas corridas te
-            dice qué variable pesa más en cada métrica, con percentiles de robustez (P10-P90) y
-            probabilidad de que el proyecto siga siendo viable.
-          </p>
-          <p id="gsens-wake-range" class="text-muted" style="font-size:.8rem"></p>
-          <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
-            <div>
-              <label class="form-label" style="font-size:.78rem">N° de muestras (Monte Carlo)</label>
-              <input type="number" class="form-input" id="gsens-n-samples" value="800" min="100" max="3000" step="100" style="width:110px">
-            </div>
-            <div>
-              <label class="form-label" style="font-size:.78rem">Métrica</label>
-              <select class="form-select" id="gsens-metric" style="min-width:200px">
-                <option value="b_c_ratio" selected>B/C (beneficio/costo)</option>
-                <option value="van_capex_ratio">VAN / CAPEX</option>
-                <option value="payback_years">PRI — periodo de retorno</option>
-                <option value="lcoe_usd_kwh">LCOE</option>
-                <option value="irr_pct">TIR</option>
-              </select>
-            </div>
-            <button class="btn-primary" id="btn-gsens-run" type="button">▶ Correr análisis global</button>
-          </div>
-          <p class="text-muted mt-1" id="gsens-progress-text" style="font-size:.75rem"></p>
-
-          <div id="gsens-results" style="display:none">
-            <div id="gsens-base-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
-            <div id="gsens-robustness-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
-            <div class="grid-2" style="gap:1rem">
-              <div style="min-width:0">
-                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables (métrica activa)</p>
-                <p id="gsens-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
-                <div style="position:relative;height:220px"><canvas id="gsens-importance-chart"></canvas></div>
-              </div>
-              <div style="min-width:0">
-                <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Matriz variable × métrica (% de importancia)</p>
-                <div id="gsens-matrix" style="overflow:auto;max-height:260px"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Financial KPIs -->
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">Resultados financieros</span>
+  <!-- Financial KPIs -->
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title">Resultados financieros</span>
         <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
         <span class="badge" id="te-loss-applied-badge"
           style="display:none;background:rgba(246,161,86,.15);color:var(--orange);border:1px solid rgba(246,161,86,.35);font-size:.65rem">—</span>
         <span class="badge" id="te-lev-active-badge"
           style="display:none;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3);font-size:.65rem">⚡ Apalancado</span>
+        <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:.5rem">
+          <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
+            onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC · Integral</button>
+          <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
+            onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity · Apalancado</button>
+        </div>
         <span class="badge" id="te-height-badge"
           style="display:none;background:rgba(100,116,139,.1);border:1px solid rgba(100,116,139,.25);font-size:.65rem">—</span>
         <span class="badge" id="te-wind-station-badge"
@@ -2581,6 +2604,271 @@
       </div>
       <div class="card-body" id="te-kpi-grid">
         <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
+      </div>
+    </div>
+
+  <!-- Indicadores de retorno y viabilidad -->
+  <div class="card mt-2" id="te-summary-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Indicadores de retorno y viabilidad</span>
+      <span class="badge badge--info" id="te-summary-mode-badge" style="font-size:.65rem">sólo proyecto</span>
+      <span class="text-muted" style="margin-left:auto;font-size:.7rem">VAN, TIR, retorno simple y descontado</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table class="data-table" id="te-summary-table">
+        <thead></thead>
+        <tbody id="te-summary-tbody"></tbody>
+      </table>
+      <p class="text-muted" style="font-size:.7rem;margin:.5rem 0 0">
+        VAN: Valor Actual Neto · TIR: Tasa Interna de Retorno · DPBP: payback descontado al costo de capital · Equity payback: solo refleja flujos del inversionista (sin deuda).
+      </p>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Desglose CAPEX</span></div>
+      <div class="chart-box"><canvas id="chart-capex"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title" id="te-cashflow-chart-title">Flujo de caja acumulado (25 años)</span></div>
+      <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title" id="te-cashflow-title">Tabla de flujos anuales</span>
+      <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto;max-height:320px">
+      <p id="te-lifecycle-assumptions" class="text-muted" style="font-size:.8rem"></p>
+      <table class="data-table" id="te-cashflow-table">
+        <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  </div><!-- /te-base -->
+
+  <!-- ══════════ ② PRODUCCIÓN ENERGÉTICA ══════════ -->
+  <div class="subsection" data-subtab="te-energia">
+
+  <div class="card mt-2">
+    <div class="card-header"><span class="card-title">Curva Cp vs Velocidad del viento</span><span class="badge badge--info" id="badge-cp-max">—</span></div>
+    <div class="chart-box"><canvas id="chart-cp"></canvas></div>
+  </div>
+
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title">Despacho horario real 8760 h/año</span>
+      <span class="badge badge--info" id="te-dispatch-badge">—</span>
+    </div>
+    <div class="card-body">
+      <div id="te-dispatch-kpis" class="te-kpi-grid" style="margin-bottom:.75rem">
+        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver despacho horario.</p>
+      </div>
+      <div class="chart-box" style="height:280px"><canvas id="chart-te-dispatch"></canvas></div>
+      <div style="overflow-x:auto;max-height:260px;margin-top:.75rem">
+        <table class="data-table" id="te-dispatch-table">
+          <thead>
+            <tr>
+              <th>Año</th><th>Horas</th><th>Carga (MWh)</th><th>Viento disp. (MWh)</th>
+              <th>Servida (MWh)</th><th>Excedente (MWh)</th><th>Déficit (MWh)</th>
+              <th>Cobertura</th><th>Curtailment</th><th>CF</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ Producción Energética del Parque ══ -->
+  <div class="card mt-2" id="te-energy-section" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Producción Energética del Parque</span>
+      <span class="badge badge--info" id="te-el-badge">—</span>
+    </div>
+    <div class="card-body" id="te-el-kpis">
+      <p class="text-muted" style="font-size:.8rem">Calculando…</p>
+    </div>
+    <div class="card-body" id="te-el-pvalues" style="display:none;padding-top:0">
+      <div class="p-value-row" id="te-el-pvalue-row"></div>
+      <p class="text-muted mt-2" style="font-size:.78rem">P50 = mediana esperada · P75 = excedido el 75% del tiempo · P90 = escenario conservador.</p>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2" id="te-el-charts-1" style="display:none">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Curva de Potencia</span></div>
+      <div class="chart-box"><canvas id="te-pcurve-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Producción Mensual (MWh)</span></div>
+      <div class="chart-box"><canvas id="te-monthly-chart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2" id="te-el-charts-2" style="display:none">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Serie de Potencia Estimada</span></div>
+      <div class="chart-box"><canvas id="te-pts-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Análisis de Sensibilidad AEP</span></div>
+      <div class="chart-box"><canvas id="te-sens-chart"></canvas></div>
+    </div>
+  </div>
+
+  </div><!-- /te-energia -->
+
+  <!-- ══════════ ③ SENSIBILIDAD & ROBUSTEZ ══════════ -->
+  <div class="subsection" data-subtab="te-sensibilidad">
+
+  <!-- ═══ ESCENARIOS PML — contexto de precio para Monte Carlo ═══ -->
+  <div class="card mt-2" id="mcda-scenario-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Escenarios de precio PML — contexto para robustez</span>
+      <span class="badge badge--info" id="mcda-scenario-status">Sin análisis</span>
+      <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:auto">
+        <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
+          onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC</button>
+        <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
+          onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.6rem">
+        Re-evalúa los layouts del pool con tres trayectorias de precio PML (bajo/base/alto) y verifica si el ganador TOPSIS es estable. El rango bajo–alto informa el prior de precio usado en el Monte Carlo de abajo.
+      </p>
+      <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+        <button class="btn-primary" id="btn-scenario-run" type="button"
+          onclick="runScenarioAnalysis()">▶ Análisis de escenarios (PML)</button>
+        <button class="btn-secondary" id="btn-gsens-use-pml" type="button"
+          style="display:none" onclick="gsensUsePmlRange()">→ Usar rango PML en Monte Carlo</button>
+      </div>
+      <p class="text-muted mt-1" id="mcda-scenario-progress-text" style="font-size:.75rem"></p>
+      <div id="mcda-scenario-results" style="display:none">
+        <div id="mcda-scenario-winner-badge" style="margin:.9rem 0 .6rem"></div>
+        <div style="display:flex;gap:.4rem;margin:.5rem 0" id="mcda-scenario-tabs">
+          <button class="btn-secondary mcda-scen-tab is-active" data-scen="base" type="button"
+            onclick="scenarioSwitchTab('base')">Base</button>
+          <button class="btn-secondary mcda-scen-tab" data-scen="bajo" type="button"
+            onclick="scenarioSwitchTab('bajo')">Bajo</button>
+          <button class="btn-secondary mcda-scen-tab" data-scen="alto" type="button"
+            onclick="scenarioSwitchTab('alto')">Alto</button>
+        </div>
+        <div id="mcda-scenario-panel"></div>
+        <div id="mcda-robustness-matrix-wrap" style="margin-top:1.2rem">
+          <p style="font-size:.78rem;font-weight:600;margin-bottom:.5rem">Matriz de robustez VAN (USD) — energía × precio</p>
+          <div id="mcda-robustness-matrix"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ANÁLISIS DE RIESGO (Tornado + Heatmap + Monte Carlo RF) ── -->
+  <div class="card mt-2" id="te-risk-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Casos y sensibilidades de la evaluación integral</span>
+      <button id="btn-calc-sensitivity" class="btn-secondary" style="font-size:.75rem;padding:.25rem .8rem;margin-left:auto">
+        &#x27F3; Recalcular
+      </button>
+    </div>
+    <div class="card-body">
+      <!-- Toggle metric -->
+      <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.85rem;flex-wrap:wrap">
+        <span style="font-size:.72rem;color:var(--text-muted)">Métrica:</span>
+        <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
+          <input type="radio" name="risk-metric" value="npv" checked style="accent-color:var(--accent)"> ΔVAN %
+        </label>
+        <label style="font-size:.78rem;cursor:pointer;display:flex;align-items:center;gap:.25rem">
+          <input type="radio" name="risk-metric" value="lcoe"> ΔLCOE %
+        </label>
+        <span id="risk-base-info" style="font-size:.72rem;color:var(--text-muted);margin-left:auto"></span>
+      </div>
+      <!-- Tornado chart -->
+      <div style="margin-bottom:1.2rem">
+        <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+          Sensibilidad — Tornado ΔVan/ΔLCOE por parámetro
+        </div>
+        <div style="position:relative;height:220px">
+          <canvas id="risk-tornado-chart"></canvas>
+        </div>
+      </div>
+      <!-- Heatmap -->
+      <div style="margin-bottom:1.2rem">
+        <div id="risk-heatmap-title" style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+          Mapa de correlación — VAN (MUSD) · Precio energía × Tasa de descuento
+        </div>
+        <div id="risk-heatmap-container" style="overflow-x:auto">
+          <canvas id="risk-heatmap-canvas" style="display:block"></canvas>
+        </div>
+        <div style="font-size:.68rem;color:var(--text-muted);margin-top:.3rem">Verde = VAN positivo · Rojo = VAN negativo · Cada celda = un caso precio–tasa de la misma evaluación.</div>
+      </div>
+      <!-- ML Regimes -->
+      <div id="risk-regimes-wrap" style="display:none">
+        <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted);margin-bottom:.4rem">
+          Regímenes de precio (K-means ML) — <span id="risk-regime-col"></span>
+        </div>
+        <div style="display:flex;gap:.6rem;margin-bottom:.6rem;flex-wrap:wrap" id="risk-regime-stats"></div>
+        <div style="position:relative;height:120px">
+          <canvas id="risk-regime-chart"></canvas>
+        </div>
+      </div>
+      <!-- ═══ SENSIBILIDAD GLOBAL — MONTE CARLO + RANDOM FOREST (ML) ═══ -->
+      <div style="margin-top:1.3rem;border-top:1px solid var(--border);padding-top:1rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.5rem">
+          <div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-muted)">
+            Sensibilidad global — Random Forest (ML)
+          </div>
+          <span class="badge badge--info" id="gsens-status">Sin análisis</span>
+        </div>
+        <p class="text-muted" style="font-size:.8rem;margin-bottom:.7rem">
+          A diferencia del tornado (una variable a la vez), acá se muestrean miles de combinaciones
+          simultáneas de precio, tasa de descuento, OPEX (% del CAPEX, que se mantiene fijo), recurso
+          eólico, inflación y —cuando hay un layout de parque aplicado— pérdida por efecto estela
+          (uniforme ±30% relativo a su valor de diseño, con límite de 100% de pérdida;
+          supuesto de sensibilidad, no intervalo de confianza calibrado) — y un Random Forest entrenado sobre esas corridas te
+          dice qué variable pesa más en cada métrica, con percentiles de robustez (P10-P90) y
+          probabilidad de que el proyecto siga siendo viable.
+        </p>
+        <p id="gsens-wake-range" class="text-muted" style="font-size:.8rem"></p>
+        <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.8rem">
+          <div>
+            <label class="form-label" style="font-size:.78rem">N° de muestras (Monte Carlo)</label>
+            <input type="number" class="form-input" id="gsens-n-samples" value="800" min="100" max="3000" step="100" style="width:110px">
+          </div>
+          <div>
+            <label class="form-label" style="font-size:.78rem">Métrica</label>
+            <select class="form-select" id="gsens-metric" style="min-width:200px">
+              <option value="b_c_ratio" selected>B/C (beneficio/costo)</option>
+              <option value="van_capex_ratio">VAN / CAPEX</option>
+              <option value="payback_years">PRI — periodo de retorno</option>
+              <option value="lcoe_usd_kwh">LCOE</option>
+              <option value="irr_pct">TIR</option>
+            </select>
+          </div>
+          <button class="btn-primary" id="btn-gsens-run" type="button">▶ Correr análisis global</button>
+        </div>
+        <p class="text-muted mt-1" id="gsens-progress-text" style="font-size:.75rem"></p>
+        <div id="gsens-results" style="display:none">
+          <div id="gsens-base-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
+          <div id="gsens-robustness-badges" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:.9rem"></div>
+          <div class="grid-2" style="gap:1rem">
+            <div style="min-width:0">
+              <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Importancia de variables (métrica activa)</p>
+              <p id="gsens-validation" style="font-size:.7rem;margin-bottom:.4rem"></p>
+              <div style="position:relative;height:220px"><canvas id="gsens-importance-chart"></canvas></div>
+            </div>
+            <div style="min-width:0">
+              <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Matriz variable × métrica (% de importancia)</p>
+              <div id="gsens-matrix" style="overflow:auto;max-height:260px"></div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -2638,116 +2926,36 @@
     </div>
   </div>
 
-  <!-- Indicadores de retorno y viabilidad — VAN, TIR, payback simple y descontado -->
-  <div class="card mt-2" id="te-summary-card" style="display:none">
+  <!-- ═══ ESCENARIOS TÉCNICO-ECONÓMICOS LAYOUTS DEL RANKING ═══ -->
+  <div class="card mt-3" id="gsens-batch-card" style="display:none">
     <div class="card-header">
-      <span class="card-title">Indicadores de retorno y viabilidad</span>
-      <span class="badge badge--info" id="te-summary-mode-badge" style="font-size:.65rem">sólo proyecto</span>
-      <span class="text-muted" style="margin-left:auto;font-size:.7rem">VAN, TIR, retorno simple y descontado</span>
-    </div>
-    <div class="card-body" style="overflow-x:auto">
-      <table class="data-table" id="te-summary-table">
-        <thead></thead>
-        <tbody id="te-summary-tbody"></tbody>
-      </table>
-      <p class="text-muted" style="font-size:.7rem;margin:.5rem 0 0">
-        VAN: Valor Actual Neto · TIR: Tasa Interna de Retorno · DPBP: payback descontado al costo de capital · Equity payback: solo refleja flujos del inversionista (sin deuda).
-      </p>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Desglose CAPEX</span></div>
-      <div class="chart-box"><canvas id="chart-capex"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title" id="te-cashflow-chart-title">Flujo de caja acumulado (25 años)</span></div>
-      <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
-    </div>
-  </div>
-
-  <div class="card mt-2">
-    <div class="card-header">
-      <span class="card-title">Despacho horario real 8760 h/año</span>
-      <span class="badge badge--info" id="te-dispatch-badge">—</span>
+      <span class="card-title">Escenarios técnico-económicos — layouts del ranking</span>
+      <span class="badge badge--info" id="gsens-batch-status">Sin análisis</span>
     </div>
     <div class="card-body">
-      <div id="te-dispatch-kpis" class="te-kpi-grid" style="margin-bottom:.75rem">
-        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver despacho horario.</p>
-      </div>
-      <div class="chart-box" style="height:280px"><canvas id="chart-te-dispatch"></canvas></div>
-      <div style="overflow-x:auto;max-height:260px;margin-top:.75rem">
-        <table class="data-table" id="te-dispatch-table">
-          <thead>
-            <tr>
-              <th>Año</th><th>Horas</th><th>Carga (MWh)</th><th>Viento disp. (MWh)</th>
-              <th>Servida (MWh)</th><th>Excedente (MWh)</th><th>Déficit (MWh)</th>
-              <th>Cobertura</th><th>Curtailment</th><th>CF</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
+        Compara los layouts con el mismo flujo de caja del parque y verifica que cada VAN base
+        coincida con el ranking. Aplica a todos los mismos cambios hipotéticos: precio −20%,
+        AEP −10%, CAPEX y OPEX +15%, tasa de descuento +2 puntos porcentuales y su combinación.
+        Muestra VAN, umbrales de equilibrio y pérdida frente al mejor layout de cada escenario.
+        Son pruebas de sensibilidad, no probabilidades ni intervalos de confianza calibrados.
+      </p>
+      <p class="text-muted" style="font-size:.78rem;margin-bottom:.8rem"><b>Calibración pendiente:</b>
+        los rangos de precio, AEP y estelas todavía no se estiman con series multianuales
+        ni con errores observados del modelo. Si se usa el perfil PML de 2018,
+        repetirlo no predice por sí solo los precios futuros. Usa esta comparación
+        como prueba de estrés.</p>
+      <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar escenarios de todos los layouts</button>
+      <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
+      <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
+      <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
     </div>
   </div>
 
-  <div class="grid-2 mt-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Curva Cp vs Velocidad del viento</span><span class="badge badge--info" id="badge-cp-max">—</span></div>
-      <div class="chart-box"><canvas id="chart-cp"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title" id="te-cashflow-title">Tabla de flujos anuales</span>
-        <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
-      </div>
-      <div class="card-body" style="overflow-x:auto;max-height:320px">
-        <p id="te-lifecycle-assumptions" class="text-muted" style="font-size:.8rem"></p>
-        <table class="data-table" id="te-cashflow-table">
-          <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
+  </div><!-- /te-sensibilidad -->
 
-  <!-- ══ Producción Energética del Parque ══ -->
-  <div class="card mt-2" id="te-energy-section" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Producción Energética del Parque</span>
-      <span class="badge badge--info" id="te-el-badge">—</span>
-    </div>
-    <div class="card-body" id="te-el-kpis">
-      <p class="text-muted" style="font-size:.8rem">Calculando…</p>
-    </div>
-    <div class="card-body" id="te-el-pvalues" style="display:none;padding-top:0">
-      <div class="p-value-row" id="te-el-pvalue-row"></div>
-      <p class="text-muted mt-2" style="font-size:.78rem">P50 = mediana esperada · P75 = excedido el 75% del tiempo · P90 = escenario conservador.</p>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-2" id="te-el-charts-1" style="display:none">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Curva de Potencia</span></div>
-      <div class="chart-box"><canvas id="te-pcurve-chart"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Producción Mensual (MWh)</span></div>
-      <div class="chart-box"><canvas id="te-monthly-chart"></canvas></div>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-2" id="te-el-charts-2" style="display:none">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Serie de Potencia Estimada</span></div>
-      <div class="chart-box"><canvas id="te-pts-chart"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title">Análisis de Sensibilidad AEP</span></div>
-      <div class="chart-box"><canvas id="te-sens-chart"></canvas></div>
-    </div>
-  </div>
+  <!-- ══════════ ④ EVALUACIÓN APALANCADA ══════════ -->
+  <div class="subsection" data-subtab="te-apalancado">
 
   <!-- ══ Análisis Apalancado de la evaluación integral ══ -->
   <div id="te-lev-section" style="display:none">
@@ -2816,6 +3024,8 @@
     </div>
 
   </div><!-- /te-lev-section -->
+
+  </div><!-- /te-apalancado -->
 
 </section>
 
