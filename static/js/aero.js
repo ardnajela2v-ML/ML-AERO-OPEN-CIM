@@ -14359,7 +14359,7 @@ function bindTechnoSubtabs() {
         const gc = document.getElementById('gsens-batch-card');
         if (gc && MCDA.lastRanking?.ranking?.length) gc.style.display = '';
       }
-      if (tab.dataset.subtab === 'te-apalancado') {
+      if (tab.dataset.subtab === 'te-financiero') {
         const levSec = document.getElementById('te-lev-section');
         if (levSec && WP.technoScenarios.integrated?.leveraged) levSec.style.display = '';
       }

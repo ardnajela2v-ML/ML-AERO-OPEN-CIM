@@ -2484,9 +2484,8 @@
 
   <div class="subtabs" role="tablist">
     <button class="subtab is-active" data-subtab="te-base" type="button">① Evaluación base</button>
-    <button class="subtab" data-subtab="te-energia" type="button">② Producción energética</button>
+    <button class="subtab" data-subtab="te-financiero" type="button">② Evaluación financiera</button>
     <button class="subtab" data-subtab="te-sensibilidad" type="button">③ Sensibilidad &amp; robustez</button>
-    <button class="subtab" data-subtab="te-apalancado" type="button">④ Evaluación apalancada</button>
   </div>
 
   <!-- ══════════ ① EVALUACIÓN BASE ══════════ -->
@@ -2593,97 +2592,7 @@
       </div>
     </div>
 
-  <!-- Financial KPIs -->
-  <div class="card mt-2">
-    <div class="card-header">
-      <span class="card-title">Resultados financieros</span>
-        <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
-        <span class="badge" id="te-loss-applied-badge"
-          style="display:none;background:rgba(246,161,86,.15);color:var(--orange);border:1px solid rgba(246,161,86,.35);font-size:.65rem">—</span>
-        <span class="badge" id="te-lev-active-badge"
-          style="display:none;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3);font-size:.65rem">⚡ Apalancado</span>
-        <span class="badge" id="te-topsis-ref-badge"
-          style="display:none;background:rgba(159,122,234,.12);color:#9F7AEA;border:1px solid rgba(159,122,234,.3);font-size:.65rem">—</span>
-        <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:.5rem">
-          <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
-            onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC · Integral</button>
-          <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
-            onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity · Apalancado</button>
-        </div>
-        <span class="badge" id="te-height-badge"
-          style="display:none;background:rgba(100,116,139,.1);border:1px solid rgba(100,116,139,.25);font-size:.65rem">—</span>
-        <span class="badge" id="te-wind-station-badge"
-          style="display:none;background:rgba(34,197,94,.1);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
-        <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-          <label id="te-loss-toggle-wrap"
-            title="Aplica un % de pérdidas eléctricas finales al AEP. Re-escala VAN, LCOE, flujos y financiamiento sin re-ejecutar la simulación."
-            style="display:inline-flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);padding:.2rem .55rem;border-radius:18px;cursor:pointer;user-select:none">
-            <input type="checkbox" id="te-final-loss-enable" style="margin:0;cursor:pointer;accent-color:var(--accent)">
-            <span>Pérdidas finales</span>
-            <input type="number" id="te-final-loss-pct" value="3" step="0.5" min="0" max="30" disabled
-              style="width:46px;background:transparent;border:none;color:var(--text-primary);font-family:var(--font-mono),monospace;font-size:.78rem;padding:0;text-align:right">
-            <span>%</span>
-          </label>
-          <!-- btn-lev-from-scenario eliminado — el apalancamiento se accede por el toggle ⚡ Equity -->
-          <button class="btn-secondary" id="btn-clear-financing"
-            style="display:none;font-size:.75rem;padding:.25rem .7rem;white-space:nowrap;color:#f87171;border-color:rgba(248,113,113,.4)">
-            × Quitar
-          </button>
-        </div>
-      </div>
-      <div class="card-body" id="te-kpi-grid">
-        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
-      </div>
-    </div>
-
-  <!-- Indicadores de retorno y viabilidad -->
-  <div class="card mt-2" id="te-summary-card" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Indicadores de retorno y viabilidad</span>
-      <span class="badge badge--info" id="te-summary-mode-badge" style="font-size:.65rem">sólo proyecto</span>
-      <span class="text-muted" style="margin-left:auto;font-size:.7rem">VAN, TIR, retorno simple y descontado</span>
-    </div>
-    <div class="card-body" style="overflow-x:auto">
-      <table class="data-table" id="te-summary-table">
-        <thead></thead>
-        <tbody id="te-summary-tbody"></tbody>
-      </table>
-      <p class="text-muted" style="font-size:.7rem;margin:.5rem 0 0">
-        VAN: Valor Actual Neto · TIR: Tasa Interna de Retorno · DPBP: payback descontado al costo de capital · Equity payback: solo refleja flujos del inversionista (sin deuda).
-      </p>
-    </div>
-  </div>
-
-  <div class="grid-2 mt-2">
-    <div class="card">
-      <div class="card-header"><span class="card-title">Desglose CAPEX</span></div>
-      <div class="chart-box"><canvas id="chart-capex"></canvas></div>
-    </div>
-    <div class="card">
-      <div class="card-header"><span class="card-title" id="te-cashflow-chart-title">Flujo de caja acumulado (25 años)</span></div>
-      <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
-    </div>
-  </div>
-
-  <div class="card mt-2">
-    <div class="card-header">
-      <span class="card-title" id="te-cashflow-title">Tabla de flujos anuales</span>
-      <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
-    </div>
-    <div class="card-body" style="overflow-x:auto;max-height:320px">
-      <p id="te-lifecycle-assumptions" class="text-muted" style="font-size:.8rem"></p>
-      <table class="data-table" id="te-cashflow-table">
-        <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-  </div><!-- /te-base -->
-
-  <!-- ══════════ ② PRODUCCIÓN ENERGÉTICA ══════════ -->
-  <div class="subsection" data-subtab="te-energia">
-
+  <!-- ══ Producción Energética ══ -->
   <div class="card mt-2">
     <div class="card-header"><span class="card-title">Curva Cp vs Velocidad del viento</span><span class="badge badge--info" id="badge-cp-max">—</span></div>
     <div class="chart-box"><canvas id="chart-cp"></canvas></div>
@@ -2751,7 +2660,7 @@
     </div>
   </div>
 
-  </div><!-- /te-energia -->
+  </div><!-- /te-base -->
 
   <!-- ══════════ ③ SENSIBILIDAD & ROBUSTEZ ══════════ -->
   <div class="subsection" data-subtab="te-sensibilidad">
@@ -2997,10 +2906,110 @@
 
   </div><!-- /te-sensibilidad -->
 
-  <!-- ══════════ ④ EVALUACIÓN APALANCADA ══════════ -->
-  <div class="subsection" data-subtab="te-apalancado">
+  <!-- ══════════ ② EVALUACIÓN FINANCIERA ══════════ -->
+  <div class="subsection" data-subtab="te-financiero">
 
-  <!-- ══ Análisis Apalancado de la evaluación integral ══ -->
+  <!-- ── Capital completo (WACC · Proyecto) ── -->
+  <div class="te-section-divider mt-2" style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+    <span style="font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-secondary);white-space:nowrap">Capital completo</span>
+    <span style="flex:1;height:1px;background:var(--border)"></span>
+    <span style="font-size:.68rem;color:var(--text-muted)">WACC · Evaluación sin financiamiento externo</span>
+  </div>
+
+  <!-- Financial KPIs -->
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title">Resultados financieros</span>
+        <span class="badge badge--info" id="te-viable-badge" style="display:none">—</span>
+        <span class="badge" id="te-loss-applied-badge"
+          style="display:none;background:rgba(246,161,86,.15);color:var(--orange);border:1px solid rgba(246,161,86,.35);font-size:.65rem">—</span>
+        <span class="badge" id="te-lev-active-badge"
+          style="display:none;background:rgba(77,163,255,.12);color:#4DA3FF;border:1px solid rgba(77,163,255,.3);font-size:.65rem">⚡ Apalancado</span>
+        <span class="badge" id="te-topsis-ref-badge"
+          style="display:none;background:rgba(159,122,234,.12);color:#9F7AEA;border:1px solid rgba(159,122,234,.3);font-size:.65rem">—</span>
+        <div class="fin-view-toggle" style="display:flex;gap:.3rem;margin-left:.5rem">
+          <button class="btn-secondary fin-view-btn is-active" data-view="integral" type="button"
+            onclick="setFinView('integral')" style="font-size:.72rem;padding:.2rem .55rem">WACC · Integral</button>
+          <button class="btn-secondary fin-view-btn" data-view="equity" type="button"
+            onclick="setFinView('equity')" style="font-size:.72rem;padding:.2rem .55rem">⚡ Equity · Apalancado</button>
+        </div>
+        <span class="badge" id="te-height-badge"
+          style="display:none;background:rgba(100,116,139,.1);border:1px solid rgba(100,116,139,.25);font-size:.65rem">—</span>
+        <span class="badge" id="te-wind-station-badge"
+          style="display:none;background:rgba(34,197,94,.1);color:#22c55e;border:1px solid rgba(34,197,94,.3);font-size:.65rem">—</span>
+        <div style="margin-left:auto;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+          <label id="te-loss-toggle-wrap"
+            title="Aplica un % de pérdidas eléctricas finales al AEP. Re-escala VAN, LCOE, flujos y financiamiento sin re-ejecutar la simulación."
+            style="display:inline-flex;align-items:center;gap:.35rem;font-size:.72rem;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border);padding:.2rem .55rem;border-radius:18px;cursor:pointer;user-select:none">
+            <input type="checkbox" id="te-final-loss-enable" style="margin:0;cursor:pointer;accent-color:var(--accent)">
+            <span>Pérdidas finales</span>
+            <input type="number" id="te-final-loss-pct" value="3" step="0.5" min="0" max="30" disabled
+              style="width:46px;background:transparent;border:none;color:var(--text-primary);font-family:var(--font-mono),monospace;font-size:.78rem;padding:0;text-align:right">
+            <span>%</span>
+          </label>
+          <!-- btn-lev-from-scenario eliminado — el apalancamiento se accede por el toggle ⚡ Equity -->
+          <button class="btn-secondary" id="btn-clear-financing"
+            style="display:none;font-size:.75rem;padding:.25rem .7rem;white-space:nowrap;color:#f87171;border-color:rgba(248,113,113,.4)">
+            × Quitar
+          </button>
+        </div>
+      </div>
+      <div class="card-body" id="te-kpi-grid">
+        <p class="text-muted" style="font-size:.8rem">Ejecuta el análisis para ver resultados.</p>
+      </div>
+    </div>
+
+  <!-- Indicadores de retorno y viabilidad -->
+  <div class="card mt-2" id="te-summary-card" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Indicadores de retorno y viabilidad</span>
+      <span class="badge badge--info" id="te-summary-mode-badge" style="font-size:.65rem">sólo proyecto</span>
+      <span class="text-muted" style="margin-left:auto;font-size:.7rem">VAN, TIR, retorno simple y descontado</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table class="data-table" id="te-summary-table">
+        <thead></thead>
+        <tbody id="te-summary-tbody"></tbody>
+      </table>
+      <p class="text-muted" style="font-size:.7rem;margin:.5rem 0 0">
+        VAN: Valor Actual Neto · TIR: Tasa Interna de Retorno · DPBP: payback descontado al costo de capital · Equity payback: solo refleja flujos del inversionista (sin deuda).
+      </p>
+    </div>
+  </div>
+
+  <div class="grid-2 mt-2">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Desglose CAPEX</span></div>
+      <div class="chart-box"><canvas id="chart-capex"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-header"><span class="card-title" id="te-cashflow-chart-title">Flujo de caja acumulado (25 años)</span></div>
+      <div class="chart-box"><canvas id="chart-cashflow"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card mt-2">
+    <div class="card-header">
+      <span class="card-title" id="te-cashflow-title">Tabla de flujos anuales</span>
+      <span class="badge badge--info" id="te-cashflow-mode-badge" style="display:none;font-size:.65rem">—</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto;max-height:320px">
+      <p id="te-lifecycle-assumptions" class="text-muted" style="font-size:.8rem"></p>
+      <table class="data-table" id="te-cashflow-table">
+        <thead><tr><th>Año</th><th>Flujo (USD)</th><th>VP Flujo</th><th>Acumulado</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ── Con financiamiento (Equity · Apalancado) ── -->
+  <div class="te-section-divider mt-3" style="display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem">
+    <span style="font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--text-secondary);white-space:nowrap">Con financiamiento</span>
+    <span style="flex:1;height:1px;background:var(--border)"></span>
+    <span style="font-size:.68rem;color:var(--text-muted)">Equity · Estructura de deuda y flujos del inversionista</span>
+  </div>
+
+  <!-- ══ Análisis con financiamiento ══ -->
   <div id="te-lev-section" style="display:none">
 
     <div class="grid-2 mt-2">
@@ -3068,7 +3077,7 @@
 
   </div><!-- /te-lev-section -->
 
-  </div><!-- /te-apalancado -->
+  </div><!-- /te-financiero -->
 
 </section>
 
