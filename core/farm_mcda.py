@@ -187,6 +187,172 @@ def rerun_economics_from_pool(
     return {'alternatives': alternatives, 'warnings': warnings_out}
 
 
+def _rerun_with_overrides(
+    pool_caches: Dict[str, List[Dict]],
+    turbines_folder: str,
+    cost_model: CostModel,
+    discount_rate: float,
+    project_years: int,
+    price_usd_kwh: float,
+    annual_inflation_pct: Optional[float] = None,
+    price_escalation_pct: Optional[float] = None,
+    aep_factor: float = 1.0,
+) -> dict:
+    """Like rerun_economics_from_pool but accepts explicit parameter overrides.
+
+    ``price_usd_kwh`` is the flat price used for all candidates.
+    ``aep_factor`` multiplies the P50 AEP before running economics (e.g. 0.90
+    simulates a 10 % resource under-estimate).
+    """
+    alternatives: List[Dict] = []
+    for turbine_fn, candidates in pool_caches.items():
+        turbine = PowerCurve.from_file(
+            os.path.join(turbines_folder, os.path.basename(turbine_fn)))
+        feasible = []
+        for c in candidates:
+            aep = float(c.get('aep_p50_mwh', 0) or 0) * aep_factor
+            if aep <= 0:
+                continue
+            econ = _economics(
+                turbine, c['n_turbines'], aep, cost_model,
+                discount_rate, project_years, price_usd_kwh,
+                c['collection_length_m'],
+                revenue_year1_override=None,
+                annual_inflation_pct=annual_inflation_pct,
+                price_escalation_pct=price_escalation_pct,
+                discount_rate_basis='nominal',
+            )
+            feasible.append({**c, 'aep_p50_mwh': aep, 'van_usd': econ['van_usd'], '_econ': econ})
+        if not feasible:
+            continue
+        champion = max(feasible, key=lambda x: x['van_usd'])
+        econ = champion['_econ']
+        installed_mw = champion['n_turbines'] * turbine.rated_power_kw / 1000.0
+        factor_cap = champion['aep_p50_mwh'] / (installed_mw * 8760.0) if installed_mw > 0 else 0.0
+        alt = {
+            'label': f'layout::{turbine_fn}::wake-optimal',
+            'turbina': turbine_fn,
+            'is_champion': True,
+            'n_aerogeneradores': champion['n_turbines'],
+            'n_optimo_estela': champion['n_turbines'],
+            'max_n_fisico': champion['n_turbines'],
+            'aep_p50_mwh': champion['aep_p50_mwh'],
+            'factor_capacidad': factor_cap,
+            'installed_mw': installed_mw,
+            'capex_usd_per_installed_kw': (
+                econ['capex_usd'] / (installed_mw * 1000) if installed_mw > 0 else None),
+            **{k: econ[k] for k in (
+                'van_usd', 'van_real_usd', 'irr', 'lcoe_usd_kwh',
+                'lcoe_nom_usd_kwh', 'lcoe_real_usd_kwh',
+                'benefit_cost_ratio', 'roi', 'payback_years',
+                'annual_revenue_year1_flat_usd', 'economics_warnings',
+            ) if k in econ},
+        }
+        alternatives.append(alt)
+    return {'alternatives': alternatives}
+
+
+def topsis_scenario_sensitivity(
+    pool_caches: Dict[str, List[Dict]],
+    turbines_folder: str,
+    cost_model: CostModel,
+    base_discount_rate: float,
+    project_years: int,
+    base_annual_inflation_pct: Optional[float] = None,
+    base_price_escalation_pct: Optional[float] = None,
+    base_price_usd_kwh: float = 0.07,
+) -> Dict:
+    """Evaluate TOPSIS winner stability across AEP, rate, and inflation scenarios.
+
+    Returns a dict with per-dimension scenario tables and an overall stability
+    summary. All dimensions are evaluated independently against the base case.
+    Combined extremes (stress / optimista) are also included.
+    """
+    from core.multicriteria import rank_layout_alternatives as _rank
+
+    inf = base_annual_inflation_pct if base_annual_inflation_pct is not None else 0.0
+    rate = float(base_discount_rate)
+    price = float(base_price_usd_kwh)
+
+    # Base winner
+    base_run = _rerun_with_overrides(
+        pool_caches, turbines_folder, cost_model, rate, project_years,
+        price, inf, base_price_escalation_pct, aep_factor=1.0)
+    base_alts = base_run['alternatives']
+    if not base_alts:
+        return {'error': 'No hay alternativas en el pool para el escenario base.'}
+    base_ranking = _rank(base_alts) if len(base_alts) >= 2 else {'ranking': [{'label': base_alts[0].get('turbina', ''), 'turbina': base_alts[0].get('turbina', '')}]}
+    base_winner = base_ranking['ranking'][0]['turbina'] if base_ranking.get('ranking') else None
+
+    def _run_scenario(label: str, dim: str, aep_f: float, rate_v: float,
+                      inf_v: float, price_v: float, params: dict) -> dict:
+        r = _rerun_with_overrides(
+            pool_caches, turbines_folder, cost_model, rate_v, project_years,
+            price_v, inf_v, base_price_escalation_pct, aep_factor=aep_f)
+        alts = r['alternatives']
+        if not alts:
+            return {'label': label, 'dim': dim, 'params': params, 'winner': None, 'stable': False, 'ranking': []}
+        ranking = _rank(alts) if len(alts) >= 2 else {'ranking': [{'label': alts[0].get('turbina', ''), 'turbina': alts[0].get('turbina', '')}]}
+        winner = ranking['ranking'][0]['turbina'] if ranking.get('ranking') else None
+        return {
+            'label': label, 'dim': dim, 'params': params,
+            'winner': winner,
+            'stable': winner == base_winner,
+            'ranking': ranking.get('ranking', [])[:6],
+        }
+
+    aep_scenarios = [
+        _run_scenario('AEP −20%', 'aep', 0.80, rate, inf, price, {'aep_factor': 0.80}),
+        _run_scenario('AEP −10%', 'aep', 0.90, rate, inf, price, {'aep_factor': 0.90}),
+        _run_scenario('AEP base',  'aep', 1.00, rate, inf, price, {'aep_factor': 1.00}),
+        _run_scenario('AEP +10%', 'aep', 1.10, rate, inf, price, {'aep_factor': 1.10}),
+    ]
+
+    rate_delta = [(-0.03, 'WACC −3 pp'), (-0.015, 'WACC −1.5 pp'),
+                  (0.0, 'WACC base'), (0.015, 'WACC +1.5 pp'), (0.03, 'WACC +3 pp')]
+    rate_scenarios = [
+        _run_scenario(lbl, 'rate', 1.0, max(0.01, rate + d), inf, price, {'discount_rate': round(rate + d, 4)})
+        for d, lbl in rate_delta
+    ]
+
+    if inf > 0:
+        inf_cases = [(0.0, 'Inflación 0%'), (inf * 0.5, 'Inflación ½× base'),
+                     (inf, 'Inflación base'), (inf * 1.5, 'Inflación 1.5× base'), (inf * 2.0, 'Inflación 2× base')]
+    else:
+        inf_cases = [(0.0, 'Inflación 0% (base)'), (0.01, 'Inflación 1%'),
+                     (0.02, 'Inflación 2%'), (0.03, 'Inflación 3%'), (0.05, 'Inflación 5%')]
+    inflation_scenarios = [
+        _run_scenario(lbl, 'inflation', 1.0, rate, iv, price, {'annual_inflation_pct': round(iv, 4)})
+        for iv, lbl in inf_cases
+    ]
+
+    combined_scenarios = [
+        _run_scenario('Estrés máximo', 'combined', 0.80, max(0.01, rate + 0.03), inf * 2.0 if inf > 0 else 0.05, price, {
+            'aep_factor': 0.80, 'discount_rate': round(rate + 0.03, 4), 'annual_inflation_pct': round(inf * 2 if inf > 0 else 0.05, 4)}),
+        _run_scenario('Escenario optimista', 'combined', 1.10, max(0.01, rate - 0.03), inf * 0.5 if inf > 0 else 0.0, price, {
+            'aep_factor': 1.10, 'discount_rate': round(max(0.01, rate - 0.03), 4), 'annual_inflation_pct': round(inf * 0.5 if inf > 0 else 0.0, 4)}),
+    ]
+
+    all_scenarios = aep_scenarios + rate_scenarios + inflation_scenarios + combined_scenarios
+    stable_count = sum(1 for s in all_scenarios if s.get('stable'))
+    total = len(all_scenarios)
+
+    return {
+        'base_winner': base_winner,
+        'base_winner_label': base_ranking['ranking'][0].get('label', base_winner) if base_ranking.get('ranking') else base_winner,
+        'aep_scenarios': aep_scenarios,
+        'rate_scenarios': rate_scenarios,
+        'inflation_scenarios': inflation_scenarios,
+        'combined_scenarios': combined_scenarios,
+        'stability_summary': {
+            'total_scenarios': total,
+            'winner_stable_count': stable_count,
+            'winner_changes_count': total - stable_count,
+            'stability_rate_pct': round(stable_count / total * 100, 1) if total else 0,
+        },
+    }
+
+
 def compute_annual_energy_breakdown(
     layout_xy_m, turbine, resource, ratio_by_sector,
     availability=0.97, electrical_losses=0.03,

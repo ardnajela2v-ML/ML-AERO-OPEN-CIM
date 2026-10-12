@@ -9727,7 +9727,7 @@ async function runScenarioAnalysis() {
   const progEl = document.getElementById('mcda-scenario-progress-text');
   const statusEl = document.getElementById('mcda-scenario-status');
   if (btn) btn.disabled = true;
-  if (progEl) progEl.textContent = 'Recalculando escenarios bajo/base/alto desde el pool…';
+  if (progEl) progEl.textContent = 'Calculando sensibilidad tecnoeconómica del pool…';
   if (statusEl) statusEl.textContent = 'Calculando…';
   try {
     const data = await api('/api/multicriteria/scenario_analysis', 'POST', {
@@ -9739,7 +9739,13 @@ async function runScenarioAnalysis() {
     const resultsEl = document.getElementById('mcda-scenario-results');
     if (resultsEl) resultsEl.style.display = '';
     renderScenarioAnalysis(data, 'base');
-    toast('Análisis de escenarios PML completado.', 'success');
+    const sens = data.topsis_sensitivity;
+    if (sens && !sens.error) {
+      const pct = sens.stability_summary?.stability_rate_pct;
+      toast(`Estabilidad del ganador TOPSIS: ${pct != null ? pct + '%' : '—'} de los escenarios.`, 'success');
+    } else {
+      toast('Análisis de escenarios PML completado.', 'success');
+    }
   } catch (e) {
     toast(`Error en escenarios: ${e.message}`, 'error');
     if (statusEl) statusEl.textContent = 'Error';
@@ -9759,28 +9765,63 @@ function scenarioSwitchTab(scen) {
 function renderScenarioAnalysis(data, activeScen) {
   const scenarios = data.scenarios || {};
   const winnerStable = data.winner_stable;
+  const sens = data.topsis_sensitivity || {};
+  const summary = sens.stability_summary || {};
+  const baseWinner = (sens.base_winner || '').replace('.csv', '');
 
-  // Winner stable badge
+  // Winner stable badge (PML)
   const badgeEl = document.getElementById('mcda-scenario-winner-badge');
   if (badgeEl) {
     if (winnerStable == null) {
       badgeEl.innerHTML = '';
     } else if (winnerStable) {
-      badgeEl.innerHTML = '<span class="badge badge--success" style="font-size:.8rem;padding:.35rem .75rem">Ganador estable en los tres escenarios</span>';
+      badgeEl.innerHTML = '<span class="badge badge--success" style="font-size:.8rem;padding:.35rem .75rem">Ganador PML estable en los tres escenarios</span>';
     } else {
       badgeEl.innerHTML = '<span class="badge badge--warning" style="font-size:.8rem;padding:.35rem .75rem;background:var(--yellow-dim,#3d2d00);color:var(--yellow,#f9c547);border:1px solid var(--yellow,#f9c547)">Advertencia: el ganador cambia entre escenarios de precio</span>';
     }
   }
 
+  // Global stability bar
+  const barEl = document.getElementById('mcda-stability-bar');
+  if (barEl && summary.total_scenarios) {
+    const pct = summary.stability_rate_pct ?? 0;
+    const stable = summary.winner_stable_count ?? 0;
+    const total = summary.total_scenarios ?? 0;
+    const color = pct >= 80 ? 'var(--green,#22c55e)' : pct >= 50 ? 'var(--yellow,#f9c547)' : 'var(--red,#ef4444)';
+    barEl.innerHTML = `
+      <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:.6rem .9rem;display:flex;align-items:center;gap:.9rem;flex-wrap:wrap">
+        <span style="font-size:.72rem;color:var(--text-secondary);white-space:nowrap">Ganador base: <strong style="color:var(--text-primary)">${baseWinner || '—'}</strong></span>
+        <span style="font-size:.72rem;color:var(--text-secondary);white-space:nowrap">Estabilidad global:</span>
+        <div style="flex:1;min-width:120px;background:var(--bg-secondary);border-radius:4px;height:8px;overflow:hidden">
+          <div style="width:${pct}%;height:100%;background:${color};transition:width .4s"></div>
+        </div>
+        <span style="font-size:.8rem;font-weight:700;color:${color};white-space:nowrap">${pct}%</span>
+        <span style="font-size:.7rem;color:var(--text-muted);white-space:nowrap">(${stable}/${total} escenarios)</span>
+      </div>`;
+  }
+
   // Active tab panel
   const panelEl = document.getElementById('mcda-scenario-panel');
-  if (panelEl) {
+  if (!panelEl) return;
+  activeScen = activeScen || 'base';
+
+  if (activeScen === 'sens_aep') {
+    panelEl.innerHTML = _sensScenarioTable(sens.aep_scenarios || [], 'AEP', 'aep_factor', baseWinner);
+  } else if (activeScen === 'sens_rate') {
+    panelEl.innerHTML = _sensScenarioTable(sens.rate_scenarios || [], 'Tasa de descuento', 'discount_rate', baseWinner);
+  } else if (activeScen === 'sens_inflation') {
+    panelEl.innerHTML = _sensScenarioTable(sens.inflation_scenarios || [], 'Inflación OPEX', 'annual_inflation_pct', baseWinner);
+  } else if (activeScen === 'sens_combined') {
+    panelEl.innerHTML = _sensScenarioTable(sens.combined_scenarios || [], 'Escenario combinado', null, baseWinner);
+  } else if (activeScen === 'sens_summary') {
+    panelEl.innerHTML = _sensSummaryTable(sens);
+  } else {
     const scen = scenarios[activeScen];
     if (!scen) {
       panelEl.innerHTML = '<p class="text-muted" style="font-size:.82rem">Sin datos para este escenario.</p>';
     } else {
       const price = scen.price_usd_kwh != null
-        ? `Precio: ${Number(scen.price_usd_kwh).toFixed(4)} USD/kWh`
+        ? `Precio PML: <strong>${Number(scen.price_usd_kwh).toFixed(4)} USD/kWh</strong>`
         : '';
       const ranking = scen.ranking?.ranking || [];
       panelEl.innerHTML = `<p class="text-muted" style="font-size:.78rem;margin:.3rem 0 .6rem">${price}</p>` +
@@ -9798,6 +9839,72 @@ function renderScenarioAnalysis(data, activeScen) {
       matrixEl.innerHTML = _renderRobustnessMatrix(matrixData);
     }
   }
+}
+
+function _sensScenarioTable(scenarios, dimLabel, paramKey, baseWinner) {
+  if (!scenarios.length) return '<p class="text-muted" style="font-size:.82rem">Sin escenarios.</p>';
+  const rows = scenarios.map(s => {
+    const stable = s.stable;
+    const icon = stable ? '✓' : '✗';
+    const rowColor = stable ? '' : 'style="background:rgba(239,68,68,.07)"';
+    const iconColor = stable ? 'color:var(--green,#22c55e)' : 'color:var(--red,#ef4444)';
+    const winner = (s.winner || '—').replace('.csv', '');
+    const paramVal = paramKey && s.params?.[paramKey] != null
+      ? (paramKey === 'aep_factor' ? `×${Number(s.params[paramKey]).toFixed(2)}`
+        : paramKey === 'discount_rate' ? `${(Number(s.params[paramKey]) * 100).toFixed(1)}%`
+        : `${(Number(s.params[paramKey]) * 100).toFixed(1)}%`)
+      : '—';
+    return `<tr ${rowColor}>
+      <td style="font-weight:600">${s.label}</td>
+      <td style="font-variant-numeric:tabular-nums">${paramVal}</td>
+      <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${winner}</td>
+      <td><span style="${iconColor};font-weight:700">${icon}</span> ${stable ? 'Mismo ganador' : 'Cambia'}</td>
+    </tr>`;
+  }).join('');
+  const paramHeader = paramKey === 'aep_factor' ? 'Factor AEP'
+    : paramKey === 'discount_rate' ? 'Tasa (%)'
+    : paramKey === 'annual_inflation_pct' ? 'Inflación (%)'
+    : 'Parámetros';
+  return `<p class="text-muted" style="font-size:.75rem;margin-bottom:.5rem">Base: <strong>${baseWinner || '—'}</strong> · Variación: ${dimLabel}</p>
+    <div style="overflow:auto"><table class="data-table" style="width:100%;font-size:.79rem">
+    <thead><tr><th>Escenario</th><th>${paramHeader}</th><th>Ganador</th><th>¿Estable?</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function _sensSummaryTable(sens) {
+  if (!sens || sens.error) return `<p class="text-muted" style="font-size:.82rem">${sens?.error || 'Sin datos.'}</p>`;
+  const baseWinner = (sens.base_winner || '—').replace('.csv', '');
+  const s = sens.stability_summary || {};
+  const dims = [
+    { key: 'aep_scenarios', label: 'Variación AEP' },
+    { key: 'rate_scenarios', label: 'Tasa de descuento' },
+    { key: 'inflation_scenarios', label: 'Inflación OPEX' },
+    { key: 'combined_scenarios', label: 'Escenarios combinados' },
+  ];
+  const dimRows = dims.map(d => {
+    const arr = sens[d.key] || [];
+    if (!arr.length) return '';
+    const stable = arr.filter(x => x.stable).length;
+    const total = arr.length;
+    const pct = Math.round(stable / total * 100);
+    const color = pct >= 80 ? 'var(--green,#22c55e)' : pct >= 50 ? 'var(--yellow,#f9c547)' : 'var(--red,#ef4444)';
+    const changers = arr.filter(x => !x.stable).map(x => x.label).join(', ') || 'ninguno';
+    return `<tr>
+      <td>${d.label}</td>
+      <td>${stable}/${total}</td>
+      <td><span style="font-weight:700;color:${color}">${pct}%</span></td>
+      <td style="font-size:.73rem;color:var(--text-muted)">${changers}</td>
+    </tr>`;
+  }).join('');
+  return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:.65rem .9rem;margin-bottom:.8rem;font-size:.8rem">
+    Ganador base: <strong>${baseWinner}</strong> &nbsp;·&nbsp;
+    Estabilidad global: <strong>${s.stability_rate_pct ?? '—'}%</strong>
+    (${s.winner_stable_count ?? '—'}/${s.total_scenarios ?? '—'} escenarios)
+  </div>
+  <div style="overflow:auto"><table class="data-table" style="width:100%;font-size:.79rem">
+    <thead><tr><th>Dimensión</th><th>Estables</th><th>%</th><th>Escenarios con cambio de ganador</th></tr></thead>
+    <tbody>${dimRows}</tbody>
+  </table></div>`;
 }
 
 function _scenarioRankingTable(ranking) {
@@ -14352,8 +14459,6 @@ function bindTechnoSubtabs() {
     tab.addEventListener('click', () => {
       switchSubTab('mod-techno', tab.dataset.subtab);
       if (tab.dataset.subtab === 'te-sensibilidad') {
-        const sc = document.getElementById('mcda-scenario-card');
-        if (sc && MCDA.lastSpatial?.pool_available) sc.style.display = '';
         const rc = document.getElementById('te-risk-card');
         if (rc && WP.technoScenarios.integrated?.result) rc.style.display = '';
         const gc = document.getElementById('gsens-batch-card');
@@ -14392,6 +14497,8 @@ function bindKrigingSubtabs() {
       if (tab.dataset.subtab === 'geo') krig3ActivateMapSubtab();
       if (tab.dataset.subtab === 'topsis') {
         tclusterLoadTurbines();
+        const sc = document.getElementById('mcda-scenario-card');
+        if (sc && MCDA.lastSpatial?.pool_available) sc.style.display = '';
         setTimeout(() => {
           if (PARQUE.optMap) {
             PARQUE.optMap.invalidateSize();

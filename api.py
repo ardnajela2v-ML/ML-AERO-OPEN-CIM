@@ -100,7 +100,8 @@ from core.farm import (simulate_wind_farm, jensen_deficit, dominant_direction,
                        optimize_layout_structured, energy_weighted_dominant_direction)
 from core.farm_mcda import (analyze_park_layouts, generate_park_layouts,
                             rerun_economics_from_pool, robustness_matrix,
-                            cluster_technology_champions)
+                            cluster_technology_champions,
+                            topsis_scenario_sensitivity)
 from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
@@ -5823,12 +5824,34 @@ def create_app():
                         'classifier_validation': None,
                     }
 
+            # Precio base para sensibilidad: media de bajo/base/alto
+            base_price = None
+            for s in ('base', 'bajo', 'alto'):
+                alts_s = scenario_results.get(s, {}).get('alternatives', [])
+                if alts_s and alts_s[0].get('scenario_price_usd_kwh'):
+                    base_price = float(alts_s[0]['scenario_price_usd_kwh'])
+                    break
+            topsis_sensitivity = {}
+            if base_price is not None:
+                try:
+                    topsis_sensitivity = topsis_scenario_sensitivity(
+                        pool_caches, turbines_folder, cost_model_raw,
+                        discount_rate, project_years,
+                        base_annual_inflation_pct=annual_inflation_pct,
+                        base_price_escalation_pct=price_escalation_pct,
+                        base_price_usd_kwh=base_price,
+                    )
+                except Exception as _se:
+                    logger.warning('topsis_scenario_sensitivity falló: %s', _se)
+                    topsis_sensitivity = {'error': str(_se)}
+
             return jsonify(numpy_to_python({
                 'scenarios': scenario_results,
                 'winner_stable': winner_stable,
                 'robustness_matrix': matrix_result,
                 'smaa': smaa_results,
                 'pool_size_bytes': pool_bytes,
+                'topsis_sensitivity': topsis_sensitivity,
             }))
         except Exception as e:
             logger.exception('Error en %s', request.path)
