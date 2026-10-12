@@ -7258,6 +7258,8 @@ const TCLUSTER = {
   linkageMethod: 'complete',
 };
 
+const TECH_CLUSTER_STATE = { activeView: 'full', data: null };
+
 function tclusterUpdateTurbineCount() {
   const total = document.querySelectorAll('.tcluster-turbine-check').length;
   const sel = document.querySelectorAll('.tcluster-turbine-check:checked').length;
@@ -7268,23 +7270,21 @@ function tclusterUpdateTurbineCount() {
 function tclusterLoadTurbines() {
   const list = document.getElementById('tcluster-turbine-list');
   if (!list) return;
-  const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
-  if (!ranking.length) {
-    list.innerHTML = '<span class="text-muted">Ejecuta TOPSIS para ver los aerogeneradores evaluados.</span>';
+  const alts = (typeof MCDA !== 'undefined') ? (MCDA.lastSpatial?.alternatives || []) : [];
+  if (!alts.length) {
+    list.innerHTML = '<span class="text-muted">Genera layouts y ejecuta TOPSIS para ver las alternativas.</span>';
     tclusterUpdateTurbineCount();
     return;
   }
-  const seen = new Set();
-  const turbines = ranking.filter(r => r.turbina && !seen.has(r.turbina) && seen.add(r.turbina));
-  list.innerHTML = turbines.map(r => {
-    const spec = r.turbine_specification || {};
-    const mw = spec.rated_power_kw ? `${(spec.rated_power_kw / 1000).toFixed(1)} MW` : '—';
-    const rotor = spec.rotor_diameter_m ? `Ø ${spec.rotor_diameter_m} m` : '—';
-    const name = (r.turbina || '').replace('.csv', '');
-    return `<label style="display:flex;align-items:flex-start;gap:.45rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
-      <input type="checkbox" class="tcluster-turbine-check" value="${r.turbina}" checked style="margin-top:.15rem">
-      <span>${name} <span class="text-muted">· ${mw} · ${rotor}</span></span>
-    </label>`;
+  list.innerHTML = alts.map(a => {
+    const name = a.turbina || a.label || '?';
+    const n = a.n_aerogeneradores != null ? `${a.n_aerogeneradores} turbinas` : '';
+    const aep = a.aep_p90_mwh != null ? `AEP P90 ${Math.round(a.aep_p90_mwh).toLocaleString()} MWh` : '';
+    return `
+      <label style="display:flex;align-items:flex-start;gap:.45rem;padding:.28rem 0;border-bottom:1px solid var(--border)">
+        <input type="checkbox" class="tcluster-turbine-check" value="${name}" checked style="margin-top:.15rem">
+        <span>${name} <span class="text-muted">· ${[n, aep].filter(Boolean).join(' · ')}</span></span>
+      </label>`;
   }).join('');
   document.querySelectorAll('.tcluster-turbine-check').forEach(el =>
     el.addEventListener('change', tclusterUpdateTurbineCount));
@@ -7292,36 +7292,36 @@ function tclusterLoadTurbines() {
 }
 
 async function runTurbineTcluster() {
-  if (!WP.sessionId) { toast('Carga datos primero', 'warn'); return; }
-  const linkageMethod = document.getElementById('tcluster-linkage')?.value || 'complete';
-  TCLUSTER.linkageMethod = linkageMethod;
-  const turbineFilenames = Array.from(document.querySelectorAll('.tcluster-turbine-check:checked'))
-    .map(el => el.value);
-  if (turbineFilenames.length < 2) {
-    toast('Selecciona al menos 2 turbinas para poder agruparlas.', 'warning');
+  const alts = (typeof MCDA !== 'undefined') ? (MCDA.lastSpatial?.alternatives || []) : [];
+  if (!alts.length) { toast('Genera layouts y ejecuta TOPSIS primero.', 'warn'); return; }
+  const selectedNames = new Set(
+    Array.from(document.querySelectorAll('.tcluster-turbine-check:checked')).map(el => el.value)
+  );
+  if (selectedNames.size < 2) {
+    toast('Selecciona al menos 2 alternativas para poder agruparlas.', 'warning');
+    return;
+  }
+  const selectedAlts = alts.filter(a => selectedNames.has(a.turbina || a.label || '?'));
+  if (selectedAlts.length < 2) {
+    toast('Selecciona al menos 2 alternativas.', 'warning');
     return;
   }
   document.getElementById('tcluster-status').textContent = 'Ejecutando…';
   document.getElementById('tcluster-progress-wrap').style.display = '';
   document.getElementById('tcluster-progress-text').textContent =
-    'Generando series de potencia por turbina e interpolando contra el viento del sitio…';
+    'Calculando agrupación Ward sobre criterios TOPSIS…';
   const btn = document.getElementById('btn-tcluster-run');
   if (btn) btn.disabled = true;
   try {
-    const r = await api('/api/mcda/turbine_clustering', 'POST', {
-      session_id: WP.sessionId,
-      data_source: WP.activeDataSource,
-      linkage_method: linkageMethod,
-      ws_height_m: wsH(),
-      turbine_filenames: turbineFilenames,
-    });
-    TCLUSTER.result = r;
+    const r = await api('/api/multicriteria/cluster_champions', 'POST',
+      { alternatives: selectedAlts });
+    TCLUSTER.result = r.tech_clustering;
     document.getElementById('tcluster-progress-wrap').style.display = 'none';
     document.getElementById('tcluster-progress-text').textContent = '';
     document.getElementById('tcluster-status').textContent =
-      `${r.turbines.length} turbinas · ${linkageMethod}`;
+      `${(r.tech_clustering?.n_alternatives || 0)} alternativas · Ward`;
     renderTclusterResult();
-    toast('Clustering completado', 'success');
+    toast('Agrupación completada', 'success');
   } catch (e) {
     toast(`Error: ${e.message}`, 'error');
     document.getElementById('tcluster-status').textContent = 'Error';
@@ -7611,31 +7611,45 @@ function renderTclusterResult() {
   const kInput = document.getElementById('tcluster-k');
   const k = Math.max(2, Math.min(parseInt(kInput?.value) || TCLUSTER.k, (r.labels?.length - 1) || 2));
   TCLUSTER.k = k;
-  const clusterOf = cutTreeByK(r.linkage, k);
-  renderDendrogramSvg(document.getElementById('tcluster-dendrogram'), r.linkage, r.labels, clusterOf, r.turbines);
-  renderTclusterDistanceTable(r.distance_matrix, r.labels);
-  renderTclusterSummaryTable(r.turbines, clusterOf);
-  renderTclusterRepresentatives(r.turbines, clusterOf);
 
-  // Ward tecno-económico — ya calculado por TOPSIS, reutilizamos el linkage
-  const techClust = (typeof MCDA !== 'undefined') ? MCDA.lastSpatial?.tech_clustering : null;
-  const wardSection = document.getElementById('tcluster-ward-section');
-  if (techClust?.linkage && Array.isArray(techClust.labels) && techClust.labels.length >= 2 && wardSection) {
-    wardSection.style.display = '';
-    const wardK = Math.max(2, Math.min(k, techClust.labels.length - 1));
-    const wardClusterOf = cutTreeByK(techClust.linkage, wardK);
-    const wardTurbines = techClust.labels.map(name => ({ filename: name, name }));
-    renderDendrogramSvg(
-      document.getElementById('tcluster-ward-dendrogram'),
-      techClust.linkage, techClust.labels, wardClusterOf, wardTurbines
-    );
-  } else if (wardSection) {
-    wardSection.style.display = 'none';
+  const viewSel = document.getElementById('tcluster-view');
+  const viewName = viewSel?.value || 'full';
+  const view = r.views?.[viewName] || r.views?.full || r.views?.economic || r.views?.technical;
+  const linkage = view?.linkage || r.linkage;
+  const variables = view?.variables || r.variables || [];
+
+  if (!linkage) { wrap.style.display = 'none'; return; }
+
+  const clusterOf = cutTreeByK(linkage, k);
+
+  const alts = (typeof MCDA !== 'undefined') ? (MCDA.lastSpatial?.alternatives || []) : [];
+  const altsByName = new Map(alts.map(a => [a.turbina || a.label || '?', a]));
+  const turbinesForDendro = (r.labels || []).map(name => ({ filename: name, name }));
+
+  renderDendrogramSvg(document.getElementById('tcluster-dendrogram'), linkage, r.labels, clusterOf, turbinesForDendro);
+
+  const noteEl = document.getElementById('tcluster-view-note');
+  if (noteEl) {
+    const viewLabels = { full: '7 criterios TOPSIS', technical: 'Criterios técnicos (4)', economic: 'Criterios económicos (3)' };
+    noteEl.textContent =
+      `Vista: ${viewLabels[viewName] || viewName} · Ward · Z-score previo · variables: ${variables.map(v => v.replace(/_/g, ' ')).join(' · ')}`;
   }
+
+  renderTclusterSummaryTableAlts(r.labels, clusterOf, alts);
+  renderTclusterRepresentatives(turbinesForDendro.map((t, i) => ({
+    ...t,
+    capacity_factor_pct: altsByName.get(t.name)?.factor_capacidad != null
+      ? Number(altsByName.get(t.name).factor_capacidad) * 100 : null,
+    aep_mwh: altsByName.get(t.name)?.aep_p90_mwh,
+  })), clusterOf);
 
   if (kInput && !kInput._wiredTc) {
     kInput._wiredTc = true;
     kInput.addEventListener('change', renderTclusterResult);
+  }
+  if (viewSel && !viewSel._wiredTc) {
+    viewSel._wiredTc = true;
+    viewSel.addEventListener('change', renderTclusterResult);
   }
 }
 
@@ -7695,6 +7709,35 @@ function renderTclusterSummaryTable(turbines, clusterOf) {
       <td>${t.hub_height_m ?? '—'}</td>
       <td>${t.capacity_factor_pct != null ? t.capacity_factor_pct.toFixed(1) : '—'}</td>
       <td>${t.aep_mwh != null ? Math.round(t.aep_mwh).toLocaleString() : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTclusterSummaryTableAlts(labels, clusterOf, alts) {
+  const tbody = document.getElementById('tcluster-summary-tbody');
+  if (!tbody) return;
+  const altsByName = new Map(alts.map(a => [a.turbina || a.label || '?', a]));
+  tbody.innerHTML = (labels || []).map((name, i) => {
+    const c = clusterOf[i];
+    const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
+    const a = altsByName.get(name) || {};
+    const n = a.n_aerogeneradores ?? '—';
+    const aep = a.aep_p90_mwh != null ? Math.round(a.aep_p90_mwh).toLocaleString() : '—';
+    const van = a.van_usd != null ? (a.van_usd / 1e6).toFixed(2) : '—';
+    const lcoe = a.lcoe_usd_kwh != null ? Number(a.lcoe_usd_kwh).toFixed(4) : '—';
+    const cf = a.factor_capacidad != null ? (Number(a.factor_capacidad) * 100).toFixed(1) : '—';
+    const capex = a.capex_usd_per_installed_kw != null ? Math.round(a.capex_usd_per_installed_kw).toLocaleString() : '—';
+    return `<tr>
+      <td>
+        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;vertical-align:middle"></span>
+        ${name}
+      </td>
+      <td style="text-align:center">${n}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${aep}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${van}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${lcoe}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${cf}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${capex}</td>
     </tr>`;
   }).join('');
 }
@@ -8603,12 +8646,13 @@ async function fetchAndRenderTechClustering() {
 function renderTechClustering(clustering) {
   const card = document.getElementById('mcda-tech-cluster-card');
   if (!card) return;
-  // Hay alternatives pero sin clustering (proyecto guardado antes de §7.6)
   const alts = MCDA.lastSpatial?.alternatives;
   const hasAlts = Array.isArray(alts) && alts.length >= 2;
   if (!clustering || !Array.isArray(clustering.labels) || clustering.labels.length < 2) {
     if (hasAlts) {
       card.style.display = '';
+      const tabs = document.getElementById('mcda-tech-cluster-tabs');
+      if (tabs) tabs.style.display = 'none';
       const bodyEl = document.getElementById('mcda-tech-cluster-body');
       if (bodyEl) bodyEl.innerHTML =
         `<tr><td colspan="3" style="padding:.6rem">
@@ -8625,33 +8669,64 @@ function renderTechClustering(clustering) {
     return;
   }
   card.style.display = '';
-  const labels   = clustering.labels;
-  const k2       = clustering.cluster_k2 || [];
-  const k3       = clustering.cluster_k3 || [];
-  const COLORS   = [
+  TECH_CLUSTER_STATE.data = clustering;
+  const tabs = document.getElementById('mcda-tech-cluster-tabs');
+  if (tabs) tabs.style.display = '';
+  techClusterSwitchView(TECH_CLUSTER_STATE.activeView, true);
+}
+
+function techClusterSwitchView(viewName, skipTabUpdate) {
+  TECH_CLUSTER_STATE.activeView = viewName;
+  const clustering = TECH_CLUSTER_STATE.data;
+  if (!clustering) return;
+
+  if (!skipTabUpdate) {
+    document.querySelectorAll('#mcda-tech-cluster-tabs button[data-view]').forEach(btn => {
+      btn.classList.toggle('is-active', btn.dataset.view === viewName);
+    });
+  }
+
+  const view = clustering.views?.[viewName] || clustering;
+  const labels = clustering.labels;
+  const k2 = view?.cluster_k2 || clustering.cluster_k2 || [];
+  const k3 = view?.cluster_k3 || clustering.cluster_k3 || [];
+  const variables = view?.variables || clustering.variables || [];
+
+  const COLORS = [
     'var(--accent,#4DA3FF)', 'var(--violet,#9F7AEA)', '#22c55e', '#f59e0b',
   ];
-  const rows = labels.map((lbl, i) => {
-    const name = (lbl || '').replace('.csv', '');
-    const c2 = k2[i] ?? '—';
-    const c3 = k3[i] ?? '—';
-    const col2 = COLORS[(c2 - 1) % COLORS.length] || COLORS[0];
-    const col3 = COLORS[(c3 - 1) % COLORS.length] || COLORS[0];
-    return `<tr>
-      <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-          title="${name}">${name}</td>
-      <td><span style="background:${col2};color:#fff;padding:.15rem .5rem;
-          border-radius:4px;font-size:.72rem;font-weight:600">G${c2}</span></td>
-      <td><span style="background:${col3};color:#fff;padding:.15rem .5rem;
-          border-radius:4px;font-size:.72rem;font-weight:600">G${c3}</span></td>
-    </tr>`;
-  }).join('');
+
+  let rows = '';
+  if (!k2.length) {
+    rows = '<tr><td colspan="3" class="text-muted" style="padding:.6rem">Vista no disponible para estas alternativas.</td></tr>';
+  } else {
+    rows = labels.map((lbl, i) => {
+      const name = (lbl || '').replace('.csv', '');
+      const c2 = k2[i] ?? '—';
+      const c3 = k3[i] ?? '—';
+      const col2 = COLORS[(c2 - 1) % COLORS.length] || COLORS[0];
+      const col3 = COLORS[(c3 - 1) % COLORS.length] || COLORS[0];
+      return `<tr>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${name}">${name}</td>
+        <td style="text-align:center"><span style="background:${col2};color:#fff;padding:.15rem .5rem;
+            border-radius:4px;font-size:.72rem;font-weight:600">G${c2}</span></td>
+        <td style="text-align:center"><span style="background:${col3};color:#fff;padding:.15rem .5rem;
+            border-radius:4px;font-size:.72rem;font-weight:600">G${c3}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
   const bodyEl = document.getElementById('mcda-tech-cluster-body');
   if (bodyEl) bodyEl.innerHTML = rows;
+
   const noteEl = document.getElementById('mcda-tech-cluster-note');
-  if (noteEl) noteEl.textContent =
-    `Ward · distancia euclidiana · Z-score previo · ${clustering.n_alternatives} tecnologías · variables: ` +
-    (clustering.variables || []).map(v => v.replace(/_/g, ' ')).join(' · ');
+  if (noteEl) {
+    const viewLabels = { full: '7 criterios TOPSIS', technical: 'Técnicos (4)', economic: 'Económicos (3)' };
+    noteEl.textContent =
+      `Ward · distancia euclidiana · Z-score previo · ${clustering.n_alternatives} alternativas · vista: ${viewLabels[viewName] || viewName}` +
+      (variables.length ? ` · variables: ${variables.map(v => v.replace(/_/g, ' ')).join(' · ')}` : '');
+  }
 }
 
 function mcdaPreviewCandidate(index) {

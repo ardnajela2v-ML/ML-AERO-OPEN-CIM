@@ -1258,51 +1258,89 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
 
 
 def cluster_technology_champions(alternatives: List[Dict]) -> Optional[Dict]:
-    """Ward-linkage agglomerative clustering on 6 energy/economic variables.
+    """Ward-linkage agglomerative clustering on TOPSIS criterion subsets.
 
-    Informational only — does not modify alternatives or affect TOPSIS.
-    Returns None if < 2 alternatives or any required variable is missing/non-finite.
+    Returns clusterings for 3 views: full (7 TOPSIS criteria), technical (4),
+    and economic (3). Falls back to a legacy 6-variable set when TOPSIS-specific
+    fields are absent. Returns None if < 2 alternatives or no view succeeds.
     """
-    VARS = [
+    if len(alternatives) < 2:
+        return None
+
+    _VIEWS: Dict[str, List[str]] = {
+        'full': [
+            'hours_near_cpmax', 'van_usd', 'aep_p90_mwh',
+            'capex_usd_per_installed_kw', 'factor_capacidad',
+            'cp_effective_full_series', 'lcoe_usd_kwh',
+        ],
+        'technical': [
+            'hours_near_cpmax', 'aep_p90_mwh',
+            'factor_capacidad', 'cp_effective_full_series',
+        ],
+        'economic': [
+            'van_usd', 'capex_usd_per_installed_kw', 'lcoe_usd_kwh',
+        ],
+    }
+    _LEGACY_VARS: List[str] = [
         'aep_p50_mwh', 'aep_p90_mwh', 'van_usd',
         'lcoe_usd_kwh', 'factor_capacidad', 'capex_usd_per_installed_kw',
     ]
-    if len(alternatives) < 2:
-        return None
-    rows: List[List[float]] = []
-    labels: List[str] = []
-    for alt in alternatives:
-        row: List[float] = []
-        for v in VARS:
-            val = alt.get(v)
-            try:
-                fval = float(val)  # type: ignore[arg-type]
-            except (TypeError, ValueError):
-                return None
-            if not math.isfinite(fval):
-                return None
-            row.append(fval)
-        rows.append(row)
-        labels.append(str(alt.get('label', alt.get('turbina', len(labels)))))
+
     try:
         from scipy.cluster.hierarchy import (
             linkage as _linkage, fcluster as _fcluster)
     except ImportError:
         return None
-    X = np.array(rows, dtype=float)
-    std = X.std(axis=0)
-    std[std == 0.0] = 1.0
-    X_norm = (X - X.mean(axis=0)) / std
-    Z = _linkage(X_norm, method='ward', metric='euclidean')
-    k2 = _fcluster(Z, 2, criterion='maxclust').tolist()
-    k3 = _fcluster(Z, min(3, len(alternatives)), criterion='maxclust').tolist()
+
+    n = len(alternatives)
+    labels: List[str] = [
+        str(alt.get('label', alt.get('turbina', i)))
+        for i, alt in enumerate(alternatives)
+    ]
+
+    def _run_view(vars_list: List[str]) -> Optional[Dict]:
+        rows: List[List[float]] = []
+        for alt in alternatives:
+            row: List[float] = []
+            for v in vars_list:
+                val = alt.get(v)
+                try:
+                    fval = float(val)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return None
+                if not math.isfinite(fval):
+                    return None
+                row.append(fval)
+            rows.append(row)
+        X = np.array(rows, dtype=float)
+        std = X.std(axis=0)
+        std[std == 0.0] = 1.0
+        X_norm = (X - X.mean(axis=0)) / std
+        Z = _linkage(X_norm, method='ward', metric='euclidean')
+        k2 = _fcluster(Z, 2, criterion='maxclust').tolist()
+        k3 = _fcluster(Z, min(3, n), criterion='maxclust').tolist()
+        return {'linkage': Z.tolist(), 'cluster_k2': k2, 'cluster_k3': k3,
+                'variables': vars_list}
+
+    views: Dict[str, Optional[Dict]] = {}
+    for name, vlist in _VIEWS.items():
+        views[name] = _run_view(vlist)
+
+    # Primary view for legacy top-level fields: full > economic > technical > legacy
+    primary = (views.get('full') or views.get('economic') or views.get('technical')
+               or _run_view(_LEGACY_VARS))
+    if primary is None:
+        return None
+
     return {
-        'linkage': Z.tolist(),
         'labels': labels,
-        'cluster_k2': k2,
-        'cluster_k3': k3,
-        'variables': VARS,
-        'n_alternatives': len(alternatives),
+        'n_alternatives': n,
+        'views': views,
+        # Legacy fields — kept for backward compatibility
+        'linkage': primary['linkage'],
+        'cluster_k2': primary['cluster_k2'],
+        'cluster_k3': primary['cluster_k3'],
+        'variables': primary['variables'],
     }
 
 

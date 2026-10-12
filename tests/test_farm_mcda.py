@@ -612,10 +612,24 @@ class ClusteringTests(unittest.TestCase):
         self.assertEqual(len(result['cluster_k3']), 3)
         self.assertTrue(all(c in (1, 2) for c in result['cluster_k2']))
         self.assertTrue(all(c in (1, 2, 3) for c in result['cluster_k3']))
-        self.assertEqual(result['variables'], [
-            'aep_p50_mwh', 'aep_p90_mwh', 'van_usd',
-            'lcoe_usd_kwh', 'factor_capacidad', 'capex_usd_per_installed_kw',
-        ])
+        # Legacy variables come from the best available view; alts in _make_alts
+        # lack hours_near_cpmax / cp_effective_full_series so full/technical fail;
+        # primary falls back to economic or legacy set.
+        self.assertIn('variables', result)
+        self.assertIsInstance(result['variables'], list)
+        self.assertGreater(len(result['variables']), 0)
+        # New format: views dict present
+        self.assertIn('views', result)
+        self.assertIsInstance(result['views'], dict)
+        # economic view must succeed (all three fields present in _make_alts)
+        eco = result['views'].get('economic')
+        self.assertIsNotNone(eco)
+        self.assertEqual(len(eco['cluster_k2']), 3)
+        self.assertEqual(len(eco['cluster_k3']), 3)
+        self.assertEqual(eco['variables'],
+                         ['van_usd', 'capex_usd_per_installed_kw', 'lcoe_usd_kwh'])
+        # full / technical may be None since _make_alts lacks TOPSIS-specific fields
+        # (that's acceptable — graceful partial failure)
 
     def test_cluster_does_not_mutate_alternatives(self):
         import copy

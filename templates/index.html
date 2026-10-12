@@ -2012,33 +2012,69 @@
       </div>
 
 <div id="layout-candidates" aria-live="polite"><p>Genera layouts para revisar las alternativas antes de TOPSIS.</p></div>
+
+<!-- §7.6 Agrupación tecno-económica de alternativas -->
+<div id="mcda-tech-cluster-card" class="card mt-3" style="display:none">
+  <div class="card-header">
+    <span class="card-title">Agrupación tecno-económica de parques — Ward</span>
+    <span class="badge badge--info" style="font-size:.72rem">clustering jerárquico</span>
+  </div>
+  <div class="card-body">
+    <p class="text-muted" style="font-size:.8rem;margin-bottom:.7rem">
+      Agrupa las alternativas generadas por tecnología según similitud en los criterios TOPSIS.
+      Ward · Z-score · distancia euclidiana. No modifica el ranking.
+    </p>
+    <div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.6rem" id="mcda-tech-cluster-tabs">
+      <button class="btn-secondary is-active" type="button" data-view="full"
+        onclick="techClusterSwitchView('full')"
+        style="font-size:.72rem;padding:.2rem .55rem">7 criterios TOPSIS</button>
+      <button class="btn-secondary" type="button" data-view="technical"
+        onclick="techClusterSwitchView('technical')"
+        style="font-size:.72rem;padding:.2rem .55rem">Técnicos (4)</button>
+      <button class="btn-secondary" type="button" data-view="economic"
+        onclick="techClusterSwitchView('economic')"
+        style="font-size:.72rem;padding:.2rem .55rem">Económicos (3)</button>
+    </div>
+    <div style="overflow:auto;max-height:280px">
+      <table class="data-table" style="font-size:.72rem;width:100%">
+        <thead><tr>
+          <th style="text-align:left">Tecnología / Layout</th>
+          <th style="text-align:center">Grupo k=2</th>
+          <th style="text-align:center">Grupo k=3</th>
+        </tr></thead>
+        <tbody id="mcda-tech-cluster-body"></tbody>
+      </table>
+    </div>
+    <p class="text-muted" id="mcda-tech-cluster-note" style="font-size:.74rem;margin-top:.5rem"></p>
+  </div>
+</div>
+
   <button class="btn-primary" type="button" onclick="krigingGoToSubtab('topsis')">Continuar a ④ AHP / TOPSIS</button>
   </div></div>
 
   </div>
 
   <div class="subsection" data-subtab="topsis">
-  <!-- ═══════════ CLUSTERING JERÁRQUICO — AEROGENERADORES EVALUADOS EN TOPSIS (ML) ═══════════ -->
+  <!-- ═══════════ AGRUPACIÓN JERÁRQUICA DE PARQUES ÓPTIMOS — TOPSIS (ML) ═══════════ -->
   <div class="card mt-3">
     <div class="card-header">
-      <span class="card-title">Clustering jerárquico de aerogeneradores evaluados en TOPSIS (ML)</span>
+      <span class="card-title">Agrupación jerárquica de parques óptimos evaluados en TOPSIS (ML)</span>
       <span class="badge badge--info" id="tcluster-status">Sin análisis</span>
     </div>
     <div class="card-body">
       <p class="text-muted" style="font-size:.85rem;margin-bottom:.8rem">
-        Agrupa las turbinas ya evaluadas con simulación de parque completa (estela + AEP)
-        según qué tan correlacionadas están sus series de potencia contra el viento real de este sitio
-        (distancia = 1 − correlación de Pearson). Complementa el ranking TOPSIS con información
-        de similitud de comportamiento energético entre los candidatos finalistas.
+        Agrupa los parques óptimos (alternativas TOPSIS) según similitud en los criterios del ranking.
+        Ward · Z-score · distancia euclidiana. Selecciona las alternativas y la vista de criterios,
+        luego ejecuta. No modifica el ranking TOPSIS.
       </p>
 
       <div style="margin-bottom:.9rem">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.35rem">
-          <label class="form-label" style="font-size:.78rem;margin:0">Turbinas a incluir en el estudio</label>
+          <label class="form-label" style="font-size:.78rem;margin:0">Alternativas a incluir</label>
           <span class="text-muted" style="font-size:.72rem" id="tcluster-turbine-count">Sin ranking</span>
         </div>
         <div id="tcluster-turbine-list" style="max-height:150px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:.45rem;background:var(--bg-secondary);font-size:.74rem;line-height:1.45">
-          <span class="text-muted">Ejecuta TOPSIS para ver los aerogeneradores evaluados.</span>
+          <span class="text-muted">Genera layouts y ejecuta TOPSIS para ver las alternativas disponibles.</span>
         </div>
         <div style="display:flex;gap:.5rem;margin-top:.35rem">
           <button class="btn-secondary" id="btn-tcluster-turbines-all" type="button" style="font-size:.72rem;padding:.2rem .6rem">Todas</button>
@@ -2048,19 +2084,18 @@
 
       <div style="display:flex;gap:.6rem;align-items:flex-end;flex-wrap:wrap;margin-bottom:.9rem">
         <div>
-          <label class="form-label" style="font-size:.78rem">Método de enlace (linkage)</label>
-          <select class="form-select" id="tcluster-linkage" style="min-width:160px">
-            <option value="complete" selected>complete</option>
-            <option value="average">average</option>
-            <option value="single">single</option>
-            <option value="weighted">weighted</option>
+          <label class="form-label" style="font-size:.78rem">Vista de criterios</label>
+          <select class="form-select" id="tcluster-view" style="min-width:200px">
+            <option value="full">7 criterios TOPSIS</option>
+            <option value="technical">Técnicos (4 criterios)</option>
+            <option value="economic">Económicos (3 criterios)</option>
           </select>
         </div>
         <div>
           <label class="form-label" style="font-size:.78rem">Número de clusters (k)</label>
           <input type="number" class="form-input" id="tcluster-k" value="3" min="2" max="10" style="width:90px">
         </div>
-        <button class="btn-primary" id="btn-tcluster-run" type="button">▶ Analizar similitud de aerogeneradores</button>
+        <button class="btn-primary" id="btn-tcluster-run" type="button">▶ Agrupar parques TOPSIS</button>
       </div>
 
       <div class="progress-bar mt-2" id="tcluster-progress-wrap" style="display:none;height:4px;background:var(--bg-hover);border-radius:2px;overflow:hidden">
@@ -2073,45 +2108,19 @@
           <svg id="tcluster-dendrogram" width="100%" height="380" style="min-width:520px"></svg>
         </div>
 
-        <p class="text-muted" style="font-size:.75rem;margin-bottom:.3rem">
-          Agrupación por similitud energética de los candidatos ya evaluados.
-          No modifica ni reordena el ranking TOPSIS.
-        </p>
+        <p class="text-muted" id="tcluster-view-note" style="font-size:.75rem;margin-bottom:.3rem"></p>
         <div id="tcluster-reps" style="font-size:.8rem;margin-bottom:.9rem"></div>
 
-        <div class="grid-2" style="gap:1rem">
-          <div>
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Matriz de distancias (1 − r Pearson)</p>
-            <div style="overflow:auto;max-height:320px" id="tcluster-distance-table"></div>
-          </div>
-          <div>
-            <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Resumen por aerogenerador</p>
-            <div style="overflow:auto;max-height:320px">
-              <table class="data-table" style="font-size:.72rem">
-                <thead><tr>
-                  <th>Turbina</th><th>P. Nominal (kW)</th><th>Diámetro (m)</th>
-                  <th>H. Buje (m)</th><th>CF (%)</th><th>AEP (MWh)</th>
-                </tr></thead>
-                <tbody id="tcluster-summary-tbody"></tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        <!-- Ward tecno-económico -->
-        <div id="tcluster-ward-section" style="display:none;margin-top:1.2rem">
-          <hr style="border:none;border-top:1px solid var(--border);margin:.8rem 0">
-          <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.6rem;flex-wrap:wrap">
-            <p style="font-size:.78rem;font-weight:600;margin:0">Agrupación tecno-económica — Ward</p>
-            <span class="badge badge--info" style="font-size:.68rem">AEP P50/P90 · VAN · LCOE · CF · CAPEX/kW · Z-score · Euclidiana</span>
-          </div>
-          <p class="text-muted" style="font-size:.75rem;margin-bottom:.6rem">
-            Agrupa las mismas turbinas según similitud en sus 6 indicadores calculados por TOPSIS.
-            Usa el mismo k que el panel de correlación de Pearson arriba.
-          </p>
-          <div style="overflow:auto;margin-bottom:.8rem">
-            <svg id="tcluster-ward-dendrogram" width="100%" height="300" style="min-width:520px"></svg>
-          </div>
+        <div style="overflow:auto;max-height:320px">
+          <p style="font-size:.78rem;font-weight:600;margin-bottom:.4rem">Resumen de alternativas agrupadas</p>
+          <table class="data-table" style="font-size:.72rem">
+            <thead><tr>
+              <th>Tecnología</th><th>N turbinas</th><th>AEP P90 (MWh)</th>
+              <th>VAN (MUSD)</th><th>LCOE (USD/kWh)</th>
+              <th>CF (%)</th><th>CAPEX/kW (USD)</th>
+            </tr></thead>
+            <tbody id="tcluster-summary-tbody"></tbody>
+          </table>
         </div>
       </div>
     </div>
