@@ -896,14 +896,14 @@ function collectParkConfiguration() {
     energy_price_usd_kwh: pf(document.getElementById('park-energy-price')?.value) ?? 0.07,
     price_escalation_pct: pf(document.getElementById('park-price-escalation')?.value) ?? 0,
     annual_inflation_pct: pf(document.getElementById('park-inflation')?.value) ?? 0,
-    // Modelo CAPEX & OPEX
-    capex_turbine_usd_kw: pf(document.getElementById('cm-turbine-usd-kw')?.value) ?? 1800,
-    capex_turbines_pct: pf(document.getElementById('cm-turbines-pct')?.value) ?? 66,
-    capex_civil_pct: pf(document.getElementById('cm-civil-pct')?.value) ?? 12,
-    capex_elec_pct: pf(document.getElementById('cm-elec-pct')?.value) ?? 8,
-    capex_install_pct: pf(document.getElementById('cm-install-pct')?.value) ?? 5,
-    capex_eng_pct: pf(document.getElementById('cm-eng-pct')?.value) ?? 6,
-    capex_misc_pct: pf(document.getElementById('cm-misc-pct')?.value) ?? 3,
+    // Modelo CAPEX & OPEX — valores según DEFAULT_COST_MODEL (Key et al. 2022 + DOE/LBNL + IRENA 2025)
+    capex_turbine_usd_kw: pf(document.getElementById('cm-turbine-usd-kw')?.value) ?? 945,
+    capex_turbines_pct: pf(document.getElementById('cm-turbines-pct')?.value) ?? 70,
+    capex_civil_pct: pf(document.getElementById('cm-civil-pct')?.value) ?? 4,
+    capex_elec_pct: pf(document.getElementById('cm-elec-pct')?.value) ?? 9,
+    capex_install_pct: pf(document.getElementById('cm-install-pct')?.value) ?? 6,
+    capex_eng_pct: pf(document.getElementById('cm-eng-pct')?.value) ?? 7,
+    capex_misc_pct: pf(document.getElementById('cm-misc-pct')?.value) ?? 4,
     capex_opex_pct: pf(document.getElementById('cm-opex-pct')?.value) ?? 3.72,
     // Parámetros de apalancamiento (análisis siempre dual)
     lev_debt_ratio_pct: pf(document.getElementById('park-debt-ratio')?.value) ?? 70,
@@ -2347,6 +2347,48 @@ function technoUpdatePctTotalBadge() {
   const ok = Math.abs(total - 1.0) < 0.005;
   badge.textContent = `${pct} %`;
   badge.style.color = ok ? '' : '#d97706';
+}
+
+// Valores del estudio (DEFAULT_COST_MODEL, recalibrado 2026-09)
+const _CAPEX_STUDY_DEFAULTS = {
+  'cm-turbine-usd-kw': 945,
+  'cm-turbines-pct':   70,
+  'cm-civil-pct':      4,
+  'cm-elec-pct':       9,
+  'cm-install-pct':    6,
+  'cm-eng-pct':        7,
+  'cm-misc-pct':       4,
+  'cm-opex-pct':       3.72,
+};
+
+// Benchmark IRENA 2024 (DESIGN_COST_BENCHMARK, para comparación)
+const _CAPEX_IRENA_2024 = {
+  'cm-turbine-usd-kw': 780.75,
+  'cm-turbines-pct':   75,
+  'cm-civil-pct':      2.21,
+  'cm-elec-pct':       5.88,
+  'cm-install-pct':    3.68,
+  'cm-eng-pct':        4.41,
+  'cm-misc-pct':       2.21,
+  'cm-opex-pct':       3.72,
+};
+
+function _applyCapexPreset(preset) {
+  Object.entries(preset).forEach(([id, val]) => {
+    const el = document.getElementById(id);
+    if (el) el.value = val;
+  });
+  updateCapexTotalBadge();
+}
+
+function resetCapexToStudyDefaults() {
+  _applyCapexPreset(_CAPEX_STUDY_DEFAULTS);
+  toast('Modelo CAPEX restaurado a valores del estudio AERO OPEN CIM (Key et al. 2022 + DOE/LBNL)', 'success');
+}
+
+function resetCapexToIrena2024() {
+  _applyCapexPreset(_CAPEX_IRENA_2024);
+  toast('Modelo CAPEX establecido a benchmark IRENA 2024 · promedio global ponderado 1041 USD/kW', 'info');
 }
 
 function updateCapexTotalBadge() {

@@ -1298,42 +1298,63 @@
         <span class="badge badge--info" id="park-capex-total-badge">100.0 %</span>
       </div>
       <div class="card-body">
-        <p class="text-muted" style="font-size:.72rem;margin:0 0 .7rem">Todos los valores en USD. Defaults del estudio AERO OPEN CIM. Los rangos se usan en análisis de sensibilidad global.</p>
-        <div class="form-grid-2">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:.6rem;flex-wrap:wrap;margin-bottom:.7rem">
           <div>
-            <label class="form-label">Precio aerogenerador (USD/kW) <span class="text-muted" style="font-size:.7rem">[800–2000]</span></label>
-            <input type="number" class="form-input" id="cm-turbine-usd-kw" value="1800" step="50" min="0">
+            <p class="text-muted" style="font-size:.72rem;margin:0">
+              Valores base del estudio AERO OPEN CIM — fundamentados en literatura 2018-2024.
+              Anclas: <strong>Key, Roberts &amp; Eberle (2022)</strong> NREL/OSTI 1837954 (planta referencia 2018, EE.UU.);
+              <strong>DOE/LBNL Land-Based Wind Market Report</strong> (rango 2022-23: 1200-1800 USD/kW instalado);
+              <strong>IRENA Renewable Power Generation Costs in 2024</strong> (media global ponderada 1041 USD/kW, turbina ≈ 75%).
+              Punto central para México (por encima del promedio global por costos locales de mano de obra).
+              Los rangos [min–max] se usan en análisis de sensibilidad global (Monte Carlo).
+            </p>
           </div>
-          <div>
-            <label class="form-label">% Aerogeneradores del CAPEX <span class="text-muted" style="font-size:.7rem">[60–80]</span></label>
-            <input type="number" class="form-input" id="cm-turbines-pct" value="66" step="0.5" min="0" max="100">
+          <div style="display:flex;gap:.4rem;flex-shrink:0">
+            <button class="btn-secondary" type="button" onclick="resetCapexToStudyDefaults()"
+              style="font-size:.7rem;padding:.2rem .55rem;white-space:nowrap" title="Valores del estudio AERO OPEN CIM (Key et al. 2022 + DOE/LBNL)">↺ Estudio</button>
+            <button class="btn-secondary" type="button" onclick="resetCapexToIrena2024()"
+              style="font-size:.7rem;padding:.2rem .55rem;white-space:nowrap" title="Benchmark IRENA 2024 · promedio global ponderado 1041 USD/kW">IRENA 2024</button>
           </div>
         </div>
-        <h6 style="margin:.7rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Desglose BOS (% del CAPEX)</h6>
+
         <div class="form-grid-2">
           <div>
-            <label class="form-label">Obras civiles <span class="text-muted" style="font-size:.7rem">[10–15]</span></label>
-            <input type="number" class="form-input" id="cm-civil-pct" value="12" step="0.5" min="0" max="100">
+            <label class="form-label">Precio aerogenerador (USD/kW) <span class="text-muted" style="font-size:.7rem">[700–1100]</span></label>
+            <input type="number" class="form-input" id="cm-turbine-usd-kw" value="945" step="25" min="0">
+            <small class="text-muted" style="font-size:.68rem">Key et al. 2022: TCC 881 USD/kW (2018); ajustado para México ~945 USD/kW.</small>
           </div>
           <div>
-            <label class="form-label">Sistema eléctrico + red <span class="text-muted" style="font-size:.7rem">[5–10]</span></label>
-            <input type="number" class="form-input" id="cm-elec-pct" value="8" step="0.5" min="0" max="100">
+            <label class="form-label">% Aerogeneradores del CAPEX total <span class="text-muted" style="font-size:.7rem">[65–78]</span></label>
+            <input type="number" class="form-input" id="cm-turbines-pct" value="70" step="0.5" min="0" max="100">
+            <small class="text-muted" style="font-size:.68rem">Key et al. 2022: TCC/total ≈ 69.5%; IRENA 2024: turbina ≈ 75%.</small>
+          </div>
+        </div>
+        <h6 style="margin:.7rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em">Desglose BOS — Balance of System (% del CAPEX total)</h6>
+        <div class="form-grid-2">
+          <div>
+            <label class="form-label">Obras civiles (caminos, sitio) <span class="text-muted" style="font-size:.7rem">[2–6]</span></label>
+            <input type="number" class="form-input" id="cm-civil-pct" value="4" step="0.5" min="0" max="100">
           </div>
           <div>
-            <label class="form-label">Instalación y puesta en marcha <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
-            <input type="number" class="form-input" id="cm-install-pct" value="5" step="0.5" min="0" max="100">
+            <label class="form-label">Sistema eléctrico + red <span class="text-muted" style="font-size:.7rem">[6–12]</span></label>
+            <input type="number" class="form-input" id="cm-elec-pct" value="9" step="0.5" min="0" max="100">
           </div>
           <div>
-            <label class="form-label">Ingeniería + permisos <span class="text-muted" style="font-size:.7rem">[2–10]</span></label>
-            <input type="number" class="form-input" id="cm-eng-pct" value="6" step="0.5" min="0" max="100">
+            <label class="form-label">Instalación y puesta en marcha <span class="text-muted" style="font-size:.7rem">[3–8]</span></label>
+            <input type="number" class="form-input" id="cm-install-pct" value="6" step="0.5" min="0" max="100">
           </div>
           <div>
-            <label class="form-label">Misceláneos + contingencias <span class="text-muted" style="font-size:.7rem">[1–5]</span></label>
-            <input type="number" class="form-input" id="cm-misc-pct" value="3" step="0.5" min="0" max="100">
+            <label class="form-label">Ingeniería + permisos <span class="text-muted" style="font-size:.7rem">[4–10]</span></label>
+            <input type="number" class="form-input" id="cm-eng-pct" value="7" step="0.5" min="0" max="100">
+          </div>
+          <div>
+            <label class="form-label">Misceláneos + contingencias <span class="text-muted" style="font-size:.7rem">[2–6]</span></label>
+            <input type="number" class="form-input" id="cm-misc-pct" value="4" step="0.5" min="0" max="100">
           </div>
           <div>
             <label class="form-label">OPEX anual (% del CAPEX) <span class="text-muted" style="font-size:.7rem">[2–4]</span></label>
             <input type="number" class="form-input" id="cm-opex-pct" value="3.72" step="0.1" min="0" max="100">
+            <small class="text-muted" style="font-size:.68rem">≈ 50 USD/kW/año; consistente con Key et al. 2022 (52 USD/kW/año) y DOE/LBNL 2023 (&gt;40 USD/kW/año).</small>
           </div>
         </div>
         <p style="font-size:.72rem;margin:.6rem 0 0">Total CAPEX: <strong id="cm-pct-total-badge">100.0 %</strong> <span class="text-muted">(turbinas + BOS debe sumar 100 %)</span></p>
