@@ -1455,6 +1455,7 @@ def cluster_technology_champions(alternatives: List[Dict]) -> Optional[Dict]:
     try:
         from scipy.cluster.hierarchy import (
             linkage as _linkage, fcluster as _fcluster)
+        from sklearn.metrics import silhouette_score as _silhouette_score
     except ImportError:
         return None
 
@@ -1485,8 +1486,18 @@ def cluster_technology_champions(alternatives: List[Dict]) -> Optional[Dict]:
         Z = _linkage(X_norm, method='ward', metric='euclidean')
         k2 = _fcluster(Z, 2, criterion='maxclust').tolist()
         k3 = _fcluster(Z, min(3, n), criterion='maxclust').tolist()
+        best_k, best_sil = 2, -1.0
+        for k in range(2, min(n, 7)):
+            labs = _fcluster(Z, k, criterion='maxclust')
+            if len(set(labs.tolist())) < 2:
+                continue
+            score = float(_silhouette_score(X_norm, labs))
+            if score > best_sil:
+                best_sil, best_k = score, k
+        k_opt = _fcluster(Z, best_k, criterion='maxclust').tolist()
         return {'linkage': Z.tolist(), 'cluster_k2': k2, 'cluster_k3': k3,
-                'variables': vars_list}
+                'k_optimal': best_k, 'k_optimal_silhouette': round(best_sil, 4),
+                'cluster_k_optimal': k_opt, 'variables': vars_list}
 
     views: Dict[str, Optional[Dict]] = {}
     for name, vlist in _VIEWS.items():

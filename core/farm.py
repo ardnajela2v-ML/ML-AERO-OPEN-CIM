@@ -493,8 +493,10 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
             round(gaussian_min_valid_distance_d(k=k_wake, ct=ct), 6)
             if wake_model == 'gaussian' else 0.0
         ),
-        'ct_source': 'constant_user_input',
-        'ct_curve_available': False,
+        'ct_source': ('turbine_actuator_disk_curve'
+                      if getattr(turbine, 'ct_curve_available', False)
+                      else 'constant_user_input'),
+        'ct_curve_available': getattr(turbine, 'ct_curve_available', False),
     }
     n_samples = len(ws)
     if n_samples == 0:
@@ -579,30 +581,45 @@ def simulate_wind_farm(layout_xy: List[Tuple[float, float]],
     # then power via curve, weight by joint frequency × hours.
     e_per_turbine_kwh = np.zeros(n, dtype=float)
     sector_freq = freq.sum(axis=1)  # P(sector)
+    _use_ct_curve = getattr(turbine, 'ct_curve_available', False)
 
     for s in range(n_sectors):
         if sector_freq[s] <= 0:
             continue
         wind_dir = sector_centres[s]
-        # Ct is constant in this model, so the wake multiplier depends on
-        # geometry and direction, not on the speed bin. Reuse it for all bins.
-        wake_factor = effective_wind_per_turbine(
-            layout, np.ones(n), wind_dir, rotor_d, k=k_wake, ct=ct,
-            wake_model=wake_model)
-        # Interpolate the power curve once for every speed bin in this
-        # direction; retain the original per-bin accumulation order below.
-        if local_wind_multipliers is not None:
-            v_eff_bins = ((ws_centres[:, None] * local_wind_multipliers[None, :])
-                          * wake_factor[None, :])
+        if _use_ct_curve:
+            # Speed-dependent Ct: wake factor varies per wind speed bin.
+            for b, v_free in enumerate(ws_centres):
+                p_join = freq[s, b]
+                if p_join <= 0 or v_free <= 0:
+                    continue
+                ct_b = float(turbine.ct_at(v_free))
+                wf_b = effective_wind_per_turbine(
+                    layout, np.ones(n), wind_dir, rotor_d, k=k_wake, ct=ct_b,
+                    wake_model=wake_model)
+                if local_wind_multipliers is not None:
+                    v_eff_b = v_free * local_wind_multipliers * wf_b
+                else:
+                    v_eff_b = v_free * wf_b
+                p_kw_b = turbine.power_kw_density_corrected(v_eff_b, rho_mean)
+                e_per_turbine_kwh += p_kw_b * p_join * total_hours
         else:
-            v_eff_bins = ws_centres[:, None] * wake_factor[None, :]
-        p_kw_bins = turbine.power_kw_density_corrected(v_eff_bins, rho_mean)
-        for b, v_free in enumerate(ws_centres):
-            p_join = freq[s, b]
-            if p_join <= 0 or v_free <= 0:
-                continue
-            p_kw = p_kw_bins[b]
-            e_per_turbine_kwh += p_kw * p_join * total_hours
+            # Constant Ct: wake factor is identical for all speed bins.
+            wake_factor = effective_wind_per_turbine(
+                layout, np.ones(n), wind_dir, rotor_d, k=k_wake, ct=ct,
+                wake_model=wake_model)
+            if local_wind_multipliers is not None:
+                v_eff_bins = ((ws_centres[:, None] * local_wind_multipliers[None, :])
+                              * wake_factor[None, :])
+            else:
+                v_eff_bins = ws_centres[:, None] * wake_factor[None, :]
+            p_kw_bins = turbine.power_kw_density_corrected(v_eff_bins, rho_mean)
+            for b, v_free in enumerate(ws_centres):
+                p_join = freq[s, b]
+                if p_join <= 0 or v_free <= 0:
+                    continue
+                p_kw = p_kw_bins[b]
+                e_per_turbine_kwh += p_kw * p_join * total_hours
 
     # wake_loss aislado: comparar ANTES de aplicar losses operacionales
     # (ambos lados sin losses → wake puro, consistente con el per-turbine donde se cancelan)
@@ -933,6 +950,8 @@ def chronological_revenue(layout_xy: np.ndarray, turbine: 'PowerCurve',
     capture_ratios_complete: List[float] = []
     realized_vals_complete:  List[float] = []
     flat_vals_complete:      List[float] = []
+    _total_rev_complete:     float = 0.0
+    _total_naive_rev_complete: float = 0.0
 
     for y in unique_years:
         mask_y     = years_arr == y
@@ -979,6 +998,9 @@ def chronological_revenue(layout_xy: np.ndarray, turbine: 'PowerCurve',
                 realized_vals_complete.append(avg_realized_y)
             if avg_flat_y is not None:
                 flat_vals_complete.append(avg_flat_y)
+            if avg_flat_y is not None and avg_flat_y > 0:
+                _total_rev_complete += rev_y
+                _total_naive_rev_complete += energy_y_kwh * avg_flat_y
 
     if not rev_ann_complete:
         raise ValueError(
@@ -989,7 +1011,8 @@ def chronological_revenue(layout_xy: np.ndarray, turbine: 'PowerCurve',
     n_complete        = len(rev_ann_complete)
     mean_rev_ann      = float(np.mean(rev_ann_complete))
     mean_aep_mwh      = float(np.mean(ann_energies_complete))
-    mean_capture      = float(np.mean(capture_ratios_complete)) if capture_ratios_complete else None
+    mean_capture      = (_total_rev_complete / _total_naive_rev_complete
+                         if _total_naive_rev_complete > 0 else None)
     mean_avg_realized = float(np.mean(realized_vals_complete)) if realized_vals_complete else None
     mean_avg_flat     = float(np.mean(flat_vals_complete))     if flat_vals_complete     else None
 

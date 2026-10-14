@@ -298,6 +298,7 @@ class PowerCurve:
             curve_points = self._default_curve()
         self._raw_points = curve_points
         self._build_interpolator(curve_points)
+        self._build_ct_curve()
         # Nivel de potencia sonora (Lwa, dB(A)) para el módulo de ruido
         # (core/acoustic_noise.py) -- None hasta que from_file() lo declare
         # (explícito en el nombre de archivo) o lo estime genéricamente.
@@ -423,6 +424,34 @@ class PowerCurve:
                                 bounds_error=False, fill_value=(0, 0))
         self._ws_arr = ws_arr
         self._pw_arr = pw_arr
+
+    def _build_ct_curve(self, rho_ref=1.225):
+        """Derive Ct(v) via actuator-disk: a = 1 - Cp_eff, Ct = 4a(1-a)."""
+        ws = self._ws_arr[self._ws_arr > 0.0]
+        if ws.size == 0:
+            self.ct_curve_available = False
+            return
+        p_w = self._interp(ws) * 1000.0  # W
+        kinetic = 0.5 * rho_ref * self.rotor_area_m2 * ws ** 3
+        cp_eff = np.where(kinetic > 0, p_w / kinetic, 0.0)
+        cp_eff = np.clip(cp_eff, 0.0, 1.0)
+        a = 1.0 - cp_eff
+        ct = np.clip(4.0 * a * (1.0 - a), 0.0, 1.0)
+        ct[ws < self.cut_in] = 0.0
+        ct[ws > self.cut_out] = 0.0
+        ws_full = np.concatenate([[0.0], ws])
+        ct_full = np.concatenate([[0.0], ct])
+        self._ct_interp = interp1d(ws_full, ct_full, kind='linear',
+                                   bounds_error=False, fill_value=(0.0, 0.0))
+        self.ct_curve_available = True
+
+    def ct_at(self, v):
+        """Interpolated Ct(v) from actuator-disk-derived curve."""
+        if not getattr(self, 'ct_curve_available', False):
+            return 0.8
+        v_arr = np.asarray(v, dtype=float)
+        ct = self._ct_interp(v_arr)
+        return float(ct) if v_arr.ndim == 0 else ct
 
     def power_kw(self, wind_speed_ms):
         """Return power in kW for scalar or array of wind speeds."""

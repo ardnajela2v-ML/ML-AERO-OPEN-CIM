@@ -694,7 +694,7 @@ def site_wind_stats(site: dict, hub_height_m: Optional[float] = None,
     gust_ms = float(np.nanpercentile(wsp, 99.5)) if wsp.size else Vmax
     power_density_wm2 = float(np.nanmean(0.5 * rho * np.power(wsp, 3))) if wsp.size else 0.0
     try:
-        sh, _, sc = wbl_dist.fit(ws, floc=0)
+        sh, _, sc = wbl_dist.fit(wsp, floc=0)
         C, K = float(sc), float(sh)
     except Exception:
         C, K = 6.0, 2.0
