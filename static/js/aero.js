@@ -288,6 +288,7 @@ function collectProjectClientState() {
       weightSchema: MCDA.weightSchema,
       ahpDraft: MCDA.ahpDraft, ahpResult: MCDA.ahpResult,
       ahpApplied: MCDA.ahpApplied, weightSource: MCDA.weightSource,
+      activePreset: MCDA.activePreset,
     }),
     cluster: projectJsonClone({
       result: CLUSTER.result, k: CLUSTER.k,
@@ -7948,6 +7949,7 @@ const MCDA = {
   lastSpatial:  null,
   defaults:     null,
   layoutWeights: null,
+  activePreset: null,
   ahpDraft: null, ahpResult: null, ahpApplied: null, weightSource: 'reference',
   scope:        'area',
   turbines:     [],
@@ -7976,9 +7978,68 @@ function mcdaActiveAhp() {
 
 function mcdaAhpSourceLabel() {
   const el = document.getElementById('mcda-weight-source');
-  if (el) el.textContent = mcdaActiveAhp() ? 'Pesos AHP individuales aplicados'
-    : MCDA.weightSource === 'manual' && MCDA.scope === 'area' ? 'Escenario manual'
-    : 'Escenario de referencia — sin elicitación AHP';
+  if (!el) return;
+  if (mcdaActiveAhp()) {
+    el.textContent = 'Pesos AHP individuales aplicados';
+  } else if (MCDA.weightSource === 'preset' && MCDA.activePreset) {
+    const label = MCDA.defaults?.layout_weight_presets?.[MCDA.activePreset]?.label || MCDA.activePreset;
+    el.textContent = `Perfil AHP: ${label}`;
+  } else if (MCDA.weightSource === 'manual' && MCDA.scope === 'area') {
+    el.textContent = 'Escenario manual';
+  } else {
+    el.textContent = 'Escenario de referencia — sin elicitación AHP';
+  }
+}
+
+async function mcdaRenderPresetChips() {
+  const row = document.getElementById('mcda-preset-row');
+  const container = document.getElementById('mcda-preset-chips');
+  if (!row || !container) return;
+  if (MCDA.scope !== 'area') { row.style.display = 'none'; return; }
+  const d = await mcdaLoadDefaults();
+  const presets = d.layout_weight_presets;
+  if (!presets || !Object.keys(presets).length) { row.style.display = 'none'; return; }
+  // Auto-detect matching preset when none is explicitly active
+  if (!MCDA.activePreset) {
+    const match = Object.entries(presets).find(([, p]) =>
+      Object.keys(p.weights).every(k => Math.abs((MCDA.layoutWeights?.[k] || 0) - p.weights[k]) < 1e-10)
+    );
+    if (match) MCDA.activePreset = match[0];
+  }
+  const defaultId = d.default_preset_id;
+  row.style.display = 'flex';
+  container.innerHTML = Object.entries(presets).map(([id, p]) => {
+    const isActive = MCDA.weightSource === 'preset' && MCDA.activePreset === id;
+    const isDefault = id === defaultId;
+    return `<button type="button"
+      style="font-size:.72rem;padding:.2rem .6rem;border-radius:12px;cursor:pointer;
+             border:1px solid var(--border);
+             background:${isActive ? 'var(--accent)' : 'var(--surface-raised)'};
+             color:${isActive ? '#fff' : 'var(--text-primary)'};
+             font-weight:${isActive ? '600' : '400'}"
+      onclick="mcdaApplyPreset('${id}')"
+      title="CR=${p.cr?.toFixed(4) ?? '?'} · ${p.assessed_at ?? ''}"
+    >${mcdaAhpEscape(p.label)}${isDefault ? ' ★' : ''}</button>`;
+  }).join('');
+}
+
+async function mcdaApplyPreset(id) {
+  const d = await mcdaLoadDefaults();
+  const preset = d.layout_weight_presets?.[id];
+  if (!preset) return;
+  const weights = preset.weights;
+  document.querySelectorAll('.mcda-w').forEach(el => {
+    const v = weights[el.dataset.crit];
+    if (v !== undefined) {
+      el.value = v;
+      if (el.nextElementSibling) el.nextElementSibling.value = (+v).toFixed(3);
+    }
+  });
+  MCDA.layoutWeights = { ...weights };
+  MCDA.activePreset = id;
+  MCDA.weightSource = 'preset';
+  mcdaAhpSourceLabel();
+  mcdaRenderPresetChips();
 }
 
 function mcdaAhpEscape(value) {
@@ -8086,6 +8147,7 @@ async function mcdaApplyAhp() {
   MCDA.layoutWeights = {...MCDA.ahpApplied.weights};
   MCDA.weightSchema = 'effective-area-v1';
   MCDA.weightSource = 'ahp';
+  MCDA.activePreset = null;
   await mcdaBuildWeightSliders();
   TOPSIS_ROBUST.result = null;
   const robustCard = document.getElementById('topsis-robust-card');
@@ -8207,6 +8269,7 @@ async function mcdaBuildWeightSliders() {
     MCDA.weightSchema = 'effective-area-v1';
   }
   mcdaRenderAhp();
+  mcdaRenderPresetChips();
   const weights = isLayout ? MCDA.layoutWeights : d.weights;
   const directions = isLayout ? d.layout_directions : d.directions;
   const labels = isLayout ? d.layout_labels : d.labels;
@@ -8976,8 +9039,10 @@ async function mcdaResetWeights() {
   });
   if (MCDA.scope === 'area') {
     MCDA.layoutWeights = { ...defaults };
+    MCDA.activePreset = null;
     MCDA.weightSource = 'reference';
     mcdaAhpSourceLabel();
+    mcdaRenderPresetChips();
   }
 }
 

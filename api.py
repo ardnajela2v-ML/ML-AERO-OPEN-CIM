@@ -106,6 +106,7 @@ from core.multicriteria import (topsis, rank_sites_turbines,
                                  DEFAULT_WEIGHTS, CRITERION_LABELS,
                                  CRITERION_DIRECTION, rank_layout_alternatives,
                                  LAYOUT_WEIGHTS, LAYOUT_LABELS, LAYOUT_DIRECTION,
+                                 LAYOUT_WEIGHT_PRESETS, DEFAULT_PRESET_ID,
                                  smaa_weight_robustness)
 from core.forecasting import (read_one_column, read_pml, base_year_stats,
                               normalize_fixed_hourly_profile)
@@ -5519,6 +5520,8 @@ def create_app():
             'layout_weights': LAYOUT_WEIGHTS,
             'layout_labels': LAYOUT_LABELS,
             'layout_directions': LAYOUT_DIRECTION,
+            'layout_weight_presets': LAYOUT_WEIGHT_PRESETS,
+            'default_preset_id': DEFAULT_PRESET_ID,
             'design_cost_benchmark': get_design_cost_benchmark(),
         })
 

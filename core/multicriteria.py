@@ -281,6 +281,40 @@ LAYOUT_LABELS = {
     'civil_complexity_index': 'Complejidad civil',
 }
 
+LAYOUT_WEIGHT_PRESETS = {
+    'ahp_v1_20260917': {
+        'label': 'AHP v1 — sep 2026',
+        'assessed_at': '2026-09-17',
+        'author': 'José Antonio Rojas Escobar',
+        'cr': 0.0106,
+        'weights': {
+            'hours_near_cpmax':           0.2311314876969732,
+            'van_usd':                    0.2046550499137324,
+            'aep_p90_mwh':                0.18810285560539022,
+            'capex_usd_per_installed_kw': 0.15156273227622008,
+            'factor_capacidad':           0.1072896466943155,
+            'cp_effective_full_series':   0.08125790256137676,
+            'lcoe_usd_kwh':               0.03600032525199196,
+        },
+    },
+    'ahp_v2_20261015': {
+        'label': 'AHP v2 — oct 2026',
+        'assessed_at': '2026-10-15',
+        'author': 'José Antonio Rojas Escobar',
+        'cr': 0.09891616597266037,
+        'weights': {
+            'hours_near_cpmax':           0.17698875760378283,
+            'aep_p90_mwh':                0.16739613399711545,
+            'lcoe_usd_kwh':               0.14886219331318237,
+            'cp_effective_full_series':   0.13991626330989365,
+            'capex_usd_per_installed_kw': 0.13812171122907546,
+            'van_usd':                    0.1294080649622875,
+            'factor_capacidad':           0.09930687558466272,
+        },
+    },
+}
+DEFAULT_PRESET_ID = 'ahp_v2_20261015'
+
 LAYOUT_DIRECTION = {key: value for key, value in LAYOUT_DIRECTION.items()
                     if key in LAYOUT_WEIGHTS}
 LAYOUT_LABELS = {key: value for key, value in LAYOUT_LABELS.items()
