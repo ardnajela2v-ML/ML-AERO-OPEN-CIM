@@ -125,9 +125,8 @@ def create_app():
     # (series horarias MERRA-2/ERA5 + CSVs de estudios) superan fácil 100 MB.
     app.config['MAX_CONTENT_LENGTH'] = 750 * 1024 * 1024
 
-    # CORS con whitelist desde Config (ALLOWED_ORIGINS) o fallback localhost
-    CORS(app, origins=getattr(Config, 'ALLOWED_ORIGINS',
-                              ['http://localhost:5051']))
+    # CORS: lista de orígenes desde Config.ALLOWED_ORIGINS (env ALLOWED_ORIGINS)
+    CORS(app, origins=Config.ALLOWED_ORIGINS)
 
     logger = logging.getLogger('aero')
     if not logger.handlers:
@@ -168,6 +167,26 @@ def create_app():
                 tasks.pop(tid, None)
 
     _last_cleanup = [0.0]  # mutable container for closure
+
+    # ── API-key auth (opcional) ─────────────────────────────────────────────
+    # Activa cuando API_KEY está definida en el entorno. Permite:
+    #   - preflight CORS (OPTIONS)
+    #   - GET / (SPA shell)
+    #   - /static/** (assets)
+    #   - GET /api/version (healthcheck externo)
+    # Todo lo demás requiere  X-API-Key: <valor>  en el header.
+    _api_key = Config.API_KEY
+    if _api_key:
+        @app.before_request
+        def _check_api_key():
+            from flask import request, jsonify as _jsonify
+            if request.method == 'OPTIONS':
+                return None
+            path = request.path
+            if path == '/' or path.startswith('/static/') or path == '/api/version':
+                return None
+            if request.headers.get('X-API-Key') != _api_key:
+                return _jsonify({'error': 'unauthorized', 'hint': 'Incluye X-API-Key en el header'}), 401
 
     @app.after_request
     def _after(resp):

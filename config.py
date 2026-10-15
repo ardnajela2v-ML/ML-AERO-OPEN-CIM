@@ -1,9 +1,21 @@
 import os
+import warnings
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+_DEFAULT_SECRET = 'aero-opencim-2025-secret'  # nosec B105
+
 class Config:
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'aero-opencim-2025-secret')
+    _raw_secret = os.environ.get('SECRET_KEY', '')
+    if not _raw_secret:
+        warnings.warn(
+            'SECRET_KEY no está definida en el entorno. '
+            'Se usa la clave de desarrollo por defecto — '
+            'NUNCA usar en producción. '
+            'Establece SECRET_KEY=<valor_aleatorio_largo> en las variables de entorno.',
+            stacklevel=2,
+        )
+    SECRET_KEY = _raw_secret or _DEFAULT_SECRET
     MAX_CONTENT_LENGTH = 256 * 1024 * 1024  # 256 MB upload limit
     UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
     EXPORT_FOLDER = os.path.join(BASE_DIR, 'exports')
@@ -42,7 +54,7 @@ class Config:
     # dedicadas por categoría definidas más abajo.
     MARKET_DATA_FOLDER = os.environ.get(
         'AERO_MARKET_FOLDER',
-        '/Users/ale/Desktop/suso/datos carga y precios pml compra y venta ')
+        os.path.join(BASE_DIR, 'mercado_pml'))
 
     # Carpetas dedicadas por categoría (dentro del proyecto). Cualquier archivo
     # .txt/.csv/.tsv/.dat que se deposite en estas carpetas se descubre
@@ -59,6 +71,20 @@ class Config:
     INTEREST_FOLDER = os.environ.get(
         'AERO_INTEREST_FOLDER',
         os.path.join(BASE_DIR, 'mercado_tasas'))
+
+    # CORS — lista de orígenes permitidos separada por comas en ALLOWED_ORIGINS.
+    # En producción: ALLOWED_ORIGINS=https://windpro.ipn.mx,https://app.windpro.ipn.mx
+    ALLOWED_ORIGINS = [
+        o.strip()
+        for o in os.environ.get('ALLOWED_ORIGINS', 'http://localhost:5051').split(',')
+        if o.strip()
+    ]
+
+    # Auth opcional por API key. Si API_KEY está definida en el entorno, todos
+    # los endpoints (excepto GET /, /api/version y assets estáticos) requieren
+    # el header  X-API-Key: <valor>. Si no está definida, la auth está inactiva
+    # (modo desarrollo / CI).
+    API_KEY = os.environ.get('API_KEY', '')
 
     # Allowed upload extensions
     ALLOWED_EXTENSIONS = {'csv', 'txt', 'tsv', 'dat', 'xlsx'}
