@@ -2925,6 +2925,99 @@ services:
   </div>
 </section>
 
+<section id="s30">
+  <h2>TOPSIS y AHP — Selección multicriterio de tecnología</h2>
+
+  <h3>Fundamento del método TOPSIS</h3>
+  <p>TOPSIS (<em>Technique for Order of Preference by Similarity to Ideal Solution</em>, Hwang &amp; Yoon 1981) rankea
+  alternativas midiendo su distancia geométrica a la solución ideal positiva (A⁺) y negativa (A⁻) en el espacio
+  normalizado de criterios. La alternativa ganadora es la más cercana a A⁺ y más lejana de A⁻.</p>
+
+  <h3>Ec. 1 — Normalización vectorial</h3>
+  <div class="eq-block">
+    <span class="eq-name">// Normalización por norma euclídea de cada columna j</span>
+    r<sub>ij</sub> = x<sub>ij</sub> / √( Σ<sub>k</sub> x<sub>kj</sub>² )
+  </div>
+
+  <h3>Ec. 2 — Matriz ponderada</h3>
+  <div class="eq-block">
+    <span class="eq-name">// w_j son los pesos AHP normalizados (suman 1)</span>
+    v<sub>ij</sub> = w<sub>j</sub> · r<sub>ij</sub>
+  </div>
+
+  <h3>Ec. 3 — Soluciones ideal y anti-ideal</h3>
+  <div class="eq-block">
+    A⁺ = { max<sub>i</sub>(v<sub>ij</sub>) si beneficio,  min<sub>i</sub>(v<sub>ij</sub>) si costo }
+    A⁻ = { min<sub>i</sub>(v<sub>ij</sub>) si beneficio,  max<sub>i</sub>(v<sub>ij</sub>) si costo }
+  </div>
+
+  <h3>Ec. 4 — Distancias euclídeas</h3>
+  <div class="eq-block">
+    d<sub>i</sub>⁺ = √( Σ<sub>j</sub> (v<sub>ij</sub> − A⁺<sub>j</sub>)² )
+    d<sub>i</sub>⁻ = √( Σ<sub>j</sub> (v<sub>ij</sub> − A⁻<sub>j</sub>)² )
+  </div>
+
+  <h3>Ec. 5 — Coeficiente de proximidad (score TOPSIS)</h3>
+  <div class="eq-block">
+    <span class="eq-name">// CC ∈ [0, 1]; CC=1 → alternativa ideal</span>
+    CC<sub>i</sub> = d<sub>i</sub>⁻ / ( d<sub>i</sub>⁺ + d<sub>i</sub>⁻ )
+  </div>
+
+  <h3>Criterios activos en WindPro Platform (7 criterios, layout de parque)</h3>
+  <div class="card-grid">
+    <div class="card"><h4>hours_near_cpmax ↑</h4><p>Horas anuales en zona ≥95% del Cp máximo de la turbina. Indica qué fracción del año la turbina opera en su región de máxima eficiencia aerodinámica.</p></div>
+    <div class="card"><h4>aep_p90_mwh ↑</h4><p>Producción anual de energía al percentil 90 de excedencia (P90). Incorpora incertidumbre de recurso, estela, curva de potencia y pérdidas. Base conservadora para bankability.</p></div>
+    <div class="card"><h4>lcoe_usd_kwh ↓</h4><p>Costo Nivelado de Energía: PV(CAPEX + OPEX + desmantelamiento) / PV(energía neta). Estándar de industria para comparar tecnologías con diferente escala.</p></div>
+    <div class="card"><h4>cp_effective_full_series ↑</h4><p>Cp promedio sobre toda la serie histórica. Integra la curva de potencia real con la distribución de velocidades del sitio, sin truncar a una velocidad media.</p></div>
+    <div class="card"><h4>capex_usd_per_installed_kw ↓</h4><p>CAPEX total (turbinas + cable colector + cimentación) por kW instalado. Normalizar por kW evita premiar trivialmente instalar menos capacidad.</p></div>
+    <div class="card"><h4>van_usd ↑</h4><p>Valor Actual Neto bruto del proyecto (no normalizado por área ni por MW). Para un área fija, el VAN bruto mide el valor total extraíble de ese terreno.</p></div>
+    <div class="card"><h4>factor_capacidad ↑</h4><p>CF = AEP_P50 / (MW_instalado × 8760 h). Indica cuántas horas equivalentes a plena carga opera el parque por año.</p></div>
+  </div>
+
+  <div class="callout warn">
+    <strong>Criterios excluidos del ranking (audit-only):</strong>
+    BCR, TIR, payback descontado y ROI están perfectamente correlacionados con LCOE y VAN (ρ = ±1.000)
+    cuando precio/tasa/OPEX% son constantes entre alternativas de una misma corrida — añadirlos duplicaría
+    información sin aportar discriminación adicional. CAPEX total se excluye porque premiaría instalar
+    menos turbinas en contradicción directa con AEP y VAN.
+    Verificado en <code>scripts/verify_technical_criteria_correlation.py</code>.
+  </div>
+
+  <h3>AHP — Proceso Analítico Jerárquico (Saaty 1987)</h3>
+  <p>Los pesos w<sub>j</sub> de TOPSIS se obtienen por AHP: el investigador construye una matriz de comparaciones
+  por pares A (n×n), donde a<sub>ij</sub> indica cuánto más importante es el criterio i respecto al j en la escala
+  verbal 1–9 de Saaty. Los pesos son el autovector principal normalizado de A.</p>
+
+  <h3>Ec. 6 — Vector de prioridades AHP</h3>
+  <div class="eq-block">
+    <span class="eq-name">// Autovector principal de A, normalizado a suma = 1</span>
+    A · w = λ_max · w      →      w = normalize( eigenvector(A, λ_max) )
+  </div>
+
+  <h3>Ec. 7 — Índice y Razón de Consistencia</h3>
+  <div class="eq-block">
+    CI = (λ_max − n) / (n − 1)
+    CR = CI / RI(n)        <span class="eq-name">// RI: índice aleatorio de Saaty (1987)</span>
+    <span class="eq-name">// Criterio de aceptación: CR &lt; 0.10</span>
+  </div>
+
+  <div class="callout tip">
+    <strong>Perfiles AHP en WindPro Platform:</strong>
+    La plataforma almacena dos elicitaciones documentadas del investigador (v1 sep-2026, CR=0.011;
+    v2 oct-2026, CR=0.099) seleccionables con un clic en la pestaña MCDA. Ambas satisfacen CR &lt; 0.10.
+    El análisis SMAA integrado (500 muestras Dirichlet) evalúa la estabilidad del ganador ante
+    perturbaciones de los pesos de ±10%, produciendo una frecuencia de victoria robusta por alternativa.
+  </div>
+
+  <h3>Referencias</h3>
+  <ul>
+    <li>Hwang, C.-L. &amp; Yoon, K. (1981). <em>Multiple attribute decision making</em>. Springer. <a href="https://doi.org/10.1007/978-3-642-48318-9_3" target="_blank">doi:10.1007/978-3-642-48318-9_3</a></li>
+    <li>Saaty, T.L. (1987). How to make a decision: the analytic hierarchy process. <em>European Journal of Operational Research</em>, 48(1). <a href="https://doi.org/10.1016/0270-0255(87)90473-8" target="_blank">doi:10.1016/0270-0255(87)90473-8</a></li>
+    <li>Delapedra-Silva, V. et al. (2022). Methods for financial analysis of wind energy projects. <em>Energies</em>. doi:10.3390/en15020640</li>
+    <li>Diakoulaki, D. et al. (1995). CRITIC: Determining objective weights. <em>Computers &amp; Operations Research</em>.</li>
+  </ul>
+</section>
+
 </div><!-- /container nuevo -->
 
 <footer>
@@ -2936,6 +3029,7 @@ services:
     Troen &amp; Petersen (1989) · Jensen (1983) · Bastankhah &amp; Porté-Agel (2014) · DTU Wind Energy · Global Wind Atlas ·
     Matheron (1963) Kriging · Cressie (1993) Statistics for Spatial Data ·
     Hull (2009) Options Futures and Other Derivatives (OU process) ·
+    Hwang &amp; Yoon (1981) TOPSIS · Saaty (1987) AHP ·
     CENACE MEM México · NASA MERRA-2 · ECMWF ERA5 · IEA Wind Task 31 ·
     Hochreiter &amp; Schmidhuber (1997) LSTM · Chen &amp; Guestrin (2016) XGBoost
   </p>

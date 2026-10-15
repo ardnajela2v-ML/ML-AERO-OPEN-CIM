@@ -10191,9 +10191,15 @@ const ING_ANCHORS = {
   cf:            's6',
   wake:          's7',
   rix:           's8',
-  kriging:       's13',  // Resource grid (closest analog)
+  kriging:       's16',  // s16 = Kriging geoestadístico (s13 era módulo genérico)
   powercurve:    's10',  // wtg_parser
   project:       's9',
+  layout:        's17',  // Layout de parque eólico y optimización de micrositing
+  economics:     's24',  // Análisis Tecnoeconómico completo (CAPEX/OPEX/LCOE/VAN)
+  pml:           's22',  // Precios PML — modelo estocástico
+  ml:            's19',  // Centro de modelaje — ML para recurso y generación
+  topsis:        's30',  // TOPSIS + AHP (sección añadida 2026-10-15)
+  mcp:           's2',   // MCP usa el mismo fundamento de flujo microscala
 };
 
 function openIngenieria(topic) {
@@ -10227,13 +10233,13 @@ function ingSprinkle() {
     We add one button if and only if none exists yet (idempotent).
   */
   const targets = [
-    // (selector, topic)
-    ['[data-module="kriging"]',              'kriging'],
-    ['#mod-wind .card-title',                'weibull'],
-    ['#mod-techno .card-title',              'aep'],
-    ['#mod-advanced .card-title',            'orography'],
-    ['#krig-map',                            'kriging'],
-    ['#mcda-rank-tbl',                       'aep'],
+    // selector → topic (all verified to exist in index.html)
+    ['#krig3-map-title',            'kriging'],   // span: appended directly
+    ['#mod-techno .card-title',     'economics'], // first card in technoecon module
+    ['#mcda-rank-tbl',              'topsis'],    // TOPSIS ranking table → s30
+    ['#park-layout-card-header',    'layout'],    // Layout generation card
+    ['#ml-cluster-card-header',     'layout'],    // ML clustering card (layout context)
+    ['#pml-card-header',            'pml'],       // Datos comerciales / PML card
   ];
   const mkBtn = (topic) => {
     const b = document.createElement('button');
