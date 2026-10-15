@@ -196,13 +196,21 @@ LAYOUT_WEIGHTS = {
     # — LCOE (7º/7, el criterio con más citas en §1) queda con el peso más
     # bajo del set por decisión explícita del investigador, no de la
     # literatura: "que sea el más citado no significa que sea el mejor".
-    'hours_near_cpmax': 0.2311314876969732,
-    'van_usd': 0.2046550499137324,
-    'aep_p90_mwh': 0.18810285560539022,
-    'capex_usd_per_installed_kw': 0.15156273227622008,
-    'factor_capacidad': 0.1072896466943155,
-    'cp_effective_full_series': 0.08125790256137676,
-    'lcoe_usd_kwh': 0.03600032525199196,
+    # 2026-10-15: pesos reemplazados por nueva elicitación AHP del investigador
+    # (windpro-ahp (4).json, autor: José Antonio Rojas Escobar).
+    # λmax=7.7834, CI=0.1306, RI=1.32, CR=0.0989 (‹0.10, consistente).
+    # Cambios notables respecto a la sesión anterior (2026-09-17):
+    #   LCOE: 0.036 → 0.149 (sube de 7º a 3er lugar)
+    #   VAN:  0.205 → 0.129 (baja de 2º a 7º lugar)
+    #   cp_effective_full_series: 0.081 → 0.140 (sube)
+    # Técnico ≈ 61% / Económico ≈ 39% (sin cambio en distribución de bloques).
+    'hours_near_cpmax': 0.17698875760378283,
+    'aep_p90_mwh': 0.16739613399711545,
+    'lcoe_usd_kwh': 0.14886219331318237,
+    'cp_effective_full_series': 0.13991626330989365,
+    'capex_usd_per_installed_kw': 0.13812171122907546,
+    'van_usd': 0.1294080649622875,
+    'factor_capacidad': 0.09930687558466272,
 }
 
 # These values remain available in the alternative audit, but are no longer
