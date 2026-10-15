@@ -11,10 +11,12 @@ abstract: >
   con precios de mercado (PML/CENACE). Desarrollado como soporte metodológico
   para tesis doctoral en el IPN CIIDIR Oaxaca.
 authors:
+  - family-names: "Velázquez Velázquez"
+    given-names: "Alejandra"
+    affiliation: "Universidad del Istmo — Maestría en Ciencias en Energía Eólica"
+    orcid: ""
   - family-names: "Rojas Escobar"
     given-names: "José Antonio"
-    affiliation: "Centro Interdisciplinario de Investigación para el Desarrollo Integral Regional (CIIDIR) Unidad Oaxaca, Instituto Politécnico Nacional"
-    email: "tamicataub712@outlook.com"
     orcid: ""
 version: "1.0.0"
 date-released: "2026-10-15"

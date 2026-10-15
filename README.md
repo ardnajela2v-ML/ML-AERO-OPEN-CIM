@@ -75,7 +75,7 @@ aero-open-cim/
 
 Si usas AERO OPEN CIM en tu investigación, cita usando el archivo `CITATION.cff` o:
 
-> Rojas Escobar, J.A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.0). CIIDIR Oaxaca, IPN. doi: [pendiente Zenodo]
+> Velázquez Velázquez, A. & Rojas Escobar, J.A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.0). Universidad del Istmo. doi: [pendiente Zenodo]
 
 ## Licencia
 
@@ -85,10 +85,11 @@ El motor científico (`core/`) se distribuye en forma compilada y no se incluye 
 
 ## Autor
 
-**José Antonio Rojas Escobar**  
-Doctorado en Ciencia y Tecnología para la Transición Energética (DoCITTE)  
-CIIDIR Unidad Oaxaca, Instituto Politécnico Nacional  
-Istmo de Tehuantepec, Oaxaca, México
+**Alejandra Velázquez Velázquez** *(autora principal)*  
+Maestría en Ciencias en Energía Eólica  
+Universidad del Istmo, Oaxaca, México
+
+**José Antonio Rojas Escobar** *(coautor)*
 
 ## Agradecimientos
 
