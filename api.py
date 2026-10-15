@@ -3519,6 +3519,7 @@ def create_app():
                 'annual_pmt_usd':       round(pmt),
                 'noi_usd':              round(noi),
                 'wacc_pct':             round(wacc * 100.0, 2),
+                'wacc_note':            'pre_tax_no_shield',
                 'leveraged_npv_usd':    round(lev_npv),
                 'leveraged_irr_pct':    lev_irr,
                 'equity_payback_years': equity_payback,

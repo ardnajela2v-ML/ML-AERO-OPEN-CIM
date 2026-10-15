@@ -666,7 +666,7 @@ def _economics(turbine: PowerCurve, n_turbines: int, aep_p50_mwh: float,
         'capex_usd_per_installed_kw': capex / installed_kw if installed_kw > 0 else None,
         'opex_usd_anual': annual_opex,
         'opex_usd_per_installed_kw_year': annual_opex / installed_kw if installed_kw > 0 else None,
-        'opex_lifetime_usd': annual_opex * project_years,
+        'opex_lifetime_usd': lifecycle['opex_lifetime_usd'],
         'opex_present_value_usd': pv_opex,
         'van_usd': van,
         'van_usd_per_installed_mw': (
@@ -1312,6 +1312,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     'price_usd_kwh': float(
                         (precomputed.get('scenarios') or {}).get('base')
                         or price_usd_kwh),
+                    'annual_inflation_pct': float(annual_inflation_pct or 0.0),
                     'degradation_pct_per_year': DEFAULT_DEGRADATION_PCT,
                     'decommissioning_pct_capex': DEFAULT_DECOMMISSIONING_PCT,
                     'collection_cable_usd_per_m': 75.0,
