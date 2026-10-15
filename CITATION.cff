@@ -1,0 +1,76 @@
+cff-version: 1.2.0
+message: "Si usas AERO OPEN CIM en tu investigación, por favor cita el software usando los metadatos de este archivo."
+title: "AERO OPEN CIM — Plataforma de prefactibilidad eólica"
+abstract: >
+  AERO OPEN CIM es una plataforma de ciclo completo para prefactibilidad eólica.
+  Integra adquisición y validación del recurso eólico (MERRA-2/ERA5/CERTE),
+  interpolación espacial por Kriging ordinario, generación y simulación de layouts
+  de parque con modelos de estela Jensen y Bastankhah-Porté-Agel, selección
+  multicriterio TOPSIS+AHP, evaluación tecnoeconómica completa (LCOE/VAN/TIR)
+  con inflación Fisher y apalancamiento equity, y cruce cronológico de generación
+  con precios de mercado (PML/CENACE). Desarrollado como soporte metodológico
+  para tesis doctoral en el IPN CIIDIR Oaxaca.
+authors:
+  - family-names: "Rojas Escobar"
+    given-names: "José Antonio"
+    affiliation: "Centro Interdisciplinario de Investigación para el Desarrollo Integral Regional (CIIDIR) Unidad Oaxaca, Instituto Politécnico Nacional"
+    email: "tamicataub712@outlook.com"
+    orcid: ""
+version: "1.0.0"
+date-released: "2026-10-15"
+license: MIT
+license-url: "https://opensource.org/licenses/MIT"
+repository-code: ""
+url: ""
+keywords:
+  - "energía eólica"
+  - "prefactibilidad"
+  - "recurso eólico"
+  - "kriging"
+  - "TOPSIS"
+  - "AHP"
+  - "LCOE"
+  - "VAN"
+  - "MERRA-2"
+  - "ERA5"
+  - "México"
+  - "Oaxaca"
+  - "parque eólico"
+  - "estela"
+  - "Jensen"
+  - "Bastankhah"
+  - "MCP"
+references:
+  - type: article
+    authors:
+      - family-names: "Hwang"
+        given-names: "Ching-Lai"
+      - family-names: "Yoon"
+        given-names: "Kwangsun"
+    title: "Multiple Attribute Decision Making"
+    year: 1981
+    doi: "10.1007/978-3-642-48318-9_3"
+  - type: article
+    authors:
+      - family-names: "Saaty"
+        given-names: "Thomas L."
+    title: "How to make a decision: the analytic hierarchy process"
+    journal: "European Journal of Operational Research"
+    year: 1987
+    doi: "10.1016/0270-0255(87)90473-8"
+  - type: article
+    authors:
+      - family-names: "Bastankhah"
+        given-names: "Majid"
+      - family-names: "Porté-Agel"
+        given-names: "Fernando"
+    title: "A new analytical model for wind-turbine wakes"
+    journal: "Renewable Energy"
+    year: 2014
+    doi: "10.1016/j.renene.2014.01.002"
+  - type: report
+    authors:
+      - name: "IRENA"
+    title: "Renewable Power Generation Costs in 2024"
+    year: 2025
+    url: "https://www.irena.org/Publications/2025/Jun/Renewable-Power-Generation-Costs-in-2024"
