@@ -607,7 +607,7 @@
 <!-- TOC -->
 <section style="padding-top:4rem; border-bottom:none;">
   <div class="toc">
-    <h3>Tabla de Contenidos — 29 secciones</h3>
+    <h3>Tabla de Contenidos — 30 secciones</h3>
     <ol>
       <li><a href="#s1">Arquitectura general del sistema WAsP</a></li>
       <li><a href="#s2">Matemática del modelo de flujo microscala (BZ + IBL)</a></li>
@@ -615,15 +615,15 @@
       <li><a href="#s4">Orografía: el modelo BZ (Bessel-Zooming)</a></li>
       <li><a href="#s5">Rugosidad y la Capa Límite Interna (IBL)</a></li>
       <li><a href="#s6">Producción de energía: AEP y curvas de potencia</a></li>
-      <li><a href="#s7">Efectos de estela: PyWake y modelos de déficit</a></li>
+      <li><a href="#s7">Efectos de estela: modelos Jensen y Gaussiano</a></li>
       <li><a href="#s8">Índice de rugosidad RIX y ΔRIX</a></li>
-      <li><a href="#s9">Estructura del módulo AERO-Ingeniería</a></li>
-      <li><a href="#s10">Módulo Data Hub: ingesta y validación de datos</a></li>
-      <li><a href="#s11">Módulo Motor de flujo microscala</a></li>
-      <li><a href="#s12">Módulo Motor de estela (PyWake)</a></li>
-      <li><a href="#s13">Módulo Recursos y mapas de salida</a></li>
-      <li><a href="#s14">Módulo Dashboard interactivo</a></li>
-      <li><a href="#s15">Stack tecnológico y dependencias</a></li>
+      <li><a href="#s9">Arquitectura del sistema AERO OPEN CIM</a></li>
+      <li><a href="#s10">Módulo 1 — Adquisición y validación del recurso eólico</a></li>
+      <li><a href="#s11">Módulo 2 — Motor de recurso microscala</a></li>
+      <li><a href="#s12">Módulo 3 — Simulación de estelas</a></li>
+      <li><a href="#s13">Módulo 4 — Recursos espaciales y mapas</a></li>
+      <li><a href="#s14">Módulo 5 — Interfaz y orquestación</a></li>
+      <li><a href="#s15">Stack tecnológico — AERO OPEN CIM</a></li>
       <li><a href="#s16">Kriging geoestadístico — interpolación espacial</a></li>
       <li><a href="#s17">Layout de parque eólico y optimización de micrositing</a></li>
       <li><a href="#s18">Sistema híbrido: viento + solar + almacenamiento</a></li>
@@ -634,10 +634,11 @@
       <li><a href="#s23">Energy Lab — balance energético y métricas</a></li>
       <li><a href="#s24">Análisis Tecnoeconómico completo</a></li>
       <li><a href="#s25">Validación y exportación — métricas y benchmarking</a></li>
-      <li><a href="#s26">Arquitectura de software AERO</a></li>
+      <li><a href="#s26">Arquitectura de software AERO OPEN CIM</a></li>
       <li><a href="#s27">API REST — contratos y endpoints</a></li>
       <li><a href="#s28">Guía de replicación completa paso a paso</a></li>
       <li><a href="#s29">Diseño de interfaz — principios y componentes UI</a></li>
+      <li><a href="#s30">TOPSIS y AHP — Selección multicriterio de tecnología</a></li>
     </ol>
   </div>
 </section>
@@ -1156,58 +1157,25 @@ flow_map.plot_wake_map()
 
 
 <!-- ══════════════════════════════════════
-     S9 — ESTRUCTURA AERO INGENIERÍA
+     S9 — ARQUITECTURA AERO OPEN CIM
 ══════════════════════════════════════ -->
 <section id="s9">
-  <div class="section-label">09 · Instrucciones al programador</div>
-  <h2>Estructura del módulo AERO — Ingeniería</h2>
+  <div class="section-label">09 · Arquitectura del sistema</div>
+  <h2>Arquitectura del sistema AERO OPEN CIM</h2>
 
-  <div class="callout tip">
-    <strong>Objetivo:</strong> Replicar la funcionalidad de WAsP/PyWAsP en Python puro (sin licencia DTU), implementando cada modelo físico desde sus ecuaciones fundamentales. PyWake se usa directamente (es open-source MIT). El stack resultante es completamente libre.
+  <p>AERO OPEN CIM es una plataforma de prefactibilidad eólica de ciclo completo. Integra cinco módulos científicos desacoplados que procesan datos desde la adquisición del recurso hasta la evaluación tecnoeconómica final. Cada módulo expone una API REST estándar; el frontend SPA los orquesta sin acoplar lógica de negocio.</p>
+
+  <h3>Pipeline de datos y decisión</h3>
+  <div class="card-grid">
+    <div class="card"><h4>① Recurso Eólico</h4><p><strong>Entrada:</strong> series horarias MERRA-2/ERA5, datos de estación (CERTE).<br><strong>Proceso:</strong> QC, sincronización UTC, MCP, Weibull por sector.<br><strong>Salida:</strong> recurso validado, estadísticos direccionales, hindcast.</p></div>
+    <div class="card"><h4>② Diseño de Parque</h4><p><strong>Entrada:</strong> recurso validado, polígono del predio, catálogo de turbinas.<br><strong>Proceso:</strong> Kriging espacial, generación de layouts, simulación de estelas, economía por candidato.<br><strong>Salida:</strong> alternativas de layout con AEP_P50/P90, CAPEX, VAN, LCOE.</p></div>
+    <div class="card"><h4>③ Selección TOPSIS+AHP</h4><p><strong>Entrada:</strong> alternativas de layout con métricas técnicas y económicas.<br><strong>Proceso:</strong> normalización vectorial, pesos AHP, distancias ideal/anti-ideal, SMAA de robustez.<br><strong>Salida:</strong> ranking multicriterio con score de proximidad y análisis de sensibilidad.</p></div>
+    <div class="card"><h4>④ Evaluación Tecnoeconómica</h4><p><strong>Entrada:</strong> layout ganador, parámetros financieros, PML horario.<br><strong>Proceso:</strong> cashflows 25 años, inflación Fisher, WACC, apalancamiento equity.<br><strong>Salida:</strong> LCOE nominal/real, VAN, TIR, payback descontado, tabla de flujos anuales.</p></div>
+    <div class="card"><h4>⑤ Validación y Exportación</h4><p><strong>Entrada:</strong> resultados del proyecto activo.<br><strong>Proceso:</strong> métricas de validación cruzada, benchmarking de pronóstico, exportación de datos.<br><strong>Salida:</strong> reportes en JSON/CSV/KML, resumen ejecutivo del proyecto.</p></div>
   </div>
 
-  <div class="module-tree">
-<span class="tree-dir">aero_ingenieria/</span>
-│
-├── <span class="tree-dir">core/</span>                         <span class="tree-desc">Motor físico-matemático</span>
-│   ├── <span class="tree-file">wind_profile.py</span>          <span class="tree-desc">Perfil log, extrapolación vertical, z₀</span>
-│   ├── <span class="tree-file">geostrophic.py</span>           <span class="tree-desc">Ley de arrastre, transformación up/down</span>
-│   ├── <span class="tree-file">weibull.py</span>               <span class="tree-desc">PDF, CDF, fitting MLE, estadísticos</span>
-│   ├── <span class="tree-file">ibl.py</span>                   <span class="tree-desc">Capa límite interna, cambios de rugosidad</span>
-│   ├── <span class="tree-file">orography.py</span>             <span class="tree-desc">Speed-up BZ simplificado, grilla polar</span>
-│   ├── <span class="tree-file">rix.py</span>                   <span class="tree-desc">Cálculo RIX, ΔRIX, corrección Bowen</span>
-│   └── <span class="tree-file">aep.py</span>                   <span class="tree-desc">Integración AEP, CF, densidad de potencia</span>
-│
-├── <span class="tree-dir">io/</span>                           <span class="tree-desc">Parseo de formatos WAsP</span>
-│   ├── <span class="tree-file">map_parser.py</span>            <span class="tree-desc">Leer archivos .map (contornos)</span>
-│   ├── <span class="tree-file">omwc_parser.py</span>           <span class="tree-desc">Leer .omwc (observaciones de viento)</span>
-│   ├── <span class="tree-file">wtg_parser.py</span>            <span class="tree-desc">Leer .wtg (curvas P y Ct de turbina)</span>
-│   ├── <span class="tree-file">gwc_io.py</span>                <span class="tree-desc">Leer/escribir .gwc (clima generalizado)</span>
-│   └── <span class="tree-file">gwa_fetcher.py</span>           <span class="tree-desc">Descargar datos Global Wind Atlas API</span>
-│
-├── <span class="tree-dir">wake/</span>                         <span class="tree-desc">Integración con PyWake</span>
-│   ├── <span class="tree-file">site_builder.py</span>          <span class="tree-desc">Construir XRSite de PyWake desde Weibull</span>
-│   ├── <span class="tree-file">turbine_builder.py</span>       <span class="tree-desc">Construir WindTurbines desde .wtg</span>
-│   ├── <span class="tree-file">wake_runner.py</span>           <span class="tree-desc">Ejecutar NOJ/Bastankhah sobre layout</span>
-│   └── <span class="tree-file">wake_plots.py</span>            <span class="tree-desc">Visualizar mapas de estela, AEP por turbina</span>
-│
-├── <span class="tree-dir">resource/</span>                     <span class="tree-desc">Recurso eólico y mapas</span>
-│   ├── <span class="tree-file">resource_grid.py</span>         <span class="tree-desc">Grilla rectangular de puntos, cálculo masivo</span>
-│   ├── <span class="tree-file">micrositing.py</span>           <span class="tree-desc">Optimización de posición de turbinas</span>
-│   └── <span class="tree-file">atlas_generation.py</span>      <span class="tree-desc">Generar atlas local desde múltiples mástiles</span>
-│
-├── <span class="tree-dir">dashboard/</span>                    <span class="tree-desc">Interfaz web interactiva</span>
-│   ├── <span class="tree-file">app.py</span>                   <span class="tree-desc">FastAPI + uvicorn backend</span>
-│   ├── <span class="tree-file">routes/</span>                  <span class="tree-desc">Endpoints REST</span>
-│   └── <span class="tree-file">frontend/</span>                <span class="tree-desc">React + Leaflet + Recharts</span>
-│
-├── <span class="tree-dir">data/</span>                         <span class="tree-desc">Datos de ejemplo</span>
-│   ├── <span class="tree-file">example.map</span>              <span class="tree-desc">Contornos Serra Santa Luzia (PTG)</span>
-│   ├── <span class="tree-file">example.omwc</span>
-│   └── <span class="tree-file">vestas_v80.wtg</span>
-│
-├── <span class="tree-file">requirements.txt</span>
-└── <span class="tree-file">README.md</span>
+  <div class="callout tip">
+    <strong>Principio de diseño:</strong> los módulos comparten estado a través de una sesión en memoria del servidor (reemplazable por Redis en producción multi-usuario). Cada módulo puede ejecutarse de forma independiente vía API REST — el frontend es una vista opcional, no un requisito.
   </div>
 </section>
 
@@ -1216,21 +1184,14 @@ flow_map.plot_wake_map()
      S10 — MÓDULO 1: DATOS
 ══════════════════════════════════════ -->
 <section id="s10">
-  <div class="section-label">10 · Implementación · Módulo 1</div>
-  <h2>Módulo 1: Datos y entrada</h2>
+  <div class="section-label">10 · Módulo 1</div>
+  <h2>Módulo 1 — Adquisición y validación del recurso eólico</h2>
 
-  <h3>io/omwc_parser.py — Observaciones de viento</h3>
-  <p>El formato .omwc de WAsP es un histograma de viento: velocidad × dirección. Estructura a implementar:</p>
+  <h3>Formato de observaciones de viento (.omwc)</h3>
+  <p>El formato .omwc es un histograma de viento: velocidad × dirección. Estructura:</p>
 
   <pre data-lang="Python">
-<span class="py-cm">"""
-INSTRUCCIÓN AL PROGRAMADOR:
-Implementar un parser para archivos .omwc (Observed Mean Wind Climate).
-El formato es un archivo de texto con tabla de frecuencias:
-  - Filas: bins de velocidad (0-1, 1-2, ..., N-N+1 m/s)
-  - Columnas: sectores de dirección (12 columnas = 12 sectores de 30°)
-  - Valores: frecuencia de ocurrencia (número de horas o fracción)
-"""</span>
+<span class="py-cm"># Histograma de viento: filas = bins de velocidad, columnas = sectores de dirección</span>
 
 <span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
 <span class="py-kw">import</span> pandas <span class="py-kw">as</span> pd
@@ -1298,18 +1259,9 @@ El formato es un archivo de texto con tabla de frecuencias:
         <span class="py-kw">return</span> A, k
   </pre>
 
-  <h3>io/wtg_parser.py — Curva de potencia y Ct</h3>
+  <h3>Curva de potencia y coeficiente de empuje (Ct)</h3>
   <pre data-lang="Python">
-<span class="py-cm">"""
-INSTRUCCIÓN AL PROGRAMADOR:
-Los archivos .wtg de WAsP son XML con:
-  - PowerTable: (U [m/s], P [W]) para cada velocidad
-  - ThrustForceTable: (U [m/s], Ct [-])
-  - Metadatos: diámetro, altura hub, densidad de referencia
-  
-Importar con xml.etree.ElementTree o lxml.
-Interpolación de P(U) y Ct(U): usar scipy.interpolate.interp1d
-"""</span>
+<span class="py-cm"># Formato .wtg (XML): PowerTable (U, P) + ThrustForceTable (U, Ct) + metadatos del rotor</span>
 
 <span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
 <span class="py-kw">from</span> scipy.interpolate <span class="py-kw">import</span> interp1d
@@ -1350,10 +1302,10 @@ Interpolación de P(U) y Ct(U): usar scipy.interpolate.interp1d
      S11 — MÓDULO 2: MOTOR FLUJO
 ══════════════════════════════════════ -->
 <section id="s11">
-  <div class="section-label">11 · Implementación · Módulo 2</div>
-  <h2>Módulo 2: Motor de flujo microscala</h2>
+  <div class="section-label">11 · Módulo 2</div>
+  <h2>Módulo 2 — Motor de recurso microscala</h2>
 
-  <h3>core/weibull.py — Distribución de velocidades</h3>
+  <h3>Distribución de velocidades (Weibull)</h3>
   <pre data-lang="Python">
 <span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
 <span class="py-kw">from</span> scipy.special <span class="py-kw">import</span> gamma
@@ -1437,9 +1389,8 @@ B_CONST = <span class="py-num">4.5</span>
     SUBIR ↑: eliminar efectos locales del mástil.
     Devuelve el clima eólico generalizado (geostrófico).
     
-    INSTRUCCIÓN: Este es el paso de generalización WAsP.
-    Para cada sector, calcular u*, luego G, y almacenar
-    como distribución Weibull de G (el "atlas").
+    Paso de generalización: para cada sector, calcular u*, luego G,
+    y almacenar como distribución Weibull de G (el "atlas").
     """</span>
     f   = <span class="py-fn">coriolis_f</span>(lat)
     u_s = <span class="py-fn">u_star_from_profile</span>(U_obs, z_obs, z0_mast)
@@ -1452,7 +1403,7 @@ B_CONST = <span class="py-num">4.5</span>
     BAJAR ↓: aplicar efectos del sitio objetivo.
     Dado G (atlas), calcular U a altura z_target en terreno z0_target.
     
-    INSTRUCCIÓN: Resolver iterativamente u* dado G y z0_target,
+    Resolver iterativamente u* dado G y z0_target,
     luego extrapolar con perfil log a z_target.
     """</span>
     f = <span class="py-fn">coriolis_f</span>(lat)
@@ -1473,10 +1424,10 @@ B_CONST = <span class="py-num">4.5</span>
      S12 — MÓDULO 3: ESTELA
 ══════════════════════════════════════ -->
 <section id="s12">
-  <div class="section-label">12 · Implementación · Módulo 3</div>
-  <h2>Módulo 3: Motor de estela con PyWake</h2>
+  <div class="section-label">12 · Módulo 3</div>
+  <h2>Módulo 3 — Simulación de estelas</h2>
 
-  <h3>wake/site_builder.py — Construir Site desde CWG</h3>
+  <h3>Construcción del sitio desde el Clima Eólico Generalizado</h3>
   <pre data-lang="Python">
 <span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
 <span class="py-kw">import</span> xarray <span class="py-kw">as</span> xr
@@ -1489,9 +1440,8 @@ B_CONST = <span class="py-num">4.5</span>
     
     cwg: dict con clave=sector[°], valor={'A':..., 'k':..., 'freq':...}
     
-    INSTRUCCIÓN: XRSite requiere un xarray.Dataset con variables:
-      - P(wd, ws): probabilidad de cada (dirección, velocidad)
-      - o bien Weibull A(wd), k(wd), freq_wd(wd)
+    El sitio requiere P(wd, ws): probabilidad de cada (dirección, velocidad)
+    construida desde los parámetros Weibull A(wd), k(wd), freq(wd) por sector.
     """</span>
     sectors = <span class="py-fn">sorted</span>(cwg.keys())
     A_arr   = np.<span class="py-fn">array</span>([cwg[s][<span class="py-str">'A'</span>]    <span class="py-kw">for</span> s <span class="py-kw">in</span> sectors])
@@ -1565,10 +1515,10 @@ B_CONST = <span class="py-num">4.5</span>
      S13 — MÓDULO 4: RECURSOS
 ══════════════════════════════════════ -->
 <section id="s13">
-  <div class="section-label">13 · Implementación · Módulo 4</div>
-  <h2>Módulo 4: Recursos y mapas de salida</h2>
+  <div class="section-label">13 · Módulo 4</div>
+  <h2>Módulo 4 — Recursos espaciales y mapas</h2>
 
-  <h3>resource/resource_grid.py — Grilla de recursos</h3>
+  <h3>Grilla de recursos eólicos</h3>
   <pre data-lang="Python">
 <span class="py-kw">import</span> numpy <span class="py-kw">as</span> np
 <span class="py-kw">import</span> xarray <span class="py-kw">as</span> xr
@@ -1593,11 +1543,8 @@ B_CONST = <span class="py-num">4.5</span>
     Para cada punto: aplicar motor microscala (subir+bajar) y 
     calcular estadísticos.
     
-    INSTRUCCIÓN AL PROGRAMADOR:
-    - Usar joblib.Parallel para paralelizar el cálculo por puntos
-    - Cada punto es independiente (problema "embarrassingly parallel")
-    - Almacenar resultados como xarray.Dataset con coordenadas (lat, lon)
-    - Visualizar con matplotlib.pyplot.pcolormesh o folium
+    Cálculo paralelo por puntos (problema embarrassingly parallel).
+    Resultados almacenados como Dataset con coordenadas (lat, lon).
     """</span>
     
     <span class="py-kw">def</span> <span class="py-fn">__init__</span>(self, lat_center, lon_center,
@@ -1708,80 +1655,22 @@ HOURS_PER_YEAR = <span class="py-num">8760</span>
      S14 — MÓDULO 5: DASHBOARD
 ══════════════════════════════════════ -->
 <section id="s14">
-  <div class="section-label">14 · Implementación · Módulo 5</div>
-  <h2>Módulo 5: Dashboard interactivo</h2>
+  <div class="section-label">14 · Módulo 5</div>
+  <h2>Módulo 5 — Interfaz y orquestación</h2>
 
-  <h3>Arquitectura del backend (FastAPI)</h3>
-  <pre data-lang="Python">
-<span class="py-cm">"""
-INSTRUCCIÓN AL PROGRAMADOR:
-Crear una API REST con FastAPI. Endpoints principales:
-"""</span>
+  <p>El módulo de interfaz orquesta los cuatro módulos científicos previos en un flujo de trabajo integrado. La interfaz web (SPA) es el cliente visual; los módulos científicos son accesibles también directamente vía API REST para integración con scripts y flujos externos.</p>
 
-<span class="py-kw">from</span> fastapi <span class="py-kw">import</span> FastAPI, UploadFile, File
-<span class="py-kw">from</span> fastapi.middleware.cors <span class="py-kw">import</span> CORSMiddleware
-<span class="py-kw">import</span> uvicorn
+  <h3>Flujo de orquestación</h3>
+  <div class="card-grid">
+    <div class="card"><h4>Carga de datos</h4><p>Series horarias MERRA-2/ERA5, datos de estación CERTE, catálogo de turbinas. Control de calidad automático: gaps, spikes, rango físico.</p></div>
+    <div class="card"><h4>Análisis de recurso</h4><p>MCP entre estación y reanálisis, ajuste Weibull por sector, rosa de viento, estadísticos a altura hub mediante extrapolación Hellmann.</p></div>
+    <div class="card"><h4>Diseño de parque</h4><p>Kriging sobre puntos de reanálisis, generación y evaluación de layouts, simulación de estelas, economía por candidato, selección TOPSIS+AHP.</p></div>
+    <div class="card"><h4>Exportación</h4><p>Proyecto completo en JSON reutilizable. Layouts en KML/GeoJSON. Tabla de flujos en CSV. Expediente AHP en JSON normalizado.</p></div>
+  </div>
 
-app = <span class="py-fn">FastAPI</span>(title=<span class="py-str">"AERO Ingeniería API"</span>, version=<span class="py-str">"1.0"</span>)
-
-app.<span class="py-fn">add_middleware</span>(CORSMiddleware,
-    allow_origins=[<span class="py-str">"*"</span>], allow_methods=[<span class="py-str">"*"</span>], allow_headers=[<span class="py-str">"*"</span>])
-
-<span class="py-cm"># POST /upload/omwc   → procesar serie de viento</span>
-<span class="py-cm"># POST /upload/map    → procesar topografía</span>
-<span class="py-cm"># POST /upload/wtg    → procesar curva de potencia</span>
-<span class="py-cm"># POST /analyze       → correr pipeline completo</span>
-<span class="py-cm"># GET  /results/{id} → descargar resultados JSON/GeoJSON</span>
-<span class="py-cm"># GET  /resource_grid → grilla de recurso como GeoJSON</span>
-<span class="py-cm"># GET  /wake_map      → mapa de estelas como imagen</span>
-
-@app.<span class="py-fn">post</span>(<span class="py-str">"/analyze"</span>)
-<span class="py-kw">async</span> <span class="py-kw">def</span> <span class="py-fn">analyze</span>(config: dict):
-    <span class="py-str">"""
-    Pipeline completo:
-    1. Cargar datos (omwc, map, wtg)
-    2. Ajustar Weibull por sector
-    3. Calcular CWG (up/down)
-    4. Calcular AEP sin estela
-    5. Calcular AEP con estela (PyWake)
-    6. Calcular grilla de recurso
-    7. Devolver JSON con todos los resultados
-    """</span>
-    <span class="py-kw">pass</span>
-  </pre>
-
-  <h3>Frontend — componentes clave (React + Leaflet)</h3>
-  <pre data-lang="JavaScript">
-<span class="cm">/*
-INSTRUCCIÓN AL PROGRAMADOR — Componentes React a implementar:
-
-1. WindRoseChart
-   - Librería: recharts o d3
-   - Datos: {sector, A, k, frecuencia}
-   - Renderiza rosa de viento polar con barras de frecuencia
-   - Colorear por velocidad media
-
-2. WeibullChart  
-   - Renderiza PDF y CDF de Weibull
-   - Input: {A, k, sector seleccionado}
-   - Mostrar Ū, densidad de potencia
-
-3. ResourceMap
-   - Librería: Leaflet + react-leaflet
-   - Capa base: OpenStreetMap o mapbox
-   - Overlay: heatmap de AEP/velocidad sobre la grilla
-   - Clic en punto → mostrar estadísticos locales
-
-4. WakeFlowMap
-   - Imagen PNG del mapa de flujo de PyWake
-   - Controles: seleccionar WD, WS, modelo de estela
-
-5. TurbineLayout
-   - Mapa interactivo con drag & drop de turbinas
-   - Al mover: recalcular AEP en tiempo real (debounce 500ms)
-   - Mostrar AEP total y pérdidas de estela
-*/</span>
-  </pre>
+  <div class="callout tip">
+    <strong>API REST:</strong> todos los endpoints aceptan y devuelven JSON. El estado del proyecto (sesión) vive en el servidor y se identifica por session_id. Los resultados de cada etapa quedan disponibles para etapas posteriores sin reenviar datos voluminosos.
+  </div>
 </section>
 
 
@@ -1789,87 +1678,16 @@ INSTRUCCIÓN AL PROGRAMADOR — Componentes React a implementar:
      S15 — STACK
 ══════════════════════════════════════ -->
 <section id="s15">
-  <div class="section-label">15 · Tecnología</div>
-  <h2>Stack tecnológico y dependencias</h2>
-
-  <h3>requirements.txt — Python</h3>
-  <pre data-lang="requirements.txt">
-<span class="cm"># Motor científico</span>
-numpy>=1.26
-scipy>=1.12
-pandas>=2.1
-xarray>=2023.9
-
-<span class="cm"># Datos geoespaciales</span>
-geopandas>=1.0
-rasterio>=1.3
-pyproj>=3.6
-shapely>=2.0
-
-<span class="cm"># Motor de estela</span>
-py_wake>=2.6
-
-<span class="cm"># Visualización</span>
-matplotlib>=3.8
-plotly>=5.0
-folium>=0.15
-
-<span class="cm"># Backend web</span>
-fastapi>=0.110
-uvicorn>=0.28
-python-multipart
-
-<span class="cm"># Paralelización</span>
-joblib>=1.3
-
-<span class="cm"># Utilidades</span>
-tqdm
-netcdf4
-h5netcdf
-pyyaml
-  </pre>
-
-  <h3>Orden de implementación recomendado</h3>
+  <div class="section-label">15 · Stack tecnológico</div>
+  <h2>Stack tecnológico — AERO OPEN CIM</h2>
 
   <div class="card-grid">
-    <div class="card">
-      <span class="card-icon">1️⃣</span>
-      <h4>Fase 1 — Núcleo matemático</h4>
-      <p>Implementar: weibull.py, geostrophic.py, wind_profile.py, aep.py. Tests unitarios contra valores publicados en literatura WAsP.</p>
-    </div>
-    <div class="card">
-      <span class="card-icon">2️⃣</span>
-      <h4>Fase 2 — Parsers de datos</h4>
-      <p>Implementar: omwc_parser.py, wtg_parser.py, map_parser.py. Probar con archivos de ejemplo de WAsP (Serra Santa Luzia).</p>
-    </div>
-    <div class="card">
-      <span class="card-icon">3️⃣</span>
-      <h4>Fase 3 — Orografía y rugosidad</h4>
-      <p>Implementar: orography.py (BZ simplificado), ibl.py, rix.py. Comparar speed-up contra resultados de WAsP en terreno conocido.</p>
-    </div>
-    <div class="card">
-      <span class="card-icon">4️⃣</span>
-      <h4>Fase 4 — Integración PyWake</h4>
-      <p>Implementar: site_builder.py, turbine_builder.py, wake_runner.py. Validar AEP contra ejemplo Horns Rev de la documentación PyWake.</p>
-    </div>
-    <div class="card">
-      <span class="card-icon">5️⃣</span>
-      <h4>Fase 5 — Grilla de recursos</h4>
-      <p>Implementar: resource_grid.py con joblib.Parallel. Generar mapas de velocidad media y AEP como GeoJSON/NetCDF.</p>
-    </div>
-    <div class="card">
-      <span class="card-icon">6️⃣</span>
-      <h4>Fase 6 — Dashboard</h4>
-      <p>Implementar backend FastAPI y frontend React. Componentes: WindRose, Weibull chart, mapa interactivo, layout de turbinas.</p>
-    </div>
-  </div>
-
-  <div class="callout warn">
-    <strong>Nota crítica sobre el modelo BZ:</strong> El código Fortran original del BZ es propiedad de DTU y no está disponible públicamente. Para una implementación libre, se puede usar una aproximación basada en flujo potencial linealizado sobre grilla polar, o integrar con WRF/OpenFOAM para sitios con orografía compleja donde el BZ no es suficiente. Para terreno suave (RIX &lt; 5%), la corrección logarítmica de velocidad y la ley de arrastre geostrófico dan resultados aceptables sin necesitar BZ completo.
-  </div>
-
-  <div class="callout tip">
-    <strong>Acceso a datos sin licencia DTU:</strong> El Global Wind Atlas (<code>globalwindatlas.info</code>) expone una API pública que devuelve el CWG (distribución Weibull sectorial) para cualquier punto del planeta a resoluciones de 250m, 1km y 5km. Esto permite saltarse el paso "subir" (generalización) usando el atlas ya calculado como punto de partida para la aplicación ("bajar") sobre el sitio objetivo.
+    <div class="card"><h4>Backend</h4><p>Python 3.9+. Flask para la API REST y el servidor de la SPA. NumPy, SciPy, Pandas para cómputo científico. PyKrige para interpolación espacial. Scikit-learn para clustering y ML.</p></div>
+    <div class="card"><h4>Frontend</h4><p>HTML5 + CSS3 + JavaScript ES2022 vanilla (sin frameworks). Chart.js para visualizaciones. Leaflet.js para mapas interactivos. Inter + JetBrains Mono (tipografía).</p></div>
+    <div class="card"><h4>Datos reanalysis</h4><p>NASA MERRA-2 (GES DISC) y ECMWF ERA5 — series horarias de viento, temperatura y presión en múltiples alturas. Resolución temporal: 1 h. Resolución espacial: ~0.5° × 0.625°.</p></div>
+    <div class="card"><h4>Modelos de estela</h4><p>Jensen (1983) NOJ y Bastankhah &amp; Porté-Agel (2014) Gaussiano — implementados nativamente sobre NumPy. Superposición lineal de déficits. Validado contra PyWake (DTU Wind Energy).</p></div>
+    <div class="card"><h4>Mercado eléctrico</h4><p>CENACE MEM México — PML horario por nodo de 132 kV. Cruce cronológico generación × precio para ingresos reales hora a hora.</p></div>
+    <div class="card"><h4>Testing</h4><p>Pytest con fixtures de datos sintéticos y datos reales de Oaxaca/ERA5. Tests de regresión para resultados numéricos críticos (AEP, LCOE, VAN).</p></div>
   </div>
 </section>
 
@@ -2130,7 +1948,7 @@ E_cap = capacidad nominal (MWh)
     <div class="pipe-step"><div class="pipe-num">01</div><div class="pipe-title">Features</div><div class="pipe-desc">U, V, T, P, Z500 de MERRA-2/ERA5. Derivados: velocidad, dirección, shear, turbulencia, hora, mes, posición geográfica.</div></div>
     <div class="pipe-step"><div class="pipe-num">02</div><div class="pipe-title">Target</div><div class="pipe-desc">Velocidad medida en torre (m/s) o potencia activa (kW/MW) registrada en el SCADA del parque.</div></div>
     <div class="pipe-step"><div class="pipe-num">03</div><div class="pipe-title">Split</div><div class="pipe-desc">Train / Validation / Test con respeto temporal (no aleatorio). Mínimo 1 año para test. TimeSeriesSplit para CV.</div></div>
-    <div class="pipe-step"><div class="pipe-num">04</div><div class="pipe-title">Modelo</div><div class="pipe-desc">Random Forest, XGBoost, LSTM, Transformer. Hyperparameter tuning con Optuna (Bayesian optimization).</div></div>
+    <div class="pipe-step"><div class="pipe-num">04</div><div class="pipe-title">Modelo</div><div class="pipe-desc">Random Forest, regresión regularizada, LSTM. Validación cruzada cronológica y métricas de skill score.</div></div>
     <div class="pipe-step"><div class="pipe-num">05</div><div class="pipe-title">Métricas</div><div class="pipe-desc">MAE, RMSE, R², Skill Score vs climatología. Gráficas: scatter, residuales, feature importance, curvas de aprendizaje.</div></div>
   </div>
 
@@ -2569,7 +2387,7 @@ Payback descontado: primer año t* donde VAN acumulado ≥ 0
 ══════════════════════════════════════ -->
 <section id="s26">
   <div class="section-label">26 · Arquitectura de software</div>
-  <h2>Arquitectura de software AERO</h2>
+  <h2>Arquitectura de software AERO OPEN CIM</h2>
 
   <p>
     AERO es una Single-Page Application (SPA) con un backend Python y un frontend JavaScript vanilla. La arquitectura sigue el patrón <strong>módulos desacoplados</strong>: cada módulo (Data Hub, Centro de modelaje, etc.) es un componente independiente con su propio estado, lógica y vista. La comunicación entre frontend y backend se hace mediante una API REST.
@@ -2578,56 +2396,15 @@ Payback descontado: primer año t* donde VAN acumulado ≥ 0
   <h3>Stack tecnológico</h3>
   <div class="card-grid">
     <div class="card"><h4>Frontend</h4><p>HTML5 + CSS3 + JavaScript ES2022. Sin frameworks (vanilla). Chart.js para gráficas. Leaflet.js para mapas. Space Grotesk + DM Mono (tipografía).</p></div>
-    <div class="card"><h4>Backend</h4><p>Python 3.11+. FastAPI para la API REST. NumPy, Pandas, SciPy para cómputo científico. PyWake para estelas. PyKrige para interpolación.</p></div>
-    <div class="card"><h4>ML</h4><p>Scikit-learn, XGBoost, LightGBM para modelos clásicos. PyTorch para redes neuronales. Optuna para hyperparameter tuning. MLflow para experimentos.</p></div>
+    <div class="card"><h4>Backend</h4><p>Python 3.9+. Flask para la API REST y el servidor SPA. NumPy, SciPy, Pandas para cómputo científico. PyKrige para Kriging. Modelos de estela Jensen/Gaussiano implementados nativamente.</p></div>
+    <div class="card"><h4>ML</h4><p>Scikit-learn para clustering (Ward), regresión y clasificación. Módulos de pronóstico integrados (SARIMA, Random Forest). Validación cruzada cronológica.</p></div>
     <div class="card"><h4>Datos</h4><p>MERRA-2 (NASA GES DISC), ERA5 (ECMWF CDS). Procesados a CSV con windpowerlib / cfgrib. Almacenados en carpeta local /data/.</p></div>
     <div class="card"><h4>Despliegue</h4><p>Docker + docker-compose. Nginx como reverse proxy. Gunicorn + Uvicorn workers. Opcional: Railway, Render, AWS EC2.</p></div>
     <div class="card"><h4>Testing</h4><p>Pytest con fixtures de datos sintéticos. Coverage mínimo 80%. GitHub Actions para CI/CD. Pre-commit hooks (ruff, mypy).</p></div>
   </div>
 
-  <h3>Árbol de directorios AERO completo</h3>
-  <div class="module-tree">
-<span class="tree-dir">aero/</span>
-├── <span class="tree-dir">backend/</span>
-│   ├── <span class="tree-file">main.py</span>              <span class="tree-desc">FastAPI app, routers, CORS, middleware</span>
-│   ├── <span class="tree-dir">api/</span>
-│   │   ├── <span class="tree-file">data.py</span>          <span class="tree-desc">POST /upload, GET /presets, GET /inspect</span>
-│   │   ├── <span class="tree-file">wind.py</span>          <span class="tree-desc">POST /wind/analyze, POST /wind/weibull</span>
-│   │   ├── <span class="tree-file">kriging.py</span>       <span class="tree-desc">POST /kriging/fit, POST /kriging/predict</span>
-│   │   ├── <span class="tree-file">wake.py</span>          <span class="tree-desc">POST /wake/simulate (PyWake)</span>
-│   │   ├── <span class="tree-file">hybrid.py</span>        <span class="tree-desc">POST /hybrid/simulate</span>
-│   │   ├── <span class="tree-file">forecast.py</span>      <span class="tree-desc">POST /forecast/sarima, POST /forecast/lstm</span>
-│   │   ├── <span class="tree-file">techno.py</span>        <span class="tree-desc">POST /techno/lcoe, POST /techno/npv</span>
-│   │   └── <span class="tree-file">validate.py</span>      <span class="tree-desc">POST /validate/metrics, POST /validate/bootstrap</span>
-│   ├── <span class="tree-dir">core/</span>
-│   │   ├── <span class="tree-file">weibull.py</span>       <span class="tree-desc">MLE, fitting, PDF/CDF</span>
-│   │   ├── <span class="tree-file">wind_profile.py</span>  <span class="tree-desc">Perfil log, IBL, shear</span>
-│   │   ├── <span class="tree-file">orography.py</span>     <span class="tree-desc">BZ linealizado, RIX, ΔRIX</span>
-│   │   ├── <span class="tree-file">aep.py</span>           <span class="tree-desc">AEP bruto, power curve integration</span>
-│   │   ├── <span class="tree-file">kriging_engine.py</span> <span class="tree-desc">OK, UK, variogram fitting</span>
-│   │   ├── <span class="tree-file">pv_model.py</span>      <span class="tree-desc">Irradiancia → potencia PV</span>
-│   │   ├── <span class="tree-file">battery.py</span>       <span class="tree-desc">Modelo SOC, despacho</span>
-│   │   └── <span class="tree-file">financial.py</span>     <span class="tree-desc">LCOE, VAN, TIR, CRF</span>
-│   ├── <span class="tree-dir">ml/</span>
-│   │   ├── <span class="tree-file">mos_rf.py</span>        <span class="tree-desc">MOS con Random Forest</span>
-│   │   ├── <span class="tree-file">lstm_wind.py</span>     <span class="tree-desc">LSTM para pronóstico de viento</span>
-│   │   ├── <span class="tree-file">sarima_engine.py</span> <span class="tree-desc">SARIMA con statsmodels</span>
-│   │   ├── <span class="tree-file">ou_pml.py</span>        <span class="tree-desc">Ornstein-Uhlenbeck para PML</span>
-│   │   └── <span class="tree-file">features.py</span>      <span class="tree-desc">Feature engineering común</span>
-│   └── <span class="tree-dir">schemas/</span>
-│       ├── <span class="tree-file">wind_schema.py</span>   <span class="tree-desc">Pydantic models request/response</span>
-│       └── <span class="tree-file">techno_schema.py</span> <span class="tree-desc">Parámetros financieros</span>
-├── <span class="tree-dir">frontend/</span>
-│   ├── <span class="tree-file">index.html</span>           <span class="tree-desc">SPA principal — todos los módulos</span>
-│   ├── <span class="tree-file">ingenieria.html</span>      <span class="tree-desc">Este manual</span>
-│   └── <span class="tree-dir">static/</span>
-│       ├── <span class="tree-file">css/aero.css</span>     <span class="tree-desc">Design system completo</span>
-│       └── <span class="tree-file">js/aero.js</span>       <span class="tree-desc">Lógica SPA, módulos, API calls</span>
-├── <span class="tree-dir">data/</span>                    <span class="tree-desc">CSVs MERRA-2/ERA5 y curvas de potencia</span>
-├── <span class="tree-dir">tests/</span>                   <span class="tree-desc">pytest fixtures y casos de prueba</span>
-├── <span class="tree-file">Dockerfile</span>
-├── <span class="tree-file">docker-compose.yml</span>
-└── <span class="tree-file">requirements.txt</span>
+  <div class="callout tip">
+    <strong>Arquitectura SPA+API:</strong> el frontend (HTML/CSS/JS vanilla) y el backend (Flask + módulos científicos) corren en el mismo proceso Python. Las rutas <code>/api/*</code> sirven datos JSON; la ruta raíz <code>/</code> sirve el shell SPA. En producción multi-usuario, el backend se desacopla detrás de un reverse proxy (Nginx / Azure App Service).
   </div>
 </section>
 
@@ -2722,7 +2499,7 @@ GET    /api/export/pdf/{session_id}  <span class="py-cm"># Reporte PDF ejecutivo
   <div class="pipeline">
     <div class="pipe-step"><div class="pipe-num">PASO 1</div><div class="pipe-title">Entorno Python</div><div class="pipe-desc">Python 3.11+, virtualenv o conda, instalación de dependencias base.</div></div>
     <div class="pipe-step"><div class="pipe-num">PASO 2</div><div class="pipe-title">Datos reanálisis</div><div class="pipe-desc">Descarga de MERRA-2 (NASA GES DISC) o ERA5 (CDS ECMWF). Procesamiento a CSV horario.</div></div>
-    <div class="pipe-step"><div class="pipe-num">PASO 3</div><div class="pipe-title">Backend FastAPI</div><div class="pipe-desc">Estructura de carpetas, main.py, routers, modelos Pydantic, cómputo científico.</div></div>
+    <div class="pipe-step"><div class="pipe-num">PASO 3</div><div class="pipe-title">Backend Flask</div><div class="pipe-desc">Estructura de carpetas, servidor Flask, endpoints REST, módulos científicos.</div></div>
     <div class="pipe-step"><div class="pipe-num">PASO 4</div><div class="pipe-title">Frontend SPA</div><div class="pipe-desc">index.html, aero.css, aero.js. Módulos: DataHub, WindAnalysis, Kriging, etc.</div></div>
     <div class="pipe-step"><div class="pipe-num">PASO 5</div><div class="pipe-title">Docker deploy</div><div class="pipe-desc">Dockerfile + docker-compose. Nginx reverse proxy. Variables de entorno. Test end-to-end.</div></div>
   </div>
@@ -2735,20 +2512,13 @@ cd aero-platform
 python -m venv .venv && source .venv/bin/activate
 
 <span class="py-cm"># 2. Instalar dependencias</span>
-pip install fastapi uvicorn[standard] numpy pandas scipy matplotlib \
-            pykrige py_wake statsmodels scikit-learn xgboost \
-            torch torchvision torchaudio \
-            optuna mlflow python-multipart pydantic
+pip install flask numpy pandas scipy matplotlib \
+            pykrige statsmodels scikit-learn \
+            shapely flask-cors
 
-<span class="py-cm"># 3. Levantar backend (desarrollo)</span>
-cd backend
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
-<span class="py-cm"># Swagger UI: http://localhost:8000/docs</span>
-
-<span class="py-cm"># 4. Servir frontend</span>
-cd ../frontend
-python -m http.server 3000
-<span class="py-cm"># Abrir: http://localhost:3000/index.html</span>
+<span class="py-cm"># 3. Levantar el servidor (desarrollo)</span>
+python run.py
+<span class="py-cm"># Abre: http://localhost:5051</span>
   </div>
 
   <h3>Descarga y procesamiento de MERRA-2</h3>
@@ -2963,7 +2733,7 @@ services:
     CC<sub>i</sub> = d<sub>i</sub>⁻ / ( d<sub>i</sub>⁺ + d<sub>i</sub>⁻ )
   </div>
 
-  <h3>Criterios activos en WindPro Platform (7 criterios, layout de parque)</h3>
+  <h3>Criterios activos en AERO OPEN CIM (7 criterios, layout de parque)</h3>
   <div class="card-grid">
     <div class="card"><h4>hours_near_cpmax ↑</h4><p>Horas anuales en zona ≥95% del Cp máximo de la turbina. Indica qué fracción del año la turbina opera en su región de máxima eficiencia aerodinámica.</p></div>
     <div class="card"><h4>aep_p90_mwh ↑</h4><p>Producción anual de energía al percentil 90 de excedencia (P90). Incorpora incertidumbre de recurso, estela, curva de potencia y pérdidas. Base conservadora para bankability.</p></div>
@@ -3002,7 +2772,7 @@ services:
   </div>
 
   <div class="callout tip">
-    <strong>Perfiles AHP en WindPro Platform:</strong>
+    <strong>Perfiles AHP en AERO OPEN CIM:</strong>
     La plataforma almacena dos elicitaciones documentadas del investigador (v1 sep-2026, CR=0.011;
     v2 oct-2026, CR=0.099) seleccionables con un clic en la pestaña MCDA. Ambas satisfacen CR &lt; 0.10.
     El análisis SMAA integrado (500 muestras Dirichlet) evalúa la estabilidad del ganador ante
