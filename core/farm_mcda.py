@@ -1555,10 +1555,37 @@ def cluster_technology_champions(alternatives: List[Dict]) -> Optional[Dict]:
     if primary is None:
         return None
 
+    # Matriz de distancias de Pearson para la vista primaria.
+    # Distancia = 1 - |r|  (Kaufman & Rousseeuw, 1990, §1.2).
+    # Se calcula sobre la misma X_norm que Ward para que las dos
+    # representaciones (dendrograma + matriz de calor) sean coherentes.
+    distance_matrix: Optional[list] = None
+    try:
+        prim_vars = primary['variables']
+        rows_prim: List[List[float]] = []
+        for alt in alternatives:
+            row_prim: List[float] = []
+            for v in prim_vars:
+                val = alt.get(v)
+                fval = float(val)  # type: ignore[arg-type]
+                row_prim.append(fval)
+            rows_prim.append(row_prim)
+        X_p = np.array(rows_prim, dtype=float)
+        std_p = X_p.std(axis=0)
+        std_p[std_p == 0.0] = 1.0
+        X_pn = (X_p - X_p.mean(axis=0)) / std_p
+        corr = np.corrcoef(X_pn)              # (n × n) correlación de Pearson
+        dist = 1.0 - np.abs(corr)             # distancia 1−|r|, simétrica, diag=0
+        np.fill_diagonal(dist, 0.0)
+        distance_matrix = [[round(float(v), 4) for v in row] for row in dist.tolist()]
+    except Exception:
+        pass
+
     return {
         'labels': labels,
         'n_alternatives': n,
         'views': views,
+        'distance_matrix': distance_matrix,
         # Legacy fields — kept for backward compatibility
         'linkage': primary['linkage'],
         'cluster_k2': primary['cluster_k2'],

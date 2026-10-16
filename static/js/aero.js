@@ -7800,6 +7800,7 @@ function renderTclusterResult() {
   const turbinesForDendro = (r.labels || []).map(name => ({ filename: name, name }));
 
   renderDendrogramSvg(document.getElementById('tcluster-dendrogram'), linkage, r.labels, clusterOf, turbinesForDendro);
+  renderTclusterDistanceTable(r.distance_matrix, r.labels);
 
   const noteEl = document.getElementById('tcluster-view-note');
   if (noteEl) {
@@ -7889,7 +7890,13 @@ function renderTclusterSummaryTable(turbines, clusterOf) {
 function renderTclusterSummaryTableAlts(labels, clusterOf, alts) {
   const tbody = document.getElementById('tcluster-summary-tbody');
   if (!tbody) return;
-  const altsByName = new Map(alts.map(a => [a.turbina || a.label || '?', a]));
+  // El label del cluster puede ser "turbina" o "label completo" (layout::x::wake-optimal)
+  // — indexamos por ambas claves para que el lookup nunca falle.
+  const altsByName = new Map();
+  alts.forEach(a => {
+    if (a.turbina) altsByName.set(a.turbina, a);
+    if (a.label && a.label !== a.turbina) altsByName.set(a.label, a);
+  });
   tbody.innerHTML = (labels || []).map((name, i) => {
     const c = clusterOf[i];
     const color = CLUSTER_COLORS[c % CLUSTER_COLORS.length];
