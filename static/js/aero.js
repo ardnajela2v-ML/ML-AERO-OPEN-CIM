@@ -2512,6 +2512,7 @@ function technoParkLayout() {
       const wake = Number(row.wake_loss_pct);
       const capex = Number(row.capex_usd);
       const opex  = Number(row.opex_usd_anual);
+      const topsisScenarioPrice = SCENARIO_ANALYSIS.result?.scenarios?.base?.price_usd_kwh ?? null;
       return {
         turbine_key: overrideKey,
         turbine_name: meta?.name || overrideKey.replace('.csv', ''),
@@ -2522,6 +2523,8 @@ function technoParkLayout() {
         capex_usd: Number.isFinite(capex) && capex > 0 ? capex : null,
         opex_usd_anual: Number.isFinite(opex) && opex >= 0 ? opex : null,
         economic_assumptions: row.economic_assumptions || null,
+        // PML capture price from TOPSIS scenario analysis (base scenario)
+        topsis_scenario_price: topsisScenarioPrice,
       };
     }
   }
@@ -2552,6 +2555,12 @@ function technoIntegratedDefaults() {
   // Precio fijo desde config (PPA/Mixto) si no hay precio de mercado capturado
   if ((base.price == null || Number(base.price) <= 0) && cfg.energy_price_usd_kwh > 0) {
     base.price = Number(cfg.energy_price_usd_kwh).toFixed(4);
+  }
+  // Precio de captura PML real (escenario base TOPSIS) — máxima prioridad cuando
+  // el análisis de escenarios ya corrió; garantiza consistencia con el ranking.
+  const _topsisBase = SCENARIO_ANALYSIS.result?.scenarios?.base?.price_usd_kwh;
+  if (_topsisBase != null && Number.isFinite(Number(_topsisBase)) && Number(_topsisBase) > 0) {
+    base.price = Number(_topsisBase).toFixed(4);
   }
   if (cfg.price_escalation_pct != null) base.priceEscalation = cfg.price_escalation_pct;
   if (cfg.base_interest_rate_pct != null) base.rate = Number(cfg.base_interest_rate_pct).toFixed(2);
@@ -2764,6 +2773,19 @@ async function calcTechnoEconomic() {
       toast('No hay un PML fijo 2018 publicado; se usará el precio manual.', 'warn');
     }
 
+    // Cuando el análisis de escenarios TOPSIS ya corrió, usar el precio de
+    // captura base (PML ponderado real) en vez del precio plano configurado.
+    // Esto alinea el VAN aquí con el del ranking TOPSIS.
+    const topsisPrice = layout.topsis_scenario_price;
+    const effectivePrice = (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0)
+      ? topsisPrice : inputs.price;
+    const effectiveBuiltPrice = (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0)
+      ? { series: null, baseline: null, hourly: null }  // precio plano igual que TOPSIS
+      : builtPrice;
+    if (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0) {
+      toast(`Precio de captura PML base: ${topsisPrice.toFixed(4)} USD/kWh (consistent con ranking TOPSIS)`, 'info');
+    }
+
     const body = {
       session_id:    WP.sessionId,
       data_source:   WP.activeDataSource,
@@ -2774,14 +2796,14 @@ async function calcTechnoEconomic() {
       turbine: { builtin_model: layout.turbine_key || inputs.turbine },
       financial: {
         demand_mwh:           inputs.demand,
-        energy_price_usd_kwh: inputs.price,
+        energy_price_usd_kwh: effectivePrice,
         discount_rate_pct:    inputs.rate,
         project_years:        inputs.years,
         usd_to_mxn:           inputs.fx,
         annual_inflation_pct: inputs.inflation,
         cost_model:           inputs.costModel,
-        energy_price_series_usd_kwh: builtPrice.series || null,
-        price_hourly_year1_usd_kwh:  builtPrice.hourly || null,
+        energy_price_series_usd_kwh: effectiveBuiltPrice.series || null,
+        price_hourly_year1_usd_kwh:  effectiveBuiltPrice.hourly || null,
         price_mode: inputs.priceMode,
       },
       // Pass TOPSIS-stored CAPEX/OPEX so the panel reproduces the ranking VAN

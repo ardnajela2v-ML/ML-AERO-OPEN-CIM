@@ -2,7 +2,7 @@
 Multi-criteria decision analysis (MCDA) for wind turbine × site selection.
 
 Uses TOPSIS (Technique for Order of Preference by Similarity to Ideal Solution)
-with configurable weights across 8 technical and economic criteria.
+with configurable weights across 7 technical and economic criteria.
 
 Criteria catalogue
 ──────────────────
