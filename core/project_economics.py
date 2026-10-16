@@ -8,7 +8,9 @@ All monetary inputs must use the same currency.
 """
 import math
 
-DEFAULT_DEGRADATION_PCT = 0.3
+# 0.5 %/año — WindEurope (2019), DNV-GL project finance practice, IRENA RE Cost 2023.
+# Rango empírico: 0.5–1.5 %/año según antigüedad y fabricante.
+DEFAULT_DEGRADATION_PCT = 0.5
 DEFAULT_DECOMMISSIONING_PCT = 3.0
 
 

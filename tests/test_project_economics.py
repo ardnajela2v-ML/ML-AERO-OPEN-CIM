@@ -40,7 +40,7 @@ def test_panel_and_topsis_match_for_same_inputs(rate, years):
 def test_independent_discounted_formula_and_terminal_timing():
     capex, opex, energy, price, rate, years = 1_000_000, 30000, 2_000_000, 0.1, .08, 25
     actual = project_cashflows(capex, opex, energy, price, rate, years)
-    expected_energy = energy * .997 ** np.arange(years)
+    expected_energy = energy * .995 ** np.arange(years)
     discounts = 1.08 ** np.arange(1, years + 1)
     expected_costs = capex + np.sum(opex / discounts) + capex * .03 / discounts[-1]
     expected_npv = np.sum(expected_energy * price / discounts) - expected_costs
@@ -59,8 +59,8 @@ def test_price_series_inflation_and_hourly_revenue_override_survive():
                                year1_revenue_override=1234)
     rows = result['cashflow_table']
     assert rows[0]['revenue_usd'] == 1234
-    assert rows[1]['revenue_usd'] == pytest.approx(10_000 * .997 * .3)
-    assert rows[2]['revenue_usd'] == pytest.approx(10_000 * .997 ** 2 * .1)
+    assert rows[1]['revenue_usd'] == pytest.approx(10_000 * .995 * .3)
+    assert rows[2]['revenue_usd'] == pytest.approx(10_000 * .995 ** 2 * .1)
     assert rows[-1]['opex_usd'] == pytest.approx(20 * 1.02 ** 4)
     assert result['van_usd'] == pytest.approx(sum(result['cashflows']))
 
@@ -179,9 +179,9 @@ def test_economics_T1a_regression_no_inflation():
     Sin nuevos parámetros → INF001+BASIS001+INF002 por defecto."""
     turbine, model = _t1_turbine_model()
     result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0)
-    assert result['van_usd'] == pytest.approx(-57_321_534.6658887, rel=1e-9)
-    assert result['lcoe_usd_kwh'] == pytest.approx(0.7750339644597397, rel=1e-9)
-    assert result['benefit_cost_ratio'] == pytest.approx(0.12902660345951156, rel=1e-9)
+    assert result['van_usd'] == pytest.approx(-57_448_125.759909645, rel=1e-9)
+    assert result['lcoe_usd_kwh'] == pytest.approx(0.7867627969688327, rel=1e-9)
+    assert result['benefit_cost_ratio'] == pytest.approx(0.12710311212638778, rel=1e-9)
     assert 'economics_warnings' in result
     assert any(w.startswith('INF001') for w in result['economics_warnings'])
     assert any(w.startswith('INF002') for w in result['economics_warnings'])
@@ -195,8 +195,8 @@ def test_economics_T1b_nominal_with_inflation_golden():
     result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0,
                         annual_inflation_pct=3.65, price_escalation_pct=3.65,
                         discount_rate_basis='nominal')
-    assert result['van_usd'] == pytest.approx(-60_394_640.54437992, rel=1e-9)
-    assert result['lcoe_nom_usd_kwh'] == pytest.approx(0.8458056197820268, rel=1e-9)
+    assert result['van_usd'] == pytest.approx(-60_600_267.16775158, rel=1e-9)
+    assert result['lcoe_nom_usd_kwh'] == pytest.approx(0.8586054619884109, rel=1e-9)
     assert result['economics_warnings'] == []
 
 
@@ -333,6 +333,6 @@ def test_economics_T12_backward_compatible_no_new_params():
     Sin nuevos params → warnings de defecto (INF001/BASIS001/INF002)."""
     turbine, model = _t1_turbine_model()
     result = _economics(turbine, 7, 9205, model, 0.095, 25, 0.1, 22788.0)
-    assert result['van_usd'] == pytest.approx(-57_321_534.6658887, rel=1e-9)
+    assert result['van_usd'] == pytest.approx(-57_448_125.759909645, rel=1e-9)
     assert 'economics_warnings' in result
     assert result['lcoe_nom_usd_kwh'] == pytest.approx(result['lcoe_usd_kwh'], rel=1e-12)
