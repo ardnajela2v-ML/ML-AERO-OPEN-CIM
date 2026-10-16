@@ -62,7 +62,7 @@ class EnvironmentalWorkflowTests(unittest.TestCase):
     def test_champion_selection_rule_is_wake_only(self):
         result = self._run()
         row = result['alternatives'][0]
-        self.assertEqual(row['champion_selection']['rule'], 'max_n_then_van')
+        self.assertEqual(row['champion_selection']['rule'], 'max_van')
         self.assertIn('environmental_feasibility', row)
         self.assertIn('shadow_flicker_evaluation', row['environmental_feasibility'])
 

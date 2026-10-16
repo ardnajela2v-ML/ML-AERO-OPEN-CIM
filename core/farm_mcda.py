@@ -844,10 +844,34 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     dominant_direction(wd, 36), energy_dir, rose_dirs, rose_energy)
                 resource['provenance']['rho_used_kg_m3'] = rho
             setback = max(float(boundary_setback_m), turbine.rotor_diameter_m / 2.0)
+            # Ct representativo de la turbina para el scoring de búsqueda de
+            # layout (optimize_layout_structured). simulate_wind_farm ya usa
+            # la curva Ct(v) completa por disco actuador cuando
+            # ct_curve_available=True (que es siempre para turbinas CSV) -- el
+            # escalar solo guía la heurística de selección de patrones de
+            # rejilla. Usar ct_at(mean_speed) en vez de 0.8 fijo alinea el
+            # scoring con el punto de operación real del sitio.
+            ct_effective = ct
+            if (getattr(turbine, 'ct_curve_available', False)
+                    and mean_speed is not None and float(mean_speed) > 0):
+                ct_effective = float(turbine.ct_at(float(mean_speed)))
+            # Pre-computar wind_bins y wind_summary una vez por tecnología
+            # (camino sintético): simulate_wind_farm re-bineaba ws/wd en cada
+            # call al evaluate_layout, lo que suma en el costo de las
+            # O(log N + n_window) evaluaciones de estela por familia.
+            _wind_bins = None
+            _wind_summary = None
+            if resource is None and ws is not None:
+                _wind_bins = bin_wind_to_sectors(ws, wd, 36)
+                _dom_dir = dominant_direction(wd, 36)
+                _energy_dir, _rose_dirs, _rose_energy = energy_weighted_dominant_direction(
+                    ws, wd, turbine, n_sectors=16, rho=rho)
+                _wind_summary = (_dom_dir, _energy_dir, _rose_dirs, _rose_energy)
             def evaluate_layout(points):
-                options = dict(k_wake=k_wake, ct=ct, n_sectors=36,
+                options = dict(k_wake=k_wake, ct=ct_effective, n_sectors=36,
                     availability=availability, electrical_losses=electrical_losses,
-                    wake_model=wake_model, rho_override=rho)
+                    wake_model=wake_model, rho_override=rho,
+                    wind_bins=_wind_bins, wind_summary=_wind_summary)
                 if resource is not None:
                     return historical_layout_simulation(points, turbine, resource,
                         wind_grid, (lat0, lon0), price_hourly_usd_kwh=None,
@@ -866,7 +890,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 fallback_wind_ms=mean_speed, rho=rho, exclusions=exclusions,
                 boundary_setback_m=setback, min_spacing_d=min_spacing_d,
                 s_para_range=s_para_range, s_perp_range=s_perp_range,
-                wake_model=wake_model, k_wake=k_wake, ct=ct,
+                wake_model=wake_model, k_wake=k_wake, ct=ct_effective,
                 evaluate_layout=evaluate_layout,
                 constraints=LayoutConstraints(
                     max_wake_loss_pct=float(max_wake_loss_pct),

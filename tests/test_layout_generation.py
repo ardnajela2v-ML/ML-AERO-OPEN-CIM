@@ -256,17 +256,17 @@ class SelectTechnologyChampionTests(unittest.TestCase):
             candidate['van_usd'] = van_usd
         return candidate
 
-    def test_default_rule_picks_max_n_then_van(self):
-        # max_n_then_van: el N más alto factible gana primero; VAN es
-        # desempate solo cuando dos candidatos tienen el mismo N.
+    def test_default_rule_picks_max_van(self):
+        # max_van: el mayor VAN gana; entre empates de VAN, mayor N desempata.
+        # N=14 tiene VAN inferior a N=12 → N=12 es el campeón, no N=14.
         pool = [
             self._candidate(10, aep_mwh=5000.0, wake_loss_pct=4.0, van_usd=2_000_000.0),
-            self._candidate(12, aep_mwh=5800.0, wake_loss_pct=6.0, van_usd=2_500_000.0),
-            self._candidate(14, aep_mwh=6100.0, wake_loss_pct=9.0, van_usd=1_800_000.0),  # champion
+            self._candidate(12, aep_mwh=5800.0, wake_loss_pct=6.0, van_usd=2_500_000.0),  # champion
+            self._candidate(14, aep_mwh=6100.0, wake_loss_pct=9.0, van_usd=1_800_000.0),
         ]
         result = select_technology_champion(pool)
-        self.assertEqual(result['champion']['n_turbines'], 14)
-        self.assertEqual(result['rule'], 'max_n_then_van')
+        self.assertEqual(result['champion']['n_turbines'], 12)
+        self.assertEqual(result['rule'], 'max_van')
 
     def test_picks_max_value_among_feasible_with_explicit_value_key(self):
         pool = [

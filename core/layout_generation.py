@@ -876,7 +876,7 @@ _REASON_BY_FEASIBILITY_KEY = {
 
 
 def select_technology_champion(
-        pool: List[Dict], rule: str = 'max_n_then_van',
+        pool: List[Dict], rule: str = 'max_van',
         value_key: str = 'van_usd',
         tie_breakers: Tuple[str, ...] = ('wake_loss_pct',),
         require_feasibility_keys: Tuple[str, ...] = (
@@ -894,17 +894,14 @@ def select_technology_champion(
     ambientalmente viable. Ver core.farm_mcda.analyze_park_layouts, que
     calcula ambos a partir del mismo pool y expone la diferencia.
 
-    Regla ('max_n_then_van'): el campeón es el de mayor número de
-    aerogeneradores entre los candidatos factibles; entre empates en N,
-    gana el de mayor VAN. Esto garantiza que una turbina con rotor más
-    grande (que cabe en mayor separación absoluta → menos estela por
-    turbina) nunca termine con más aerogeneradores que una de rotor más
-    chico en el mismo polígono, porque cada tecnología maximiza SU propio
-    N factible independientemente. El VAN solo desempata entre geometrías
-    del mismo N (alineado vs tresbolillo vs greedy).
-
-    TOPSIS (paso 7) sigue siendo indispensable después para comparar los
-    campeones de tecnologías DISTINTAS usando VARIOS criterios a la vez.
+    Regla ('max_van'): el campeón es el de mayor VAN entre los candidatos
+    factibles; entre empates en VAN, gana el de mayor N. Esto es más
+    robusto ante perturbaciones del polígono que la regla anterior
+    'max_n_then_van' (donde un salto de 1 turbina al borde del polígono
+    dominaba siempre el resultado sin importar la diferencia de VAN):
+    VAN es continuo y absorbe correctamente el trade-off entre N y pérdida
+    por estela dentro de UNA tecnología. La comparación entre tecnologías
+    distintas sigue en TOPSIS (paso 7) con múltiples criterios.
 
     `value_key` es configurable para permitir análisis de sensibilidad y
     para las pruebas unitarias que no necesitan correr el modelo económico
@@ -933,7 +930,7 @@ def select_technology_champion(
     def sort_key(candidate):
         n = int(candidate.get('n_turbines', 0))
         tie_values = tuple(float(candidate.get(key, 0.0) or 0.0) for key in tie_breakers)
-        return (-n, -_value(candidate)) + tie_values
+        return (-_value(candidate), -n) + tie_values
 
     champion = min(feasible, key=sort_key)
     return {'champion': champion, 'pool_size': len(pool), 'n_feasible': len(feasible),
