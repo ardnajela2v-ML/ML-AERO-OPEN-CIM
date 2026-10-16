@@ -870,13 +870,13 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             def evaluate_layout(points):
                 options = dict(k_wake=k_wake, ct=ct_effective, n_sectors=36,
                     availability=availability, electrical_losses=electrical_losses,
-                    wake_model=wake_model, rho_override=rho,
-                    wind_bins=_wind_bins, wind_summary=_wind_summary)
+                    wake_model=wake_model, rho_override=rho)
                 if resource is not None:
                     return historical_layout_simulation(points, turbine, resource,
                         wind_grid, (lat0, lon0), price_hourly_usd_kwh=None,
                         **options)
-                result = simulate_wind_farm(points, turbine, ws, wd, **options)
+                result = simulate_wind_farm(points, turbine, ws, wd,
+                    wind_bins=_wind_bins, wind_summary=_wind_summary, **options)
                 result['production_source'] = {'method': 'synthetic_weibull', 'source_id': None}
                 return result
             # Paso 6 del framework de tesis (generación de layouts factibles)
