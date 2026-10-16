@@ -29,4 +29,4 @@ Universidad del Istmo — Maestría en Ciencias en Energía Eólica
 
 Required attribution for CC BY-NC 4.0 components:
   "AERO OPEN CIM, Alejandra Velázquez Velázquez (2026).
-   https://github.com/[repository]"
+   https://github.com/ardnajela2v-ML/ML-AERO-OPEN-CIM"
