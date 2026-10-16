@@ -384,6 +384,8 @@ def create_app():
         'active_data_source', 'wind_stats', 'wind_advanced',
         'energy_summary', 'df_energy', 'market', 'demand', 'pml',
         'kriging_calibrations', 'active_kriging_calibration_id',
+        # Computed caches: TOPSIS pool (restaura escenarios + matriz robustez)
+        '_candidate_pool',
     }
 
     def _project_encode(value, archive, path='root', key_hint=''):
@@ -1168,6 +1170,37 @@ def create_app():
                 legacy_models.get('pml'), dict) else {}
         restored['_project_restore_dir'] = str(restore_dir.resolve())
         restored['_last_access'] = time.time()
+        # Reconstruir historical_wind desde el df ya restaurado, para que el
+        # análisis de escenarios y la matriz de robustez estén disponibles sin
+        # necesidad de re-lanzar el TOPSIS.
+        try:
+            _df_r = restored.get('df')
+            _ws_col_r = restored.get('wind_speed_col')
+            _ws_h_r = restored.get('ws_height_m')
+            if (isinstance(_df_r, pd.DataFrame) and _ws_col_r and
+                    _ws_col_r in _df_r.columns and _ws_h_r):
+                _hw: dict = {
+                    'ws': pd.to_numeric(_df_r[_ws_col_r], errors='coerce').to_numpy(dtype=float),
+                    'dt_hours': float(_infer_dt_h(_df_r.index)),
+                    'measurement_height_m': float(_ws_h_r),
+                    'source_id': 'project_import',
+                    'source_kind': 'restored',
+                    'source_label': 'Restaurado desde proyecto',
+                    'provenance': {'kind': 'project_import'},
+                }
+                _wd_col_r = restored.get('wd_col') or _auto_detect_wd_col(_df_r)
+                if _wd_col_r and _wd_col_r in _df_r.columns:
+                    _hw['wd'] = pd.to_numeric(_df_r[_wd_col_r], errors='coerce').to_numpy(dtype=float)
+                for _col, _out in [('temperature', 'temperature_c'), ('pressure', 'pressure_pa')]:
+                    if _col in _df_r.columns:
+                        _hw[_out] = pd.to_numeric(_df_r[_col], errors='coerce').to_numpy(dtype=float)
+                if isinstance(_df_r.index, pd.DatetimeIndex):
+                    _day = np.minimum(_df_r.index.dayofyear, 365) - 1
+                    _hw['hour_of_year'] = (_day * 24 + _df_r.index.hour).to_numpy(dtype=int) % 8760
+                    _hw['timestamps_utc'] = _df_r.index.values
+                restored['historical_wind'] = _hw
+        except Exception as _hw_err:
+            logger.warning('No se pudo reconstruir historical_wind al importar proyecto: %s', _hw_err)
         with _sessions_lock:
             sessions[sid] = restored
         client_state = manifest.get('client_state') or {}
