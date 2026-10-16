@@ -2728,8 +2728,8 @@ def create_app():
             )
 
             n_turbines = int(sim_cfg.get('n_turbines', 1))
-            availability = float(sim_cfg.get('availability', 1.0))
-            elec_losses  = float(sim_cfg.get('electrical_losses', 0.0))
+            availability = float(sim_cfg.get('availability', 0.97))
+            elec_losses  = float(sim_cfg.get('electrical_losses', 0.03))
             wake_losses  = float(sim_cfg.get('wake_losses', 0.0))
             curt_losses  = float(sim_cfg.get('curtailment_losses', 0.0))
             ws_height_m  = _sess_ws_h(sim_cfg, sess)
@@ -4366,8 +4366,8 @@ def create_app():
                 k_wake=float(body.get('k_wake', 0.05)),
                 ct=float(body.get('ct', 0.8)),
                 n_sectors=int(body.get('n_sectors', 36)),
-                availability=float(body.get('availability', 1.0)),
-                electrical_losses=float(body.get('electrical_losses', 0.0)),
+                availability=float(body.get('availability', 0.97)),
+                electrical_losses=float(body.get('electrical_losses', 0.03)),
                 temperature_c=temperature_c,
                 pressure_pa=pressure_pa,
             )
@@ -4478,6 +4478,9 @@ def create_app():
                 availability=float(body.get('availability', 0.97)),
                 electrical_losses=float(body.get('electrical_losses', 0.03)),
                 avg_wake_loss=float(body.get('avg_wake_loss', 0.08)),
+                environmental_loss=(float(body['environmental_loss'])
+                                    if body.get('environmental_loss') is not None
+                                    else 0.015),
             )
             result['turbine'] = turbine.to_dict()
             result['data_source'] = source_info
@@ -5830,6 +5833,9 @@ def create_app():
                         price_escalation_pct=price_escalation_pct,
                         availability=float(body.get('availability', 0.97)),
                         electrical_losses=float(body.get('electrical_losses', 0.03)),
+                        environmental_loss=(float(body['environmental_loss'])
+                                            if body.get('environmental_loss') is not None
+                                            else 0.015),
                     )
 
             smaa_results = {}

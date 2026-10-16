@@ -1217,6 +1217,7 @@ def recommend_n_turbines(
         availability: float = 0.97,
         electrical_losses: float = 0.03,
         avg_wake_loss: float = 0.08,
+        environmental_loss: float = 0.015,
         n_hours: int = 8760) -> dict:
     """
     Estimate the number of turbines required to satisfy an annual energy demand.
@@ -1250,7 +1251,8 @@ def recommend_n_turbines(
     p_kw      = np.nan_to_num(p_kw, nan=0.0)
     aep_gross = float(np.sum(p_kw)) / 1000.0          # kWh → MWh
 
-    survival  = float(availability) * (1.0 - float(electrical_losses))
+    survival  = (float(availability) * (1.0 - float(electrical_losses))
+                 * (1.0 - float(environmental_loss)))
     aep_net   = aep_gross * survival * (1.0 - float(avg_wake_loss))
 
     n_needed  = max(1, math.ceil(float(demand_mwh) / aep_net)) if aep_net > 0 else 1

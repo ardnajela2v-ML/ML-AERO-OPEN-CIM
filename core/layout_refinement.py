@@ -11,7 +11,7 @@ from core.layout_generation import _local_wake_refinement, receptor_exclusion_bu
 
 def build_energy_context(sites, turbine, *, wake_model, k_wake, ct,
                          availability, electrical_losses, curtailment_loss=0.0,
-                         environmental_loss=0.0, historical_resource=None,
+                         environmental_loss=0.015, historical_resource=None,
                          wind_grid=None, origin=None, rho=None):
     # Keep the inputs to the deterministic joint distribution, not a second
     # independently fitted Weibull or an extrapolation of hub-height wind.
@@ -83,7 +83,7 @@ def energy_evaluator(context, turbine):
     else:
         ws, wd, mean_speed, _, rho = _joint_synthetic_wind(context['sites'])
     survival = ((1.0 - float(context.get('curtailment_loss', 0.0))) *
-                (1.0 - float(context.get('environmental_loss', 0.0))))
+                (1.0 - float(context.get('environmental_loss', 0.015))))
 
     def evaluate(points):
         options = {key: context[key] for key in ('wake_model', 'k_wake', 'ct',
