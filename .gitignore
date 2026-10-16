@@ -25,7 +25,8 @@ Thumbs.db
 *.orig
 
 # Datos y exports (no versionar)
-exports/*.csv
+DATOS DE METEREOLOGICOS DE parques/
+exports/
 uploads/*
 runs/
 saved_models/*
