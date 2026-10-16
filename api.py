@@ -73,7 +73,8 @@ from core.energy import (PowerCurve, WindToPowerEngine, AEPCalculator,
                           extrapolate_wind_log,
                           load_turbines_from_folder, list_turbine_info)
 from core.cost_model import (CostModel, get_default_model_dict,
-                             get_design_cost_benchmark, DEFAULT_COST_MODEL)
+                             get_design_cost_benchmark, DEFAULT_COST_MODEL,
+                             electrical_loss_estimate)
 from core.wind_stats import (compute_wind_rose, compute_diurnal_profile,
                               compute_monthly_climatology, compute_extreme_events,
                               compute_histogram, compute_site_overview,
@@ -6256,6 +6257,50 @@ def create_app():
                             _pml_ts = pd.date_range(
                                 _pml_sd['start_utc'], periods=_pml_sd['n_hours'],
                                 freq='h', tz='UTC')
+                    # Pérdidas eléctricas: si el usuario provee distancia a la
+                    # subestación, se calcula el desglose físico (colección MV +
+                    # transformador + transmisión HV). Si no, se usa el valor
+                    # plano del body (default 3 %).
+                    _substation_km = (float(body['substation_distance_km'])
+                                      if body.get('substation_distance_km') not in (None, '')
+                                      else None)
+                    _voltage_mv  = float(body.get('voltage_mv_kv') or 34.5)
+                    _voltage_hv  = float(body.get('voltage_hv_kv') or 115.0)
+                    _env_loss_raw = body.get('environmental_loss')
+                    _environmental_loss = (float(_env_loss_raw)
+                                           if _env_loss_raw is not None
+                                           else 0.015)
+                    if _substation_km is not None:
+                        # Instalación estimada en MW: se aproxima con n_turbines
+                        # × rated_kw del primer tipo de turbina disponible;
+                        # como aún no se generó el layout, se usa una estimación
+                        # basada en el rango_n máximo × potencia nominal media.
+                        # El cálculo se refina después del layout, pero este
+                        # valor pre-layout es suficiente para pre-factibilidad.
+                        _est_mw = float(body.get('_estimated_installed_mw') or 0.0)
+                        if _est_mw <= 0:
+                            # fallback: 5 MW × n_max por turbina como proxy
+                            _n_max = 30
+                            if body.get('n_range'):
+                                try:
+                                    _n_max = int(body['n_range'][1])
+                                except Exception:
+                                    pass
+                            _est_mw = max(1.0, _n_max * 2.5)
+                        _est_n = max(1, int(_est_mw / 2.5))
+                        _elec_breakdown = electrical_loss_estimate(
+                            collection_length_m=0.0,  # se refina post-layout
+                            installed_mw=_est_mw,
+                            n_turbines=_est_n,
+                            substation_distance_km=_substation_km,
+                            voltage_mv_kv=_voltage_mv,
+                            voltage_hv_kv=_voltage_hv,
+                        )
+                        _electrical_losses = _elec_breakdown['total_electrical_loss_pct'] / 100.0
+                    else:
+                        _elec_breakdown = None
+                        _electrical_losses = float(body.get('electrical_losses', 0.03))
+
                     layout_builder = generate_park_layouts if generation_only else analyze_park_layouts
                     layout_result = layout_builder(
                         sites=spatial['sites'], polygon=polygon,
@@ -6276,9 +6321,9 @@ def create_app():
                         k_wake=float(body.get('k_wake') or 0.04),
                         ct=float(body.get('ct') or 0.8),
                         availability=float(body.get('availability', 0.97)),
-                        electrical_losses=float(body.get('electrical_losses', 0.03)),
+                        electrical_losses=_electrical_losses,
                         curtailment_loss=float(body.get('curtailment_loss') or 0.0),
-                        environmental_loss=float(body.get('environmental_loss') or 0.0),
+                        environmental_loss=_environmental_loss,
                         discount_rate=tasa,
                         project_years=project_years,
                         price_usd_kwh=price_usd_kwh,
@@ -6342,6 +6387,8 @@ def create_app():
                     **(layout_result or {}),
                     'pool_available': bool(layout_result and layout_result.get('_pool_caches')),
                     'design_cost_benchmark': get_design_cost_benchmark(),
+                    **({'electrical_loss_breakdown': _elec_breakdown}
+                       if _elec_breakdown is not None else {}),
                     'market_configuration': {
                         'trajectories': body.get('market_trajectories') or {},
                         'equivalent_inputs': {

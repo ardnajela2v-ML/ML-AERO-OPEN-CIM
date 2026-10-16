@@ -252,6 +252,89 @@ class CostModel:
                 * float(hub_height_m) * int(n_turbines))
 
 
+def electrical_loss_estimate(
+    collection_length_m: float,
+    installed_mw: float,
+    n_turbines: int,
+    substation_distance_km: float = 0.0,
+    voltage_mv_kv: float = 34.5,
+    voltage_hv_kv: float = 115.0,
+    pf: float = 0.95,
+) -> Dict[str, float]:
+    """Estimación de pérdidas eléctricas en tres componentes, pre-factibilidad.
+
+    Referencias:
+      - MV colección: fórmula de alimentador radial balanceado, factor 1/3 para
+        distribución de carga. Parámetros de cable XLPE 95 mm² a 34.5 kV
+        (r ≈ 0.35 Ω/km). Stehly & Beiter, NREL/TP-5000-77450 (2020), §4.2.
+      - Transformador elevador 34.5/115 kV: pérdidas típicas 0.3–0.5 %,
+        se usa 0.4 % (media de rango CIGRÉ 261, 2004).
+      - Línea HV: Stehly & Beiter (2020); cable ACSR 397.5 kcmil 115 kV
+        r ≈ 0.065 Ω/km. Para 230 kV usar voltage_hv_kv=230.
+
+    Supuestos:
+      - Factor de potencia 0.95.
+      - Alimentador radial con N turbinas uniformemente distribuidas a lo largo
+        del tendido MST: factor de pérdida ≈ 1/3 del escenario concentrado.
+      - No incluye filtros de armónicos ni compensación reactiva.
+
+    Returns dict con claves:
+      mv_collection_loss_pct, transformer_loss_pct, hv_transmission_loss_pct,
+      total_electrical_loss_pct, substation_distance_km, voltage_mv_kv,
+      voltage_hv_kv, inputs_valid.
+    """
+    r_mv_ohm_km = 0.35   # XLPE 95 mm², 34.5 kV — Stehly & Beiter 2020
+    r_hv_ohm_km = 0.065  # ACSR 397.5 kcmil, 115 kV
+    transformer_loss_pct = 0.4  # CIGRÉ 261 (2004), media del rango 0.3–0.5 %
+
+    inputs_valid = (
+        installed_mw > 0
+        and n_turbines > 0
+        and collection_length_m >= 0
+        and voltage_mv_kv > 0
+        and voltage_hv_kv > 0
+        and 0 < pf <= 1
+    )
+    if not inputs_valid:
+        return {
+            'mv_collection_loss_pct': 0.0,
+            'transformer_loss_pct': transformer_loss_pct,
+            'hv_transmission_loss_pct': 0.0,
+            'total_electrical_loss_pct': transformer_loss_pct,
+            'substation_distance_km': float(substation_distance_km or 0.0),
+            'voltage_mv_kv': voltage_mv_kv,
+            'voltage_hv_kv': voltage_hv_kv,
+            'inputs_valid': False,
+        }
+
+    L_mv_km = collection_length_m / 1000.0
+    pf2 = pf ** 2
+    # Radial feeder: factor 1/3 por distribución de carga a lo largo del MST
+    mv_loss_pct = (
+        100.0 * installed_mw * r_mv_ohm_km * L_mv_km
+        / (3.0 * n_turbines * voltage_mv_kv ** 2 * pf2)
+    )
+
+    d_hv_km = max(0.0, float(substation_distance_km or 0.0))
+    hv_loss_pct = (
+        100.0 * installed_mw * r_hv_ohm_km * d_hv_km
+        / (voltage_hv_kv ** 2 * pf2)
+        if d_hv_km > 0 else 0.0
+    )
+
+    total = mv_loss_pct + transformer_loss_pct + hv_loss_pct
+    return {
+        'mv_collection_loss_pct':    round(mv_loss_pct, 4),
+        'transformer_loss_pct':      round(transformer_loss_pct, 4),
+        'hv_transmission_loss_pct':  round(hv_loss_pct, 4),
+        'total_electrical_loss_pct': round(total, 4),
+        'substation_distance_km':    d_hv_km,
+        'voltage_mv_kv':             voltage_mv_kv,
+        'voltage_hv_kv':             voltage_hv_kv,
+        'inputs_valid':              True,
+    }
+
+
 def get_default_model_dict() -> Dict[str, Any]:
     """Devuelve el dict completo (con rangos) para que el frontend renderice los inputs."""
     return {k: dict(v) for k, v in DEFAULT_COST_MODEL.items()}

@@ -9141,6 +9141,10 @@ async function mcdaRunAnalysis() {
     ct: Number(document.getElementById('parque-ct')?.value) || 0.8,
     availability: Number(document.getElementById('parque-avail')?.value ?? 97) / 100,
     electrical_losses: Number(document.getElementById('parque-elec')?.value ?? 3) / 100,
+    substation_distance_km: document.getElementById('parque-substation-km')?.value?.trim()
+      ? Number(document.getElementById('parque-substation-km').value) : null,
+    voltage_hv_kv: Number(document.getElementById('parque-hv-kv')?.value || 115),
+    environmental_loss: Number(document.getElementById('parque-env-loss')?.value ?? 1.5) / 100,
     exclusion_polygons: exclusionPolygons,
     boundary_setback_m: Math.max(0, Number(document.getElementById('mcda-boundary-setback')?.value) || 0),
     row_sep_reference_d: rowRefD,
@@ -9208,6 +9212,8 @@ async function mcdaPollStatus() {
       MCDA.lastSpatial = r.result;
       MCDA.lastAnalysis = r.result?.sites || [];
       MCDA.lastRanking = r.result?.ranking || null;
+      if (r.result?.electrical_loss_breakdown)
+        MCDA.lastRanking = Object.assign(MCDA.lastRanking || {}, { electrical_loss_breakdown: r.result.electrical_loss_breakdown });
       if (MCDA.scope === 'area') mcdaBuildWeightSliders();
       if (MCDA.lastSpatial && MCDA.lastRanking) MCDA.lastSpatial.ranking = MCDA.lastRanking;
       const nSites = MCDA.lastAnalysis.length;
@@ -9510,7 +9516,19 @@ function mcdaLayoutAuditHtml(a, readOnly = false) {
         ? `Gaussiano x/D ≥ ${mcdaAuditNumber(wakeValidity.minimum_valid_x_over_d, 3)} · Ct constante`
         : 'Jensen · no aplica umbral gaussiano'],
       ['Indisponibilidad', `${mcdaAuditNumber(losses.availability_loss_pct, 2)}%`],
-      ['Eléctricas / curtailment', `${mcdaAuditNumber(losses.electrical_loss_pct, 2)}% / ${mcdaAuditNumber(losses.curtailment_loss_pct, 2)}%`],
+      ['Eléctricas', (() => {
+        const eb = MCDA.lastRanking?.electrical_loss_breakdown;
+        if (eb) {
+          return `${mcdaAuditNumber(losses.electrical_loss_pct, 2)}% `
+            + `<span class="text-muted" style="font-size:.72rem">`
+            + `(MV ${mcdaAuditNumber(eb.mv_collection_loss_pct, 2)}% `
+            + `+ Trafo ${mcdaAuditNumber(eb.transformer_loss_pct, 2)}% `
+            + `+ HV ${mcdaAuditNumber(eb.hv_transmission_loss_pct, 2)}% · `
+            + `${mcdaAuditNumber(eb.substation_distance_km, 1)} km @ ${mcdaAuditNumber(eb.voltage_hv_kv, 0)} kV)</span>`;
+        }
+        return `${mcdaAuditNumber(losses.electrical_loss_pct, 2)}%`;
+      })()],
+      ['Soiling / polvo', `${mcdaAuditNumber(losses.environmental_loss_pct, 2)}%`],
       ['Incertidumbre combinada', `${mcdaAuditNumber(a.aep_uncertainty_pct, 2)}%`],
     ]),
     mcdaAuditCard('Adaptación aerodinámica al sitio', [
@@ -10745,6 +10763,10 @@ async function parqueRecalcEditedLayout() {
     ct:                parseFloat(document.getElementById('parque-ct')?.value) || 0.8,
     availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
     electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
+    substation_distance_km: document.getElementById('parque-substation-km')?.value?.trim()
+      ? Number(document.getElementById('parque-substation-km').value) : null,
+    voltage_hv_kv:     Number(document.getElementById('parque-hv-kv')?.value || 115),
+    environmental_loss: (parseFloat(document.getElementById('parque-env-loss')?.value) ?? 1.5) / 100,
     n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
     session_id:        WP.sessionId,
     data_source:       WP.activeDataSource,
@@ -11114,7 +11136,10 @@ function parqueSelectTurbina(el, forceKey) {
         ['parque-col-sep-d', limits.col_sep_reference_d ?? Math.min(...limits.s_perp_range)],
         ['parque-max-wake-loss', limits.max_wake_loss_pct], ['parque-kwake', ctx.k_wake],
         ['parque-ct', ctx.ct], ['parque-avail', ctx.availability * 100],
-        ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors]]) {
+        ['parque-elec', ctx.electrical_losses * 100], ['parque-sectors', ctx.n_sectors],
+        ['parque-env-loss', (ctx.environmental_loss ?? 0.015) * 100],
+        ['parque-hv-kv', ctx.voltage_hv_kv ?? 115],
+        ['parque-substation-km', ctx.substation_distance_km ?? '']]) {
         document.getElementById(id).value = value;
       }
     }
@@ -11345,6 +11370,10 @@ async function parqueOptimizeManual() {
     ct:                parseFloat(document.getElementById('parque-ct')?.value) || 0.8,
     availability:      (parseFloat(document.getElementById('parque-avail')?.value) || 97) / 100,
     electrical_losses: (parseFloat(document.getElementById('parque-elec')?.value) || 3) / 100,
+    substation_distance_km: document.getElementById('parque-substation-km')?.value?.trim()
+      ? Number(document.getElementById('parque-substation-km').value) : null,
+    voltage_hv_kv:     Number(document.getElementById('parque-hv-kv')?.value || 115),
+    environmental_loss: (parseFloat(document.getElementById('parque-env-loss')?.value) ?? 1.5) / 100,
     n_sectors:         parseInt(document.getElementById('parque-sectors')?.value) || 36,
     layout_type:       document.getElementById('parque-layout-type')?.value || 'auto',
     hub_height_m:      hubHeight,
@@ -13705,6 +13734,9 @@ async function qdStartCalc() {
   sv('parque-demand',      0);          // venta total
   sv('parque-avail',       97);
   sv('parque-elec',        3);
+  sv('parque-env-loss',    1.5);
+  sv('parque-hv-kv',       115);
+  sv('parque-substation-km', '');
   sv('parque-kwake',       QD.params.kWake);
 
   // Pre-fill TE DOM inputs

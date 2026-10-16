@@ -356,7 +356,7 @@ def topsis_scenario_sensitivity(
 def compute_annual_energy_breakdown(
     layout_xy_m, turbine, resource, ratio_by_sector,
     availability=0.97, electrical_losses=0.03,
-    curtailment_loss=0.0, environmental_loss=0.0,
+    curtailment_loss=0.0, environmental_loss=0.015,
     rho_override=None,
 ):
     """Thin wrapper: hourly energy with pre-computed wake, then AEPCalculator."""
@@ -415,7 +415,7 @@ def robustness_matrix(
     availability: float = 0.97,
     electrical_losses: float = 0.03,
     curtailment_loss: float = 0.0,
-    environmental_loss: float = 0.0,
+    environmental_loss: float = 0.015,
 ) -> dict:
     """Energy (P50/P75/P90 empirical) x price (bajo/base/alto) matrix."""
     import os
@@ -721,7 +721,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                          ct: float = 0.8, availability: float = 0.97,
                          electrical_losses: float = 0.03,
                          curtailment_loss: float = 0.0,
-                         environmental_loss: float = 0.0,
+                         environmental_loss: float = 0.015,
                          discount_rate: float = 0.08, project_years: int = None,
                          price_usd_kwh: float = None, demand_mwh: float = 0.0,
                          annual_inflation_pct: Optional[float] = None,
