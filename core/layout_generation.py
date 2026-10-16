@@ -263,7 +263,8 @@ def generate_feasible_layouts_grid(
         grid_limit_mw: Optional[float] = None,
         local_refinement_max_evals: int = 60,
         shared_layouts: Optional[List[Dict]] = None,
-        shared_only: bool = False) -> Dict:
+        shared_only: bool = False,
+        include_greedy: bool = False) -> Dict:
     """Genera el pool de layouts factibles de una tecnología, variando N.
 
     A diferencia del comportamiento anterior (romper en el primer N, de
@@ -713,16 +714,16 @@ def generate_feasible_layouts_grid(
                 first_feasible_n = n
         n_range_explored_by_family[family] = [min(n_seen), max_n] if n_seen else [max_n, max_n]
 
-    # Tercera familia: crecimiento greedy sembrado en el vértice más a
-    # barlovento (core.farm.optimize_layout_greedy_vertex). A diferencia de
-    # las dos familias estructuradas, una sola pasada de crecimiento ya
-    # genera una secuencia anidada válida para TODO N de 1 a su capacidad
-    # física -- no hace falta repetir la búsqueda por N (ver docstring de
-    # optimize_layout_greedy_vertex), así que esta familia es más barata que
-    # las otras dos pese a agregar una tercera vía de comparación.
+    # Tercera familia: greedy-vertex (desactivada por defecto).
+    # optimize_layout_greedy_vertex tiene un growth loop O(N²·|cands|) en
+    # Python puro (~2 min para un parque típico 8×4 km) y para polígonos
+    # convexos/rectangulares casi nunca produce el campeón — las familias
+    # estructuradas la superan en densidad y pérdida de estela.
+    # Activar solo para polígonos irregulares con re-entrantes notables
+    # (include_greedy=True desde api.py o tests específicos).
     try:
-        if shared_only:
-            raise ValueError('Solo se evalúan geometrías compartidas.')
+        if shared_only or not include_greedy:
+            raise ValueError('Familia greedy desactivada.')
         greedy = optimize_layout_greedy_vertex(
             polygon, turbine, ws=ws, wd=wd, wind_grid=wind_grid,
             fallback_wind_ms=fallback_wind_ms, min_spacing_d=min_spacing_d,

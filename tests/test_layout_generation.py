@@ -52,16 +52,18 @@ class LayoutGenerationTests(unittest.TestCase):
 
     def test_all_families_are_explicitly_represented_in_pool(self):
         # Ninguna familia debe quedar fuera del pool por un ranking de score
-        # implícito -- Alineado, Tresbolillo y Greedy (vértice) deben
-        # aparecer como candidatos explícitos y auditables (family_summary /
-        # layout_config['family']), no una decisión silenciosa de cuál
-        # puntuó mejor.
+        # Por defecto solo aligned + staggered (greedy es opt-in por costo).
+        # Con include_greedy=True las tres familias deben aparecer auditables.
         generation = self._generate()
         families = {c['layout_config'].get('family') for c in generation['pool']}
-        self.assertEqual(families, {'aligned', 'staggered', 'greedy'})
+        self.assertEqual(families, {'aligned', 'staggered'})
+
+        generation_g = self._generate(include_greedy=True)
+        families_g = {c['layout_config'].get('family') for c in generation_g['pool']}
+        self.assertEqual(families_g, {'aligned', 'staggered', 'greedy'})
         for family in ('aligned', 'staggered', 'greedy'):
-            self.assertIn(family, generation['max_n_fit_by_family'])
-            self.assertGreater(generation['max_n_fit_by_family'][family], 0)
+            self.assertIn(family, generation_g['max_n_fit_by_family'])
+            self.assertGreater(generation_g['max_n_fit_by_family'][family], 0)
 
     def test_pool_entries_respect_min_spacing(self):
         generation = self._generate()

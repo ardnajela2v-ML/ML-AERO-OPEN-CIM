@@ -747,7 +747,8 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                          local_refinement_max_evals: int = 60,
                          pml_series_values: Optional[np.ndarray] = None,
                          pml_series_timestamps_utc=None,
-                         interannual_variability_pct: float = 6.4):
+                         interannual_variability_pct: float = 6.4,
+                         include_greedy: bool = False):
     if not sites:
         raise ValueError('No hay recurso eólico interpolado para optimizar el parque.')
     if len(polygon or []) < 3:
@@ -892,6 +893,7 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 local_refinement_max_evals=local_refinement_max_evals,
                 shared_layouts=shared_layouts,
                 shared_only=prior_generation is not None,
+                include_greedy=include_greedy,
             )
             if prior_generation is not None:
                 shared_generation = generation
