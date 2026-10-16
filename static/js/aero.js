@@ -3095,7 +3095,7 @@ function renderGlobalSensitivityMatrix(data) {
 }
 
 // ─── ROBUSTEZ COMPARADA ENTRE TODAS LAS TURBINAS DEL RANKING TOPSIS ─────────
-const GSENS_BATCH = { result: null, activeMetric: 'van_usd' };
+const GSENS_BATCH = { result: null, activeMetric: 'van_usd', sortByBest: false };
 
 async function runGlobalSensitivityBatch() {
   const ranking = (typeof MCDA !== 'undefined' && MCDA.lastRanking?.ranking) || [];
@@ -3151,6 +3151,17 @@ function gsensBatchSwitchMetric(metric) {
   if (GSENS_BATCH.result) renderGlobalSensitivityBatchTable(GSENS_BATCH.result);
 }
 
+function gsensBatchToggleSort() {
+  GSENS_BATCH.sortByBest = !GSENS_BATCH.sortByBest;
+  const btn = document.getElementById('btn-gsens-batch-sort');
+  if (btn) {
+    btn.style.opacity = GSENS_BATCH.sortByBest ? '1' : '.7';
+    btn.textContent = GSENS_BATCH.sortByBest ? '↓ Mejor primero' : '↕ Ordenar por mejor';
+    btn.classList.toggle('is-active', GSENS_BATCH.sortByBest);
+  }
+  if (GSENS_BATCH.result) renderGlobalSensitivityBatchTable(GSENS_BATCH.result);
+}
+
 function renderGlobalSensitivityBatchTable(data) {
   const el = document.getElementById('gsens-batch-table');
   if (!el) return;
@@ -3158,17 +3169,31 @@ function renderGlobalSensitivityBatchTable(data) {
   const cfg = _GSENS_METRIC_CFG[metric] || _GSENS_METRIC_CFG.van_usd;
   const factor = v => v == null ? '—' : (v * 100).toFixed(1) + '%';
   const isVan = metric === 'van_usd';
+  const lowerIsBetter = metric === 'lcoe_usd_kwh';
 
   const scenCols = _GSENS_BATCH_SCENARIOS.filter(([key]) =>
     data.rows[0]?.[metric]?.[key] !== undefined);
+
+  // Ordenar por valor base de la métrica activa (mejor primero)
+  let displayRows = [...data.rows];
+  if (GSENS_BATCH.sortByBest) {
+    displayRows.sort((a, b) => {
+      const va = a[metric]?.base ?? (lowerIsBetter ? Infinity : -Infinity);
+      const vb = b[metric]?.base ?? (lowerIsBetter ? Infinity : -Infinity);
+      return lowerIsBetter ? va - vb : vb - va;
+    });
+  }
 
   const headerCells = scenCols.map(([, lbl]) => `<th style="white-space:nowrap">${lbl}</th>`).join('');
   const extraHeader = isVan
     ? '<th>Peor VAN</th><th>Δ vs. mejor</th><th>P equilibrio</th><th>AEP equilibrio</th><th>CAPEX equilibrio</th><th>VAN/CAPEX</th>'
     : '<th>Peor valor</th>';
 
-  const rows = data.rows.map(t => {
+  const rows = displayRows.map((t, i) => {
     const metricVals = t[metric] || {};
+    const isBest = GSENS_BATCH.sortByBest && i === 0;
+    const rowStyle = isBest ? ' style="background:var(--green-dim,rgba(34,197,94,.08))"' : '';
+    const rankBadge = GSENS_BATCH.sortByBest ? `<span style="color:var(--text-muted);font-size:.68rem;margin-right:.3rem">${i + 1}.</span>` : '';
     const scenCells = scenCols.map(([key]) => `<td style="text-align:right;font-variant-numeric:tabular-nums">${cfg.fmt(metricVals[key])}</td>`).join('');
     const extraCells = isVan
       ? `<td style="text-align:right">${cfg.fmt(t.peor_van_usd)}</td>
@@ -3178,7 +3203,7 @@ function renderGlobalSensitivityBatchTable(data) {
          <td style="text-align:right">${factor(t.umbral_capex_factor)}</td>
          <td style="text-align:right">${(t.van_por_capex_base ?? 0).toFixed(2)}</td>`
       : `<td style="text-align:right">${cfg.fmt(Math.min(...Object.values(metricVals).filter(Number.isFinite)))}</td>`;
-    return `<tr><td>${_topsisRobustName(t.turbina)}</td>${scenCells}${extraCells}</tr>`;
+    return `<tr${rowStyle}><td>${rankBadge}${_topsisRobustName(t.turbina)}</td>${scenCells}${extraCells}</tr>`;
   }).join('');
 
   el.innerHTML = `<table class="data-table" style="font-size:.71rem;min-width:900px">

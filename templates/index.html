@@ -2932,20 +2932,26 @@
       <button class="btn-primary" id="btn-gsens-batch-run" type="button">▶ Comparar escenarios de todos los layouts</button>
       <p class="text-muted mt-1" id="gsens-batch-progress-text" style="font-size:.75rem"></p>
       <div id="gsens-batch-interpretation" class="text-muted" style="font-size:.82rem;margin:.7rem 0;line-height:1.5"></div>
-      <!-- Selector de métrica -->
-      <div style="display:flex;gap:.3rem;flex-wrap:wrap;margin-bottom:.5rem" id="gsens-batch-metric-tabs">
-        <button class="btn-secondary is-active" type="button" data-metric="van_usd"
-          onclick="gsensBatchSwitchMetric('van_usd')"
-          style="font-size:.72rem;padding:.2rem .55rem">VAN (USD)</button>
-        <button class="btn-secondary" type="button" data-metric="lcoe_usd_kwh"
-          onclick="gsensBatchSwitchMetric('lcoe_usd_kwh')"
-          style="font-size:.72rem;padding:.2rem .55rem">LCOE (USD/kWh)</button>
-        <button class="btn-secondary" type="button" data-metric="b_c_ratio"
-          onclick="gsensBatchSwitchMetric('b_c_ratio')"
-          style="font-size:.72rem;padding:.2rem .55rem">B/C</button>
-        <button class="btn-secondary" type="button" data-metric="vae_usd"
-          onclick="gsensBatchSwitchMetric('vae_usd')"
-          style="font-size:.72rem;padding:.2rem .55rem">VAE (USD/año)</button>
+      <!-- Selector de métrica + ordenamiento -->
+      <div style="display:flex;gap:.3rem;flex-wrap:wrap;align-items:center;margin-bottom:.5rem">
+        <div style="display:flex;gap:.3rem;flex-wrap:wrap" id="gsens-batch-metric-tabs">
+          <button class="btn-secondary is-active" type="button" data-metric="van_usd"
+            onclick="gsensBatchSwitchMetric('van_usd')"
+            style="font-size:.72rem;padding:.2rem .55rem">VAN (USD)</button>
+          <button class="btn-secondary" type="button" data-metric="lcoe_usd_kwh"
+            onclick="gsensBatchSwitchMetric('lcoe_usd_kwh')"
+            style="font-size:.72rem;padding:.2rem .55rem">LCOE (USD/kWh)</button>
+          <button class="btn-secondary" type="button" data-metric="b_c_ratio"
+            onclick="gsensBatchSwitchMetric('b_c_ratio')"
+            style="font-size:.72rem;padding:.2rem .55rem">B/C</button>
+          <button class="btn-secondary" type="button" data-metric="vae_usd"
+            onclick="gsensBatchSwitchMetric('vae_usd')"
+            style="font-size:.72rem;padding:.2rem .55rem">VAE (USD/año)</button>
+        </div>
+        <button class="btn-secondary" type="button" id="btn-gsens-batch-sort"
+          onclick="gsensBatchToggleSort()"
+          style="font-size:.72rem;padding:.2rem .55rem;margin-left:.4rem;opacity:.7"
+          title="Ordenar por mejor valor en escenario base">↕ Ordenar por mejor</button>
       </div>
       <div style="overflow:auto;max-height:340px" id="gsens-batch-table"></div>
     </div>
