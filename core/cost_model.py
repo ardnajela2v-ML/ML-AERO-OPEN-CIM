@@ -104,6 +104,51 @@ DESIGN_COST_BENCHMARK: Dict[str, Any] = {
 }
 
 
+# Benchmark específico para México (Istmo de Tehuantepec y sitios maduros).
+# Anclas bibliográficas:
+#   - IRENA (2023) "Renewable Power Generation Costs in 2022", tabla de costos
+#     de instalación onshore por región: América Latina y el Caribe promedio
+#     ponderado ≈ 1 198 USD/kW (USD de 2022), turbina ≈ 73-74 % del total.
+#     DOI/URL: https://www.irena.org/Publications/2023/Aug/
+#     Renewable-Power-Generation-Costs-in-2022
+#   - SENER/CRE — Subastas eléctricas de largo plazo 1ª-3ª (2016-2019):
+#     precios de adjudicación eólica en Oaxaca ~18-22 USD/MWh implican CAPEX
+#     estimado de 1 000-1 350 USD/kW (análisis regresivo publicado en
+#     Elizondo-Azuela et al., "Performance of renewable energy auctions:
+#     experience in Brazil, Mexico and Peru", World Bank, 2017).
+#   - Key, Roberts & Eberle (2022), NREL/OSTI 1837954 (ya citado en
+#     DEFAULT_COST_MODEL): la estructura porcentual de BOS se conserva;
+#     se re-escala al nivel de precio mexicano.
+# Punto central: 1 200 USD/kW total instalado (USD de 2024), consistente con
+# el rango 1 050-1 350 reportado para proyectos mexicanos recientes.
+# OPEX ≈ 4.0 % CAPEX (≈ 48 USD/kW·año), ligeramente por encima del benchmark
+# global (3.72 %) para reflejar costos de O&M en zonas remotas del Istmo.
+MEXICO_COST_BENCHMARK: Dict[str, Any] = {
+    'id': 'irena_latam_2022_mexico_onshore',
+    'label': 'IRENA LatAm 2022 · México onshore (Istmo, sitios maduros)',
+    'data_year': 2022,
+    'currency_year': 2024,
+    'total_installed_usd_per_kw': 1200.0,
+    'source_url': (
+        'https://www.irena.org/Publications/2023/Aug/'
+        'Renewable-Power-Generation-Costs-in-2022'),
+    'cost_model': {
+        # 1 200 × 0.74 = 888 USD/kW turbina
+        'turbine_usd_per_kw': 888.0,
+        'turbines_pct': 0.74,
+        # BOS = 26 %, mismas proporciones relativas 12:8:5:6:3 del modelo base
+        # pero re-escaladas a 0.26 (mayor logística Istmo frente al 0.25 IRENA).
+        'civil_works_pct':     0.09230769230769231,    # 12/34 * 0.26
+        'electrical_pct':      0.06153846153846154,    # 8/34 * 0.26
+        'installation_pct':    0.038461538461538464,   # 5/34 * 0.26
+        'engineering_pct':     0.04615384615384615,    # 6/34 * 0.26
+        'miscellaneous_pct':   0.023076923076923078,   # 3/34 * 0.26
+        'opex_pct_capex': 0.04,
+        # foundation_usd_per_m3eq: hereda DEFAULT_COST_MODEL (misma física).
+    },
+}
+
+
 # Sub-componentes BOS en orden de presentación
 BOS_COMPONENTS = (
     ('civil_works_pct',   'civil_works_usd',   'Obras civiles (caminos, preparación de sitio)'),
@@ -148,8 +193,13 @@ class CostModel:
 
     @classmethod
     def from_design_benchmark(cls) -> 'CostModel':
-        """Modelo IRENA para comparar alternativas en Diseño/TOPSIS."""
+        """Modelo IRENA global 2024 para comparar alternativas en Diseño/TOPSIS."""
         return cls(**DESIGN_COST_BENCHMARK['cost_model'])
+
+    @classmethod
+    def from_mexico_benchmark(cls) -> 'CostModel':
+        """Modelo específico México (IRENA LatAm 2022, Istmo/sitios maduros)."""
+        return cls(**MEXICO_COST_BENCHMARK['cost_model'])
 
     def to_dict(self) -> Dict[str, float]:
         return {f: getattr(self, f) for f in self.__dataclass_fields__}
@@ -208,8 +258,13 @@ def get_default_model_dict() -> Dict[str, Any]:
 
 
 def get_design_cost_benchmark() -> Dict[str, Any]:
-    """Benchmark y modelo separados del escenario editable tecnoeconómico."""
+    """Benchmark IRENA global 2024 + benchmark México, para que el frontend
+    pueda ofrecer tres opciones: ESTUDIO, IRENA, MEXICO."""
     return {
         **{k: v for k, v in DESIGN_COST_BENCHMARK.items() if k != 'cost_model'},
         'cost_model': dict(DESIGN_COST_BENCHMARK['cost_model']),
+        'mexico': {
+            **{k: v for k, v in MEXICO_COST_BENCHMARK.items() if k != 'cost_model'},
+            'cost_model': dict(MEXICO_COST_BENCHMARK['cost_model']),
+        },
     }

@@ -5985,6 +5985,28 @@ def create_app():
                 except (TypeError, ValueError):
                     price_hourly_usd_kwh = None
             pml_series_dict = pml_model.get('pml_series')
+            # Reconstruir pml_series_dict para sesiones antiguas que almacenaron
+            # hourly_timestamps + hourly_profile_2018 (array multi-año) pero sin
+            # el campo pml_series. Esto habilita el emparejamiento cronológico
+            # real (_use_dated) en lugar de replicar el perfil de 2018.
+            if (pml_series_dict is None
+                    and isinstance(pml_model.get('hourly_timestamps'), list)
+                    and len(pml_model['hourly_timestamps']) > 8760
+                    and isinstance(pml_model.get('hourly_profile_2018'), list)
+                    and len(pml_model['hourly_profile_2018'])
+                        == len(pml_model['hourly_timestamps'])):
+                _ts_rebuild = pml_model['hourly_timestamps']
+                _vals_rebuild = pml_model['hourly_profile_2018']
+                _ts_pd_rebuild = pd.DatetimeIndex(_ts_rebuild)
+                pml_series_dict = {
+                    'schema_version': 1,
+                    'start_utc': str(_ts_pd_rebuild[0]),
+                    'n_hours': len(_vals_rebuild),
+                    'values': _vals_rebuild,
+                    '_timestamps_utc': _ts_rebuild,
+                    'years_selected': sorted(
+                        set(int(y) for y in _ts_pd_rebuild.year)),
+                }
             source_info = _analysis_source_info(source_session, body)
             source_frame = _analysis_df(source_session, body)
             if source_frame is not None and len(source_frame):
@@ -6104,9 +6126,13 @@ def create_app():
         def _run():
             try:
                 requested_cost_model = body.get('cost_model')
-                cost_model = (CostModel.from_dict(requested_cost_model)
-                              if requested_cost_model
-                              else CostModel.from_design_benchmark())
+                _cost_preset = body.get('cost_model_preset', '')
+                if requested_cost_model:
+                    cost_model = CostModel.from_dict(requested_cost_model)
+                elif _cost_preset == 'mexico':
+                    cost_model = CostModel.from_mexico_benchmark()
+                else:
+                    cost_model = CostModel.from_design_benchmark()
                 if calibration_payload is not None:
                     tasks[task_id]['progress'] = 10
                     tasks[task_id]['message'] = 'Construyendo campos calibrados para TOPSIS…'
@@ -6263,7 +6289,9 @@ def create_app():
                         cost_model=cost_model,
                         cost_model_origin=(
                             'request' if requested_cost_model
-                            else 'irena_onshore_2024_global_weighted_average'),
+                            else ('irena_latam_2022_mexico_onshore'
+                                  if _cost_preset == 'mexico'
+                                  else 'irena_onshore_2024_global_weighted_average')),
                         uncertainty_components_pct=body.get('uncertainty_components_pct'),
                         **({} if generation_only else {'weights': body.get('layout_weights')}),
                         historical_wind=historical_wind,
