@@ -1,9 +1,0 @@
-label,n_turbines,hub_height_m,aep_mwh_simulate_wind_farm,aep_mwh_chronological_revenue,diff_mwh,diff_pct,n_hours_used,aep_mwh_manifest_original_sim,aep_mwh_manifest_original_chron
-layout::acciona15_p1500_r35.csv::wake-optimal,16,80.0,108646.24,108749.57,103.33,0.0951,384600,108237.05,108342.88
-layout::acciona16_p1500_r38.5.csv::wake-optimal,15,80.0,106183.62,106212.67,29.05,0.0274,384600,105794.16,105823.46
-layout::alstom30_p3000_r55.csv::wake-optimal,9,80.0,114287.12,114301.38,14.26,0.0125,384600,113816.31,113836.12
-layout::clipper25_p2500_r44.5.csv::wake-optimal,11,80.0,111337.02,111187.42,-149.6,-0.1344,384600,110881.61,110733.43
-layout::gamesa20_p2000_r40.csv::wake-optimal,14,80.0,130397.19,130450.12,52.93,0.0406,384600,129923.6,129977.0
-layout::gamesa21_p2000_r45.csv::wake-optimal,12,80.0,122716.75,122705.42,-11.33,-0.0092,384600,122341.51,122333.29
-layout::vestas20_p2000_r40.csv::wake-optimal,14,80.0,130548.6,130613.02,64.42,0.0493,384600,130074.16,130140.11
-layout::vestas30_p3000_r45.csv::wake-optimal,11,80.0,135644.95,135561.09,-83.86,-0.0618,384600,135095.86,135013.65

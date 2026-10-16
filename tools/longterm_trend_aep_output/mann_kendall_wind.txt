@@ -1,9 +1,0 @@
-MANN-KENDALL -- velocidad media anual 80 m, 1980-2023 (44 anios)
-==================================================================
-n: 44
-S: -158
-var_S: 9775.333
-Z: -1.5879
-p_value: 0.1123
-sen_slope_per_year: -0.008217
-trend: sin tendencia significativa

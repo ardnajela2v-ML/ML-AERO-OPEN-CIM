@@ -1,5 +1,0 @@
-year,branch,revenue_usd_year1,aep_mwh,avg_realized_price_usd_kwh,avg_flat_price_usd_kwh,capture_ratio,n_hours,rho_mean,method,calendar_assumption
-2019,observado,544290.06,9171.26,0.059347,0.077787,0.763,6870,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-2019,predicho_merra2,553889.43,9331.69,0.059356,0.077787,0.7631,6870,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-2020,observado,99740.16,3802.44,0.026231,0.032089,0.8174,5105,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-2020,predicho_merra2,201955.37,7787.08,0.025935,0.032089,0.8082,5105,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"

@@ -1,5 +1,0 @@
-version,branch,months_covered,revenue_usd_year1,aep_mwh,avg_realized_price_usd_kwh,avg_flat_price_usd_kwh,capture_ratio,n_hours,rho_mean,method,calendar_assumption
-i_excluye_horas_trabadas,observado,"1,2,6,7,8,9",147012.38,5345.02,0.027505,0.032089,0.8571,2313,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-i_excluye_horas_trabadas,predicho_merra2,"1,2,6,7,8,9",163562.77,5978.69,0.027358,0.032089,0.8526,2313,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-ii_sustituye_80mA_en_ventana,observado,"1,2,3,4,5,6,7,8,9",190679.82,7372.06,0.025865,0.032089,0.806,5105,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"
-ii_sustituye_80mA_en_ventana,predicho_merra2,"1,2,3,4,5,6,7,8,9",201955.37,7787.08,0.025935,0.032089,0.8082,5105,1.225,chronological_hourly_generation_times_hourly_price,"price_hourly_usd_kwh[0] = 1 de enero hora 0, mismo huso que la serie de viento"

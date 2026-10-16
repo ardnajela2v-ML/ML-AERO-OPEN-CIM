@@ -59,6 +59,8 @@ Sin título/
 
 # Motor propietario (no distribuir fuente)
 core/
+windmcp/
+tools/
 
 # Documentación interna / instrucciones de IA
 CLAUDE.md
