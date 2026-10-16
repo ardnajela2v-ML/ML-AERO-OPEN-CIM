@@ -928,6 +928,21 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             # no solo para el ganador -- barato frente al costo ya pagado
             # en la simulación de estela de cada candidato.
             other_survival = (1.0 - curtailment_loss) * (1.0 - environmental_loss)
+            _use_dated = (resource is not None
+                          and pml_series_values is not None
+                          and pml_series_timestamps_utc is not None
+                          and resource.get('timestamps_utc') is not None)
+            # Precio medio del PML pre-computado una vez: se usa para ordenar
+            # candidatos por VAN sin llamar chronological_revenue por candidato.
+            # Con proyectos de varios años de datos, chronological_revenue es
+            # O(T×N) y llamarlo por cada candidato (30-50 por tecnología)
+            # multiplicaba el tiempo total hasta horas; llamarlo solo para el
+            # campeón final lo reduce a una sola llamada por tecnología.
+            _pml_mean_price: Optional[float] = None
+            if _use_dated and pml_series_values is not None:
+                _finite_pml = pml_series_values[np.isfinite(pml_series_values)]
+                if len(_finite_pml) > 0:
+                    _pml_mean_price = float(np.mean(_finite_pml))
             for candidate in generation['pool']:
                 # Economía calculada para todo candidato que cumple estela,
                 # sin exigir además ruido/flicker -- necesario para poder
@@ -939,26 +954,14 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                 if candidate.get('_precomputed') is not None:
                     continue
                 candidate_sim = candidate['sim']
-                _use_dated = (resource is not None
-                              and pml_series_values is not None
-                              and pml_series_timestamps_utc is not None
-                              and resource.get('timestamps_utc') is not None)
-                if _use_dated:
-                    candidate_sim['chronological_revenue'] = chronological_revenue(
-                        candidate['layout_xy_m'], turbine,
-                        np.asarray(resource['ws']), np.asarray(resource['wd']),
-                        timestamps_utc=resource['timestamps_utc'],
-                        pml_series_values=pml_series_values,
-                        pml_series_timestamps_utc=pml_series_timestamps_utc,
-                        min_coverage=0.85,
-                        sample_duration_hours=resource['dt_hours'],
-                        temperature_c=resource.get('temperature_c'),
-                        pressure_pa=resource.get('pressure_pa'),
-                        local_wind_multipliers=(
-                            candidate_sim['production_source']['local_speed_multipliers']),
-                        k_wake=k_wake, ct=ct, n_sectors=36,
-                        availability=availability, electrical_losses=electrical_losses,
-                        wake_model=wake_model, rho_override=rho)
+                candidate_aep_p50 = float(candidate_sim['aep_mwh']) * other_survival
+                if _use_dated and _pml_mean_price is not None:
+                    # Ruta dated: usa precio medio del PML para selección;
+                    # chronological_revenue exacto solo para el campeón (abajo).
+                    candidate_revenue_override = None
+                    _econ_price = _pml_mean_price
+                    candidate_chron = None
+                    candidate_scenarios = None
                 elif (resource is not None and price_hourly_usd_kwh is not None
                         and resource.get('hour_of_year') is not None):
                     candidate_sim['chronological_revenue'] = chronological_revenue(
@@ -973,18 +976,17 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                         k_wake=k_wake, ct=ct, n_sectors=36,
                         availability=availability, electrical_losses=electrical_losses,
                         wake_model=wake_model, rho_override=rho)
-                candidate_aep_p50 = float(candidate_sim['aep_mwh']) * other_survival
-                candidate_chron = candidate_sim.get('chronological_revenue')
-
-                candidate_scenarios = None
-                if _use_dated and candidate_chron and candidate_chron.get('by_year'):
-                    candidate_scenarios = derive_price_scenarios(
-                        candidate_chron['by_year'])
-
-                if _use_dated and candidate_scenarios is not None:
-                    candidate_revenue_override = None
-                    _econ_price = candidate_scenarios['base']
+                    candidate_chron = candidate_sim.get('chronological_revenue')
+                    candidate_scenarios = None
+                    candidate_revenue_override = (
+                        candidate_chron['revenue_usd_year1'] * other_survival
+                        if candidate_chron
+                        and candidate_chron.get('revenue_usd_year1') is not None
+                        else None)
+                    _econ_price = price_usd_kwh
                 else:
+                    candidate_chron = candidate_sim.get('chronological_revenue')
+                    candidate_scenarios = None
                     candidate_revenue_override = (
                         candidate_chron['revenue_usd_year1'] * other_survival
                         if candidate_chron
@@ -1025,6 +1027,47 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
             champion_result = select_technology_champion(
                 generation['pool'], require_feasibility_keys=('wake_loss_ok',))
             champion = champion_result['champion']
+            # Ruta dated: chronological_revenue completo solo para el campeón.
+            if _use_dated and champion is not None:
+                try:
+                    champion['sim']['chronological_revenue'] = chronological_revenue(
+                        champion['layout_xy_m'], turbine,
+                        np.asarray(resource['ws']), np.asarray(resource['wd']),
+                        timestamps_utc=resource['timestamps_utc'],
+                        pml_series_values=pml_series_values,
+                        pml_series_timestamps_utc=pml_series_timestamps_utc,
+                        min_coverage=0.85,
+                        sample_duration_hours=resource['dt_hours'],
+                        temperature_c=resource.get('temperature_c'),
+                        pressure_pa=resource.get('pressure_pa'),
+                        local_wind_multipliers=(
+                            champion['sim']['production_source']['local_speed_multipliers']),
+                        k_wake=k_wake, ct=ct, n_sectors=36,
+                        availability=availability, electrical_losses=electrical_losses,
+                        wake_model=wake_model, rho_override=rho)
+                    _chron_result = champion['sim']['chronological_revenue']
+                    if _chron_result and _chron_result.get('by_year'):
+                        try:
+                            _champ_scenarios = derive_price_scenarios(
+                                _chron_result['by_year'])
+                            _final_price = _champ_scenarios['base']
+                            _champ_econ = _economics(
+                                turbine, champion['n_turbines'],
+                                champion['_precomputed']['aep_p50'],
+                                cost_model, discount_rate, project_years, _final_price,
+                                champion['_precomputed']['collection_length'],
+                                revenue_year1_override=None,
+                                annual_inflation_pct=annual_inflation_pct,
+                                price_escalation_pct=price_escalation_pct,
+                                discount_rate_basis='nominal')
+                            champion['van_usd'] = _champ_econ['van_usd']
+                            champion['_precomputed']['econ'] = _champ_econ
+                            champion['_precomputed']['scenarios'] = _champ_scenarios
+                            champion['_precomputed']['revenue_year1_override'] = None
+                        except (ValueError, KeyError):
+                            pass
+                except Exception:
+                    pass
             if champion is None:
                 return {'error': {
                     'turbine': filename,

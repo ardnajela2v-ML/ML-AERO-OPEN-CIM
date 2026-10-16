@@ -869,7 +869,7 @@ _REASON_BY_FEASIBILITY_KEY = {
 
 
 def select_technology_champion(
-        pool: List[Dict], rule: str = 'max_van_feasible',
+        pool: List[Dict], rule: str = 'max_n_then_van',
         value_key: str = 'van_usd',
         tie_breakers: Tuple[str, ...] = ('wake_loss_pct',),
         require_feasibility_keys: Tuple[str, ...] = (
@@ -880,44 +880,29 @@ def select_technology_champion(
     `require_feasibility_keys` permite pedir DOS lecturas distintas del
     mismo pool sin recalcular nada, para el flujo de decisión de ruido/
     shadow flicker (discutido con el usuario): con
-    `('wake_loss_ok',)` se obtiene el campeón "estela + VAN" (ignora ruido/
+    `('wake_loss_ok',)` se obtiene el campeón "estela + N" (ignora ruido/
     flicker -- la selección primaria que pide el flujo); con el default
     completo se obtiene el campeón que además cumple ruido/flicker/
     pendiente, útil como "alternativa que mitiga" cuando el primero no es
     ambientalmente viable. Ver core.farm_mcda.analyze_park_layouts, que
     calcula ambos a partir del mismo pool y expone la diferencia.
 
-    Regla ('max_van_feasible'): el campeón es el de mayor VAN neto (ingresos
-    menos CAPEX/OPEX/desmantelamiento, descontados sobre la vida del
-    proyecto) entre los candidatos factibles -- es decir, "de las
-    configuraciones que ESTA tecnología puede construir aquí sin violar
-    ninguna restricción, ¿cuál genera más dinero neto?". El llamador debe
-    poblar `van_usd` en cada candidato del pool antes de invocar esta
-    función (core.farm_mcda calcula economía completa -- CAPEX, OPEX,
-    cashflow -- por candidato; ver _economics()).
+    Regla ('max_n_then_van'): el campeón es el de mayor número de
+    aerogeneradores entre los candidatos factibles; entre empates en N,
+    gana el de mayor VAN. Esto garantiza que una turbina con rotor más
+    grande (que cabe en mayor separación absoluta → menos estela por
+    turbina) nunca termine con más aerogeneradores que una de rotor más
+    chico en el mismo polígono, porque cada tecnología maximiza SU propio
+    N factible independientemente. El VAN solo desempata entre geometrías
+    del mismo N (alineado vs tresbolillo vs greedy).
 
-    Esto NO es un mini-TOPSIS ni duplica el paso 7 (AHP+TOPSIS) del
-    framework de tesis: aquí se maximiza UN solo número (VAN) dentro del
-    espacio de configuraciones de UNA sola tecnología -- un argmax de una
-    variable, no una comparación multicriterio ponderada. TOPSIS sigue
-    siendo indispensable después, porque compara los campeones de
-    tecnologías DISTINTAS usando VARIOS criterios a la vez (VAN, LCOE,
-    CAPEX/kW, Cp efectivo, factor de capacidad, horas cerca de Cp máximo...)
-    -- una comparación que un solo número no puede resolver. Preferir AEP en
-    vez de VAN aquí sería peor: maximizar energía sin mirar el costo puede
-    escoger un N con muchas turbinas marginales (CAPEX/colector crecientes,
-    estela creciente) que un inversionista racional no elegiría -- literatura
-    de optimización de layout (p. ej. funciones de costo tipo Mosetti et al.
-    1994) también prefiere objetivos económicos sobre AEP puro por esta
-    razón.
+    TOPSIS (paso 7) sigue siendo indispensable después para comparar los
+    campeones de tecnologías DISTINTAS usando VARIOS criterios a la vez.
 
-    `value_key` es configurable (no solo VAN) para permitir análisis de
-    sensibilidad de esta propia regla -- p. ej. comparar el campeón elegido
-    por VAN contra el que elegiría AEP puro, como evidencia de robustez del
-    método en la tesis -- y para las pruebas unitarias que no necesitan
-    correr el modelo económico completo. Si `value_key` no está en el nivel
-    superior del candidato, se busca dentro de candidate['sim'] (p. ej.
-    'aep_mwh').
+    `value_key` es configurable para permitir análisis de sensibilidad y
+    para las pruebas unitarias que no necesitan correr el modelo económico
+    completo. Si `value_key` no está en el nivel superior del candidato,
+    se busca dentro de candidate['sim'] (p. ej. 'aep_mwh').
     """
     rejected_by_reason: Counter = Counter()
     feasible = []
@@ -939,8 +924,9 @@ def select_technology_champion(
         return float(candidate.get('sim', {}).get(value_key) or 0.0)
 
     def sort_key(candidate):
+        n = int(candidate.get('n_turbines', 0))
         tie_values = tuple(float(candidate.get(key, 0.0) or 0.0) for key in tie_breakers)
-        return (-_value(candidate),) + tie_values
+        return (-n, -_value(candidate)) + tie_values
 
     champion = min(feasible, key=sort_key)
     return {'champion': champion, 'pool_size': len(pool), 'n_feasible': len(feasible),

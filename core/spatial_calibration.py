@@ -24,6 +24,7 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.stats import weibull_min
 
+from core.cost_model import CostModel
 from core.kriging import (
     SECTOR_COUNT,
     SECTOR_LABELS,
@@ -1136,14 +1137,55 @@ def build_calibrated_maps(
         power_interp = interp1d(x_raw, fitted_w, bounds_error=False, fill_value=0.0)
         capex = np.zeros_like(wind)
         van = np.zeros_like(wind)
-        for j in range(ny):
-            for i in range(nx):
-                capex[j, i], van[j, i] = _legacy_prefit_economics(
-                    float(wind[j, i]), float(weibull_k[j, i]), float(density[j, i]),
-                    power_interp, float(np.max(fitted_w)), float(rotor_m), float(rated_kw),
-                    float(demand_mwh), float(discount_rate), float(price_usd_kwh),
-                    float(fx_mxn_per_usd), int(project_years), cost_model=cost_model,
-                )
+        # Pre-compute annual energy per turbine for all cells in chunks to avoid
+        # 6400 × _virtual_weibull_series (each 8760 values) called individually.
+        # Each chunk of 200 cells creates a 200×8760 matrix (~14 MB) — fast.
+        _p_q = (np.arange(8760, dtype=float) + 0.5) / 8760
+        _wind_flat = wind.ravel()
+        _k_flat = np.maximum(weibull_k.ravel(), 0.45)
+        _pt_all = np.zeros(len(_wind_flat))
+        for _s in range(0, len(_wind_flat), 200):
+            _e = min(_s + 200, len(_wind_flat))
+            _vv = _wind_flat[_s:_e]
+            _kk = _k_flat[_s:_e]
+            _gamma = np.array([math.gamma(1.0 + 1.0 / float(k)) for k in _kk])
+            _c = np.where(_gamma > 0, _vv / _gamma, _vv)
+            _ws = _c[:, None] * np.power(-np.log1p(-_p_q[None, :]),
+                                          1.0 / _kk[:, None])
+            _pw = np.maximum(power_interp(_ws), 0.0)
+            _pw[_ws > 25.0] = 0.0
+            _pt_all[_s:_e] = _pw.sum(axis=1)
+        # Vectorized economics using pre-computed annual energy.
+        _demand_wh = float(demand_mwh) * 1e6
+        _tasa = float(discount_rate)
+        _anios = int(project_years)
+        _price = float(price_usd_kwh)
+        _p_nom = float(rated_kw)
+        _p_max = float(np.max(fitted_w))
+        _rotor = float(rotor_m)
+        _cm_inst = cost_model
+        # capex_breakdown is called for each unique n (a small discrete set).
+        _cap_flat = capex.ravel()
+        _van_flat = van.ravel()
+        _capex_cache: dict = {}
+        for _idx in range(len(_wind_flat)):
+            _pt_i = float(_pt_all[_idx])
+            _n = math.ceil(_demand_wh / _pt_i) if _pt_i > 0 else 0
+            if _n not in _capex_cache:
+                _c_inst = _cm_inst
+                if _c_inst is None:
+                    _c_inst = CostModel.from_design_benchmark()
+                _bk = _c_inst.capex_breakdown(_p_nom, _n)
+                _ctot = float(_bk['total_capex_usd'])
+                _opex = float(_c_inst.opex_annual_usd(_ctot))
+                _capex_cache[_n] = (_ctot, _opex)
+            _ctot, _opex = _capex_cache[_n]
+            _ekwh = _pt_i * _n / 1e3
+            _flux = _ekwh * _price - _opex
+            _van_v = (_flux * ((1.0 - (1.0 + _tasa) ** -_anios) / _tasa) - _ctot
+                      if _tasa > 0 else 0.0)
+            _cap_flat[_idx] = _ctot
+            _van_flat[_idx] = _van_v
         result["inversion"] = _wrap_grid(template, capex, "Inversión inicial (USD)")
         result["van"] = _wrap_grid(template, van, "Valor Actual Neto (USD)")
     if progress_callback:
