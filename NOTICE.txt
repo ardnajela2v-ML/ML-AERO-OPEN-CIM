@@ -1,0 +1,32 @@
+AERO OPEN CIM — Notices
+=======================
+
+Copyright (c) 2026 Alejandra Velázquez Velázquez
+Universidad del Istmo — Maestría en Ciencias en Energía Eólica
+
+
+1. User Interface and Public Components
+   Files: static/, templates/, api.py, run.py, and all files not listed below.
+   License: Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+   https://creativecommons.org/licenses/by-nc/4.0/
+
+   You may use, copy, adapt and share these components freely for non-commercial
+   purposes, provided you give credit to the original author.
+
+2. Core Computational Engine
+   Directory: core/
+   License: Proprietary — All Rights Reserved.
+   Copyright (c) 2026 Alejandra Velázquez Velázquez.
+
+   This directory contains proprietary algorithms for wind resource interpolation
+   (Kriging), wake modeling, multi-criteria decision analysis (TOPSIS/AHP), and
+   techno-economic evaluation. No part of this code may be copied, modified,
+   distributed, or used in any form without express written permission from the
+   copyright holder.
+
+   Contact: tamicataub712@outlook.com
+
+
+Required attribution for CC BY-NC 4.0 components:
+  "AERO OPEN CIM, Alejandra Velázquez Velázquez (2026).
+   https://github.com/[repository]"

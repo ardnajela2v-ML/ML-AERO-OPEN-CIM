@@ -17,8 +17,8 @@ authors:
     orcid: ""
 version: "1.0.0"
 date-released: "2026-10-15"
-license: MIT
-license-url: "https://opensource.org/licenses/MIT"
+license: "CC-BY-NC-4.0"
+license-url: "https://creativecommons.org/licenses/by-nc/4.0/"
 repository-code: ""
 url: ""
 keywords:
