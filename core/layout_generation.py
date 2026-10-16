@@ -58,6 +58,12 @@ from core.osm_infrastructure import feature_to_exclusion_polygon
 # usuario (ver mcdaUseMitigationAlternative en el frontend, que sí puede
 # permitirse un presupuesto mayor si se expone como acción explícita).
 _AUTO_REPAIR_MAX_STEPS = 20
+# Tolerancia de factibilidad de estela (porcentaje absoluto).  Layouts con
+# wake_loss_pct ≤ max_wake_loss_pct + _WAKE_TOL se consideran factibles.
+# El valor 0.05 absorbe el error de discretización de cuadrícula (~0.01–0.03 %)
+# que de otro modo clasifica de forma inconsistente turbinas con rotor similar
+# pero diferente espaciado absoluto (p. ej. gamesa g80 vs g90, misma curva).
+_WAKE_TOL: float = 0.05
 
 
 @dataclass
@@ -424,7 +430,7 @@ def generate_feasible_layouts_grid(
         # tiempo más allá de lo razonable para explorar varias tecnologías
         # (medido en producción: 8-13 tecnologías tardaban 20-30 min).
         if not any(float(g['sim'].get('wake_loss_pct') or 0.0)
-                   <= float(constraints.max_wake_loss_pct) + 1e-9 for g in geometries):
+                   <= float(constraints.max_wake_loss_pct) + _WAKE_TOL for g in geometries):
             seed = min(geometries, key=lambda g: float(g['sim'].get('wake_loss_pct') or math.inf))
             seed_wake = float(seed['sim'].get('wake_loss_pct') or math.inf)
             # Rescate condenado al fracaso: un ajuste de <=1D no va a recortar
@@ -444,7 +450,7 @@ def generate_feasible_layouts_grid(
                     max_evals=local_refinement_max_evals)
                 if (not refined_sim.get('error')
                         and float(refined_sim.get('wake_loss_pct') or 0.0)
-                        <= float(constraints.max_wake_loss_pct) + 1e-9):
+                        <= float(constraints.max_wake_loss_pct) + _WAKE_TOL):
                     refined_lats, refined_lons = _xy_to_latlon(
                         [p[0] for p in refined_xy], [p[1] for p in refined_xy], site_lat0, site_lon0)
                     geometries.append({
@@ -456,7 +462,7 @@ def generate_feasible_layouts_grid(
         n_has_feasible = False
         for geometry in geometries:
             wake_loss_pct = float(geometry['sim'].get('wake_loss_pct') or 0.0)
-            wake_loss_ok = wake_loss_pct <= float(constraints.max_wake_loss_pct) + 1e-9
+            wake_loss_ok = wake_loss_pct <= float(constraints.max_wake_loss_pct) + _WAKE_TOL
             # Embudo de costo creciente: el ruido (suma logarítmica por
             # receptor) solo se evalúa sobre geometrías que YA pasaron
             # estela -- no tiene sentido pagar ese cálculo si el candidato
@@ -489,7 +495,7 @@ def generate_feasible_layouts_grid(
                         repaired_sim = evaluate_layout(repair['layout_xy_m'])
                         repaired_wake = float(repaired_sim.get('wake_loss_pct') or 0.0)
                         if (not repaired_sim.get('error')
-                                and repaired_wake <= float(constraints.max_wake_loss_pct) + 1e-9):
+                                and repaired_wake <= float(constraints.max_wake_loss_pct) + _WAKE_TOL):
                             xs, ys = zip(*repair['layout_xy_m'])
                             lats_r, lons_r = _xy_to_latlon(list(xs), list(ys), site_lat0, site_lon0)
                             geometry['layout_xy_m'] = repair['layout_xy_m']
@@ -531,7 +537,7 @@ def generate_feasible_layouts_grid(
                                 constraints.noise_limit_dba)
                             repaired_noise_ok = repaired_noise_eval['ok']
                         if (not repaired_sim.get('error')
-                                and repaired_wake <= float(constraints.max_wake_loss_pct) + 1e-9
+                                and repaired_wake <= float(constraints.max_wake_loss_pct) + _WAKE_TOL
                                 and repaired_noise_ok):
                             xs, ys = zip(*repair['layout_xy_m'])
                             lats_r, lons_r = _xy_to_latlon(list(xs), list(ys), site_lat0, site_lon0)

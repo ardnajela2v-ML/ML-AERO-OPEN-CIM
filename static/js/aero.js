@@ -8857,7 +8857,7 @@ function mcdaRenderCandidates() {
     </summary><div class="card-body"><button class="btn-secondary" type="button"
     onclick="mcdaPreviewCandidate(${i})">Ver layout en el mapa</button>${mcdaLayoutAuditHtml(a)}</div></details>`).join('')
     + errors.map(e => `<p>${mcdaAuditEscape(e.turbine)}: ${mcdaAuditEscape(e.reason)}</p>`).join('')
-    + (rows.length ? '<p class="text-muted" style="font-size:.78rem;margin:.6rem 0">La cantidad seleccionada maximiza VAN entre layouts que cumplen el límite de estela; la capacidad física se muestra por separado. Dos modelos pueden tener cantidades seleccionadas distintas aunque el rotor mayor ocupe más espacio.</p>' : '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>');
+    + (rows.length ? '<p class="text-muted" style="font-size:.78rem;margin:.6rem 0">La cantidad seleccionada maximiza VAN entre layouts factibles (estela ≤ límite + 0.05 % de tolerancia de grilla). La pérdida por estela depende de la curva de potencia: turbinas de mayor potencia son más sensibles y pueden seleccionar menos unidades que otras de igual rotor pero menor potencia. La capacidad física corresponde al empaque máximo a separación mínima.</p>' : '<p>No hay layouts preparados. Genera alternativas factibles antes de ejecutar TOPSIS.</p>');
   renderTechClustering(MCDA.lastSpatial?.tech_clustering);
 }
 
@@ -12240,7 +12240,17 @@ async function publishMCPRun() {
     const published = await api(`/api/mcp/runs/${encodeURIComponent(WP.mcpRunId)}/publish`, 'POST', { session_id: WP.sessionId });
     invalidateProjectWindResults();
     WP.activeDataSource = published.source_id;
+    WP.studyMode = 'mcp_observed';
+    GLOBE.studyMode = 'mcp_observed';
+    WP.meta = {
+      display_name: WP.mcpStudy?.observed_station?.display_name || published.label,
+      format: 'mcp',
+      wind_height_m: published.target_height_m || WP.referenceHeight,
+      latitude: GLOBE?.poi?.lat ?? WP.mcpStudy?.poi?.lat ?? WP.meta?.latitude,
+      longitude: GLOBE?.poi?.lon ?? WP.mcpStudy?.poi?.lon ?? WP.meta?.longitude,
+    };
     krig3ActivatePublishedSource();
+    refreshReconstruccionDisclosure();
     WP.windStats = null;
     WP.energyResult = null;
     WP.technoResult = null;
@@ -14679,7 +14689,7 @@ function refreshReconstruccionDisclosure() {
   const details = document.getElementById('reconstruccion-mcp-details');
   const summary = document.getElementById('reconstruccion-mcp-summary');
   if (!details || !summary) return;
-  const isMcp = WP.studyMode === 'mcp_observed';
+  const isMcp = WP.studyMode === 'mcp_observed' || !!WP.activeDataSource?.startsWith('mcp:');
   details.open = isMcp;
   summary.textContent = isMcp
     ? 'Reconstrucción histórica MCP · ver detalle del estudio'

@@ -2157,7 +2157,7 @@ def optimize_layout_structured(
                 continue
             if evaluation is None or float(loss) < float(evaluation['wake_loss_pct']):
                 best, evaluation = config, result
-            if max_wake_loss_pct is not None and float(loss) <= max_wake_loss_pct + 1e-9:
+            if max_wake_loss_pct is not None and float(loss) <= max_wake_loss_pct + 0.05:
                 best, evaluation = config, result
                 break
     placed       = best['_candidates']
