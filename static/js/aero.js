@@ -2782,8 +2782,23 @@ async function calcTechnoEconomic() {
     const effectiveBuiltPrice = (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0)
       ? { series: null, baseline: null, hourly: null }  // precio plano igual que TOPSIS
       : builtPrice;
-    if (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0) {
-      toast(`Precio de captura PML base: ${topsisPrice.toFixed(4)} USD/kWh (consistent con ranking TOPSIS)`, 'info');
+    // Parámetros económicos: preferir los guardados en el TOPSIS para reproducir
+    // el VAN exacto del ranking. Sin ellos, usar los inputs actuales del UI.
+    const ea = layout.economic_assumptions;
+    const hasEconAssumptions = ea && (layout.capex_usd > 0);
+    const effectiveRate     = hasEconAssumptions && Number.isFinite(Number(ea.discount_rate))
+      ? Number(ea.discount_rate) * 100 : inputs.rate;
+    const effectiveYears    = hasEconAssumptions && Number.isFinite(Number(ea.project_years))
+      ? Math.round(Number(ea.project_years)) : inputs.years;
+    const effectiveInflation= hasEconAssumptions && Number.isFinite(Number(ea.annual_inflation_pct))
+      ? Number(ea.annual_inflation_pct) : inputs.inflation;
+    const effectivePriceFinal = hasEconAssumptions && Number.isFinite(Number(ea.price_usd_kwh)) && Number(ea.price_usd_kwh) > 0
+      ? Number(ea.price_usd_kwh) : effectivePrice;
+
+    if (hasEconAssumptions) {
+      toast(`Reproduciendo TOPSIS: tasa ${effectiveRate.toFixed(1)}% · ${effectiveYears} años · inflación ${effectiveInflation.toFixed(1)}% · precio ${effectivePriceFinal.toFixed(4)} USD/kWh`, 'info');
+    } else if (topsisPrice != null && Number.isFinite(topsisPrice) && topsisPrice > 0) {
+      toast(`Precio de captura PML base: ${topsisPrice.toFixed(4)} USD/kWh (consistente con ranking TOPSIS)`, 'info');
     }
 
     const body = {
@@ -2796,14 +2811,14 @@ async function calcTechnoEconomic() {
       turbine: { builtin_model: layout.turbine_key || inputs.turbine },
       financial: {
         demand_mwh:           inputs.demand,
-        energy_price_usd_kwh: effectivePrice,
-        discount_rate_pct:    inputs.rate,
-        project_years:        inputs.years,
+        energy_price_usd_kwh: effectivePriceFinal,
+        discount_rate_pct:    effectiveRate,
+        project_years:        effectiveYears,
         usd_to_mxn:           inputs.fx,
-        annual_inflation_pct: inputs.inflation,
+        annual_inflation_pct: effectiveInflation,
         cost_model:           inputs.costModel,
-        energy_price_series_usd_kwh: effectiveBuiltPrice.series || null,
-        price_hourly_year1_usd_kwh:  effectiveBuiltPrice.hourly || null,
+        energy_price_series_usd_kwh: hasEconAssumptions ? null : (effectiveBuiltPrice.series || null),
+        price_hourly_year1_usd_kwh:  hasEconAssumptions ? null : (effectiveBuiltPrice.hourly || null),
         price_mode: inputs.priceMode,
       },
       // Pass TOPSIS-stored CAPEX/OPEX so the panel reproduces the ranking VAN
@@ -9904,7 +9919,11 @@ function renderScenarioAnalysis(data, activeScen) {
   const winnerStable = data.winner_stable;
   const sens = data.topsis_sensitivity || {};
   const summary = sens.stability_summary || {};
+  // base_winner = ganador del flujo TOPSIS principal (cuando existe) o re-evaluación plana
   const baseWinner = (sens.base_winner || '').replace('.csv', '');
+  const sensBaseWinner = (sens.sens_base_winner || '').replace('.csv', '');
+  const winnerSource = sens.winner_source || 'sens_rerun';
+  const winnersMatch = !sensBaseWinner || !baseWinner || baseWinner === sensBaseWinner;
 
   // Winner stable badge (PML)
   const badgeEl = document.getElementById('mcda-scenario-winner-badge');
@@ -9925,9 +9944,16 @@ function renderScenarioAnalysis(data, activeScen) {
     const stable = summary.winner_stable_count ?? 0;
     const total = summary.total_scenarios ?? 0;
     const color = pct >= 80 ? 'var(--green,#22c55e)' : pct >= 50 ? 'var(--yellow,#f9c547)' : 'var(--red,#ef4444)';
+    const sourceLabel = winnerSource === 'main_topsis'
+      ? '<span title="Ganador del análisis TOPSIS principal con precios PML por turbina" style="font-size:.67rem;color:var(--accent,#4DA3FF);border:1px solid var(--accent,#4DA3FF);border-radius:3px;padding:.05rem .3rem;vertical-align:middle">TOPSIS</span>'
+      : '<span title="Re-evaluación con precio PML uniforme" style="font-size:.67rem;color:var(--text-muted);border:1px solid var(--border);border-radius:3px;padding:.05rem .3rem;vertical-align:middle">precio plano</span>';
+    const divergenceNote = (!winnersMatch && sensBaseWinner)
+      ? `<span title="El flujo TOPSIS usa precio de captura por turbina; la sensibilidad usa precio promedio PML. Ambos son válidos para propósitos distintos." style="font-size:.67rem;color:var(--yellow,#f9c547);white-space:nowrap;cursor:help">⚠ sensibilidad base: ${sensBaseWinner}</span>`
+      : '';
     barEl.innerHTML = `
       <div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:.6rem .9rem;display:flex;align-items:center;gap:.9rem;flex-wrap:wrap">
-        <span style="font-size:.72rem;color:var(--text-secondary);white-space:nowrap">Ganador base: <strong style="color:var(--text-primary)">${baseWinner || '—'}</strong></span>
+        <span style="font-size:.72rem;color:var(--text-secondary);white-space:nowrap">Ganador de referencia: <strong style="color:var(--text-primary)">${baseWinner || '—'}</strong> ${sourceLabel}</span>
+        ${divergenceNote}
         <span style="font-size:.72rem;color:var(--text-secondary);white-space:nowrap">Estabilidad global:</span>
         <div style="flex:1;min-width:120px;background:var(--bg-secondary);border-radius:4px;height:8px;overflow:hidden">
           <div style="width:${pct}%;height:100%;background:${color};transition:width .4s"></div>
@@ -10011,6 +10037,9 @@ function _sensScenarioTable(scenarios, dimLabel, paramKey, baseWinner) {
 function _sensSummaryTable(sens) {
   if (!sens || sens.error) return `<p class="text-muted" style="font-size:.82rem">${sens?.error || 'Sin datos.'}</p>`;
   const baseWinner = (sens.base_winner || '—').replace('.csv', '');
+  const sensBaseWinner = (sens.sens_base_winner || '').replace('.csv', '');
+  const winnerSource = sens.winner_source || 'sens_rerun';
+  const winnersMatch = !sensBaseWinner || baseWinner === sensBaseWinner || baseWinner === '—';
   const s = sens.stability_summary || {};
   const dims = [
     { key: 'aep_scenarios', label: 'Variación AEP' },
@@ -10033,10 +10062,17 @@ function _sensSummaryTable(sens) {
       <td style="font-size:.73rem;color:var(--text-muted)">${changers}</td>
     </tr>`;
   }).join('');
+  const sourceNote = winnerSource === 'main_topsis'
+    ? '(ganador TOPSIS flujo principal)'
+    : '(re-evaluación precio plano)';
+  const divergenceRow = (!winnersMatch && sensBaseWinner)
+    ? `<p style="font-size:.72rem;color:var(--yellow,#f9c547);margin:.3rem 0 0">⚠ La sensibilidad con precio plano hubiera elegido <strong>${sensBaseWinner}</strong>. Diferencia esperada: el flujo TOPSIS usa precio de captura por turbina.</p>`
+    : '';
   return `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:8px;padding:.65rem .9rem;margin-bottom:.8rem;font-size:.8rem">
-    Ganador base: <strong>${baseWinner}</strong> &nbsp;·&nbsp;
+    Ganador de referencia: <strong>${baseWinner}</strong> <span style="color:var(--text-muted)">${sourceNote}</span> &nbsp;·&nbsp;
     Estabilidad global: <strong>${s.stability_rate_pct ?? '—'}%</strong>
     (${s.winner_stable_count ?? '—'}/${s.total_scenarios ?? '—'} escenarios)
+    ${divergenceRow}
   </div>
   <div style="overflow:auto"><table class="data-table" style="width:100%;font-size:.79rem">
     <thead><tr><th>Dimensión</th><th>Estables</th><th>%</th><th>Escenarios con cambio de ganador</th></tr></thead>

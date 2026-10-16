@@ -261,12 +261,18 @@ def topsis_scenario_sensitivity(
     base_annual_inflation_pct: Optional[float] = None,
     base_price_escalation_pct: Optional[float] = None,
     base_price_usd_kwh: float = 0.07,
+    main_topsis_winner: Optional[str] = None,
 ) -> Dict:
     """Evaluate TOPSIS winner stability across AEP, rate, and inflation scenarios.
 
     Returns a dict with per-dimension scenario tables and an overall stability
     summary. All dimensions are evaluated independently against the base case.
     Combined extremes (stress / optimista) are also included.
+
+    ``main_topsis_winner``: turbina filename of the winner from the original
+    spatial TOPSIS run (uses per-candidate PML prices). When provided it is used
+    as the stability reference so that each scenario is compared against the
+    actual TOPSIS winner, not a re-derived flat-price base.
     """
     from core.multicriteria import rank_layout_alternatives as _rank
 
@@ -274,7 +280,7 @@ def topsis_scenario_sensitivity(
     rate = float(base_discount_rate)
     price = float(base_price_usd_kwh)
 
-    # Base winner
+    # Sensitivity-internal base (flat price re-run, used for label & ranking display)
     base_run = _rerun_with_overrides(
         pool_caches, turbines_folder, cost_model, rate, project_years,
         price, inf, base_price_escalation_pct, aep_factor=1.0)
@@ -282,7 +288,11 @@ def topsis_scenario_sensitivity(
     if not base_alts:
         return {'error': 'No hay alternativas en el pool para el escenario base.'}
     base_ranking = _rank(base_alts) if len(base_alts) >= 2 else {'ranking': [{'label': base_alts[0].get('turbina', ''), 'turbina': base_alts[0].get('turbina', '')}]}
-    base_winner = base_ranking['ranking'][0]['turbina'] if base_ranking.get('ranking') else None
+    sens_base_winner = base_ranking['ranking'][0]['turbina'] if base_ranking.get('ranking') else None
+
+    # Use the main spatial TOPSIS winner as stability reference when available.
+    # This avoids divergence caused by flat-price re-evaluation vs per-candidate PML prices.
+    base_winner = main_topsis_winner if main_topsis_winner else sens_base_winner
 
     def _run_scenario(label: str, dim: str, aep_f: float, rate_v: float,
                       inf_v: float, price_v: float, params: dict) -> dict:
@@ -339,7 +349,10 @@ def topsis_scenario_sensitivity(
 
     return {
         'base_winner': base_winner,
-        'base_winner_label': base_ranking['ranking'][0].get('label', base_winner) if base_ranking.get('ranking') else base_winner,
+        'base_winner_label': base_winner.replace('.csv', '') if base_winner else None,
+        'sens_base_winner': sens_base_winner,
+        'main_topsis_winner': main_topsis_winner,
+        'winner_source': 'main_topsis' if main_topsis_winner else 'sens_rerun',
         'aep_scenarios': aep_scenarios,
         'rate_scenarios': rate_scenarios,
         'inflation_scenarios': inflation_scenarios,
@@ -398,7 +411,7 @@ def compute_annual_energy_breakdown(
 
     ts_idx = pd.DatetimeIndex(ts_v)
     df = pd.DataFrame({'energy_net_kwh': energy_kwh}, index=ts_idx)
-    calc = AEPCalculator(turbine)
+    calc = AEPCalculator()
     return calc.compute_from_timeseries(df, energy_col='energy_net_kwh')
 
 

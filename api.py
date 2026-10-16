@@ -386,6 +386,7 @@ def create_app():
         'kriging_calibrations', 'active_kriging_calibration_id',
         # Computed caches: TOPSIS pool (restaura escenarios + matriz robustez)
         '_candidate_pool',
+        '_topsis_main_winner',
     }
 
     def _project_encode(value, archive, path='root', key_hint=''):
@@ -1097,29 +1098,35 @@ def create_app():
         project_name = str(body.get('project_name') or 'proyecto_eolico').strip()
         safe_project_name = secure_filename(project_name) or 'proyecto_eolico'
         client_state = body.get('client_state') or {}
-        stream = io.BytesIO()
-        with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=6) as archive:
-            session_state = {
-                key: _project_encode(sess[key], archive, f'session.{key}', key)
-                for key in sorted(PROJECT_SESSION_KEYS)
-                if key in sess
-            }
-            manifest = {
-                'format': PROJECT_FORMAT,
-                'format_version': PROJECT_FORMAT_VERSION,
-                'application': 'AERO OPEN CIM',
-                'exported_at': datetime.now(timezone.utc).isoformat(),
-                'source_session_id': sid,
-                'project_name': project_name,
-                'session_state': session_state,
-                'client_state': numpy_to_python(client_state),
-            }
-            archive.writestr(
-                'manifest.json',
-                json.dumps(manifest, ensure_ascii=False, separators=(',', ':')),
-            )
-        stream.seek(0)
+        try:
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED,
+                                 compresslevel=6) as archive:
+                session_state = {
+                    key: _project_encode(sess[key], archive, f'session.{key}', key)
+                    for key in sorted(PROJECT_SESSION_KEYS)
+                    if key in sess
+                }
+                manifest = {
+                    'format': PROJECT_FORMAT,
+                    'format_version': PROJECT_FORMAT_VERSION,
+                    'application': 'AERO OPEN CIM',
+                    'exported_at': datetime.now(timezone.utc).isoformat(),
+                    'source_session_id': sid,
+                    'project_name': project_name,
+                    'session_state': session_state,
+                    'client_state': numpy_to_python(client_state),
+                }
+                archive.writestr(
+                    'manifest.json',
+                    json.dumps(manifest, ensure_ascii=False, separators=(',', ':')),
+                )
+            zip_size_mb = stream.tell() / (1024 * 1024)
+            logger.info('export_project: zip=%.1f MB project=%s', zip_size_mb, safe_project_name)
+            stream.seek(0)
+        except Exception as exc:
+            logger.exception('export_project: error al construir el zip del proyecto')
+            return _err(f'Error al empaquetar el proyecto: {exc}', 500)
         return send_file(
             stream, mimetype='application/zip', as_attachment=True,
             download_name=f'{safe_project_name}.aeroproj', max_age=0,
@@ -5903,6 +5910,7 @@ def create_app():
                         base_annual_inflation_pct=annual_inflation_pct,
                         base_price_escalation_pct=price_escalation_pct,
                         base_price_usd_kwh=base_price,
+                        main_topsis_winner=sess.get('_topsis_main_winner'),
                     )
                 except Exception as _se:
                     logger.warning('topsis_scenario_sensitivity falló: %s', _se)
@@ -6410,6 +6418,9 @@ def create_app():
                             layout_result['tech_clustering'] = None
                     if layout_result.get('_pool_caches') and source_session is not None:
                         source_session['_candidate_pool'] = layout_result['_pool_caches']
+                        _main_ranking = layout_result.get('ranking') or {}
+                        _main_top = (_main_ranking.get('ranking') or [{}])[0]
+                        source_session['_topsis_main_winner'] = _main_top.get('turbina') or _main_top.get('label')
                     for alternative in layout_result.get('alternatives', []):
                         alternative['spatial_sources'] = spatial.get('spatial_sources', [])
                         alternative['temporal_source'] = source_info
@@ -6428,7 +6439,8 @@ def create_app():
                     **spatial,
                     **({'data_source': source_info} if source_info is not None else {}),
                     'ranking': ranking,
-                    **(layout_result or {}),
+                    **({k: v for k, v in (layout_result or {}).items()
+                        if k != '_pool_caches'} if layout_result else {}),
                     'pool_available': bool(layout_result and layout_result.get('_pool_caches')),
                     'design_cost_benchmark': get_design_cost_benchmark(),
                     **({'electrical_loss_breakdown': _elec_breakdown}
