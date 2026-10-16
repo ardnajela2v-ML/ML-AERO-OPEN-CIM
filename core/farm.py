@@ -362,9 +362,8 @@ def bin_wind_to_sectors(ws: np.ndarray, wd: np.ndarray, n_sectors: int = 36):
     ws_bins = np.arange(0, ws_max + 1, 1.0)
     bin_idx = np.clip((ws / 1.0).astype(int), 0, len(ws_bins) - 2)
     n_b = len(ws_bins) - 1
-    freq = np.zeros((n_sectors, n_b), dtype=float)
-    for s, b in zip(sector_idx, bin_idx):
-        freq[s, b] += 1
+    flat_idx = sector_idx * n_b + bin_idx
+    freq = np.bincount(flat_idx, minlength=n_sectors * n_b).reshape(n_sectors, n_b).astype(float)
     freq /= freq.sum() if freq.sum() > 0 else 1
     sector_centres = np.arange(n_sectors) * sector_width
     ws_centres = ws_bins[:-1] + 0.5

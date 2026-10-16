@@ -56,6 +56,11 @@ def prepare_historical_wind(resource, target_height_m, require_direction=True):
         ts = np.asarray(resource['timestamps_utc']).reshape(-1)
         if len(ts) == len(speed):
             result['timestamps_utc'] = ts[valid]
+    # Precompute sector bins once — reused by every evaluate_layout call
+    # (simulate_wind_farm uses _wind_bins if present, skipping bin_wind_to_sectors)
+    if result.get('wd') is not None:
+        from core.farm import bin_wind_to_sectors as _bws
+        result['_wind_bins'] = _bws(result['ws'], result['wd'])
     return result
 
 

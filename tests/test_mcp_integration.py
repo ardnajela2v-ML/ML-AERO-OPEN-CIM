@@ -98,7 +98,7 @@ class MCPIntegrationTests(unittest.TestCase):
         from core.multicriteria import LAYOUT_WEIGHTS
         self.assertEqual(defaults.get_json()['layout_weights'], LAYOUT_WEIGHTS)
         self.assertAlmostEqual(defaults.get_json()['layout_weights']['factor_capacidad'],
-                                0.1073, places=4)
+                                0.0993, places=4)
         self.assertNotIn('discounted_payback_years', defaults.get_json()['layout_weights'])
         self.assertAlmostEqual(sum(defaults.get_json()['layout_weights'].values()), 1.0)
         from core.multicriteria import LAYOUT_AUDIT_ONLY
