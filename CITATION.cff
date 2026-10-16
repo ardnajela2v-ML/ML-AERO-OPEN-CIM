@@ -9,7 +9,7 @@ abstract: >
   multicriterio TOPSIS+AHP, evaluación tecnoeconómica completa (LCOE/VAN/TIR)
   con inflación Fisher y apalancamiento equity, y cruce cronológico de generación
   con precios de mercado (PML/CENACE). Desarrollado como soporte metodológico
-  para tesis doctoral en el IPN CIIDIR Oaxaca.
+  como soporte metodológico para tesis de maestría en la Universidad del Istmo.
 authors:
   - family-names: "Velázquez Velázquez"
     given-names: "Alejandra"

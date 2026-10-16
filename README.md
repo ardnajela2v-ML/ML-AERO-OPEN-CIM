@@ -1,13 +1,13 @@
 # AERO OPEN CIM
 
 **Plataforma de prefactibilidad eólica de ciclo completo**  
-José Antonio Rojas Escobar · CIIDIR Oaxaca, IPN · DoCITTE · 2026
+Alejandra Velázquez Velázquez · Universidad del Istmo · Maestría en Energía Eólica · 2026
 
 ---
 
 ## Descripción
 
-AERO OPEN CIM es una plataforma web de análisis y prefactibilidad para proyectos de energía eólica, desarrollada como soporte metodológico para tesis doctoral en el IPN CIIDIR Oaxaca. Integra cinco módulos científicos desacoplados:
+AERO OPEN CIM es una plataforma web de análisis y prefactibilidad para proyectos de energía eólica, desarrollada como soporte metodológico para tesis de maestría en la Universidad del Istmo, Oaxaca. Integra cinco módulos científicos desacoplados:
 
 1. **Recurso Eólico** — Adquisición (MERRA-2/ERA5/CERTE), control de calidad, MCP, Weibull por sector, recurso espacial por Kriging ordinario.
 2. **Diseño de Parque** — Generación y simulación de layouts con modelos de estela Jensen NOJ y Bastankhah-Porté-Agel (Gaussiano). Selección del campeón tecnológico por VAN máximo.
@@ -75,21 +75,19 @@ aero-open-cim/
 
 Si usas AERO OPEN CIM en tu investigación, cita usando el archivo `CITATION.cff` o:
 
-> Velázquez Velázquez, A. & Rojas Escobar, J.A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.0). Universidad del Istmo. doi: [pendiente Zenodo]
+> Velázquez Velázquez, A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.0). Universidad del Istmo. doi: [pendiente Zenodo]
 
 ## Licencia
 
-MIT License — ver `LICENSE` para los términos completos.
+CC BY-NC 4.0 — ver `LICENSE` para los términos completos.
 
-El motor científico (`core/`) se distribuye en forma compilada y no se incluye en esta licencia abierta. Los derechos sobre los algoritmos científicos y la metodología son del autor.
+El motor científico (`core/`) es propietario y no se incluye en esta licencia. Ver `NOTICE.txt`.
 
-## Autor
+## Autora
 
-**Alejandra Velázquez Velázquez** *(autora principal)*  
+**Alejandra Velázquez Velázquez**  
 Maestría en Ciencias en Energía Eólica  
 Universidad del Istmo, Oaxaca, México
-
-**José Antonio Rojas Escobar** *(coautor)*
 
 ## Agradecimientos
 
