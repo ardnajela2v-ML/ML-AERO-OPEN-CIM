@@ -6079,6 +6079,11 @@ def create_app():
                                     historical_wind['dt_hours'] * 1.5,
                                     _max_gap_h,
                                 )
+        # Persistir historical_wind en la sesión para que el endpoint de
+        # análisis de escenarios (que corre después) pueda calcular la
+        # matriz de robustez AEP × precio sin necesitar repasar los datos.
+        if source_session is not None and historical_wind is not None:
+            source_session['historical_wind'] = historical_wind
         source_selection_token = source_session.get('_source_selection_token') if source_info else None
         scope = body.get('scope', 'park')
         polygon = body.get('polygon') or None
