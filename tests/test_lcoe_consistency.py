@@ -7,6 +7,7 @@ import numpy as np
 from core.energy import TechnoEconomicAnalyzer, PowerCurve
 from core.cost_model import CostModel
 from core.kriging import turbine_site_economics
+from core.project_economics import DEFAULT_DEGRADATION_PCT
 
 
 def _annuity(rate: float, years: int) -> float:
@@ -39,7 +40,8 @@ class LcoeDiscountingTests(unittest.TestCase):
                                    project_years=years)
 
         annuity = _annuity(rate, years)
-        pv_energy = sum(annual_energy_kwh * 0.997 ** (year - 1) / (1 + rate) ** year
+        degradation_factor = 1.0 - DEFAULT_DEGRADATION_PCT / 100.0
+        pv_energy = sum(annual_energy_kwh * degradation_factor ** (year - 1) / (1 + rate) ** year
                         for year in range(1, years + 1))
         expected_lcoe = ((total_capex + annual_opex * annuity
                           + total_capex * 0.03 / (1 + rate) ** years) / pv_energy)
@@ -70,7 +72,8 @@ class LcoeDiscountingTests(unittest.TestCase):
         cm = res['opex_usd_anual']
         ekwh = res['aep_mwh'] * 1000.0
         annuity = _annuity(rate, years)
-        pv_energy = sum(ekwh * 0.997 ** (year - 1) / (1 + rate) ** year
+        degradation_factor = 1.0 - DEFAULT_DEGRADATION_PCT / 100.0
+        pv_energy = sum(ekwh * degradation_factor ** (year - 1) / (1 + rate) ** year
                         for year in range(1, years + 1))
         expected_lcoe = (ctot + cm * annuity + ctot * 0.03 / (1 + rate) ** years) / pv_energy
         undiscounted_bug = (ctot + cm * years) / (ekwh * years)

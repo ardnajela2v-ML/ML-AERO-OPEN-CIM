@@ -104,7 +104,7 @@ class HistoricalProductionTests(unittest.TestCase):
         context = build_energy_context(
             self.sites, self.turbine, wake_model='jensen', k_wake=.075, ct=.8,
             availability=.97, electrical_losses=.03, historical_resource=prepared,
-            origin=(16.505, -94.995), rho=1.2)
+            origin=(16.505, -94.995), rho=1.2, environmental_loss=0.0)
         stored = context['historical_resource']
         self.assertNotIn('ws', stored)
         self.assertNotIn('_wind_summary', stored)
