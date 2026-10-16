@@ -1037,9 +1037,6 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                     'revenue_year1_override': candidate_revenue_override,
                     'scenarios': candidate_scenarios,
                 }
-            _pool_cache = extract_candidate_pool(
-                generation, filename, turbine.hub_height_m)
-
             # Flujo de decisión de ruido/shadow flicker (acordado con el
             # usuario): la selección PRIMARIA es "estela + VAN" -- ignora
             # ruido/flicker/pendiente a propósito, igual que se generaron
@@ -1094,6 +1091,11 @@ def generate_park_layouts(sites: List[Dict], polygon: List[Dict], turbines_folde
                             pass
                 except Exception:
                     pass
+            # Extraer el pool DESPUÉS de que el campeón haya recibido sus
+            # scenarios (ruta dated), para que el pool cache incluya el precio
+            # PML real del campeón y rerun_economics_from_pool pueda usarlo.
+            _pool_cache = extract_candidate_pool(
+                generation, filename, turbine.hub_height_m)
             if champion is None:
                 return {'error': {
                     'turbine': filename,
