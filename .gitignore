@@ -56,3 +56,21 @@ logs/
 
 # Carpetas temporales
 Sin título/
+
+# Motor propietario (no distribuir fuente)
+core/
+
+# Documentación interna / instrucciones de IA
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+HANDOFF.md
+CONTEXT.md
+
+# Análisis internos y estudios de caso
+docs/
+validation/
+checar/
+dendoclust/
+scripts/
+aerogeneradores/

@@ -1,2 +1,0 @@
-# External scientific reference; install alongside the root requirements.txt.
-py-wake==2.6.19
