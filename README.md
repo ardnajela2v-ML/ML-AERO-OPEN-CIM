@@ -75,7 +75,7 @@ aero-open-cim/
 
 Si usas AERO OPEN CIM en tu investigación, cita usando el archivo `CITATION.cff` o:
 
-> Velázquez Velázquez, A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.0). Universidad del Istmo. doi: [pendiente Zenodo]
+> Velázquez Velázquez, A. (2026). *AERO OPEN CIM — Plataforma de prefactibilidad eólica* (v1.0.1). Universidad del Istmo. https://doi.org/10.5281/zenodo.23427951
 
 ## Licencia
 

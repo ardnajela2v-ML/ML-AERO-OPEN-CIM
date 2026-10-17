@@ -15,8 +15,12 @@ authors:
     given-names: "Alejandra"
     affiliation: "Universidad del Istmo — Maestría en Ciencias en Energía Eólica"
     orcid: ""
-version: "1.0.0"
-date-released: "2026-10-15"
+version: "1.0.1"
+date-released: "2026-10-16"
+doi: "10.5281/zenodo.23427951"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.23427951"
 license: "CC-BY-NC-4.0"
 license-url: "https://creativecommons.org/licenses/by-nc/4.0/"
 repository-code: "https://github.com/ardnajela2v-ML/ML-AERO-OPEN-CIM"
